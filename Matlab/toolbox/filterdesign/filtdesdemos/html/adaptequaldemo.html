@@ -1,0 +1,386 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Equalization in Digital Communications</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-19">
+      <meta name="m-file" content="adaptequaldemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Equalization in Digital Communications</h1>
+      <introduction>
+         <p>This demonstration illustrates the application of adaptive filters to channel equalization in digital communications.  Channel
+            equalization is a simple way of mitigating the detrimental effects caused by a frequency-selective and/or dispersive communication
+            link between sender and receiver.  For this demonstration, all signals are assumed to have a digital baseband representation.
+            During the training phase of channel equalization, a digital signal s[n] that is known to both the transmitter and receiver
+            is sent by the transmitter to the receiver. The received signal x[n] contains two signals:        the signal s[n] filtered
+            by the channel impulse response, and        an unknown broadband noise signal v[n]. The goal is to filter x[n] to remove the
+            inter-symbol interference (ISI) caused by the dispersive channel and to minimize the effect of the additive noise v[n].  Ideally,
+            the output signal would closely follow a delayed version of the transmitted signal s[n].
+         </p>
+         <p>Author(s): Scott C. Douglas</p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">The transmitted input signal s[n]</a></li>
+            <li><a href="#2">The transmission channel</a></li>
+            <li><a href="#4">The received signal x[n]</a></li>
+            <li><a href="#5">The training signal</a></li>
+            <li><a href="#6">Trained equalization</a></li>
+            <li><a href="#7">Training error e[n]</a></li>
+            <li><a href="#8">Decision-directed adaptation</a></li>
+            <li><a href="#9">Comparison with trained adaptation</a></li>
+         </ul>
+      </div>
+      <h2>The transmitted input signal s[n]<a name="1"></a></h2>
+      <p>A digital signal carries information through its discrete structure. There are several common baseband signaling methods.
+          We shall use a 16-QAM complex-valued symbol set, in which the input signal takes one of sixteen different values given by
+         all possible combinations of {-3, -1, 1, 3} + j*{-3, -1, 1, 3}, where j = sqrt(-1).  Let's generate a sequence of 5000 such
+         symbols, where each one is equiprobable.
+      </p><pre class="codeinput">ntr = 5000;
+j = sqrt(-1);
+s = sign(randn(1,ntr)).*(2+sign(randn(1,ntr)))+j*sign(randn(1,ntr)).*(2+sign(randn(1,ntr)));
+plot(s,<span class="string">'o'</span>);
+axis([-4 4 -4 4]);
+axis(<span class="string">'square'</span>);
+xlabel(<span class="string">'Re\{s(n)\}'</span>);
+ylabel(<span class="string">'Im\{s(n)\}'</span>);
+title(<span class="string">'Input signal constellation'</span>);
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_01.png"> <h2>The transmission channel<a name="2"></a></h2>
+      <p>The transmission channel is defined by the channel impulse response and the noise characteristics.  We shall choose a particular
+         channel that exhibits both frequency selectivity and dispersion. The noise variance is chosen so that the received signal-to-noise
+         ratio is 30 dB.
+      </p><pre class="codeinput">b = exp(j*pi/5)*[0.2 0.7 0.9];
+a = [1 -0.7 0.4];
+<span class="comment">% Transmission channel filter</span>
+channel = dfilt.df2t(b,a);
+<span class="comment">% Impulse response</span>
+hFV = fvtool(channel,<span class="string">'Analysis'</span>,<span class="string">'impulse'</span>);
+legend(hFV, <span class="string">'Transmission channel'</span>);
+set(hFV, <span class="string">'Color'</span>, [1 1 1])
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_02.png"> <pre class="codeinput"><span class="comment">% Frequency response</span>
+set(hFV, <span class="string">'Analysis'</span>, <span class="string">'freq'</span>)
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_03.png"> <h2>The received signal x[n]<a name="4"></a></h2>
+      <p>The received signal x[n] is the signal s[n] filtered by the channel impulse response with additive noise v[n]. We shall assume
+         a complex Gaussian noise signal for the additive noise.
+      </p><pre class="codeinput">sig = sqrt(1/16*(4*18+8*10+4*2))/sqrt(1000)*norm(impz(channel));
+v = sig*(randn(1,ntr) + j*randn(1,ntr))/sqrt(2);
+x = filter(channel,s) + v;
+plot(x,<span class="string">'.'</span>);
+xlabel(<span class="string">'Re\{x[n]\}'</span>);
+ylabel(<span class="string">'Im\{x[n]\}'</span>);
+axis([-40 40 -40 40]);
+axis(<span class="string">'square'</span>);
+title(<span class="string">'Received signal x[n]'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1])
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_04.png"> <h2>The training signal<a name="5"></a></h2>
+      <p>The training signal is a shifted version of the original transmitted signal s[n].  This signal would be known to both the
+         transmitter and receiver.
+      </p><pre class="codeinput">d = [zeros(1,10) s(1:ntr-10)];
+</pre><h2>Trained equalization<a name="6"></a></h2>
+      <p>To obtain the fastest convergence, we shall use the conventional version of a recursive least-squares estimator.  Only the
+         first 2000 samples are used for training.  The output signal constellation shows clusters of values centered on the sixteen
+         different symbol values--an indication that equalization has been achieved.
+      </p><pre class="codeinput">P0 = 100*eye(20);
+lam = 0.99;
+h = adaptfilt.rls(20,lam,P0);
+ntrain = 1:2000;
+[y,e] = filter(h,x(ntrain),d(ntrain));
+plot(y(1001:2000),<span class="string">'.'</span>);
+xlabel(<span class="string">'Re\{y[n]\}'</span>);
+ylabel(<span class="string">'Im\{y[n]\}'</span>);
+axis([-5 5 -5 5]);
+axis(<span class="string">'square'</span>);
+title(<span class="string">'Equalized signal y[n]'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1])
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_05.png"> <h2>Training error e[n]<a name="7"></a></h2>
+      <p>Plotting the squared magnitude of the error signal e[n], we see that convergence with the RLS algorithm is fast. It occurs
+         in about 60 samples with the equalizer settings chosen.
+      </p><pre class="codeinput">semilogy(ntrain,abs(e).^2);
+xlabel(<span class="string">'Number of iterations'</span>);
+ylabel(<span class="string">'|e[n]|^2'</span>)
+title(<span class="string">'Squared magnitude of the training errors'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1])
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_06.png"> <h2>Decision-directed adaptation<a name="8"></a></h2>
+      <p>Once the equalizer has converged, we can use decision-directed adaptation to continue adaptation during periods where no training
+         data are available. In such cases, the desired signal d[n] is replaced by a quantized version of the output signal y[n] that
+         is nearest to a valid symbol in the transmitted signal. We can use the RLS adaptive algorithm to implement this decision-directed
+         algorithm in a sample-by-sample mode.
+      </p><pre class="codeinput">e = [e(1:2000) zeros(1,3000)];
+h.ResetBeforeFiltering = <span class="string">'off'</span>;
+<span class="keyword">for</span> n=2001:5000
+    yhat = h.Coefficients*[x(n);h.States];
+    ydd = round((yhat+1+j)/2)*2-1-j;
+    <span class="keyword">if</span> (abs(real(ydd))&gt;3)
+        ydd = 3*sign(real(ydd)) + imag(ydd);
+    <span class="keyword">end</span>
+    <span class="keyword">if</span> (abs(imag(ydd))&gt;3)
+        ydd = real(ydd) + 3*sign(imag(ydd));
+    <span class="keyword">end</span>
+    e(n) = d(n) - yhat;
+    [yhat,edd] = filter(h,x(n),ydd);
+<span class="keyword">end</span>
+</pre><h2>Comparison with trained adaptation<a name="9"></a></h2>
+      <p>If the symbol decisions are correct, then decision- directed adaptation produces identical performance to trained adaptation.
+          We can compare the error sequence from the combined training/decision-directed adaptive equalizer with one that uses training
+         data over the whole received signal.  A sudden jump in the difference in the error signals indicates an incorrect symbol decision
+         was used in the decision- directed algorithm.  So long as these errors are infrequent enough, the effects of these errors
+         decay away, and the decision-directed equalizer's performance remains similar to that of the trained equalizer.
+      </p><pre class="codeinput">reset(h);
+[ytrain,etrain] = filter(h,x,d);
+n = 1:5000;
+semilogy(n,abs(e),n,abs(etrain),n,abs(e-etrain));
+xlabel(<span class="string">'number of iterations'</span>);
+ylabel(<span class="string">'|e[n]|^2'</span>);
+title(<span class="string">'Comparison of trained and trained/decision-directed equalizers'</span>);
+legend(<span class="string">'Trained/Decision-Directed'</span>,<span class="string">'Trained'</span>,<span class="string">'Difference'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1])
+</pre><img vspace="5" hspace="5" src="adaptequaldemo_07.png"> <p class="footer">Copyright 1999-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Equalization in Digital Communications 
+% This demonstration illustrates the application of adaptive filters to
+% channel equalization in digital communications.  Channel equalization
+% is a simple way of mitigating the detrimental effects caused by
+% a frequency-selective and/or dispersive communication link between
+% sender and receiver.  For this demonstration, all signals are assumed
+% to have a digital baseband representation.  During the training phase 
+% of channel equalization, a digital signal s[n] that is known to both 
+% the transmitter and receiver is sent by the transmitter to the receiver.  
+% The received signal x[n] contains two signals:
+%        the signal s[n] filtered by the channel impulse response, and
+%        an unknown broadband noise signal v[n].
+% The goal is to filter x[n] to remove the inter-symbol interference
+% (ISI) caused by the dispersive channel and to minimize the effect of
+% the additive noise v[n].  Ideally, the output signal would closely 
+% follow a delayed version of the transmitted signal s[n].  
+%
+% Author(s): Scott C. Douglas
+% Copyright 1999-2004 The MathWorks, Inc.
+% $Revision: 1.1.10.1 $  $Date: 2004/04/08 16:18:08 $
+
+%% The transmitted input signal s[n]
+%
+% A digital signal carries information through its discrete structure.
+% There are several common baseband signaling methods.  We shall use
+% a 16-QAM complex-valued symbol set, in which the input signal takes
+% one of sixteen different values given by all possible combinations
+% of {-3, -1, 1, 3} + j*{-3, -1, 1, 3}, where j = sqrt(-1).  Let's 
+% generate a sequence of 5000 such symbols, where each one is equiprobable.
+
+ntr = 5000;
+j = sqrt(-1);
+s = sign(randn(1,ntr)).*(2+sign(randn(1,ntr)))+j*sign(randn(1,ntr)).*(2+sign(randn(1,ntr)));
+plot(s,'o');
+axis([-4 4 -4 4]); 
+axis('square');
+xlabel('Re\{s(n)\}');
+ylabel('Im\{s(n)\}');
+title('Input signal constellation');
+
+%% The transmission channel
+%
+% The transmission channel is defined by the channel impulse response 
+% and the noise characteristics.  We shall choose a particular 
+% channel that exhibits both frequency selectivity and dispersion.
+% The noise variance is chosen so that the received signal-to-noise
+% ratio is 30 dB.
+
+b = exp(j*pi/5)*[0.2 0.7 0.9];
+a = [1 -0.7 0.4];
+% Transmission channel filter
+channel = dfilt.df2t(b,a);
+% Impulse response
+hFV = fvtool(channel,'Analysis','impulse');
+legend(hFV, 'Transmission channel');
+set(hFV, 'Color', [1 1 1])
+%%
+
+% Frequency response
+set(hFV, 'Analysis', 'freq')
+%%
+
+%% The received signal x[n]
+%
+% The received signal x[n] is the signal s[n] filtered by
+% the channel impulse response with additive noise v[n].
+% We shall assume a complex Gaussian noise signal for
+% the additive noise.
+
+sig = sqrt(1/16*(4*18+8*10+4*2))/sqrt(1000)*norm(impz(channel));
+v = sig*(randn(1,ntr) + j*randn(1,ntr))/sqrt(2);
+x = filter(channel,s) + v;
+plot(x,'.');
+xlabel('Re\{x[n]\}');
+ylabel('Im\{x[n]\}');
+axis([-40 40 -40 40]);
+axis('square');
+title('Received signal x[n]');
+set(gcf, 'Color', [1 1 1])
+
+%%  The training signal
+%  
+% The training signal is a shifted version of the
+% original transmitted signal s[n].  This signal would
+% be known to both the transmitter and receiver.  
+
+d = [zeros(1,10) s(1:ntr-10)];
+
+%% Trained equalization
+% 
+% To obtain the fastest convergence, we shall use the
+% conventional version of a recursive least-squares
+% estimator.  Only the first 2000 samples are used
+% for training.  The output signal constellation shows
+% clusters of values centered on the sixteen different
+% symbol valuesREPLACE_WITH_DASH_DASHan indication that equalization has
+% been achieved. 
+
+P0 = 100*eye(20);
+lam = 0.99;
+h = adaptfilt.rls(20,lam,P0);
+ntrain = 1:2000;
+[y,e] = filter(h,x(ntrain),d(ntrain));
+plot(y(1001:2000),'.');
+xlabel('Re\{y[n]\}');
+ylabel('Im\{y[n]\}');
+axis([-5 5 -5 5]);
+axis('square');
+title('Equalized signal y[n]');
+set(gcf, 'Color', [1 1 1])
+
+%% Training error e[n]
+%
+% Plotting the squared magnitude of the error signal 
+% e[n], we see that convergence with the RLS algorithm
+% is fast. It occurs in about 60 samples with the
+% equalizer settings chosen.
+
+semilogy(ntrain,abs(e).^2);
+xlabel('Number of iterations');
+ylabel('|e[n]|^2')
+title('Squared magnitude of the training errors');
+set(gcf, 'Color', [1 1 1])
+
+%% Decision-directed adaptation
+%
+% Once the equalizer has converged, we can use 
+% decision-directed adaptation to continue adaptation
+% during periods where no training data are available.
+% In such cases, the desired signal d[n] is replaced
+% by a quantized version of the output signal y[n] that
+% is nearest to a valid symbol in the transmitted signal.
+% We can use the RLS adaptive algorithm to implement
+% this decision-directed algorithm in a sample-by-sample
+% mode.
+
+e = [e(1:2000) zeros(1,3000)];
+h.ResetBeforeFiltering = 'off';
+for n=2001:5000
+    yhat = h.Coefficients*[x(n);h.States];
+    ydd = round((yhat+1+j)/2)*2-1-j;
+    if (abs(real(ydd))>3)
+        ydd = 3*sign(real(ydd)) + imag(ydd);
+    end
+    if (abs(imag(ydd))>3)
+        ydd = real(ydd) + 3*sign(imag(ydd));
+    end
+    e(n) = d(n) - yhat;
+    [yhat,edd] = filter(h,x(n),ydd);
+end
+
+%% Comparison with trained adaptation
+%
+% If the symbol decisions are correct, then decision-
+% directed adaptation produces identical performance
+% to trained adaptation.  We can compare the error
+% sequence from the combined training/decision-directed
+% adaptive equalizer with one that uses training data
+% over the whole received signal.  A sudden jump in
+% the difference in the error signals indicates an
+% incorrect symbol decision was used in the decision-
+% directed algorithm.  So long as these errors are
+% infrequent enough, the effects of these errors decay
+% away, and the decision-directed equalizer's performance 
+% remains similar to that of the trained equalizer.
+
+reset(h);
+[ytrain,etrain] = filter(h,x,d);
+n = 1:5000;
+semilogy(n,abs(e),n,abs(etrain),n,abs(e-etrain));
+xlabel('number of iterations');
+ylabel('|e[n]|^2');
+title('Comparison of trained and trained/decision-directed equalizers');
+legend('Trained/Decision-Directed','Trained','Difference');
+set(gcf, 'Color', [1 1 1])
+
+
+
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

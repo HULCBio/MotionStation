@@ -1,0 +1,460 @@
+%% $Revision $
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+
+%% Make sure no white space in this file shows up in code.
+%selectfile NULL_FILE
+
+%% Target language is C
+%implements * "C"
+
+
+%%=============================================================================
+%function AddWs(s) void
+  %if ISEMPTY(s)
+    %return ""
+  %else
+    %return "%<s> "
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function ExpandGnd(width, cmplx, gnd) void
+  %if cmplx
+    %assign gnd = "{%<gnd>, %<gnd>}"
+  %endif
+  %if width == 1
+    %if TYPE(gnd) == "String"
+      %return gnd
+    %else
+      %return STRING(gnd)
+    %endif
+  %else
+    %openfile gndBuf
+    {
+    %foreach idx = width
+      %if idx < (width - 1)
+        %<gnd>,
+      %else
+        %<gnd>
+      %endif
+    %endforeach
+    }\
+    %closefile gndBuf
+    %return gndBuf
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function VerifyBooleanScalars(record) void
+  %assign numData = LibCustomStorageClassRecordNumData(record)
+  %foreach idx = numData
+    %assign datarec = LibGetDataRecord(record, idx)
+    %<LibCustomStorageVerifyRecordIsScalar(datarec)>
+    %<LibCustomStorageVerifyRecordIsNonComplex(datarec)>
+    %if LibGetDataTypeIdAliasedThruToFromId(LibGetRecordDataTypeId(datarec)) != tSS_BOOLEAN
+      %assign id = LibGetRecordIdentifier(datarec)
+      %assign sc = LibGetCustomStorageClassName(datarec)
+      %assign errTxt = "Custom storage class '%<sc>' " + ...
+	"is not legal for '%<id>' because its data type is not boolean"
+      %<LibReportError(errTxt)>
+    %endif
+  %endforeach
+%endfunction
+
+
+%%=============================================================================
+%function GetPointer(cscDefn, msDefn) void
+
+  %if cscDefn.DataAccess == "Pointer"
+    %return "*"
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function GetPointerForData(cscDefn, msDefn, datarec) void
+
+  %assign dataAccess = SLibGetDataAccess(cscDefn, datarec)
+  %if dataAccess == "Pointer"
+    %return "*"
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function GetActualStructNameForData(cscDefn, datarec)
+  %assign caProps = LibGetCustomStorageAttributes(datarec)
+  %assign sname = LibGetInstanceSpecificProp(cscDefn, caProps, "StructName")
+
+  %if ISEMPTY(sname)
+    %% If instance specific struct name is empty (user didn't specify in
+    %% object), use default generated struct name here, which should be
+    %% able to avoid conflict among multiple packages and CSCs.
+
+    %assign cscTypeAttributes    = cscDefn.CSCTypeAttributes
+    %assign isStructNameInstSpec = cscTypeAttributes.IsStructNameInstanceSpecific
+
+    %if isStructNameInstSpec
+      %assign rtwInfoPkg = LibGetRTWInfoObjectPackage(datarec)
+      %assign cscName    = cscDefn.Name
+      %assign sname      = "rt_" + rtwInfoPkg + "_" + cscName
+    %endif
+  %endif
+
+  %return sname
+%endfunction
+
+
+%%=============================================================================
+%% Abstract:
+%%   Return an vector of [typedefs decls defns] for data of this grouped custom
+%%   storage class.  In the case of instance-specific struct name, typedefs/
+%%   decls/defns each can be a string containing multiple C typedefs/decls/
+%%   defns.
+%%
+%function GetGroupTypeDeclDefnFlatStructure(cscDefn, msDefn, classrec) void
+  %assert cscDefn.DataInit != "Macro"
+
+  %assign cscName           = cscDefn.Name
+  %assign cscTypeAttributes = cscDefn.CSCTypeAttributes
+
+  %assign isTypeDef         = cscTypeAttributes.IsTypeDef
+  %assign bitpack           = cscTypeAttributes.BitPackBoolean
+  %assign boolType          = "unsigned int"
+  %assign isStructNameInstSpec = cscTypeAttributes.IsStructNameInstanceSpecific
+
+  %if bitpack
+    %<VerifyBooleanScalars(classrec)>
+  %endif
+
+  %%---------------------------------------------------------------------------
+  %% Create a tmp map to save all instance-specific struct name info
+
+  %createrecord tmpInstSpecStructs { }
+
+  %%---------------------------------------------------------------------------
+  %% Scan each data of this CSC, save any instance-specific struct name info,
+  %% and partially construct instance-specific typedef / initstr
+  %%
+  %% xxx (yxiao 20030821) how to scan each data of this CSC by alphabetic order?
+
+  %assign numData = LibCustomStorageClassRecordNumData(classrec)
+  %foreach idx = numData
+    %assign datarec = LibGetDataRecord(classrec, idx)
+    %assign id      = LibGetRecordIdentifier(datarec)
+
+    %assign sname   = GetActualStructNameForData(cscDefn, datarec)
+
+    %%--- Check that actual struct name to use is a valid C identifier
+
+    %if !LibIsValidCVariable(sname)
+      %assign errTxt = "StructName '%<sname>' for data '%<id>' " + ...
+	"of custom storage class '%<cscName>' is not a valid C identifier"
+      %<LibReportError(errTxt)>
+    %endif
+
+    %if isStructNameInstSpec
+      %assign typeToken = ""  %% can't share same type token ammon different struct (?) 
+      %assign typeTag   = "%<sname>_tag"
+      %assign typeName  = "%<sname>_type"
+    %else
+      %assign typeToken = AddWs(cscTypeAttributes.TypeToken)
+      %assign typeTag   = AddWs(cscTypeAttributes.TypeTag)
+      %assign typeName  = AddWs(cscTypeAttributes.TypeName)
+    %endif
+
+    %%--- Add to tmp map if it's a new (must be instance specific then)
+    %%    struct name
+
+    %if !ISFIELD(tmpInstSpecStructs, sname)
+      %% NOTE: sname should be valid identifier, otherwise will error out when
+      %%       adding to tmp record here
+
+      %addtorecord tmpInstSpecStructs \
+        %<sname> { \
+          typetag typeTag \
+          typename typeName \
+          typedef (isTypeDef ? "typedef " : "" ) + \
+                  "struct " + typeToken + " " + typeTag + " {" \
+          initstr "" \
+        }
+    %endif
+
+    %assign srec = GETFIELD(tmpInstSpecStructs, sname)
+    %assign dtypeName = LibGetRecordCompositeDataTypeName(datarec)
+    %assign dataWidth = LibGetDataWidth(datarec)
+
+    %%--- Increment the typedef associated with this data's struct
+
+    %assign dataDims = ""
+    %if dataWidth > 1
+      %assign dataDims = "[%<dataWidth>]"
+    %endif
+
+    %if bitpack
+      %assign srec.typedef = "%<srec.typedef>\n    %<boolType> %<id> : 1;"
+    %else
+      %assign srec.typedef = "%<srec.typedef>\n    %<dtypeName> %<id>%<dataDims>;"
+    %endif
+
+    %% Put Description field of SDO in comments if the option is on
+    %assign desc = SLibGetDescriptionForData(datarec)
+    %if !ISEMPTY(desc)
+      %assign srec.typedef = "%<srec.typedef> /* %<desc> */"
+    %endif
+
+    %%--- Increment the init string associated with this data's struct
+
+    %if cscDefn.DataInit == "Static" && cscDefn.DataAccess == "Direct"
+      %if LibCustomStorageRecordIsModelParameter(datarec)
+        %assign initData = LibParameterInstanceInitStr(datarec)
+      %else
+        %assign dataCmplx = SLibGetRecordIsComplex(datarec)
+	%assign dtIdx    = LibGetRecordDataTypeId(datarec)
+	%assign ground   = LibGetGroundInitFromId(dtIdx)
+	%assign initData = ExpandGnd(dataWidth, dataCmplx,  ground)
+      %endif
+
+      %if idx < (numData - 1)
+        %assign srec.initstr = "%<srec.initstr>\n    %<initData>, /* %<id> */"
+      %else
+        %assign srec.initstr = "%<srec.initstr>\n    %<initData> /* %<id> */"
+      %endif
+    %endif
+
+  %endforeach
+
+  %%--------------------------------------------------------------------------
+  %% For each instance-specific struct name, complete its typedef and initstr,
+  %% and construct its decl / defn string
+
+  %assign pointer   = GetPointer(cscDefn, msDefn)
+  %assign qualifier = SLibGetQualifier(msDefn)
+
+  %assign rtnTypedefs = ""
+  %assign rtnDecls    = ""
+  %assign rtnDefns     = ""
+
+  %assign structNames = FIELDNAMES(tmpInstSpecStructs)
+  %assign numStructNames = SIZE(structNames, 1)
+  %foreach i = numStructNames
+    %assign sname = structNames[i]
+    %assign srec = GETFIELD(tmpInstSpecStructs, sname)
+
+    %assign srec.typedef = srec.typedef + \
+                           (isTypeDef ? "\n} %<srec.typename>;" : "\n};")
+
+    %if !ISEMPTY(srec.initstr)
+      %assign srec.initstr = " = {%<srec.initstr>}"
+    %endif
+
+    %assign structType = (isTypeDef ? srec.typename : "struct %<srec.typetag>")
+
+    %assign decl = "extern " + ...
+                   qualifier + ...
+                   structType + ...
+                   " " + ...
+                   pointer + ...
+                   sname + ...
+                   ";"
+
+    %assign defn = qualifier + ...
+                   structType + ...
+                   " " + ...
+                   pointer + ...
+                   sname + ...
+                   srec.initstr + ...
+                   ";"
+
+    %assign rtnTypedefs = rtnTypedefs + "\n" + srec.typedef + "\n"
+    %assign rtnDecls = rtnDecls + "\n" + decl
+    %assign rtnDefns = rtnDefns + "\n" + defn + "\n"
+
+  %endforeach
+
+  %return ["%<rtnTypedefs>", "%<rtnDecls>", "%<rtnDefns>"]
+
+%endfunction  %% of GetGroupTypeDeclDefnFlatStructure
+
+
+%% Function: GetCSCTypeComment =================================================
+%function GetCSCTypeComment(cscDefn, msDefn, record) void
+  %assign rtnStr="/* Type definition for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCTypeComment
+
+
+%% Function: GetCSCDeclComment =================================================
+%function GetCSCDeclComment(cscDefn, msDefn, record) void
+  %assign rtnStr ="/* Declaration for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCDeclComment
+
+
+%% Function: GetCSCDefnComment =================================================
+%function GetCSCDefnComment(cscDefn, msDefn, record) void
+  %assign rtnStr = "/* Definition for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCDefnComment
+
+
+%% Function: DataAccess =========================================================
+%% Abstract:
+%%   DataAccess provides an API for requesting code fragments or other
+%%   information corresponding to data of a custom storage class.
+%%
+%function DataAccess(record, request, idx, reim) void
+
+  %assign cscDefn = SLibGetCSCDefForData(record)
+  %assign msDefn = SLibGetMemorySectionDefForData(record)
+
+  %switch request
+
+    %case "contents"
+      %assign pointer = GetPointerForData(cscDefn, msDefn, record)
+      %if cscDefn.IsGrouped
+        %assign sname = GetActualStructNameForData(cscDefn, record)
+
+        %if cscDefn.DataAccess == "Direct"
+          %assign delim = "."
+        %else
+          %assign delim = "->"
+        %endif
+
+        %% The data is accessed as <STRUCT_NAME><delim><DATA_NAME>
+        %return sname + delim + LibDefaultCustomStorageContents(record, idx, reim)
+      %else
+        %return pointer + ...
+          LibDefaultCustomStorageContents(record, idx, reim)
+      %endif
+      %break
+
+    %case "address"
+      %if ( cscDefn.DataInit == "Macro" ) || ...
+          ( cscDefn.IsGrouped && ...
+            cscDefn.CSCTypeAttributes.BitPackBoolean )
+        %assign cscName = cscDefn.Name
+        %return "address not supported for %<cscName>"
+      %else
+        %return "&(%<DataAccess(record, "contents", idx, reim)>)"
+      %endif
+      %break
+
+    %case "initialize"
+      %if cscDefn.DataInit == "Dynamic"  %% xxx (yxiao): with memset to zero ??
+        %assign gndValue = LibGetGroundValue(record, tRealPart)
+        %return ...
+          "%<DataAccess(record, "contents", idx, reim)> = " + ...
+          "%<gndValue>;"
+      %else
+        %return ""      
+      %endif
+      %break
+
+    %case "layout"
+      %if ( cscDefn.DataInit == "Macro" ) || ...
+          ( cscDefn.IsGrouped && ...
+            cscDefn.CSCTypeAttributes.BitPackBoolean )
+        %return ["other"]
+      %else
+        %% LibDefaultCustomStorageLayout is the default layout function, and may
+        %% be used when the data is laid out in memory like built-in Simulink
+        %% data.  If the data is not laid out in memory like Simulink data,
+        %% return the vector ["other"].
+        %return LibDefaultCustomStorageLayout(record)
+      %endif
+      %break
+
+    %default
+
+      %% You should invoke LibDefaultCustomStorageUnknownClassAccessType
+      %% for unrecognized requests.  It gracefully errors for unhandled
+      %% critical cases, and supplies safe defaults for unhandled
+      %% noncritical requests.
+      %return LibDefaultCustomStorageUnknownDataAccessType ...
+        (record, request, idx, reim)
+      %break
+
+  %endswitch
+
+%endfunction
+
+
+%% Function: ClassAccess ========================================================
+%% Abstract:
+%%   ClassAccess provides an API for requesting information or actions
+%%   corresponding to a custom storage class.
+%%
+%% NOTE:
+%%   Expecting record of GlobalMemoryMap->CustomData,
+%%   not CompiledModel->CustomStorageClass.
+
+%function ClassAccess(record, request) void
+
+  %assign cscDefn = SLibGetCSCDefForCSC(record)
+  %assign msDefn = SLibGetMemorySectionDefForCSC(record)
+  
+  %switch request
+      
+    %case "setup"
+      %% xxx what to do with memset ??
+      %%     to add ClassAccess "groupInit" and DataAccess "init" ??
+      
+      %return ""
+      %break
+
+    %case "comment"
+      %assign rtnStr = "/* Custom storage class: %<cscDefn.Name> */"
+
+      %return rtnStr
+      %break
+
+    %case "typeComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCTypeComment(cscDefn, msDefn, record)
+      %break
+
+    %case "declComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCDeclComment(cscDefn, msDefn, record)
+      %break
+
+    %case "defnComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCDefnComment(cscDefn, msDefn, record)
+      %break
+
+    %case "groupTypeDeclDefn"
+      %assert cscDefn.IsGrouped
+
+      %return GetGroupTypeDeclDefnFlatStructure(cscDefn, msDefn, record)
+      %break
+
+    %default
+
+      %% You should invoke LibDefaultCustomStorageUnknownClassAccessType
+      %% for unrecognized requests.  It gracefully errors for unhandled
+      %% critical cases, and supplies safe defaults for unhandled
+      %% noncritical requests.
+      %return LibDefaultCustomStorageUnknownClassAccessType(record, request)
+      %break
+
+  %endswitch
+
+%endfunction
+
+
+%% [EOF]

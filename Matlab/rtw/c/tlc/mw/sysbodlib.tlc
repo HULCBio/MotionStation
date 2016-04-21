@@ -1,0 +1,549 @@
+%% $Revision: 1.1.6.6 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: 
+%%  This library implements access function and additional fields
+%%  for the system vector.
+%%
+
+%if EXISTS("_SYSBODLIB_") == TLC_FALSE
+%assign _SYSBODLIB_ = TLC_TRUE
+
+%% Function: LibAddToSystem ====================================================
+%% Abstract:
+%%    Addes a field to the current instance of a system record
+%%    
+%function LibAddToSystem(system, fieldname, value) void
+  %if ISFIELD(system.Instance, fieldname)
+    %<LibReportFatalError("LibAddToSystem, %<fieldname> already exists")>
+  %else
+    %addtorecord system.Instance  %<fieldname> value
+  %endif
+%endfunction
+
+%% Function: LibSetSystemField =================================================
+%% Abstract:
+%%    Sets the value of an existing field in the system record
+%%
+%function LibSetSystemField(system, fieldname, value) void
+  %if ISFIELD(system.Instance, fieldname)
+    %<SETFIELD(system.Instance, fieldname, value)>
+  %else
+    %<LibReportFatalError("LibSetSystemField, %<fieldname> does not exist")>
+  %endif
+%endfunction
+
+%% Function: LibSetSystemFieldForTID===============================================
+%% Abstract:
+%%    Sets the value of an existing field(s) (more than one if 
+%% rate grouping code style) in the system record.
+%%   If value passed is a vector, 
+%%       - set field corresponding to each async tid by 
+%%         value[asyncTid], 
+%%       - set field corresponding to each sync tid by 
+%%         value[syncTid] when SLibIsMultiRateAndRateGrouping(system) is ture, 
+%%         otherwise, set non-rate-grouped field of the system 
+%%         by value[0]. 
+%%   If value passed in is not a vector, 
+%%       set nor-rate-grouped field of the system by value.
+%%
+%function LibSetSystemFieldForTID(system, fieldname1, fieldname2, value) void
+    
+  %assign ListofTIDhasNoEmptyCode =""
+  %if TYPE(value) == "Vector" 
+    %assert SIZE(value, 1) == NumSampleTimes
+    %foreach idx = NumAsynchronousSampleTimes
+      %assign Tid = idx + NumSynchronousSampleTimes
+      %if !WHITE_SPACE(value[Tid])
+	%assign FieldName = "Cached" + fieldname1 + "%<Tid>" + fieldname2
+	
+	%assign ListofTIDhasNoEmptyCode = ListofTIDhasNoEmptyCode ...
+	  + " TID%<Tid> "
+	
+	%<LibSetSystemField(system, FieldName,  value[Tid])>
+      %endif
+    %endforeach
+    
+    %if SLibIsMultiRateAndRateGrouping(system)
+      %foreach Tid = NumSynchronousSampleTimes
+	%if !WHITE_SPACE(value[Tid])
+	  %assign FieldName = "Cached" + fieldname1 + "%<Tid>" + fieldname2
+	  %assign ListofTIDhasNoEmptyCode = ListofTIDhasNoEmptyCode ...
+	    + " TID%<Tid> "
+	
+	  %<LibSetSystemField(system, FieldName,  value[Tid])>
+	%endif
+      %endforeach
+    %else
+      %assign FieldName = "Cached" + fieldname1 + fieldname2
+      %<LibSetSystemField(system, FieldName,  value[0])>
+    %endif
+
+    %assign FieldName = "Cached" + fieldname1 + fieldname2
+    %if TYPE(LibGetSystemField(system, FieldName)) == "Number"
+      %if !WHITE_SPACE(ListofTIDhasNoEmptyCode)
+	%<LibSetSystemField(system, FieldName, "/* Code Rate Grouped */")>
+      %else
+	%<LibSetSystemField(system, FieldName, "")>
+      %endif
+    %endif
+  %else
+    %assign FieldName = "Cached" + fieldname1 + fieldname2
+    %<LibSetSystemField(system, FieldName,  value)>
+  %endif
+
+%endfunction
+
+%% Function: LibAddToSystemField ===============================================
+%% Abstract:
+%%    Adds (string) value to existing system field
+%%
+%function LibAddToSystemField(system, fieldname, value) void
+  %if ISFIELD(system.Instance, fieldname)
+    %assign system.Instance.%<fieldname> = ...
+      system.Instance.%<fieldname> + value
+  %else
+    %<LibReportFatalError("LibAddToSystemField, %<fieldname> does not exist")>
+  %endif
+%endfunction
+
+%% Function: LibGetSystemField =================================================
+%% Abstract:
+%%    Gets the value of an existing field in the system record
+%%
+%function LibGetSystemField(system, fieldname) void
+  %if ISFIELD(system.Instance, fieldname)
+    %assign value = GETFIELD(system.Instance, fieldname)
+  %else
+    %<LibReportFatalError("LibGetSystemField, %<fieldname> does not exist")>
+  %endif
+  %return value
+%endfunction
+
+%% Function: LibIsSystemField ==================================================
+%% Abstract:
+%%    Returns TLC_TRUE is field exists in system record TLC_FALSE otherwise
+%%
+%function LibIsSystemField(system, fieldname) void
+  %return ISFIELD(system.Instance, fieldname)
+%endfunction
+
+%% Function: LibSetSubSystemField ==============================================
+%% Abstract:
+%%    Sets the value of an existing field in the system record related to
+%%    the subsystem block
+%%
+%function LibSetSubSystemField(subsysblk, fieldname) void
+  %error "LibSetSubSystemField is not implemented yet"
+%endfunction
+
+%% Function: LibGetSubSystemField ==============================================
+%% Abstract:
+%%    Gets the value of an existing field in the system record related to
+%%    the subsystem block
+%%
+%function LibGetSubSystemField(subsysblk, fieldname) void
+  %error "LibGetSubSystemField is not implemented yet"
+%endfunction
+
+%% Function: LibGenSystemCachedFcnCall =========================================
+%% Abstract:
+%%    Generates function call to nonempty cached function
+%%
+%% Example:
+%%    LibGenCachedSystemFcnCall(childSystem, "Start", 0)
+%%
+%function LibGenCachedSystemFcnCall(system, fcnType, instIndex) Output
+  %if (!WHITE_SPACE(LibGetSystemField(system, "Cached" + fcnType + "Fcn")))
+    %assign fcnInfo = LibGetFcnInfo(system, fcnType, system.CurrentTID)
+    %if LibSystemIsInlined(system)
+      %assign buffer = SLibGetBody%<fcnType>FcnCache(system)
+      %<buffer>
+    %else
+      %<LibGenSubsystemFcnCall(fcnInfo, SystemIdx, system.SystemIdx, instIndex)>
+    %endif
+  %endif 
+%endfunction
+
+%% Function: LibGenOptSystemFcnCall ============================================
+%% Abstract:
+%%    Generates function call to a existing (optional) function
+%%
+%% Example:
+%%    LibGenOptSystemFcnCall(system, "Disable", 0)
+%%
+%function LibGenOptSystemFcnCall(system, fcnType, instIndex) Output
+  %if (LibIsSystemField(system , fcnType + "FcnInfo") && ...
+       !LibSystemFcnIsEmpty(system, fcnType))
+    %assign fcnInfo = LibGetFcnInfo(system, fcnType, system.CurrentTID)
+    %if LibSystemIsInlined(system)
+      %assign buffer = SLibGetBody%<fcnType>FcnCache(system)
+    %<buffer>
+    %else
+      %<LibGenSubsystemFcnCall(fcnInfo, SystemIdx, system.SystemIdx, instIndex)>
+    %endif
+  %endif
+%endfunction
+
+%% Function: LibGenSystemFcnCall ===============================================
+%% Abstract:
+%%    Generates (inlines) function call to a existing system function.
+%%
+%% Arguments:
+%%    1) system to call
+%%    2) function type to call (e.g. "Output", "Initialize", ...)
+%%    3) callside (instance) index of the subsystem block
+%%
+%% Example:
+%%    LibGenSystemFcnCall(system, "Output", 0)
+%%
+%function LibGenSystemFcnCall(system, fcnType, instIndex) Output
+  %% Output may have been combined with update
+  %if fcnType == "Output" && !ISFIELD(system,"OutputFcn") &&  ...
+      !(ISFIELD(system,"OutputCalledInUpdate") &&  ...
+      system.OutputCalledInUpdate == "yes")
+    %assign fcnType = "OutputUpdate"
+  %endif
+  %assign fcnInfo = LibGetFcnInfo(system, fcnType, system.CurrentTID)
+  %if LibSystemIsInlined(system)
+    %assign buffer = SLibGetBody%<fcnType>FcnCache(system)
+    %<buffer>
+  %else
+    %<LibGenSubsystemFcnCall(fcnInfo, SystemIdx, system.SystemIdx, instIndex)>
+  %endif
+%endfunction
+
+%% Function: LibGenSystemFcnCallIn =============================================
+%% Abstract:
+%%    Generates function call to a existing system function and copies the
+%%    accessed flags to the caller function type. 
+%%
+%% Example:
+%%    LibGenSystemFcnCallIn(system, "Output", "Initialize", 0)
+%%    - reads: call in the systems "Output" function the "Initialize" function
+%%    - will copy the accessed flags frm "Initialize" to "Output"
+%%
+%function LibGenSystemFcnCallIn(system, inFcnType, fcnType, instIndex) Output
+  %<LibGenSystemFcnCall(system, fcnType, instIndex)>
+  %<SLibCopyArgAccessedFlags(SystemIdx, fcnType, inFcnType, "")>
+  %<SLibCopyArgAccessedFlags(SystemIdx, fcnType, inFcnType, "Global")>
+%endfunction
+
+%% Function: SLibIsSingleRateSystem(system) ===============================
+%%  Return true if system is single rate system.
+%%  
+%%  There are two special cases:
+%%  1.  For constant subsystem, if one of its block 
+%%      is subsystem and SubsystemTID of this block 
+%%      is not constant. The system should be treated 
+%%      as multirate system for rate grouping. 
+%%  2.  For single rate enable subsystem,  
+%%      if any control port TID does not equal to subsystem TID 
+%%      and is not constant, the system should be treated as 
+%%      multirate system for rate grouping.
+%function SLibIsSingleRateSystem(system) void
+  %assign sr = TLC_TRUE
+  
+  %if system.Type == "root"
+    %assign sr = CompiledModel.SingleRate == "yes"
+  %else
+    %assign sysIdx   = system.CallSites[0][2]
+    %assign blkIdx   = system.CallSites[0][3]
+    %assign subssTID = System[sysIdx].Block[blkIdx].SubsystemTID
+    %if ISEQUAL(subssTID, "constant")
+      %% For constant subsystem, if one of its block 
+      %% is subsystem and SubsystemTID of this block 
+      %% is not constant. The system should be treated 
+      %% as multirate system for rate grouping.
+      %with system
+	%foreach blkIdx = NumBlocks
+	  %assign block = Block[blkIdx]
+	  %if ISEQUAL(block.TID, "Subsystem") && ...
+	    ISEQUAL(block.SubsystemTID, "constant")
+	    %assign sr = TLC_FALSE
+	    %break
+	  %endif
+	%endforeach
+      %endwith 
+    %elseif ISEQUAL(TYPE(subssTID),"Vector")
+      %assign sr = TLC_FALSE
+    %else
+      %assign sr = System[sysIdx].Block[blkIdx].ParamSettings.SingleRate == "yes"
+    %endif
+    %if sr
+      %% For single rate enable subsystem,  
+      %% if any control port TID does not equal to subsystem TID 
+      %% and is not constant, the system should be treated as 
+      %% multirate system for rate grouping.
+      %if system.Type == "enable"
+        %assign tid01Eq = ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+	%% enable subsystem 
+	%with System[sysIdx].Block[blkIdx]
+	  %if NumControlInputPorts > 0
+	    %foreach Idx = NumControlInputPorts
+	      %assign CntrlTID = ControlInputPort[Idx].SignalSrcTID
+	      %foreach idxSrcTID = SIZE(CntrlTID,1)
+		%if !ISEQUAL(CntrlTID[idxSrcTID], SubsystemTID) && ...
+		  !ISEQUAL(CntrlTID[idxSrcTID], "constant") 
+                  %% System is still single rate if tid01EQ=1 and both control
+                  %% port and SubsystemTID are tid={0,1}
+                  %if !(tid01Eq && (TYPE(CntrlTID[idxSrcTID]) == "Number") ...
+		    && (TYPE(SubsystemTID) == "Number") ...
+		    && (CntrlTID[idxSrcTID] <= 1) && (SubsystemTID <= 1))
+		    %assign sr = TLC_FALSE
+		    %break
+		  %endif
+		%endif
+	      %endforeach
+	    %endforeach
+	  %endif
+	%endwith
+      %endif
+    %endif
+  %endif
+  
+  %return sr
+%endfunction
+
+
+%% Function: SLibIsMultiRateAndRateGrouping =============================================
+%% Abstract:
+%%    Returen TLC_TRUE if system is multirate (not single rate) 
+%%    and rate grouping option is set  'on'. 
+%%
+%function SLibIsMultiRateAndRateGrouping(system) void
+  
+  %if ISFIELD(system, "IsMultiRateAndRateGrouping")
+    %return system.IsMultiRateAndRateGrouping
+  %endif
+  
+  %if !SLibIsSingleRateSystem(system) && SLibIsRateGrouping()
+    %addtorecord system IsMultiRateAndRateGrouping TLC_TRUE
+    %return TLC_TRUE
+  %else
+    %addtorecord system IsMultiRateAndRateGrouping TLC_FALSE
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+
+%% Function: SLibSingleTasking ==================================================
+%% Abstract:
+%%   Return true for fixed-step singletasking solver.  Otherwise, return false.
+%%
+%function SLibSingleTasking() void
+  %return ( CompiledModel.SolverType != "FixedStep" || ...
+            CompiledModel.FixedStepOpts.SolverMode != "MultiTasking" )
+%endfunction
+
+
+%% Function: SLibIsRateGrouping =============================================
+%% Abstract:
+%%    Returen TLC_TRUE if  rate grouping option is set  'on'. 
+%%
+%% Example:
+%%
+%function SLibIsRateGrouping() void
+  %if RateGroupingCode && !SLibSingleTasking()
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+%% =============================================================================
+%% Create global cache variables to hold each of the system functions
+%% =============================================================================
+%% =============================================================================
+%% Create empty caches for all Systems in the model
+%% =============================================================================
+
+%with CompiledModel
+  %assign rootSystem = System[NumSystems - 1] 
+  %foreach sysIdx = NumSystems
+    %addtorecord System[sysIdx] Instance { ...
+      CachedStartFcn        0 ; ...
+      CachedEnableFcn       0 ; ...
+      CachedInitializeFcn   0 ; ...
+      CachedOutputFcn       0 ; ...
+      CachedUpdateFcn       0 ; ...
+      CachedDerivativeFcn   0 ; ...
+      CachedProjectionFcn   0 ; ...
+      CachedZeroCrossingFcn 0 ; ...
+      CachedDisableFcn      0 ; ...
+      CachedTerminateFcn    0 ; ...
+      CachedStartSSVars         "" ; ...
+      CachedEnableSSVars        "" ; ...
+      CachedInitializeSSVars    "" ; ...
+      CachedOutputSSVars        "" ; ...
+      CachedOutputUpdateSSVars  "" ; ...
+      CachedUpdateSSVars        "" ; ...
+      CachedDerivativeSSVars    "" ; ...
+      CachedProjectionSSVars    "" ; ...
+      CachedZeroCrossingSSVars  "" ; ...
+      CachedDisableSSVars       "" ; ...
+      CachedTerminateSSVars     "" ; ...
+      CachedStartGlobalVars         "" ; ...
+      CachedEnableGlobalVars        "" ; ...
+      CachedInitializeGlobalVars    "" ; ...
+      CachedOutputGlobalVars        "" ; ...
+      CachedOutputUpdateGlobalVars  "" ; ...
+      CachedUpdateGlobalVars        "" ; ...
+      CachedDerivativeGlobalVars    "" ; ...
+      CachedProjectionGlobalVars    "" ; ...
+      CachedZeroCrossingGlobalVars  "" ; ...
+      CachedDisableGlobalVars       "" ; ...
+      CachedTerminateGlobalVars     "" ; ...
+      CachedOutputLocalBO       "" ; ...
+      CachedOutputUpdateLocalBO "" ; ...
+      CachedStartOpenCode         "" ; ...
+      CachedStartCloseCode        "" ; ...
+      CachedStartProfileDeclsCode "" ; ...
+      CachedStartProfileStartCode "" ; ...
+      CachedStartProfileEndCode   "" ; ...
+      CachedOutputOpenCode        "" ; ...
+      CachedOutputCloseCode       "" ; ...
+      CachedOutputProfileDeclsCode "" ; ...
+      CachedOutputProfileStartCode "" ; ...
+      CachedOutputProfileEndCode   "" ; ...
+      CachedOutputUpdateOpenCode         "" ; ...
+      CachedOutputUpdateCloseCode        "" ; ...
+      CachedOutputUpdateProfileDeclsCode "" ; ...
+      CachedOutputUpdateProfileStartCode "" ; ...
+      CachedOutputUpdateProfileEndCode   "" ; ...
+      CachedUpdateOpenCode          "" ; ...
+      CachedUpdateCloseCode         "" ; ...
+      CachedUpdateProfileDeclsCode  "" ; ...
+      CachedUpdateProfileStartCode  "" ; ...
+      CachedUpdateProfileEndCode    "" ; ...
+      CachedDerivativeOpenCode          "" ; ...
+      CachedDerivativeCloseCode         "" ; ...
+      CachedDerivativeProfileDeclsCode  "" ; ...
+      CachedDerivativeProfileStartCode  "" ; ...
+      CachedDerivativeProfileEndCode    "" ; ...
+      CachedProjectionOpenCode          "" ; ...
+      CachedProjectionCloseCode         "" ; ...
+      CachedProjectionProfileDeclsCode  "" ; ...
+      CachedProjectionProfileStartCode  "" ; ...
+      CachedProjectionProfileEndCode    "" ; ...
+      CachedDisableOpenCode         "" ; ...
+      CachedDisableCloseCode        "" ; ...
+      CachedDisableProfileDeclsCode "" ; ...
+      CachedDisableProfileStartCode "" ; ...
+      CachedDisableProfileEndCode   "" ; ...
+      CachedEnableOpenCode          "" ; ...
+      CachedEnableCloseCode         "" ; ...
+      CachedEnableProfileDeclsCode       "" ; ...
+      CachedEnableProfileStartCode       "" ; ...
+      CachedEnableProfileEndCode         "" ; ...
+      CachedInitializeOpenCode           "" ; ...
+      CachedInitializeCloseCode          "" ; ...
+      CachedInitializeProfileDeclsCode   "" ; ...
+      CachedInitializeProfileStartCode   "" ; ...
+      CachedInitializeProfileEndCode     "" ; ...
+      CachedZeroCrossingOpenCode         "" ; ...
+      CachedZeroCrossingCloseCode        "" ; ...
+      CachedZeroCrossingProfileDeclsCode "" ; ...
+      CachedZeroCrossingProfileStartCode "" ; ...
+      CachedZeroCrossingProfileEndCode   "" ; ...
+      CachedTerminateOpenCode            "" ; ...
+      CachedTerminateCloseCode           "" ; ...
+      CachedTerminateProfileDeclsCode    "" ; ...
+      CachedTerminateProfileStartCode    "" ; ...
+      CachedTerminateProfileEndCode      "" ; ...
+      CachedStateflowFcnCode             "" ; ...
+      SystemIncludes     "" ; ...
+      SystemTypeDefs     "" ; ...
+      SystemFcnPrototype "" ; ...
+      NeedTIDInOutput             TLC_FALSE ; ...
+      NeedTIDInUpdate             TLC_FALSE ; ...
+      NeedTIDInOutputUpdate       TLC_FALSE ; ...
+      NeedCPIInOutputUpdate TLC_FALSE ; ...
+      ForceOutputUpdateFcn  TLC_FALSE ; ...
+      InstanceCached            TLC_FALSE ; ...
+      InstanceTerminateCached   TLC_FALSE ; ...
+      InstanceDumped            TLC_FALSE ; ...
+      InstanceHeaderDumped      TLC_FALSE ; ...
+      InstanceNonEmpty          TLC_FALSE ; ...
+      InstanceTerminateNonEmpty TLC_FALSE ; ...
+      NeedMathLibrary           TLC_FALSE ; ...
+      SystemCached              TLC_FALSE ; ...
+      SystemNonEmpty            TLC_FALSE ; ...
+      SystemTerminateCached     TLC_FALSE ; ...
+      SystemTerminateNonEmpty   TLC_FALSE ; ...
+      SystemDumped              TLC_FALSE   ...
+    }
+  %endforeach
+%endwith
+    
+    
+%function SLibCreateSystemInterfaceRecordsForRateGrouping() void
+  %with CompiledModel
+    %foreach sysIdx = NumSystems
+      %foreach TID = NumSampleTimes
+	%addtorecord System[sysIdx].Instance  CachedOutput%<TID>Fcn             ""
+	%addtorecord System[sysIdx].Instance  CachedOutputUpdate%<TID>Fcn       ""
+	%addtorecord System[sysIdx].Instance  CachedUpdate%<TID>Fcn             ""
+	%addtorecord System[sysIdx].Instance  CachedOutput%<TID>LocalBO         ""
+	%addtorecord System[sysIdx].Instance  CachedOutputUpdate%<TID>LocalBO   ""
+	%addtorecord System[sysIdx].Instance  CachedOutput%<TID>OpenCode        "" 
+	%addtorecord System[sysIdx].Instance  CachedOutput%<TID>CloseCode       "" 
+	%addtorecord System[sysIdx].Instance  CachedOutputUpdate%<TID>OpenCode  ""
+	%addtorecord System[sysIdx].Instance  CachedOutputUpdate%<TID>CloseCode ""
+	%addtorecord System[sysIdx].Instance  CachedUpdate%<TID>OpenCode        ""
+	%addtorecord System[sysIdx].Instance  CachedUpdate%<TID>CloseCode       ""
+	%addtorecord System[sysIdx]  Output%<TID>Fcn      ""
+	%addtorecord System[sysIdx]  Update%<TID>Fcn      ""
+	%addtorecord System[sysIdx]  OutputUpdate%<TID>Fcn      ""
+	%addtorecord System[sysIdx].Instance CachedOutput%<TID>GlobalVars        ""
+	%addtorecord System[sysIdx].Instance CachedOutputUpdate%<TID>GlobalVars  ""
+	%addtorecord System[sysIdx].Instance CachedUpdate%<TID>GlobalVars        ""
+      %endforeach
+    %endforeach      
+  %endwith
+%endfunction
+
+%% Function: LibIsSystemCached =================================================
+%% Abstract:
+%%    Returns the system cached flag.
+%function LibIsSystemCached(system)
+  %return LibGetSystemField(system, "SystemCached")
+%endfunction
+
+%% Function: LibIsSystemDumped =================================================
+%% Abstract:
+%%    Returns the system dumped flag.
+%%
+%function LibIsSystemDumped(system)
+  %return LibGetSystemField(system, "SystemDumped")
+%endfunction
+
+%% Function: LibIsSystemNonEmpty ===============================================
+%% Abstract:
+%%    Returns the system non-empty flag.
+%%
+%function LibIsSystemNonEmpty(system)
+  %return LibGetSystemField(system, "SystemNonEmpty") 
+%endfunction
+      
+%% Function: LibIsSystemTerminateNonEmpty ======================================
+%% Abstract:
+%%    Returns the system terminate function non-empty flag.
+%%
+%function LibIsSystemTerminateNonEmpty(system)
+  %return LibGetSystemField(system, "SystemTerminateNonEmpty")
+%endfunction
+
+%% Function: LibIsSystemTerminateCached ========================================
+%% Abstract:
+%%    Returns TLC_TRUE if the systems terminate function is cached
+%%    and TLC_FALSE otherwise.
+%%
+%function LibIsSystemTerminateCached(system)
+  %return LibGetSystemField(system, "SystemTerminateCached")
+%endfunction
+
+
+%endif %% _SYSBODLIB_
+
+%% [EOF] sysbodlib.tlc

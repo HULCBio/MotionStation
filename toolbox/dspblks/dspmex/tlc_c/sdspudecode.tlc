@@ -1,0 +1,232 @@
+%% $RCSfile: sdspudecode.tlc,v $
+%% $Revision: 1.8.4.2 $ 
+%% $Date: 2004/04/12 23:09:56 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Uniformly decodes input. 
+%%   Uniformly decode the input with positive and negative Peak value.  
+%%   The output datatype is double or single. Saturate or wrap in
+%%   overflow mode.
+
+%implements sdspudecode "C"
+
+%include "dsplib.tlc"
+%include "dsp_intbounds.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %assign block = block + INPORT + OUTPORT
+  %%
+  %assign isDouble   = (LibBlockOutputSignalDataTypeId(OUTPORT) == tSS_DOUBLE)
+  %assign sl_dtype_in = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign dtype_cast = (isDouble) ? "Real" : "Real32"
+  %%
+  %assign dtype_in   = GetDtypeInForContig(sl_dtype_in)
+  %assign dtype_out  = (isDouble) ? "real_T" : "real32_T"
+  %assign isSigned   = IsInputPortSignedInt(sl_dtype_in)
+  %assign N          = CAST("Number",SFcnParamSettings.N)
+  %assign V          = CAST(dtype_cast,SFcnParamSettings.PEAK)
+  %assign T          = CAST(dtype_cast,SFcnParamSettings.T)
+  %assign W          = CAST(dtype_cast,SFcnParamSettings.W[0])
+  %assign isSaturate = CAST("Boolean",SFcnParamSettings.isSaturate)
+  %%
+  %assign block = block + isSigned + dtype_in + dtype_out \
+                        + N + V + T + W + isSaturate
+%endfunction
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Uniform Decoder (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %<IntBoundCacheDefine(isSigned,N)> \
+  %<Pow2CacheDefine(N)>\
+  %assign isCplx     = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign isContig   = IsInputPortContiguous(block,INPORT)
+{
+  %<dtype_out> *y = (%<dtype_out> *)%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+  %<dtype_out>  V = %<V>; /* Peak */
+  %<dtype_out>  T = %<T>; /* 2*V / 2^N */
+  %%
+
+ %if isContig
+    %%
+    %assign width = LibDataInputPortWidth(INPORT)
+    %if isCplx
+        /* Treating contiguous complex input as a real double length input */
+        %assign width = width*2
+    %endif   
+    %%
+    %<dtype_in> *uptr = (%<dtype_in> *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    %%
+    int_T i1;
+    for (i1=0; i1<%<width>; i1++) {
+        %<dtype_in> u = *uptr++;
+        %<Decode(block,"",0)>
+    }
+  %else
+      %%
+      %% Discontiguous input:
+      %%
+      %assign rollVars = ["U"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %if !isCplx
+           %<DecodeReal(block,lcv,sigIdx)>
+        %else
+           %<DecodeCplx(block,lcv,sigIdx)>
+        %endif
+      %endroll
+ %endif
+
+}
+
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                           Local Functions                      %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Input Characteristics Fcns %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: IsInputPortSignedInt
+%function IsInputPortSignedInt(sl_dtype_in) void 
+    %if ((sl_dtype_in == "cuint8_T") || (sl_dtype_in == "cuint16_T") || (sl_dtype_in == "cuint32_T") || \
+         (sl_dtype_in == "uint8_T")  || (sl_dtype_in == "uint16_T")  || (sl_dtype_in == "uint32_T"))
+        %assign isSigned = 0 
+    %else
+        %assign isSigned = 1
+    %endif
+    %return isSigned
+    %%
+%endfunction %% IsInputPortSignedInt
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: GetDtypeInForContig 
+%function GetDtypeInForContig(sl_dtype_in) void 
+    %if (sl_dtype_in == "cuint8_T")
+     %return "uint8_T"
+    %elseif (sl_dtype_in == "cuint16_T")
+     %return "uint16_T"
+    %elseif (sl_dtype_in == "cuint32_T")
+     %return "uint32_T"
+    %elseif (sl_dtype_in == "cint8_T")
+     %return "int8_T"
+    %elseif (sl_dtype_in == "cint16_T")
+     %return "int16_T"
+    %elseif (sl_dtype_in == "cint32_T")
+     %return "int32_T"
+    %else
+     %return sl_dtype_in
+    %endif
+    %%
+%endfunction %% GetDtypeInForContig
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% DECODER (Real/Complex, Saturate, Wrap) Functions %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Wrap
+%function Wrap(block) Output
+{
+   /* Wrap */
+   %assign LowerBoundMacro = IntBoundMacroName(isSigned,N,"MIN")
+   %if (isSigned)
+      %if ((dtype_in != "int32_T") &&  (dtype_in != "cint32_T"))
+        %<dtype_in> uTemp = u - %<LowerBoundMacro>;
+        u = (uTemp < 0)
+          ? (%<dtype_in>)(-((int_T)(-(uTemp)) % (int32_T)(%<Pow2MacroName(N)>)))
+          : (%<dtype_in>)(  (int_T)  (uTemp)  % (int32_T)(%<Pow2MacroName(N)>));
+        if (u < 0)  u -= %<LowerBoundMacro>;
+        else        u += %<LowerBoundMacro>;
+      %endif
+  %else
+    %if ((dtype_in != "uint32_T") && (dtype_in != "cuint32_T"))
+      u = (%<dtype_in>)((uint32_T)u % (uint32_T)(%<Pow2MacroName(N)>));
+    %endif
+  %endif
+}
+%endfunction %% Wrap
+/%--------------------------------------------------%/
+
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Saturate
+%function Saturate(block) Output
+   /* Saturate */
+   %assign UpperBoundMacro = IntBoundMacroName(isSigned,N,"MAX")
+   %assign LowerBoundMacro = IntBoundMacroName(isSigned,N,"MIN")
+   %%
+   if      (u > %<UpperBoundMacro>) u = (%<UpperBoundMacro>);
+   %if isSigned
+   else if (u < %<LowerBoundMacro>) u = %<LowerBoundMacro>;
+   %endif
+%endfunction %% Saturate
+/%--------------------------------------------------%/
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: HandleOverFlow
+%function HandleOverFlow(block) Output
+   %%
+   %if (isSaturate)
+        %<Saturate(block)>\
+   %else
+        %<Wrap(block)>\
+   %endif
+   %%
+%endfunction %% %% Function: HandleOverFlow
+/%--------------------------------------------------%/
+
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Decode
+%function Decode(block,lcv,sigIdx) Output
+   %<HandleOverFlow(block)>\
+   %assign expr = (W == 0) ? "(%<dtype_out>)u" : "((%<dtype_out>)u + (%<dtype_out>)(%<W>))"
+   *y++ = %<expr> * T - V;
+%endfunction %% Decode
+/%--------------------------------------------------%/
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: DecodeReal
+%function DecodeReal(block,lcv,sigIdx) Output
+{
+    %<dtype_in> u = (%<dtype_in>)(%<LibBlockInputSignal(0, "", lcv, sigIdx)>);
+    %<Decode(block,lcv,sigIdx)>
+}
+%endfunction %% DecodeReal
+/%--------------------------------------------------%/
+
+
+/%--------------------------------------------------%/
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: DecodeCplx
+%function DecodeCplx(block,lcv,sigIdx) Output
+{
+    %<dtype_in> u = (%<dtype_in>)(%<LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")>);
+    %<Decode(block,lcv,sigIdx)>
+
+    u = (%<dtype_in>)(%<LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")>);
+    %<Decode(block,lcv,sigIdx)>
+}
+%endfunction %% DecodeCplx
+/%--------------------------------------------------%/
+
+%% [EOF] sdspudecode.tlc
+

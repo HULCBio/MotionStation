@@ -1,0 +1,716 @@
+%% $RCSfile: fixptadd.tlc,v $
+%% $Revision: 1.2.4.4 $
+%% $Date: 2004/04/14 23:47:12 $
+%%
+%% This file contains tlc code for generation of
+%%    fixed point addition, subtraction.
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: FixPt_Accumulate ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Accumulation
+%%
+%%  Vc += Vb or
+%%  Vc -= Vb
+%%
+%%  It is required that the input and output have identical storage types,
+%%  identical scaling, and zero biases
+%%  because of these requirements the formulas for the
+%%  Stored Integers (not counting saturation) are trivial
+%%
+%%  C += B or
+%%  C -= B
+%%
+%%  The records C and B must contain
+%%  all the fixed point data type and scaling fields.
+%%  They must also contain a field called "Label"
+%%  In C_Language terms cLabel must be an l-value.
+%%  bLabel is treated as read only and
+%%  they must provide the values (stored integers) for
+%%  B.  Please note none of the Labels can be addresses.
+%%
+%% Synopsis:
+%%      FixPt_Accumulate(C,B,roundMode,satMode,doAdd)
+%%
+%%      C = record describing output
+%%      B = record describing input
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%      doAdd = boolean 0 = subtraction, otherwise addition
+%%
+%function FixPt_Accumulate(cLabel,cDT,bLabel,bDT,satMode,doAdd) Output
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %% determine if the output is floating point
+    %%
+    %assign cIsFloat = FixPt_DataTypeIsFloat(cDT)
+    %%
+    %% optimize the case of accumlating zero
+    %%
+    %if FixPt_IsZeroNumericOrString(bLabel)
+        %%
+        /* trivial operation eliminated */
+        %if doAdd
+            /* %<cLabel> += %<bLabel>; */
+        %else
+            /* %<cLabel> -= %<bLabel>; */
+        %endif
+    %%
+    %% output YES floating point 
+    %%
+    %elseif cIsFloat
+        %%
+        %% create Bias Free version of output Data Type
+        %%
+        %copyrecord cNoBiasDT cDT
+        %%
+        %assign cNoBiasDT.Bias = 0.0
+        %%
+        %% cast input to no bias output data type 
+        %%
+        %assign cTempLabel = "yTemp"
+        %%
+        %openfile captureConvert
+        %assign retVecStr = FixPt_Fix2Fix(cTempLabel,cNoBiasDT,bLabel,bDT,"Floor",satMode)
+        %closefile  captureConvert
+        %%
+        %if SIZE(retVecStr,1) == 3
+            %if doAdd
+                %<cLabel> += %<retVecStr[1]>;
+            %else
+                %<cLabel> -= %<retVecStr[1]>;
+            %endif
+        %else
+            {
+                %<cDT.NativeType> %<cTempLabel>;
+                
+                %<captureConvert>\
+                
+                %if doAdd
+                    %<cLabel> += %<cTempLabel>;
+                %else
+                    %<cLabel> -= %<cTempLabel>;
+                %endif
+            }
+        %endif
+    %%
+    %% output NOT floating point 
+    %%
+    %else
+        %%
+        %% determine if the input is floating point
+        %%
+        %assign bIsFloat = FixPt_DataTypeIsFloat(bDT)
+        %%
+        %<FixPt_FloatingPointNotSupported(bDT)>\
+        %%
+        %% Check that storage types and scaling are identical
+        %% and biases are zero
+        %%
+        %if (bDT.Bias != 0) || ...
+            (cDT.RequiredBits != bDT.RequiredBits) || ...
+            (cDT.IsSigned   != bDT.IsSigned  ) || ...
+            !FixPt_FracSlopesSame(cDT.FracSlope, bDT.FracSlope ) || ...
+            (cDT.FixedExp   != bDT.FixedExp  )
+    
+	    %%START_ASSERT
+          %openfile errTxt
+	  Real Time Workshop Fatal: Incompatible Input and Output to FixPt_Accumulate
+    
+          Block: %<MaskBlockName>
+	  %closefile errTxt
+	  %%END_ASSERT
+          %exit %<errTxt>
+        %endif
+        %%
+        %% short circuit the creation of a utility if accumulation is trivial
+        %%
+        %if ( satMode != "Saturate" ) && ...
+            ( cDT.RequiredBits == cDT.ActualBits )
+            %%
+            %if doAdd
+                %<cLabel> += %<bLabel>;
+            %else
+                %<cLabel> -= %<bLabel>;
+            %endif
+            %%
+            %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()    
+            %return ""
+            %%
+        %endif
+        %%
+        %% make access to Long and Int number of bits easier
+        %%
+        %assign longBits = IntegerSizes.LongNumBits
+        %assign intBits  = IntegerSizes.IntNumBits
+        %%
+        %% Create a string to represent the accumulation utility
+        %%
+            %%
+            %% specify positive or negative accumulation
+            %%
+            %if doAdd
+                %assign utilityName = "ACCUM_POS"
+            %else
+                %assign utilityName = "ACCUM_NEG"
+            %endif
+            %%
+            %% identify output storage type
+            %%
+            %if cDT.IsSigned
+                %assign utilityName = utilityName + "_S"
+            %else
+                %assign utilityName = utilityName + "_U"
+            %endif
+            %assign utilityName = utilityName + STRING(cDT.RequiredBits)
+            %%
+            %% identify input storage type
+            %%
+            %if bDT.IsSigned
+                %assign utilityName = utilityName + "_S"
+            %else
+                %assign utilityName = utilityName + "_U"
+            %endif
+            %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+            %%
+            %% identify how overflows will be handled
+            %%   the default "do nothing" mode is "WRAP".
+            %%   This default mode will be
+            %%   left off the utility name for brevity.
+            %%
+            %% note saturation is always relevant for accumulation
+            %%
+            %if satMode == "Saturate"
+                %assign utilityName = utilityName + "_SAT"
+            %else
+                %%%assign utilityName = utilityName + "_WRAP"
+            %endif
+            %%
+            %%   Note: rounding is NOT relavent because input and output
+            %%   are identical storage type and scaling
+            %%
+        %%
+        %% END: Create a string to represent the fix2fix utility
+        %%
+        %%
+        %% Output a "call" to the required utility
+        %%
+        %if FixPtIncludeCallComment
+          %%START_ASSERT  
+	  %%
+            %if doAdd
+                /* Positive Accumulation
+                 *      Vc += Vb
+            %else
+                /* Negative Accumulation
+                 *      Vc -= Vb
+            %endif
+             *   Type, Scale, and Identifier
+             %%
+             %if cDT.IsSigned
+                *      C   S%<cDT.RequiredBits> 2^%<cDT.FixedExp>  %<cLabel>
+             %else
+                *      C   U%<cDT.RequiredBits> 2^%<cDT.FixedExp>  %<cLabel>
+             %endif
+             %if bDT.IsSigned
+                *      B   S%<bDT.RequiredBits> 2^%<bDT.FixedExp>  %<bLabel>
+             %else
+                *      B   U%<bDT.RequiredBits> 2^%<bDT.FixedExp>  %<bLabel>
+             %endif
+             */
+	   %%END_ASSERT  
+	%endif
+        %%
+        %% case of C macro "call"
+        %%
+        %if FixPtUtilType == "macro"
+            %<utilityName>(%<cLabel>,%<bLabel>);
+        %%
+        %% case of C function call
+        %%
+        %else
+	    %%START_ASSERT
+            %<utilityName>(&(%<cLabel>),%<bLabel>);
+	    %%END_ASSERT
+	%endif
+        %%
+        %% determine if the required utility has already been defined
+        %%   If it has not, then create the definition.
+        %%
+        %if !(ISFIELD(FixPtUtils,utilityName))
+            %%
+            %% register that utility is being defined
+            %%
+            %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+            %%
+            %% ISO C Unary Conversion rules convert
+            %% unsigned shorts and unsigned chars to
+            %% SIGNED ints if possible
+            %% this can cause problems when shifting right
+            %% for this reason shorts and ints are explicitly cast.
+            %%
+            %if (bDT.ActualBits < intBits) && !bDT.IsSigned
+                %assign Btag = "((unsigned)(B))"
+            %else
+                %assign Btag = "(B)"
+            %endif
+            %%
+            %if FixPtUtilType == "macro"
+                %assign Ctag = "(C)"
+            %else
+	        %%START_ASSERT
+                %assign Ctag = "(*C)"
+		%%END_ASSERT
+	    %endif
+            %%
+            %% open a buffer to hold the utility header comments
+            %%
+            %openfile utilityHeaderComment
+            %%
+            %%  Produce header comment for utility
+            %%
+    
+            %if doAdd
+                /*********************************************************************
+                 * Fixed-Point Positive Accumulation Utility %<utilityName>
+                 *   Values
+                 *      Vc += Vb
+                 *   Stored Integer Formula
+                 *      C  += B
+            %else
+                /*********************************************************************
+                 * Fixed-Point Negative Accumulation Utility %<utilityName>
+                 *   Values
+                 *      Vc += Vb
+                 *   Stored Integer Formula
+                 *      C  += B
+            %endif
+            %%
+            %% generate comments related to overflow
+            %%
+             *
+             * overflow is possible for all accumulations
+            %%
+            %% note saturation/wrap status
+            %%
+            %if satMode == "Saturate"
+                * overflows will SATURATE
+                *    code specific to overflow management is included
+            %else
+                * overflows will WRAP (modulo 2)
+                *    no code specific to overflow management is included
+            %endif
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %% open a buffer to hold the utility definition
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %openfile utilityDef
+            %%
+            %% create first line of utility macro or function
+            %%
+            %% case of C language macro
+            %if FixPtUtilType == "macro"
+                #define %<utilityName>(C,B)
+                %%
+                %% for macro need to protect against the possibility
+                %% that C and B are the same variable.  So any assignments to B,
+                %% are made to a temporary variable.
+                %%
+                %assign altBStr = "altB"
+            %%
+            %% case of C function
+            %%   including prototype definition
+            %%
+            %else
+                %openfile funcProto
+                void %<utilityName>( %<cDT.NativeType> *C, %<bDT.NativeType> B);
+                %closefile funcProto
+                %selectfile utilityDef
+                void %<utilityName>( %<cDT.NativeType> *C, %<bDT.NativeType> B)
+                %%
+                %% for the function case, B is passed by value, so C and B can be the
+                %% same variable without any worries
+                %%
+                %assign altBStr = ""
+            %endif
+            {
+            %%
+            %% if Saturation and Signed or Neg
+            %%  keep a copy off original Output
+            %%
+            %if ( satMode == "Saturate" ) && ( cDT.IsSigned || !doAdd )
+              %%
+              %assign origC = "origC"
+              %%
+              /* Store original number for use in overflow checking */
+              %<cDT.NativeType> %<origC> = %<Ctag>;
+    
+              %%
+            %endif
+            %%
+            %% Accumulation
+            %%
+            /* Implement raw accumulation */
+            %%
+            %% Positive Accumulation
+            %%
+            %if doAdd
+                %<Ctag> += %<Btag>;
+            %%
+            %% Negative Accumulation
+            %%
+            %else
+                %<Ctag> -= %<Btag>;
+            %endif
+            %%
+            %% if emulating a smaller data type then force extra bits
+            %% to sign value
+            %%
+            %<FixPt_EmulationSignExt(Ctag,cDT)>\
+            %%
+            %% add Saturation Code if needed
+            %%
+            %if satMode == "Saturate"
+                %%
+                %% compute min and max for use in saturation
+                %%
+                %assign outMin = FixPt_GetMinStr(cDT)
+                %assign outMax = FixPt_GetMaxStr(cDT)
+                %%
+                %% Saturation and Signed
+                %%
+                %if cDT.IsSigned
+                  %%
+                  %% Positive Accumulation
+                  %%
+                  %if doAdd
+                      %%
+                      /* Check for overflows and underflows */
+                      if      ( (%<origC> < 0) && (%<Btag> < 0) && (%<Ctag> >= 0) )
+                      {
+                        /* Saturate underflow to minimum */
+                        %<Ctag> = (%<cDT.NativeType>) %<outMin>;
+                      }
+                      else if ( (%<origC> > 0) && (%<Btag> > 0) && (%<Ctag> <= 0) )
+                      {
+                        /* Saturate overflow to maximum */
+                        %<Ctag> = (%<cDT.NativeType>) %<outMax>;
+                      }
+                  %%
+                  %% Negative Accumulation
+                  %%
+                  %else
+                      %%
+                      /* Check for overflows and underflows */
+                      if      ( (%<origC> <  0) && (%<Btag> > 0) && (%<Ctag> >= 0) )
+                      {
+                        /* Saturate underflow to minimum */
+                        %<Ctag> = (%<cDT.NativeType>) %<outMin>;
+                      }
+                      else if ( (%<origC> >= 0) && (%<Btag> < 0) && (%<Ctag> <= 0) )
+                      {
+                        /* Saturate overflow to maximum */
+                        %<Ctag> = (%<cDT.NativeType>) %<outMax>;
+                      }
+                  %endif
+                %%
+                %% Saturation and Unsigned
+                %%
+                %elseif !cDT.IsSigned
+                  %%
+                  %% Positive Accumulation
+                  %%
+                  %if doAdd
+                      %%
+                      /* Check for overflow */
+                      if( %<Ctag> < %<Btag> )
+                      {
+                        /* Saturate overflow to maximum */
+                        %<Ctag> = (%<cDT.NativeType>) %<outMax>;
+                      }
+                  %%
+                  %% Negative Accumulation
+                  %%
+                  %else
+                      /* Check for underflow */
+                      if( %<Ctag> > %<origC> )
+                      {
+                        /* Saturate underflow to minimum */
+                        %<Ctag> = 0;
+                      }
+                  %endif
+                %endif
+            %endif
+            %%
+            %% finish header comment
+            %%
+            %selectfile utilityHeaderComment
+             */
+            %closefile utilityHeaderComment
+            %%
+            %% finish off utility define
+            %%
+            %selectfile utilityDef
+            }
+            %closefile utilityDef
+            %%
+            %% For the case of C macro,
+            %%    convert end of lines to backslash end of lines
+            %%    as required for multiline C macros
+            %%
+            %if FixPtUtilType == "macro"
+                %assign utilityDef = FEVAL("strrep",utilityDef,"\n"," \\\n")
+            %endif
+            %%
+            %% create utility trailer comment
+            %%
+            %openfile utilityTrailerComment
+    
+            /* end %<FixPtUtilType> %<utilityName>
+             *********************************************************************/
+            %closefile utilityTrailerComment
+            %%
+            %% cause utility define to be included in generated code
+            %%
+            %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+            %%
+            %if FixPtUtilType == "macro"
+                %%<LibCacheDefine(utilityDef)>\
+                %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+            %else
+	        %%START_ASSERT
+                %%<SLibCacheSourceCode(utilityDef)>\
+                %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+		%<LibCacheFunctionPrototype(funcProto)>\
+                %%END_ASSERT
+	    %endif
+            %%
+        %endif  %% definition of Accumulate utility
+    %endif
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()    
+    %return ""
+%endfunction  %% FixPt_Accumulate
+
+
+
+%% Function: FixPt_AccumPos ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Positive Accumulation
+%%
+%%  Vc += Vb
+%%
+%%  See FixPt_Accumulation for more details
+%%
+%function FixPt_AccumPos(cLabel,cDT,bLabel,bDT,satMode) Output
+    %%
+    %<FixPt_Accumulate(cLabel,cDT,bLabel,bDT,satMode,1)>\
+    %%
+%endfunction  %% FixPt_AccumPos
+
+
+
+%% Function: FixPt_AccumNeg ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Negative Accumulation
+%%
+%%  Vc += Vb
+%%
+%%  See FixPt_Accumulation for more details
+%%
+%function FixPt_AccumNeg(cLabel,cDT,bLabel,bDT,satMode) Output
+    %%
+    %<FixPt_Accumulate(cLabel,cDT,bLabel,bDT,satMode,0)>\
+    %%
+%endfunction  %% FixPt_AccumPos
+
+
+
+%% Function: FixPt_Accumulate_Easy ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Accumulation
+%%
+%%  Vc += Vb
+%%
+%%  This EASY version of FixPt_Accumulate
+%%  Handles all data types and all scalings.
+%%  If needed it always does the conversion from b's data type and scaling
+%%  to c's data type and scaling.  It also declares a local variable to
+%%  handle the cast if needed.
+%%    The reason to use the "hard" version FixPt_Accumulate instead of
+%%  this easy version would be to move the casts and declarations outside
+%%  to a more efficient and/or readable location in the generated code.
+%%
+%function FixPt_Accumulate_Easy(cLabel,cDT,bLabel,bDT,roundMode,satMode,doAdd) Output
+    %%
+    %% create Bias Free version of output Data Type
+    %%
+    %copyrecord cNoBiasDT cDT
+    %%
+    %assign cNoBiasDT.Bias = 0.0
+    %%
+    %assign castInLabel = "castIn"
+    %%
+    %openfile gutsOfAdd
+    %%
+    %assign castInWasUsed = 0
+    %%
+    %% cast input to outputs data type
+    %% add or subtract input from output
+    %%
+    %assign retVecStr = FixPt_Fix2Fix(castInLabel,cNoBiasDT,...
+                                      bLabel,     bDT,...
+                                      roundMode,satMode)
+    %%
+    %if SIZE(retVecStr,1) == 3
+        %%
+        %<FixPt_Accumulate(cLabel,      cNoBiasDT,...
+                           retVecStr[1],cNoBiasDT,...
+                           satMode,doAdd)>\
+    %else
+        %assign castInWasUsed = 1
+        %<FixPt_Accumulate(cLabel,     cNoBiasDT,...
+                           castInLabel,cNoBiasDT,...
+                           satMode,doAdd)>\
+    %endif
+    %%
+    %closefile gutsOfAdd
+    %%
+    %if castInWasUsed
+    {
+        %<cNoBiasDT.NativeType> %<castInLabel>;
+
+        %<gutsOfAdd>\
+    }
+    %else
+        %<gutsOfAdd>\
+    %endif
+    %%
+%endfunction  %% FixPt_Accumulate_Easy
+
+
+
+%% Function: FixPt_AccumPos_Easy ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Positive Accumulation
+%%
+%%  Vc += Vb
+%%
+%%  See FixPt_Accumulation_Easy for more details
+%%
+%function FixPt_AccumPos_Easy(cLabel,cDT,bLabel,bDT,roundMode,satMode) Output
+    %%
+    %<FixPt_Accumulate_Easy(cLabel,cDT,bLabel,bDT,roundMode,satMode,1)>\
+    %%
+%endfunction  %% FixPt_AccumPos_Easy
+
+
+
+%% Function: FixPt_AccumNeg_Easy ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Negative Accumulation
+%%
+%%  Vc += Vb
+%%
+%%  See FixPt_Accumulation_Easy for more details
+%%
+%function FixPt_AccumNeg_Easy(cLabel,cDT,bLabel,bDT,roundMode,satMode) Output
+    %%
+    %<FixPt_Accumulate_Easy(cLabel,cDT,bLabel,bDT,roundMode,satMode,0)>\
+    %%
+%endfunction  %% FixPt_AccumPos_Easy
+
+
+%% Function: FixPt_Add_Sub ==========================================
+%%
+%% Abstract:
+%%  Fixed Point Add
+%%
+%%  Vc = Va + Vb
+%%
+%%  or Fixed Point Sub
+%%
+%%  Vc = Va - Vb
+%%
+%%  This EASY version of FixPt_Add
+%%  Handles all data types and all scalings.
+%%  If needed it always does the conversion from a and b's data type and 
+%%  scaling to c's data type and scaling.  It also declares a local variable to
+%%  handle the cast if needed.
+%%    The reason to use the "hard" versions of FixPt_Accumulate instead of
+%%  this easy version would be to move the casts and declarations outside
+%%  to a more efficient and/or readable location in the generated code.
+%%
+%function FixPt_Add_Sub(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode,doAdd) Output
+    %%
+    %% create Bias Free version of output Data Type
+    %%
+    %copyrecord cNoBiasDT cDT
+    %%
+    %assign cNoBiasDT.Bias = 0.0
+    %%
+    %assign castInLabel = "castIn"
+    %%
+    %openfile gutsOfAdd
+    %%
+    %assign castInWasUsed = 0
+    %%
+    %<FixPt_Fix2FixAlwaysOutput(cLabel,cDT,...
+                                aLabel,aDT,...
+                                roundMode,satMode)>\
+    %%
+    %% cast input to outputs data type
+    %% add or subtract input from output
+    %%
+    %assign retVecStr = FixPt_Fix2Fix(castInLabel,cNoBiasDT,...
+                                      bLabel,     bDT,...
+                                      roundMode,satMode)
+    %%
+    %if SIZE(retVecStr,1) == 3
+        %%
+        %<FixPt_Accumulate(cLabel,      cNoBiasDT,...
+                           retVecStr[1],cNoBiasDT,...
+                           satMode,doAdd)>\
+    %else
+        %assign castInWasUsed = 1
+        %<FixPt_Accumulate(cLabel,     cNoBiasDT,...
+                           castInLabel,cNoBiasDT,...
+                           satMode,doAdd)>\
+    %endif
+    %%
+    %closefile gutsOfAdd
+    %%
+    %if castInWasUsed
+    {
+        %<cNoBiasDT.NativeType> %<castInLabel>;
+
+        %<gutsOfAdd>\
+    }
+    %else
+        %<gutsOfAdd>\
+    %endif
+    %%
+%endfunction  %% FixPt_Add_Sub
+
+%% Function: FixPt_Add ==========================================
+%%
+%function FixPt_Add(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode) Output
+    %%
+    %<FixPt_Add_Sub(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode,1)>\
+    %%
+%endfunction  %% FixPt_Add
+
+%% Function: FixPt_Sub ==========================================
+%%
+%function FixPt_Sub(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode) Output
+    %%
+    %<FixPt_Add_Sub(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode,0)>\
+    %%
+%endfunction  %% FixPt_Sub
+

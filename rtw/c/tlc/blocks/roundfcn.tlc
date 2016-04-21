@@ -1,0 +1,186 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Rounding Math block target file
+
+%implements Rounding "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %assign yDataType = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+  %switch retType
+    %case "Signal"
+      %assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+      %assign roundingOperator = ParamSettings.Operator
+      %switch roundingOperator
+        %case "ceil"
+	%case "floor"
+	  %return "(" + ...
+	    LibGenMathFcnCall(roundingOperator, yDataType, "%<u>","") + ")"
+	  %%START_ASSERT
+        %default
+	  %assign errTxt = "Unsupported operator: %<roundingOperator>"
+	  %<LibBlockReportError(block,errTxt)>
+	  %%END_ASSERT
+      %endswitch
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      The Rounding block implements the following functions:
+%%      floor, ceil, round, fix.
+%%
+%function Outputs(block, system) Output
+  %assign yDataType = LibBlockOutputSignalDataTypeId(0)
+  %assign yDataTypeName = LibBlockOutputSignalDataTypeName(0, "%<tRealPart>")
+  %assign yDataType = LibGetDataTypeIdAliasedThruToFromId(yDataType)
+  %assign dtHalf = SLibGetFormattedValueFromId(yDataType,0.5)
+  %assign dtZero = SLibGetFormattedValueFromId(yDataType,0)
+  %assign rollVars = ["U", "Y"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign isComplex = LibBlockOutputSignalIsComplex(0)
+    %if isComplex
+      %assign ur = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+      %assign yr = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+      %assign ui = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+      %assign yi = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+    %else
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %endif
+    %assign roundingOperator = ParamSettings.Operator
+    %switch roundingOperator
+      %case "fix"
+	%assign targetHasFixFcn = LibMathFcnExists("fix", yDataType)
+	%if  targetHasFixFcn == 0
+	  {
+	  %if isComplex
+	    %<yDataTypeName> yr;
+	    %<yDataTypeName> yi;
+	  %else
+	    %<yDataTypeName> y;
+	  %endif
+	  \
+	%endif
+         %if (isComplex)
+	    %if targetHasFixFcn == 0
+	      %% target does not have a fix fcn--use the fallback calculation
+	      %assign rAbsCall = LibGenMathFcnCall("abs",yDataType, ur,"")
+	      %assign rFloorCall = LibGenMathFcnCall("floor",yDataType, rAbsCall,"")
+	      %assign iAbsCall = LibGenMathFcnCall("abs",yDataType, ui,"")
+	      %assign iFloorCall = LibGenMathFcnCall("floor",yDataType, iAbsCall,"")
+	      yr =  %<rFloorCall>;
+	      %<yr> = ((%<ur> < %<dtZero>) ? -yr : yr);
+	      yi =  %<iFloorCall>;
+	      %<yi> = ((%<ui> < %<dtZero>) ? -yi : yi);
+	    %else
+	      %% use target's fix function
+	      %assign rFixCall = LibGenMathFcnCall("fix", yDataType, ur, "")
+	      %assign iFixCall = LibGenMathFcnCall("fix", yDataType, ui, "")
+	      %<yr> =  %<rFixCall>;
+	      %<yi> =  %<iFixCall>;
+	    %endif
+	%else
+	  %if targetHasFixFcn == 0
+	    %% target does not have a fix fcn--use the fallback calculation
+	    %assign absCall = LibGenMathFcnCall("abs",yDataType, u,"")
+	    %assign floorCall = LibGenMathFcnCall("floor",yDataType, absCall,"")
+	    y =  %<floorCall>;
+	    %<y> = ((%<u> < %<dtZero>) ? -y : y);
+	  %else
+	    %% use target's fix function
+	    %assign fixCall = LibGenMathFcnCall("fix", yDataType, u, "")
+	    %<y> =  %<fixCall>;
+	  %endif
+	%endif
+       %if targetHasFixFcn == 0
+	 }
+       %endif
+        %break
+      %case "round"
+	%assign targetHasRoundFcn = LibMathFcnExists("round", yDataType)
+	%if  targetHasRoundFcn == 0
+	  {
+	  %if isComplex
+	    %<yDataTypeName> yr;
+	    %<yDataTypeName> yi;
+	  %else
+	    %<yDataTypeName> y;
+	  %endif
+	  \
+	%endif
+        %if isComplex
+	  %if targetHasRoundFcn == 0
+	    %% target does not have a round fcn--use the fallback calculation
+	    %<yDataTypeName> rAbsOffset;	   
+	    %<yDataTypeName> iAbsOffset;	   
+	    %assign absCall = LibGenMathFcnCall("abs",yDataType, ur,"")
+	    rAbsOffset  =  %<absCall> + %<dtHalf>;
+	    %assign floorCall = LibGenMathFcnCall("floor",yDataType, "rAbsOffset","")
+	    yr =  %<floorCall>;
+	    %assign iAbsCall = LibGenMathFcnCall("abs",yDataType, ui,"")
+	    iAbsOffset  =  %<iAbsCall> + %<dtHalf>;
+	    %assign iFloorCall = LibGenMathFcnCall("floor",yDataType, "iAbsOffset","")
+	    yi =  %<iFloorCall>;
+	    %<yr> = ((%<ur> < %<dtZero>) ? -yr : yr);
+	    %<yi> = ((%<ui> < %<dtZero>) ? -yi : yi);
+	  %else
+	    %% use target's round function
+	    %assign rRoundCall = LibGenMathFcnCall("round", yDataType, ur, "")
+	    %assign iRoundCall = LibGenMathFcnCall("round", yDataType, ui, "")
+	    %<yr> = %<rRoundCall>;
+	    %<yi> = %<iRoundCall>;
+	  %endif
+	%else
+	  %if targetHasRoundFcn == 0
+            %% target does not have a round fcn--use the fallback calculation
+	    %<yDataTypeName> absOffset;	   
+	    %assign absCall = LibGenMathFcnCall("abs",yDataType, u,"")
+	    absOffset  =  %<absCall> + %<dtHalf>;
+	    %assign floorCall = LibGenMathFcnCall("floor",yDataType, "absOffset","")
+	    y =  %<floorCall>;
+	    %<y> = ((%<u> < %<dtZero>) ? -y : y);
+	  %else
+	    %% use target's round function
+	    %assign roundCall = LibGenMathFcnCall("round", yDataType, u, "")
+	    %<y> = %<roundCall>;
+	  %endif
+	%endif
+        %if targetHasRoundFcn == 0
+	  }
+	%endif
+	%break
+      %default
+	%if isComplex
+	  %<yr> = %<LibGenMathFcnCall(roundingOperator,yDataType, "%<ur>","")>;
+	  %<yi> = %<LibGenMathFcnCall(roundingOperator,yDataType, "%<ui>","")>;
+        %else
+	  %<y> = %<LibGenMathFcnCall(roundingOperator,yDataType, "%<u>","")>;
+        %endif
+    %endswitch
+  %endroll
+
+%endfunction
+
+%% [EOF] roundfcn.tlc

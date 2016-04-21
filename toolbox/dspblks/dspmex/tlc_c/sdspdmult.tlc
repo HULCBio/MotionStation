@@ -1,0 +1,291 @@
+%% $RCSfile: sdspdmult.tlc,v $
+%% $Revision: 1.8.4.2 $ 
+%% $Date: 2004/04/12 23:08:28 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix scaling 
+
+%implements sdspdmult "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Mode")>
+  %<LibRenameParameter(block, P2, "Cols")>
+  %%
+%endfunction 
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Multiply (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT0 = 0
+  %assign INPORT1 = 1
+  %assign OUTPORT = 0
+  %%
+  %assign contig0 = IsInputPortContiguous(block, INPORT0)
+  %assign contig1 = IsInputPortContiguous(block, INPORT1)
+  %assign cplx_A  = (LibBlockInputSignalIsComplex(INPORT0) != 0)
+  %assign cplx_D  = (LibBlockInputSignalIsComplex(INPORT1) != 0)
+  %assign cplx_Y  = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+  %assign dtype_A = cplx_A ? "creal_T" : "real_T"
+  %assign dtype_D = cplx_D ? "creal_T" : "real_T"
+  %assign dtype_Y = cplx_Y ? "creal_T" : "real_T"
+  %assign width_A = LibDataInputPortWidth(INPORT0)
+  %assign width_D = LibDataInputPortWidth(INPORT1)
+  %%
+  %assign mode    = CAST("Number",LibBlockParameterValue(Mode,0))
+  %assign mode_da = 1  %% row scaling
+  %assign mode_ad = 2  %% col scaling
+  %assign cols    = CAST("Number",LibBlockParameterValue(Cols,0))
+  %assign rows    = width_A / cols
+  %%
+  %if !contig0 || !contig1
+    %<LibDiscontiguousInputError(block)>    
+  %endif
+  %%
+  %if (width_A == 1) && (width_D == 1)      
+    %%%%%%%%%%%%%%%%%%%%%%%%%
+    /* Scalar x Scalar */
+    %%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %assign A    = LibBlockInputSignal(INPORT0,  "", "", 0)
+    %assign D    = LibBlockInputSignal(INPORT1,  "", "", 0) 
+    %assign A_re = LibBlockInputSignal(INPORT0,  "", "", "%<tRealPart>0")
+    %assign A_im = LibBlockInputSignal(INPORT0,  "", "", "%<tImagPart>0") 
+    %assign D_re = LibBlockInputSignal(INPORT1,  "", "", "%<tRealPart>0")
+    %assign D_im = LibBlockInputSignal(INPORT1,  "", "", "%<tImagPart>0")
+    %assign Y_re = LibBlockOutputSignal(OUTPORT, "", "", "%<tRealPart>0")
+    %assign Y_im = LibBlockOutputSignal(OUTPORT, "", "", "%<tImagPart>0")
+    %%
+    %if !cplx_A && !cplx_D
+      %<Y_re> = %<A_re> * %<D_re>;
+    %elseif !cplx_A && cplx_D
+      %<Y_re> = %<A_re> * %<D_re>;
+      %<Y_im> = %<A_re> * %<D_im>;
+    %elseif cplx_A && !cplx_D
+      %<Y_re> = %<A_re> * %<D_re>;
+      %<Y_im> = %<A_im> * %<D_re>;
+    %else %%cplx_A && cplx_D
+      %<Y_re> = CMULT_RE(%<A>,%<D>);
+      %<Y_im> = CMULT_IM(%<A>,%<D>);
+    %endif
+    %%
+  %else
+    %%
+    %if mode == mode_ad
+      %%%%%%%%%%%%%%%%%%%%%%%%%
+      /* Scale Columns (A*D) */
+      %%%%%%%%%%%%%%%%%%%%%%%%%
+      %%
+      %if (rows == 1) || (cols == 1)
+	%%
+	%% A = Vector, D = Vector  
+	%%	
+	%if rows ==1
+	  {
+	    /* Input A is a row vector. */
+	    %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	    %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT1,  "", "", 0)>;
+	    %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+	    int_T cols = %<cols>;
+	    
+	    while(cols-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * *d++;
+	      %elseif !cplx_A && cplx_D
+		y->re     = *a   * d->re;
+		(y++)->im = *a++ * (d++)->im;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * (*d);
+		(y++)->im = (a++)->im * (*d++);
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		const creal_T Dval = *d++;
+		y->re     = CMULT_RE(Aval, Dval); 
+		(y++)->im = CMULT_IM(Aval, Dval);	      
+	      %endif	
+	    }
+	  }
+	%else  %% cols == 1
+	  {
+	    /* Input A is a column vector */
+	    %% If cols == 1 in the A*D mode, then width_d == 1  
+	    %assign D0    = LibBlockInputSignal(INPORT1,  "", "",0)
+	    %assign D0_re = LibBlockInputSignal(INPORT1,  "", "","%<tRealPart>0")
+	    %assign D0_im = LibBlockInputSignal(INPORT1,  "", "","%<tImagPart>0")
+	    %%
+	    %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	    %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	    
+	    int_T rows = %<rows>;
+	    
+	    while(rows-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * %<D0_re>;
+	      %elseif !cplx_A && cplx_D
+		y->re     = *a   * %<D0_re>;
+		(y++)->im = *a++ * %<D0_im>;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * %<D0_re>;
+		(y++)->im = (a++)->im * %<D0_re>;
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		y->re     = CMULT_RE(Aval, %<D0>); 
+		(y++)->im = CMULT_IM(Aval, %<D0>);	      
+	      %endif	
+	    }
+	  }
+	%endif
+      %else
+	%%
+	%% A = Matrix, D = Vector  
+	%%
+	{
+	  /* Input A is a Matrix. */ 
+	  %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	  %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT1,  "", "", 0)>;
+	  %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	  
+	  int_T cols = %<cols>;
+	  
+	  while(cols-- > 0) {
+	    const %<dtype_D> Dval = *d++;
+	    int_T rows = %<rows>;
+	    
+	    while(rows-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * Dval;
+	      %elseif !cplx_A && cplx_D
+		y->re     = *a   * Dval.re;
+		(y++)->im = *a++ * Dval.im;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * Dval;
+		(y++)->im = (a++)->im * Dval;
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		y->re     = CMULT_RE(Aval, Dval); 
+		(y++)->im = CMULT_IM(Aval, Dval);	      
+	      %endif	
+	    }      
+	  }
+	}      
+      %endif 
+    %else
+      %%%%%%%%%%%%%%%%%%%%%%
+      /* Scale Rows (D*A) */
+      %%%%%%%%%%%%%%%%%%%%%%
+      %%
+      %if (rows == 1) || (cols == 1)
+	%%
+	%% A = Vector, D = Vector  
+	%%      
+	%%	
+	%if rows ==1
+	  {
+	    /* Input A is a row vector. */
+	    %% If rows ==1 in the D*A mode, then width_d == 1  
+	    %assign D0    = LibBlockInputSignal(INPORT1,  "", "",0)
+	    %assign D0_re = LibBlockInputSignal(INPORT1,  "", "","%<tRealPart>0")
+	    %assign D0_im = LibBlockInputSignal(INPORT1,  "", "","%<tImagPart>0")
+	    %%
+	    %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	    %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+	    int_T cols = %<cols>;
+	    
+	    while(cols-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * %<D0_re>;
+	      %elseif !cplx_A && cplx_D
+		y->re     = *a   * %<D0_re>;
+		(y++)->im = *a++ * %<D0_im>;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * %<D0_re>;
+		(y++)->im = (a++)->im * %<D0_re>;
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		y->re     = CMULT_RE(Aval, %<D0>); 
+		(y++)->im = CMULT_IM(Aval, %<D0>);	      
+	      %endif	
+	    }      	    
+	  }      
+	%endif	  	
+	%%
+	%if cols == 1
+	  {
+	    /* Input A is a column vector. */
+	    %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	    %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT1,  "", "", 0)>;
+	    %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+	    int_T rows = %<rows>;
+	    
+	    while(rows-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * *d++;
+	      %elseif !cplx_A && cplx_D
+		const creal_T Dval = *d++;
+		y->re     = *a   * Dval.re;
+		(y++)->im = *a++ * Dval.im;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * (*d);
+		(y++)->im = (a++)->im * (*d++);
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		const creal_T Dval = *d++;	    
+		y->re     = CMULT_RE(Aval, Dval); 
+		(y++)->im = CMULT_IM(Aval, Dval);	      
+	      %endif	
+	    }      
+	  }      
+	%endif
+      %else
+	%%
+	%% A = Matrix, D = Vector  
+	%%
+	{
+	  /* Input A is a Matrix. */ 
+	  %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT0,  "", "", 0)>;
+	  %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	  
+	  int_T cols = %<cols>;
+	  
+	  while(cols-- > 0) {
+	    %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT1,  "", "", 0)>;
+	    int_T rows = %<rows>;
+	    
+	    while(rows-- > 0) {
+	      %if !cplx_A && !cplx_D
+		*y++ = *a++ * *d++;
+	      %elseif !cplx_A && cplx_D
+		y->re     = *a   * d->re;
+		(y++)->im = *a++ * (d++)->im;
+	      %elseif cplx_A && !cplx_D
+		y->re     = a->re     * (*d);
+		(y++)->im = (a++)->im * (*d++);
+	      %else %%cplx_A && cplx_D
+		const creal_T Aval = *a++;
+		const creal_T Dval = *d++;	    
+		y->re     = CMULT_RE(Aval, Dval); 
+		(y++)->im = CMULT_IM(Aval, Dval);	      
+	      %endif	
+	    }      
+	  }
+	}      
+      %endif                                                       
+    %endif  %% modes
+  %endif  %% width
+
+%endfunction
+
+%% [EOF] sdspdmult.tlc
+
+
+
+
+
+
+
+

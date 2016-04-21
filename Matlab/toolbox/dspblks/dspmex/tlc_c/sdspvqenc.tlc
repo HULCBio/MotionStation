@@ -1,0 +1,320 @@
+%% sdspvqenc.tlc
+%% Abstract: TLC for Signal Processing Blockset block to do encoding for vector quantization. (sdspvqenc)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.1.6.2 $ $Date: 2003/12/06 15:28:34 $
+
+
+%implements "sdspvqenc" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+  %%
+  %assign INPORT_U     = 0
+  %assign INPORT_CB    = 1
+  %assign OUTPORT_IDX  = 0
+  %assign OUTPORT_CW   = 1
+
+  %assign NeedWeights      = SFcnParamSettings.NeedWeights   
+  %assign NeedQUoutport    = SFcnParamSettings.NeedQUoutport
+  %assign NeedQERRoutport  = SFcnParamSettings.NeedQERRoutport
+  %assign IsCBSrcMask      = SFcnParamSettings.IsCBSrcMask 
+  %assign IsWeightSrcMask  = SFcnParamSettings.IsWeightSrcMask
+  %assign IsTieBreakHigh   = SFcnParamSettings.IsTieBreakHigh
+  %assign CodewordVecLen   = SFcnParamSettings.CodewordVecLen
+  %assign NumOfCodewords   = SFcnParamSettings.NumOfCodewords
+
+  %assign numDims       = LibBlockInputSignalNumDimensions(INPORT_U)
+  %assign NumChans      = (numDims>1)?LibBlockInputSignalDimensions(INPORT_U)[1] ...
+                                     : 1
+
+  %assign LTorLE         = (IsTieBreakHigh)? "<="   :   "<"
+  %assign HighLowComment = (IsTieBreakHigh)? "<= for HIGHER index" : "< for LOWER index"
+
+  %assign INPORT_W      = (IsCBSrcMask)? 1:2
+  %assign OUTPORT_QERR  = (NeedQUoutport)? 2:1
+
+  %% I/O port data types
+  %assign inUdTYPE      = FixPt_GetInputDataType(INPORT_U)
+  %assign outIDXdTYPE    = FixPt_GetOutputDataType(OUTPORT_IDX)
+   
+  %assign block         = block + INPORT_U  + INPORT_CB + INPORT_W ...
+                                + OUTPORT_IDX + OUTPORT_CW + OUTPORT_QERR ...
+                                + NeedWeights + NeedQUoutport + NeedQERRoutport ...
+                                + IsCBSrcMask + IsWeightSrcMask + IsTieBreakHigh ...
+                                + CodewordVecLen + NumOfCodewords + NumChans + LTorLE + HighLowComment ...
+                                + inUdTYPE + outIDXdTYPE
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  /* Signal Processing Blockset Autocorrelation (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%breakpoint
+  %%
+  %if FixPt_DataTypeIsFloat(inUdTYPE)
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION  %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FltPtInlineCode(block)>
+    }
+    %%
+  %else
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION     %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FixPtInlineCode(block)>
+    }
+    %%
+  %endif
+%%
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtInlineCode
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtInlineCode(block) Output
+%%
+    %assign UdTypeName    = LibBlockInputSignalDataTypeName(INPORT_U,"")
+    %assign IdxDTypeName  = LibBlockOutputSignalDataTypeName(OUTPORT_IDX,"")
+    const %<UdTypeName> *InputU = %<LibBlockInputSignalAddr(INPORT_U, "", "", 0)>;
+    %%
+    %if (IsCBSrcMask)
+      const %<UdTypeName> *Codebook = %<LibBlockParameterAddr(Codebook,"","",0)>; 
+    %else
+      const %<UdTypeName> *Codebook = %<LibBlockInputSignalAddr(INPORT_CB, "", "", 0)>;
+    %endif
+    %%
+    %if (NeedWeights)
+        %if (IsWeightSrcMask)
+      const %<UdTypeName> *Weight = %<LibBlockParameterAddr(Weight,"","",0)>; 
+        %else
+      const %<UdTypeName> *Weight = %<LibBlockInputSignalAddr(INPORT_W, "", "", 0)>;
+        %endif
+    %endif
+    %%
+    %assign BLANKorJthWEIGHTinto = (NeedWeights)?"Weight[j] *" : ""
+    %%
+    %<IdxDTypeName> *Yidx = %<LibBlockOutputSignalAddr(OUTPORT_IDX, "", "", 0)>;
+    %%
+    %if (NeedQUoutport)
+      %<UdTypeName> *Ycw = %<LibBlockOutputSignalAddr(OUTPORT_CW, "", "", 0)>;
+    %endif
+    %%
+    %if (NeedQERRoutport)
+      %<UdTypeName> *Yqerr = %<LibBlockOutputSignalAddr(OUTPORT_QERR, "", "", 0)>;
+    %endif
+    %%
+    %assign isUdouble      =   (LibBlockInputSignalDataTypeId(INPORT_U) == tSS_DOUBLE) 
+    %if (isUdouble)
+        %assign MAX_DIST = "MAX_real_T"
+        %assign singleF = ""
+    %else
+        %assign MAX_DIST = "MAX_real32_T"
+        %assign singleF = "F"
+    %endif
+    %%
+    %if (NeedQUoutport)
+       const int_T BytesPerOutputCWEle  = sizeof(%<UdTypeName>);
+    %endif
+    %%
+    %assign plus_ChStride            = (NumChans>1)? " + chStride":""
+    %assign plus_chStrIntoBytesCWEle = (NumChans>1)? "+ chStride* BytesPerOutputCWEle":""
+    %assign index_i_or_0             = (NumChans>1)? "i":0
+    %%
+    %% Main Body of the program %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %if (NumChans>1)
+       int_T i, chStride = 0;
+       for (i = 0; i < %<NumChans>; i++) {  
+    %endif               
+         int_T   k, cell = 0;
+         %<UdTypeName> minSquaredDist = %<MAX_DIST>;
+	 %<UdTypeName> SquaredDist, UnSquaredDist;
+         %%
+         for ( k=0; k < %<NumOfCodewords> ; k++) { 
+                int_T   j;
+                SquaredDist = 0.0%<singleF> ;
+                %%
+                for ( j=0 ; j < %<CodewordVecLen> ; j++ ) {
+                    UnSquaredDist = ( InputU[j%<plus_ChStride>] - Codebook[k*%<CodewordVecLen> + j] ) ; 
+                    SquaredDist += %<BLANKorJthWEIGHTinto> UnSquaredDist * UnSquaredDist ;
+                                                          }
+                 if ( SquaredDist %<LTorLE> minSquaredDist )  { /* %<HighLowComment> */
+                   cell = k ;
+                   minSquaredDist = SquaredDist ;
+                                                              }
+                                                } 
+          Yidx[%<index_i_or_0>] = cell;
+          %%                        
+          %if (NeedQUoutport)     
+             memcpy((byte_T *)Ycw %<plus_chStrIntoBytesCWEle>, 
+                    (byte_T *)Codebook + cell*%<CodewordVecLen>*BytesPerOutputCWEle, 
+                     %<CodewordVecLen>*BytesPerOutputCWEle
+                   ); 
+          %endif
+          %if (NeedQERRoutport)
+             Yqerr[%<index_i_or_0>] = minSquaredDist;
+          %endif
+     %if (NumChans>1)
+          chStride += %<CodewordVecLen>; 
+                                          }
+     %endif
+%endfunction   %% FltPtInlineCode
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%% 
+    %assign UdTypeName    = LibBlockInputSignalDataTypeName(INPORT_U,"")
+    %assign IdxDTypeName  = LibBlockOutputSignalDataTypeName(OUTPORT_IDX,"")
+    %%
+    %assign accDT     = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+    %assign prodDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+    %assign acc_SqrDist  = "acc_SqrDist"
+    %assign acc2_minSqrDist = "acc2_minSqrDist"
+    %assign prodLabel = "prod"
+    %assign diffLabel0 = "TempDiff0"
+    %assign diffLabel1 = "TempDiff1"
+    %assign MAX_DIST   = FixPt_GetMaxStr(accDT)
+    %%
+    %if (NeedQUoutport)
+       const int_T BytesPerOutputCWEle  = sizeof(%<UdTypeName>);
+    %endif
+    %%
+    %assign plus_ChStride            = (NumChans>1)? " + chStride":""
+    %assign plus_chStrIntoBytesCWEle = (NumChans>1)? "+ chStride* BytesPerOutputCWEle":""
+    %assign index_i_or_0             = (NumChans>1)? "i":0
+    %%
+    %assign uLabel = LibBlockInputSignal(INPORT_U, "j%<plus_ChStride>", "", 0)   %% get uLabel = mInputU[j+chStride]
+    %%
+    %if (IsCBSrcMask)
+      %assign  cbLabel = LibBlockParameter(Codebook,"k*%<CodewordVecLen> + j","",0) %% get cbLabel=mCodebook[k*mCodewordVectorLength + j]
+    %else
+      %assign  cbLabel = LibBlockInputSignal(INPORT_CB, "k*%<CodewordVecLen> + j", "", 0) %% same as above
+    %endif
+    %%
+    %if (NeedWeights)
+        %if (IsWeightSrcMask)
+           %assign  wgtLabel = LibBlockParameter(Weight,"j","",0) %% get wgtLabel = mWeight[j]
+        %else
+           %assign  wgtLabel = LibBlockInputSignal(INPORT_W, "j", "", 0) %% same as above
+        %endif
+    %endif
+    %%
+    %assign BLANKorJthWEIGHTinto = (NeedWeights)?"%<wgtLabel> *" : ""
+    %%
+    %% Main Body of the program %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%    
+    %%
+    %if (NumChans>1)
+       int_T i, chStride = 0;
+       for (i = 0; i < %<NumChans>; i++) {%%3  
+    %endif               
+         int_T   k, cell = 0;
+         %%% %<UdTypeName> minSquaredDist = %<MAX_DIST>, SquaredDist, UnSquaredDist;
+         %<prodDT.NativeType> %<prodLabel>;
+         %<accDT.NativeType> %<acc_SqrDist>, %<acc2_minSqrDist>; %% %<acc2_minSqrDist> = MAX_DIST;
+         %<inUdTYPE.NativeType> %<diffLabel0>, %<diffLabel1>;
+         %%
+         %<FixPt_Fix2FixAlwaysOutput(acc2_minSqrDist, accDT, ...
+                                     MAX_DIST,        accDT, ...                                            
+                                     FixPtRoundingMode, FixPtSaturationMode)>\            %% acc2_minSqrDist = MAX_DIST; 
+
+        for ( k=0; k < %<NumOfCodewords> ; k++) {%%2
+           int_T j;
+           %<FixPt_Fix2FixAlwaysOutput(acc_SqrDist, accDT, ...
+                                       "0", accDT, ...                                      
+                                       FixPtRoundingMode, FixPtSaturationMode)>\          %% %<acc_SqrDist> = 0;; 
+           %%
+           for ( j=0 ; j < %<CodewordVecLen> ; j++ ) {%%1
+                %<FixPt_Fix2FixAlwaysOutput(diffLabel0, inUdTYPE, ...
+                                            uLabel,     inUdTYPE, ...                                       
+                                            FixPtRoundingMode, FixPtSaturationMode)>\     %% diffLabel0 = uLabel; 
+                %<FixPt_AccumNeg_Easy(diffLabel0, inUdTYPE, ...
+                                      cbLabel,    inUdTYPE, ...
+                                      FixPtRoundingMode, FixPtSaturationMode)>\           %% diffLabel0 -= cbLabel;
+                %<FixPt_Fix2FixAlwaysOutput(diffLabel1, inUdTYPE, ...
+                                            diffLabel0, inUdTYPE, ...
+                                            FixPtRoundingMode, FixPtSaturationMode)>\     %% diffLabel1 = diffLabel0 
+                %if (NeedWeights) %% do in two steps
+                   %<FixPt_Multiply(prodLabel,  prodDT, ...
+                                    diffLabel0, inUdTYPE, ...
+                                    diffLabel1, inUdTYPE, ...
+                                    FixPtRoundingMode, FixPtSaturationMode)>\             %% prodLabel = diffLabel0 * diffLabel1
+                   %<FixPt_Multiply(prodLabel, prodDT, ...
+                                    wgtLabel,  inUdTYPE, ...
+                                    prodLabel, prodDT, ...                              
+                                    FixPtRoundingMode, FixPtSaturationMode)>\             %% prodLabel = wgtLabel * prodLabel
+                %else
+                   %<FixPt_Multiply(prodLabel,  prodDT, ...
+                                    diffLabel0, inUdTYPE, ...
+                                    diffLabel1, inUdTYPE, ...
+                                    FixPtRoundingMode, FixPtSaturationMode)>\             %% prodLabel = wgtLabel * diffLabel0 * diffLabel1
+                %endif
+                %<FixPt_AccumPos_Easy(acc_SqrDist, accDT,...
+                                      prodLabel,   prodDT, ...
+                                      FixPtRoundingMode, FixPtSaturationMode)>\           %% acc_SqrDist += prodLabel;
+                                                   }%%1
+            if ( %<acc_SqrDist> %<LTorLE> %<acc2_minSqrDist> )  { /* %<HighLowComment> */
+                cell = k ;
+                %<FixPt_Fix2FixAlwaysOutput(acc2_minSqrDist, accDT, ...
+                                            acc_SqrDist,     accDT, ...                                     
+                                            FixPtRoundingMode, FixPtSaturationMode)>\     %% acc2_minSqrDist = acc_SqrDist; 
+                                                                }
+                                                   }%%2
+             %assign YidxLabel = LibBlockOutputSignal(OUTPORT_IDX, "%<index_i_or_0>", "", 0)   %% get YidxLabel = Yidx[i_or_0]         
+             %<YidxLabel> = cell;
+             %%                       
+             %if (NeedQUoutport)
+               %assign YcwAddress = LibBlockOutputSignalAddr(OUTPORT_CW, "", "", 0)
+               %if (IsCBSrcMask)
+                 %assign cbAddres = LibBlockParameterAddr(Codebook,"","",0) 
+               %else
+                 %assign cbAddres = LibBlockInputSignalAddr(INPORT_CB, "", "", 0)
+               %endif     
+               memcpy((byte_T *)%<YcwAddress> %<plus_chStrIntoBytesCWEle>, 
+                      (byte_T *)%<cbAddres> + cell*%<CodewordVecLen>*BytesPerOutputCWEle, 
+                       %<CodewordVecLen>*BytesPerOutputCWEle
+                     ); 
+             %endif
+          %if (NeedQERRoutport)
+                %assign YqerrLabel = LibBlockOutputSignal(OUTPORT_QERR, "%<index_i_or_0>", "", 0)  %%get YqerrLabel = Yqerr[i_or_0]
+                %<FixPt_Fix2FixAlwaysOutput(YqerrLabel,      inUdTYPE, ...
+                                            acc2_minSqrDist, accDT, ...                                     
+                                            FixPtRoundingMode, FixPtSaturationMode)>\              %% YqerrLabel = acc2_minSqrDist; 
+          %endif
+     %if (NumChans>1)
+          chStride += %<CodewordVecLen>; 
+                                          }
+     %endif
+
+%endfunction    %%FixPtInlineCode
+
+%% [EOF] sdspvqenc.tlc
+

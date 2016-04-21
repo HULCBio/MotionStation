@@ -1,0 +1,490 @@
+%% ============================================================================
+%% $Revision: 1.1.6.12 $
+%%
+%%
+%%              ModelReference
+%%                    |
+%%      --- -------------------------------------------------
+%%      |                         |                         |
+%%   SIM(SSYes)                  RTW                       NONE
+%% (Model reference sim target)   |                         |
+%%                                |                         |
+%%                        ---------------               ------------
+%%                        |             |               |           |
+%%                        SSYes (rsim)  SSNo(ert,grt)   SSYes(rsim) SSNo(ert)
+%%
+%%
+%%
+%% SS: SimStruct based target
+%% SSNo is equavalent to RTModelYes
+%%
+%%
+
+%if EXISTS("_MODELREFUTIL_") == 0
+%assign _MODELREFUTIL_ = 1
+
+%% Function:IsModelReferenceTarget ============================================
+%% Abstract:
+%%    Return true if we are generating code for model reference target
+%%
+%function IsModelReferenceTarget()
+  %if CompiledModel.ModelReferenceTargetType != "NONE"
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+
+%% Function: IsModelReferenceSimTarget =========================================
+%% Abstract:
+%%    Return true if we are generating code for model reference Sim target
+%%
+%function IsModelReferenceSimTarget()
+  %if CompiledModel.ModelReferenceTargetType == "SIM"
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+%% Function: IsModelReferenceForASimstructBasedTarget =========================
+%function IsModelReferenceForASimstructBasedTarget()
+  %return ::ModelReferenceForASimstructBasedTarget
+%endfunction
+
+
+%% Function: IsSimstructBasedTarget ===========================================
+%function IsSimstructBasedTarget()
+  %return ::SimstructBasedTarget
+%endfunction
+
+%% Function: IsModelReferenceRTWTarget =========================================
+%% Abstract:
+%%    Return true if we are generating code for model reference RTW target
+%function IsModelReferenceRTWTarget()
+  %if CompiledModel.ModelReferenceTargetType == "RTW"
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction %% IsModelReferenceRTWTarget
+
+%% Function: HasModelReferenceBlocks ===========================================
+%% Abstract:
+%%    Return true if we are generating code for a model that contains
+%%    references to other models.
+%function HasModelReferenceBlocks()
+  %if !EXISTS(CompiledModel.ModelReferenceBlocks)
+    %return TLC_FALSE
+  %else
+    %assign nMdlRefBlks = SIZE(CompiledModel.ModelReferenceBlocks, 0)
+    %return (nMdlRefBlks > 0)
+  %endif
+%endfunction
+
+%% Function: GetRootSystemFileName ============================================
+%% Abstract:
+%%    Get the file name for root system.
+%%
+%function GetRootSystemFileName()
+  %return (System[NumSystems - 1].SystemFileName)
+%endfunction
+
+
+%% Function: GetBaseSystemIdx ===============================================
+%% Abstract:
+%%  Get base system Idx. For standalone code generation, this is root system
+%%  idx. For model reference, this is the hidden model reference subsystem.
+%function GetBaseSystemIdx()
+   %assign baseSysIdx = IsModelReferenceTarget()? NumSystems-2: NumSystems - 1
+   %return baseSysIdx
+%endfunction
+
+
+%% Function:  GetNumSystemsForCodeGen =========================================
+%% Abstract:
+%%     Return number of system to generate code for. For model reference
+%% target, we do not need to generate code for root.
+%%
+%function GetNumSystemsForCodeGen()
+  %assign numSys = IsModelReferenceTarget() ? NumSystems-1 : NumSystems
+  %return numSys
+%endfunction %% GetNumSystemsForCodeGen
+
+%function GetBaseFileName()
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %assign baseName  = SLibGetSystemOutputFileBaseName(System[baseSysIdx])
+  %return baseName
+%endfunction %% GetBaseFileName
+
+%% Function: GetBaseFile ======================================================
+%% Abstract:
+%%    When generating code for model reference, this return the file
+%%    associated with the top level subsystem. Otherwise, it return
+%%    model file.
+%function GetBaseFile(type)
+  %assert(type == "SystemHeader" || type == "SystemBody")
+  %assign baseName  = GetBaseFileName()
+  %assign baseFile = SLibAddModelFile(type,"Simulink", baseName)
+  %return baseFile
+%endfunction %% GetBaseFile
+
+
+%% Function: IsModelReferenceBaseSys ==========================================
+%% Abstract:
+%%    Return true if we are generating code for model reference target
+%%    and the system is the hidden root system
+%function IsModelReferenceBaseSys(ss)
+  %return  IsModelReferenceTarget() && ss.SystemIdx == NumSystems-2
+%endfunction
+
+%% Function: CheckValidModelsInDisabledSystems ================================
+%% Abstract:
+%%  If the modelref block is in a system that can disable (enabled/action)
+%% then the generated code can not use a local absolute time.
+%function CheckValidModelsInDisabledSystems(mdlRefBlk, mdlName) void
+  %with mdlRefBlk
+    %if ModelReferenceInterfaces.%<mdlName>Interface.NeedsLocalAbsoluteTime
+      %% If any submodel uses local absolute time, then mark this model
+      %% as accessing local absolute time
+      %assign CompiledModel.ModelRefUsesLocalAbsoluteTime = TLC_TRUE
+      
+      %assign ownerSys = System[BlockIdx[0]]
+      %if ownerSys.Type != "root"
+        %assign callSites = ownerSys.CallSites
+        
+        %% We need to loop over all instances of the subsystem that
+        %% this block lives in, since any one of them could live
+        %% in an enabled subsystem.
+        %foreach idx = SIZE(callSites,0)
+          %assign callSite = callSites[idx]
+          %assign ssBlk = System[callSite[2]].Block[callSite[3]]
+          
+          %% If this block is in an enabled/action subsystem, error out
+          %if ISEQUAL(ssBlk.ParamSettings.CanBeDisabled, "yes")
+            %assign errMsg = "Invalid model referenced in an enabled/action subsystem: " ...
+              "The model '%<mdlName>' referenced from the block '%<SLibBlkName(mdlRefBlk)>' " ...
+              "contains blocks that access absolute time.  Since the model reference "...
+              "code uses a local timing engine, it can not be referenced from the system "...
+              "'%<SLibBlkName(ssBlk)>' because this system can be disabled."
+            %<LibReportError(errMsg)>
+          %endif
+        %endforeach
+      %endif
+    %endif
+  %endwith
+%endfunction
+
+%% Function: LoadModelReferenceBlocksInterface ================================
+%% Abstract:
+%%      Read model reference interfaces from mat file and cache them in
+%%      CompiledModel.ModelReferenceInterfaces
+%%
+%function LoadModelReferenceBlocksInterface() void
+  %<LibAddToCompiledModel("ModelRefUsesLocalAbsoluteTime", TLC_FALSE)>
+
+  %<LibAddToCompiledModel("ModelBlocksHaveNonInlinedSfcns", 0)>
+  %assign zeroVec = CreateZeroVector(NumSynchronousSampleTimes)
+  %<LibAddToCompiledModel("ModelBlocksReqClockTicks", zeroVec)>
+  %<LibAddToCompiledModel("ModelBlocksReqLongClockTicks", zeroVec)>
+
+  %assign mdlsReqLongClockTicks = CreateZeroVector(NumSynchronousSampleTimes)
+  %assign mdlsActRateInteraction = FEVAL("zeros", ...
+    NumSynchronousSampleTimes, NumSynchronousSampleTimes)
+
+  %assign hasMdlBlks = (EXISTS(CompiledModel.ModelReferenceBlocks) && ...
+    SIZE(CompiledModel.ModelReferenceBlocks,0) > 0)
+    
+  %if !hasMdlBlks
+    %return
+  %endif
+
+  %assign mdlRefBlks = CompiledModel.ModelReferenceBlocks
+  %assign numMdlRefs = SIZE(mdlRefBlks,0)
+  %with CompiledModel
+    %assign buildStartDir = FEVAL("rtwprivate","rtwattic","getStartDir")
+    %addtorecord CompiledModel ModelReferenceInterfaces {}
+    %foreach rowIdx = numMdlRefs
+      %assign mdlRefInfo = mdlRefBlks[rowIdx]
+      %assign mSysIdx    = mdlRefInfo[0]
+      %assign bIdx       = mdlRefInfo[1]
+      %assign mdlrefBlk  = System[mSysIdx].Block[bIdx]
+      %with mdlrefBlk
+	%assign mdlName = ParamSettings.ReferencedModelName
+
+	%if !EXISTS(ModelReferenceInterfaces.%<mdlName>Interface)
+	  %assign blkInterface = LoadModelrefInterfaceInMatInfoFile(...
+	    mdlName, buildStartDir)
+
+	  %addtorecord CompiledModel.ModelReferenceInterfaces \
+	  %<mdlName>Interface blkInterface
+
+	  %<PropModelBlocksInfoToCompiledModel(blkInterface, mdlrefBlk)>
+	%endif
+        
+        %% Check if this block is in an enabled/action subsystem
+        %% and used local absolute time when it generated code.
+        %<CheckValidModelsInDisabledSystems(mdlrefBlk, mdlName)>
+      %endwith
+    %endforeach
+  %endwith
+%endfunction
+  
+%% Function: PropModelBlocksInfoToCompiledModel ================================
+%% Abstract:
+%%	    
+%function PropModelBlocksInfoToCompiledModel(blkInterface, mdlrefBlock) void
+  %% Non-inlined s-functions
+  %if blkInterface.HasNonInlinedSfcn
+    %assign CompiledModel.ModelBlocksHaveNonInlinedSfcns = 1
+  %endif
+	    
+  %if ::UseGlobalTimingForModelReference
+    %% FirstInitCond
+    %if blkInterface.FirstInitConditionReq
+      %assign ::CompiledModel.IsFirstInitCondMacroUsed = 1
+    %endif
+        
+    %% None of these fields are needed for simstruct based targets
+    %if CodeFormat == "Embedded-C"
+      
+      %% Rate interaction
+      %if blkInterface.RequireMultiRateSampleHits
+        %assign CompiledModel.RequireMultiRateSampleHits = 1
+      %endif
+    
+      %% TID ticks
+      %foreach i = NumSynchronousSampleTimes
+        %assign iChildTid = MapParentTID2ChildTID(mdlrefBlock, i)
+        
+        %if iChildTid >= 0 %% If the block has this tid
+          %if blkInterface.ClockTicksReq[iChildTid]
+            %assign CompiledModel.ModelBlocksReqClockTicks[i] = 1
+            %<SLibSetNeedAbsoluteTime(i)>
+          %endif
+          %if blkInterface.LongClockTicksReq[iChildTid]
+            %assign CompiledModel.ModelBlocksReqLongClockTicks[i] = 1
+            %assert SLibNeedAbsoluteTimeForTID(i)
+          %endif
+          
+          %if blkInterface.RequireMultiRateSampleHits
+            %foreach j = NumSynchronousSampleTimes
+              %assign jChildTid = MapParentTID2ChildTID(mdlrefBlock, j)
+              %if jChildTid >= 0 	 %% If the block has this tid   
+                %if blkInterface.ActualRateInteraction[iChildTid][jChildTid]
+                  %assign CompiledModel.ActualMultiRateSampleHits[i][j] = 1
+                %endif
+              %endif
+            %endforeach
+          %endif
+        %endif
+      %endforeach
+    %endif
+  %endif
+%endfunction %%PropModelBlocksInfoToCompiledModel
+
+
+%% Function: GetBuildStartDir =================================================
+%% Abstract:
+%%     Return dir where the user initiated the build, i.e., pwd before
+%%     code generation.
+%%
+%function GetBuildStartDir() Output
+  %assign buildStartDir = FEVAL("rtwprivate","rtwattic","getStartDir")
+  %return buildStartDir
+%endfunction
+
+%% Function: CacheModelrefInterfaceInMatInfoFile  =============================
+%% Abstract:
+%%      Store interface of model reference blocks in .mat file.
+%%      This function should go to model ref lib file. However, since
+%%      other related functions are in this file, we keep it here.
+%function CacheModelrefInterfaceInMatInfoFile(mdlref,interface) void
+  %assert (IsModelReferenceTarget())
+  %assign targetType = IsModelReferenceSimTarget() ? "SIM" : "RTW"
+  %assign buildStartDir = GetBuildStartDir()
+  %assign rtwinfomat = FEVAL("rtwprivate", "rtwinfomatman", ...
+    "%<buildStartDir>", "addInterface", "binary", "%<mdlref>", ...
+    "%<targetType>", interface)
+%endfunction
+
+%% Function: LoadModelrefInterfaceInMatInfoFile ===============================
+%% Abstract:
+%%    Load and return model reference interface info from mat file.
+%%
+%function LoadModelrefInterfaceInMatInfoFile(mdlref, buildStartDir)
+  %% Note: Use
+  %%    "SIM" : For model reference sim target or accelerator.
+  %%            Note that we run model reference blocks in Simulink. However,
+  %%            we may use some of the interface field in the
+  %%            blocks/modelref.tlc
+  %%     "RTW": Standalone target or model reference rtw target
+  %if IsModelReferenceSimTarget() || Accelerator
+    %assign targetType = "SIM"
+  %else
+    %assign targetType = "RTW"
+  %endif
+  %assign modelInterface = FEVAL("rtwprivate", "rtwinfomatman", ...
+    "%<buildStartDir>", "loadInterface", "binary", "%<mdlref>", "%<targetType>")
+  %return modelInterface
+%endfunction
+
+%% Function: LoadRTWInfoMatFileforTLC ===============================
+%% Abstract:
+%%    Load rtwinfomat into a TLC structure and cached it into ::CompiledModel.
+%%
+%function LoadRTWInfoMatFileforTLC() void
+%assign FILESEP       = FEVAL("filesep")
+%assign PWD           = FEVAL("pwd")
+%assign modelName     = ::CompiledModel.Name
+%if Accelerator || (CodeFormat == "S-Function")
+  %assign modelName   = ::CompiledModel.OrigName
+%endif
+%assign targetType    = ::CompiledModel.ModelReferenceTargetType
+%assign infoStruct    = FEVAL("rtwprivate", "rtwinfomatman", "%<PWD>", "loadforTLC", "binary", "%<modelName>", "%<targetType>")
+%addtorecord ::CompiledModel RTWInfoMatFile infoStruct
+%% convert to absolute path
+%assign ::CompiledModel.RTWInfoMatFile.sharedSourcesDir = FEVAL("fullfile", "%<PWD>", "%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>", "%<FILESEP>")
+%endfunction
+
+%% Function: GetModelrefInterface ==============================================
+%% Abstract:
+%%       Given a model reference block, return block interface which is cached
+%%       in CompiledModel
+%%
+%function GetModelrefInterface(blk)
+  %% it must be model referefce
+  %assert (TYPE(blk.Type) == "Identifier" && blk.Type == "ModelReference")
+  %assign mdlName = blk.ParamSettings.ReferencedModelName
+  %assert(EXISTS(CompiledModel.ModelReferenceInterfaces.%<mdlName>Interface))
+  %return CompiledModel.ModelReferenceInterfaces.%<mdlName>Interface
+%endfunction
+
+
+%function IsBaseSystem(system)
+  %assign isBase = 0
+  %if IsModelReferenceTarget()
+    %assign isBase = IsModelReferenceBaseSys(system)
+  %elseif system.Type == "root"
+    %assign isBase = 1
+  %endif
+  %return isBase
+%endfunction
+
+
+%function GetDataCFile()
+ %assign  dataFile = SLibAddModelFile("SystemBody","Simulink", "%<Name>_data")
+ %return dataFile
+%endfunction
+
+%function GetPrivateHFile()
+  %assign privFile = SLibAddModelFile("SystemHeader","Simulink", "%<Name>_private")
+  %return privFile
+%endfunction
+
+%% Function:  IsMultiInsatnceERTOrModelReference ==============================
+%% Abstract:
+%%    Return true if it is Multi instance ERT or Model reference
+%%
+%function IsMultiInsatnceERTOrModelReference()
+  %return MultiInstanceERTCode || IsModelReferenceTarget()
+%endfunction
+
+%% Function: GetModelRefRegistrationFcnName ===================================
+%% Abstract:
+%%    Returns the name of the model reference registration function, the 
+%% form is %<BaseSubsysName>_initialize
+%%
+%function GetModelRefRegistrationFcnName()
+  %assign fcnName = System[GetBaseSystemIdx()].Identifier
+  %return "%<fcnName>_initialize"
+%endfunction
+
+%% Function: ModelRefNeedsLocalAbsoluteTime ===================================
+%% Abstract:
+%%    Returns true if this model accesses either clockTick%<tid> or
+%% uses TaskCounters or uses RateInteraction for multi-rate systems.  
+%% If it does, this model can not be used in a system that can be disabled.
+%function ModelRefNeedsLocalAbsoluteTime()
+  %assign needTime = TLC_FALSE
+  %foreach tidIdx = NumSynchronousSampleTimes
+    %if RTMClockTickForTIDIsReqFcn(tidIdx)
+      %assign needTime = TLC_TRUE
+      %break
+    %endif
+  %endforeach
+  %return needTime || RTMTaskCountersIsReqFcn() || RTMERTPerTaskSampleHitsIsReqFcn()
+%endfunction
+
+
+%function CreateZeroVector(numElm)
+  %assign vec = []
+  %foreach idx = numElm
+    %assign vec = vec + 0
+  %endforeach
+  %return vec
+%endfunction
+
+
+%% Function: MapParentTID2ChildTID ==========================================
+%% Abstract:
+%%   Map perants TID to child system TID. Return -1 is not match tid is found.  
+%function MapParentTID2ChildTID(block, tid)
+  %assign localTid = -1 %% 
+  %with block
+    %if TYPE(TID) != "Identifier" %% Ignore constant/triggered sample time
+      %if TYPE(TID) == "Number"
+	%if ISEQUAL(TID, tid)
+	  %assign localTid = 0
+	%endif
+      %elseif TYPE(TID) == "Vector"
+	%foreach tidIdx = SIZE(TID,1)
+	  %% Note: Constant sample times are (-2)
+	  %if ISEQUAL(TID[tidIdx], tid)
+	    %assign localTid = tidIdx
+	    %break
+	  %endif
+	%endforeach
+      %else
+	%assert(0)
+      %endif
+    %endif
+  %endwith
+  %return localTid
+%endfunction
+
+%% Function: FcnMapTIDForRateGrouping ==========================================
+%% Abstract:
+%%   We need to remove any TID's for the model reference block that are
+%% not needed when we do rate grouping.  This includes constant TID's and
+%% TID1 when Tid01Eq is true for the submodel.
+%function FcnMapTIDForRateGrouping(block, tid) void
+  %assign output_tid = tid
+  %if (TYPE(tid) == "Vector") 
+    %% Remove the constant tid from the vector
+    %assign output_tid = []
+    %foreach i = SIZE(tid,1)
+      %if tid[i] != -2
+        %assign output_tid = output_tid + tid[i]
+      %endif
+    %endforeach
+
+    %% If the size of output_tid is 1, make it a scalar
+    %if TYPE(output_tid) == "Vector" && SIZE(output_tid,1) == 1
+      %assign output_tid = output_tid[0]
+    %endif
+  
+    %% If the modelref block has only two TID's and Tid01Eq,
+    %% we can treat the block as single rate.  Blocks that
+    %% have more than 2 tid's will be taken care of later.
+    %assign intf = GetModelrefInterface(block)
+    %if (SIZE(output_tid, 1) == 2) && intf.Tid01Eq
+      %assign output_tid = 0
+    %endif
+  %endif
+  %return output_tid
+%endfunction %% FcnMapTIDForRateGrouping
+
+%endif %%_MODELREFUTIL_
+%% [EOF] modelrefutil.tlc

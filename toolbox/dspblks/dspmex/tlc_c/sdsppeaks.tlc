@@ -1,0 +1,259 @@
+%% sdsppeaks.tlc
+%% Abstract: TLC for Signal Processing Blockset Peak Finder (sdsppeaks)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.1.6.2 $Date: 
+
+%implements sdsppeaks "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% Get the input port
+    %assign INPORT          = 0
+    %assign PEAKS_FOUND     = 0
+    %assign UdTypeName      = LibBlockInputSignalDataTypeName(INPORT,"")
+
+    %%Get the order of input
+    %assign N      = LibBlockInputSignalWidth(INPORT)
+
+    %%Get data type and complexity profiles
+    %assign OUT_PEAKS       = SFcnParamSettings.MaxPeaks 
+    %assign PEAKS           = SFcnParamSettings.Polarity
+
+    %% The Polarities for the PEAKS
+    %assign POSITIVE        = 1
+    %assign NEGATIVE        = 2
+    %assign ALTERNATE       = 3
+
+    %assign INDICES         = SFcnParamSettings.outputI
+    %assign VALUES          = SFcnParamSettings.outputV
+    %assign POLARITIES      = SFcnParamSettings.outputP
+    %assign IDX_INDEX       = SFcnParamSettings.IdxLabel
+    %assign VAL_INDEX       = SFcnParamSettings.ValLabel
+    %assign POL_INDEX       = SFcnParamSettings.PolLabel
+
+    %% I/O port data types
+    %assign  inUdTYPE       = FixPt_GetInputDataType(INPORT)
+     %assign inUcplx           = LibBlockInputSignalIsComplex(INPORT)
+    
+    %% Propagate all these assignments to the block
+    %assign block = block + INPORT + PEAKS_FOUND + N
+    %assign block = block + OUT_PEAKS + PEAKS
+    %assign block = block + INDICES + VALUES + POLARITIES
+    %assign block = block + IDX_INDEX + VAL_INDEX + POL_INDEX  
+    %assign block = block + POSITIVE + NEGATIVE + ALTERNATE 
+    %assign block = block + inUdTYPE + UdTypeName + inUcplx
+
+%endfunction %% BlockInstanceSetup
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  /* Signal Processing Blockset Peak Finder (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if FixPt_DataTypeIsFloat(inUdTYPE)
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION  %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FltPtInlineCode(block)>
+    }
+    %%
+  %else
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION     %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FixPtInlineCode(block)>
+    }
+    %%
+  %endif
+%%
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtInlineCode
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtInlineCode(block) Output
+    %assign THRESH = LibBlockParameter(Thresh,"","",0)
+    const %<UdTypeName> *u  = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    uint32_T *numPeaks = %<LibBlockOutputSignalAddr(PEAKS_FOUND, "", "",0)>;
+    %if (INDICES)
+    uint32_T *idx = %<LibBlockOutputSignalAddr(IDX_INDEX, "", "",0)>;
+    %endif
+    %if (VALUES)
+    %<UdTypeName> *value = %<LibBlockOutputSignalAddr(VAL_INDEX, "", "",0)>;
+    %endif
+    %if (POLARITIES)
+    boolean_T   *polarity = %<LibBlockOutputSignalAddr(POL_INDEX, "", "",0)>;
+    %endif
+    uint32_T              i, count=0;
+
+    %if (INDICES)
+    memset(idx, 0, %<OUT_PEAKS> * sizeof(uint32_T));
+    %endif
+    %if (VALUES)
+    memset(value, 0, %<OUT_PEAKS> * sizeof(%<UdTypeName>));
+    %endif
+    %if (POLARITIES)
+    memset(polarity, 0, %<OUT_PEAKS> * sizeof(boolean_T));
+    %endif
+    for (i=2; i < %<N>; i++) {
+        /* To find extrema, we need three adjacent points */
+        %if !(%<PEAKS> == %<NEGATIVE>)
+        if ( (u[i-1]-u[i-2] > %<THRESH>) && (u[i-1]-u[i] > %<THRESH>) ) { 
+            /* Local maximum with threshold */
+            %if (INDICES)
+            *idx++ = (i-1);
+            %endif
+            %if (VALUES)
+            *value++ = u[i-1];
+            %endif
+            %if (POLARITIES)
+            *polarity++ = (boolean_T)1;
+            %endif
+            ++count;
+        } 
+        %endif 
+        %if (%<PEAKS> == %<ALTERNATE>) 
+        else 
+        %endif
+        %if !(%<PEAKS> == %<POSITIVE>)
+        if ( (u[i-1]-u[i-2] < -%<THRESH>) && (u[i-1]-u[i] < -%<THRESH>) ) { 
+            /* Local minimum */
+            %if (INDICES)
+            *idx++ = (i-1);
+            %endif
+            %if (VALUES)
+            *value++ = u[i-1];
+            %endif
+            %if (POLARITIES)
+            *polarity++ = (boolean_T)0;
+            %endif
+            ++count;
+        } 
+        %endif
+        if (count == %<OUT_PEAKS>) break;
+    }
+    *numPeaks = count;
+%endfunction  %% FltPtInlineCode
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%% 
+    %createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+    %assign THRESH = LibBlockParameter(Thresh,"0","",0)
+    %assign uLabel_0 = LibBlockInputSignal(INPORT, "i", "", 0)
+    %createrecord u0_Rec { label    uLabel_0 ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    %assign uLabel_1 = LibBlockInputSignal(INPORT, "i-1", "", 0)
+    %createrecord u1_Rec { label    uLabel_1 ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    %assign uLabel_2 = LibBlockInputSignal(INPORT, "i-2", "", 0)
+    %createrecord u2_Rec { label    uLabel_2 ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    %assign Hdiff0 = "diff0"
+   %createrecord diff0_Rec { label    Hdiff0 ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    %assign Hdiff1 = "diff1"
+    %createrecord diff1_Rec { label    Hdiff1 ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    uint32_T *numPeaks = %<LibBlockOutputSignalAddr(PEAKS_FOUND, "", "",0)>;
+    %if (INDICES)
+    uint32_T *idx = %<LibBlockOutputSignalAddr(IDX_INDEX, "", "",0)>;
+    %endif
+    %if (VALUES)
+    %assign ValLabel_count = LibBlockOutputSignal(VAL_INDEX, "count", "", 0)
+     %createrecord val_Rec { label   ValLabel_count  ; ...
+                      dTypeRec inUdTYPE ; ...
+                      isComplex inUcplx}
+    %assign ValLabel_i = LibBlockOutputSignal(VAL_INDEX, "i", "", 0)
+    %endif
+    %if (POLARITIES)
+    boolean_T   *polarity = %<LibBlockOutputSignalAddr(POL_INDEX, "", "",0)>;
+    %endif
+   %<inUdTYPE.NativeType> %<Hdiff0>,   %<Hdiff1>;
+    uint32_T              i, count=0;
+    
+    %if (INDICES)
+    memset(idx, 0, %<OUT_PEAKS> * sizeof(uint32_T));
+    %endif
+    %if (VALUES)
+    for (i=0; i <  %<OUT_PEAKS>; i++)  %<FixPt_Fix2FixAlwaysOutput(ValLabel_i, inUdTYPE, ...
+                                "0",     inUdTYPE, ...                                       
+                                FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif
+    %if (POLARITIES)
+    memset(polarity, 0, %<OUT_PEAKS> * sizeof(boolean_T));
+    %endif
+    for (i=2; i < %<N>; i++) {
+    /* To find extrema, we need three adjacent points */
+   %<DSPFixptLibEquals(diff0_Rec, u1_Rec, rndSatRec)>\
+   %<DSPFixptLibMinusEquals(diff0_Rec, u2_Rec, rndSatRec)>\
+   %<DSPFixptLibEquals(diff1_Rec, u1_Rec, rndSatRec)>\
+   %<DSPFixptLibMinusEquals(diff1_Rec, u0_Rec, rndSatRec)>\
+    %if !(%<PEAKS> == %<NEGATIVE>)
+        if ( (%<Hdiff0> > %<THRESH>) && (%<Hdiff1> > %<THRESH>) ) { /* Local maximum */
+            %if (INDICES)
+            *idx++ = (i-1);
+            %endif
+            %if (VALUES)
+            %<DSPFixptLibEquals(val_Rec, u1_Rec, rndSatRec)>\
+            %endif
+            %if (POLARITIES)
+            *polarity++ = (boolean_T)1;
+            %endif
+            ++count;
+        } 
+        %endif 
+        %if (%<PEAKS> == %<ALTERNATE>) 
+        else 
+        %endif
+        %if !(%<PEAKS> == %<POSITIVE>)
+        if ( (%<Hdiff0> < -%<THRESH>) && (%<Hdiff1> < -%<THRESH>) ) { /* Local minimum */
+            %if (INDICES)
+            *idx++ = (i-1);
+            %endif
+            %if (VALUES)
+            %<DSPFixptLibEquals(val_Rec, u1_Rec, rndSatRec)>\
+            %endif
+            %if (POLARITIES)
+            *polarity++ = (boolean_T)0;
+            %endif
+            ++count;
+        } 
+        %endif
+        if (count == %<OUT_PEAKS>) break;
+    }
+    *numPeaks = count;	
+%endfunction    %%FixPtInlineCode
+
+%% [EOF] sdsppeaks.tlc

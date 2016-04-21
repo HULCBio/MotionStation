@@ -1,0 +1,204 @@
+%% c6000_prof.tlc
+%% 
+%% This file provides profiling instrumentation for the TI C6000 target.
+%% See rtw/ttlc/mw/prof.ttlc for more information about this mechanism.
+%%
+%% $Revision: 1.5.4.3 $ $Date: 2004/01/22 18:26:01 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%if EXISTS("_C6000PROF_") == 0
+%assign _C6000PROF_ = 1
+
+%%%assign Language   = "C"
+%implements ProfilerType "C"
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  ProfilerHeaders
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%function ProfilerHeaders(profRec) void
+
+  %if C6000ProfilerActive() 
+    %assign generatedCdbHeader = CompiledModel.Name + "cfg.h"
+    %return ["<std.h>", "<clk.h>", "<sts.h>", "%<generatedCdbHeader>"]
+  %else
+    %openfile tmpBuff
+    %closefile tmpBuff
+    %return tmpBuff
+  %endif
+  
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  ProfilerGlobalExterns
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% %function ProfilerGlobalExterns (ProfRec, system) void
+%% %endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  ProfilerSystemStart
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%function ProfilerSystemStart(ProfRec, system, fcn) void
+  
+  %if C6000ProfilerActive() && SystemApprovedForProfiling(system)
+
+    %% Register system info in M-file for later processing
+    %if EXISTS(system.SLName)
+      %assign sysName = system.SLName
+    %else
+      %assign sysName = system.Name
+    %endif
+    %assign isModelMultiTasking = ...
+       ISEQUAL(CompiledModel.FixedStepOpts.SolverMode, "MultiTasking")
+    %assign combinedFlag = !( (fcn=="Output") || (fcn=="Update") )
+    %assign dummy = FEVAL("ti_profreport","regSystemInfo", ...
+        "Name", "%<sysName>", ...
+        "Idx", "%<system.SystemIdx>", ...
+        "Name", "%<sysName>", ...
+        "OutputUpdateCombined", "%<combinedFlag>", ...
+        "FundamentalStepSize", "%<CompiledModel.FundamentalStepSize>",...
+        "IsSingleRate", "%<CompiledModel.SingleRate>", ...
+        "IsMultiTasking", "%<isModelMultiTasking>", ...
+        "NumSampleTimes", "%<CompiledModel.NumSampleTimes>")
+
+    %% Generate system start instrumentation
+    %assign SysNum = system.SystemIdx
+    %assign stsObjName = "stsSys%<SysNum>_" + fcn
+    %openfile tmpBuff
+      STS_set(&%<stsObjName>, CLK_gethtime());
+    %closefile tmpBuff
+    %return tmpBuff
+  %else
+    %openfile tmpBuff
+    %closefile tmpBuff
+    %return tmpBuff
+  %endif
+  %return
+
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  ProfilerSystemFinish
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function ProfilerSystemFinish(ProfRec, system, fcn) void
+
+  %if C6000ProfilerActive() && SystemApprovedForProfiling(system)
+    %assign SysNum = system.SystemIdx
+    %assign stsObjName = "stsSys%<SysNum>_" + fcn
+    %openfile tmpBuff 
+      STS_delta(&%<stsObjName>, CLK_gethtime());
+    %closefile tmpBuff
+    %return tmpBuff
+  %else
+    %openfile tmpBuff
+    %closefile tmpBuff
+    %return tmpBuff
+  %endif
+  %return
+
+%endfunction
+
+%endif
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%  Local Helper function(s)
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+%%   Is profiler active according to RTW Options?
+%function C6000ProfilerActive() void
+  %return (useDSPBIOS && ProfileGenCode)
+%endfunction
+
+%% % % % % % % % % % % % % % % % % % % % % % % % % % % % % 
+%%   Is this system approved for profiling, according
+%%   to subsystem TIDs, tasking mode, etc?
+%function SystemApprovedForProfiling(system) void
+
+    %assign isModelMultiTasking = ...
+       ISEQUAL(CompiledModel.FixedStepOpts.SolverMode, "MultiTasking")
+       
+    %% fundamentalTID = ???
+    %foreach i = CompiledModel.NumSampleTimes
+       %assign periodAndOffset = CompiledModel.SampleTime[i].PeriodAndOffset
+       %assign period = periodAndOffset[0]
+       %if ISEQUAL(period, CompiledModel.FundamentalStepSize)
+          %assign fundamentalTID = CompiledModel.SampleTime[i].TID
+       %endif
+    %endforeach
+       
+    %assign sysName = system.Name
+
+    %if !ISEQUAL("<Root>", sysName)
+
+       %% Find subsystem block that corresponds to this system.
+       %% (If there is more than one such system (i.e. code reuse), 
+       %%   then we know the rates would be the same for each.)
+       %assign matched_parentSysIdx = -1
+       %assign matched_blkIdx = -1
+       %foreach i = CompiledModel.NumSystems
+          %foreach j = CompiledModel.System[i].NumBlocks
+             %if ISEQUAL(CompiledModel.System[i].Block[j].Type, "SubSystem")
+                %if ISEQUAL(CompiledModel.System[i].Block[j].Name, sysName)
+                   %assign matched_parentSysIdx = i
+                   %assign matched_blkIdx = j
+                %endif
+             %endif
+          %endforeach    %% j
+       %endforeach    %% i
+       %if matched_blkIdx == -1
+           %error Could not find matching subsystem block for %<sysName>
+       %endif
+       
+       %assign sysName = ...
+          CompiledModel.System[matched_parentSysIdx].Block[matched_blkIdx].Name
+       %assign isTmpAtomicSubsys = !ISEMPTY(FEVAL( ...
+          "findstr", "TmpAtomicSubsys_Feeding_",sysName))
+       
+       %if isTmpAtomicSubsys
+          %assign approve = 0
+       %else
+          %assign SubsystemTID_val = ...
+             CompiledModel.System[matched_parentSysIdx].Block[matched_blkIdx].SubsystemTID 
+          %if ISEQUAL(SubsystemTID_val,"constant")
+             %assign approve = 0
+          %elseif ISEQUAL(SubsystemTID_val,"triggered")
+             %assign approve = !isModelMultiTasking
+          %else  %% SubsystemTID_val is a vector of TID integers:
+             %assign isSystemSingleRate = ISEQUAL(SIZE(SubsystemTID_val),[1, 1])
+             %assign isSystemAtBaseRate = ISEQUAL(SubsystemTID_val[0],fundamentalTID)
+             %assign approve = (isSystemSingleRate && isSystemAtBaseRate) || ...
+                (!isModelMultiTasking)
+          %endif
+       %endif
+      
+    %else  %% if <Root> :
+    
+       %assign approve = (!isModelMultiTasking)
+      
+    %endif %% not <Root>
+    
+    %return approve
+    
+%endfunction
+
+%% EOF c6000_prof.tlc

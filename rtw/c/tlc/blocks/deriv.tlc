@@ -1,0 +1,105 @@
+%% $RCSfile: deriv.tlc,v $
+%% $Revision: 1.13 $ 
+%% $Date: 2002/01/06 04:20:17 $
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+%% Abstract: Derivative block target file.
+
+%implements Derivative "C"
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%      RWork(TimeStamp) = rtInf
+%%
+%function InitializeConditions(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %assign infVariable = LibRealNonFinite(inf)
+  %<LibBlockRWork(TimeStampA, "", "", 0)> = %<infVariable>;
+  %<LibBlockRWork(TimeStampB, "", "", 0)> = %<infVariable>;
+
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y = (U(T) - U(T-1)) / delta_T
+%%
+%function Outputs(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %assign timeStampA = LibBlockRWork(TimeStampA, "", "", 0)
+  %assign timeStampB = LibBlockRWork(TimeStampB, "", "", 0)
+  %assign widthPlusOne = DataInputPort.Width + 1
+  %%
+  {
+    real_T t = %<LibGetTaskTimeFromTID(block)>;
+    real_T timeStampA = %<timeStampA>;
+    real_T timeStampB = %<timeStampB>;
+
+    if (timeStampA >= t && timeStampB >= t) {
+      %assign rollVars = ["Y"]
+      %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0) - 1>]
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %<LibBlockOutputSignal(0, "", lcv, sigIdx)> = 0.0;
+      %endroll
+    } else {
+      real_T       deltaT;
+      real_T       *lastBank = &%<timeStampA>;
+      if (timeStampA < timeStampB) {
+        if (timeStampB < t) {
+          lastBank += %<widthPlusOne>;
+        }
+      } else if (timeStampA >= t) {
+        lastBank += %<widthPlusOne>;
+      }
+      deltaT = t - *lastBank++;
+      %%
+      %assign rollVars = ["U", "Y"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+        %<y> = (%<u> - *lastBank++) / deltaT;
+      %endroll
+    }
+  }
+
+%endfunction
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      Update the oldest bank of last inputs
+%%
+%function Update(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %assign timeStampA  = LibBlockRWork(TimeStampA, "", "", 0)
+  %assign timeStampB  = LibBlockRWork(TimeStampB, "", "", 0)
+  %assign widthPlusOne = DataInputPort.Width + 1
+  %%
+  {
+    real_T timeStampA = %<timeStampA>;
+    real_T timeStampB = %<timeStampB>;
+    real_T *lastBank  = &%<timeStampA>;
+
+    %assign infVariable = LibRealNonFinite(inf)
+    if (timeStampA != %<infVariable>) {
+      if (timeStampB == %<infVariable>) {
+          lastBank    += %<widthPlusOne>;
+      } else if (timeStampA >= timeStampB) {
+          lastBank    += %<widthPlusOne>;
+      }
+    }
+    *lastBank++ = %<LibGetTaskTimeFromTID(block)>;
+    %%
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      *lastBank++ = %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+    %endroll
+  }
+
+%endfunction
+
+%% [EOF] deriv.tlc

@@ -1,0 +1,602 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Library Routines for Linear Blocks
+
+%if EXISTS("_LINLIB_") == 0
+%assign _LINLIB_ = 1
+
+%% Function: LinLibEnclVectInCurlyBraces =======================================
+%%
+%% Abstract:
+%%      Utility function to enclose an input vector like [1 2.3 4.6] into
+%%      a string of the form: "{1, 2.3, 4.6}"
+%%
+%function LinLibEnclVectInCurlyBraces(input,start,nterms) void
+  %assign outstr = "{"
+  %foreach idx = nterms
+    %assign outstr = outstr + "%<input[start+idx]>"
+    %assign suffix = (idx == nterms-1) ? "}" : ", "
+    %assign outstr = outstr + suffix
+  %endforeach
+  %return outstr
+%endfunction %% LinLibEnclVectInCurlyBraces
+
+%% Function: LinLibEvalAXandAppend =============================================
+%%
+%% Abstract:
+%%      Utility function to compute A*x and append it to the input string:
+%%      prefix. If A is of type real, we check if it is 0.0, 1.0 or -1.0
+%%      and avoid unnecessary add or multiply operations. If the length of
+%%      the prefix string is greater than 60 then a carriage return is
+%%      inserted before the computed value of "A*x" is appended.
+%%
+%function LinLibEvalAXandAppend(prefix,A,x) void
+  %assign op = ((prefix == "") ? "" : " + ")
+  %if TYPE(A) == "Real"
+    %if A == 0.0
+      %assign ax = ""
+    %elseif A == 1.0
+      %assign ax = "%<op>%<x>"
+    %elseif A == -1.0
+      %assign ax = "-%<x>"
+    %elseif A < 0.0
+      %assign ax = "%<A>*%<x>"
+    %else
+      %assign ax = "%<op>%<A>*%<x>"
+    %endif
+  %else
+    %assign ax = "%<op>%<A>*%<x>"
+  %endif
+  %if ax == ""
+    %assign ans = prefix
+  %else
+    %assign cr = ((SIZE(prefix,1) <= 60) ? "" : "\n")
+    %assign ans = prefix + cr + ax
+  %endif
+  %return ans
+%endfunction %% LinLibEvalAXandAppend
+
+%% Function: LinLibSparseYEqAXFlat =============================================
+%%
+%%
+%function LinLibSparseYEqAXFlat(lhs, lhsIdx, lhsIsSet, Mtx, MtxOffset, rhs,\
+                                                              nterms) Output
+  %if lhs == "Y"
+    %assign Yi = LibBlockOutputSignal(0, "", "", lhsIdx)
+  %elseif lhs == "dX"
+    %assign Yi = LibBlockContinuousStateDerivative("", "", lhsIdx)
+  %else
+    %assign Yi = "%<lhs>[%<lhsIdx>]"
+  %endif
+  %assign rhsStr = ""
+  %assign MtxParamName = "%<Mtx>"
+  %foreach iterm = nterms
+    %%
+    %assign AijIdx = MtxOffset + iterm
+    %assign Aij = LibBlockParameter(%<MtxParamName>, "", "", AijIdx)
+    %%
+    %assign XjIdx = ParamSettings.ColIdxOfNonZero%<Mtx>[AijIdx]
+    %if rhs == "U"
+      %assign Xj = LibBlockInputSignal(0, "", "", XjIdx)
+    %elseif rhs == "Xc"
+      %assign Xj = LibBlockContinuousState("", "", XjIdx)
+    %elseif rhs == "Xd"
+      %assign Xj = LibBlockDWork(DSTATE, "", "", XjIdx)
+    %else
+      %assign errTxt = "Unhandled rhs value: %<rhs>"
+      %<LibBlockReportFatalError([], errTxt)>
+    %endif
+    %assign rhsStr = LinLibEvalAXandAppend(rhsStr,Aij,Xj)
+  %endforeach
+  %if rhsStr == ""
+    %return 0
+  %else
+    %assign op = ((lhsIsSet == 0) ? "=" : "+=")
+    %<Yi> %<op> %<rhsStr>;
+    %return 1
+  %endif
+  %%
+%endfunction %% LinLibSparseYEqAXFlat
+
+
+%% Function: LinLibSparseYEqAXRolled ===========================================
+%%
+%%
+%function LinLibSparseYEqAXRolled(lhs, lhsIdx, lhsIsSet, Mtx, MtxOffset, rhs,\
+                                                                nterms) Output
+  %if nterms < RollThreshold
+    %assign errTxt = "%<nterms> is less than RollThreshold = %<RollThreshold>"
+    %<LibBlockReportError([], errTxt)>
+  %endif
+  %%
+  %assign jMnz = "col%<Mtx>idxRow%<lhsIdx>"
+  %assign ColIdx = "ParamSettings.ColIdxOfNonZero%<Mtx>"
+  %assign jMnzInitStr = LinLibEnclVectInCurlyBraces(%<ColIdx>,MtxOffset,nterms)
+  %assign MtxParamName = "%<Mtx>"
+  %assign pMtxParam = LibBlockParameterAddr(%<MtxParamName>, "", "", MtxOffset)
+  %%
+  %if lhs == "Y"
+    %assign Yi = LibBlockOutputSignal(0, "", "", lhsIdx)
+    %assign pYi = "y%<lhsIdx>"
+  %elseif lhs == "dX"
+    %assign Yi = LibBlockContinuousStateDerivative("", "", lhsIdx)
+    %assign pYi = "dx%<lhsIdx>"
+  %else
+    %assign Yi = "%<lhs>[%<lhsIdx>]"
+    %assign pYi = "p%<lhs>%<lhsIdx>"
+  %endif
+  %%
+  %if rhs == "U"
+    %assign Xj = "%<LibBlockInputSignalAddr(0, "", "", 0)>"
+    %assign pXj = "u"
+  %elseif rhs == "Xc"
+    %assign Xj = "&%<LibBlockContinuousState("", "", 0)>"
+    %assign pXj = "xc"
+  %elseif rhs == "Xd"
+    %assign Xj = "&%<LibBlockDWork(DSTATE, "", "", 0)>"
+    %assign pXj = "xd"
+  %else
+    %assign errTxt = "Unhandled rhs value: %<rhs>"
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+  %%
+  %assign nMnz = ((lhsIsSet == 0) ? (nterms-1) : nterms)
+  %%
+  {
+    static const int_T %<jMnz>[%<nterms>] = %<jMnzInitStr>;
+    const int_T *p%<Mtx>idx = &%<jMnz>[0];
+    const real_T *p%<Mtx>%<MtxOffset> = %<pMtxParam>;
+    const real_T *%<pXj> = %<Xj>;
+    real_T *%<pYi> = &%<Yi>;
+    int_T numNonZero = %<nMnz>;
+
+    %if lhsIsSet == 0
+      *%<pYi> = (*p%<Mtx>%<MtxOffset>++) * %<pXj>[*p%<Mtx>idx++];
+    %endif
+    while (numNonZero--) {
+      *%<pYi> += (*p%<Mtx>%<MtxOffset>++) * %<pXj>[*p%<Mtx>idx++];
+    }
+  }
+  %return 1
+%endfunction %% LinLibSparseYEqAXRolled
+
+
+%% Function: LinLibSparseYEqAXPlusBU ===========================================
+%%
+%%
+%function LinLibSparseYEqAXPlusBU(y, A, x, B, u, ny) Output
+  %%
+  %assign Aoffset = 0
+  %assign Boffset = 0
+  %foreach iy = ny
+    %assign yIsSet = 0
+    %%
+    %% Compute y = B*u -but first check if B has at least one non zero term-
+    %%
+    %assign evalstr = "ParamSettings.NumNonZero%<B>InRow"
+    %assign evalval = %<evalstr>
+    %if SIZE(evalval,0) > 0 && SIZE(evalval,1) > 0
+      %assign nterms = ParamSettings.NumNonZero%<B>InRow[iy]
+      %if ParamSettings.InputContiguous == "no" || nterms < RollThreshold
+        %assign yIsSet = LinLibSparseYEqAXFlat(y,iy,0,B,Boffset,u,nterms)
+      %else
+        %assign yIsSet = LinLibSparseYEqAXRolled(y,iy,0,B,Boffset,u,nterms)
+      %endif
+      %assign Boffset = Boffset+nterms
+    %endif
+    %%
+    %% Now Add A*x to y.
+    %%
+    %assign evalstr = "ParamSettings.NumNonZero%<A>InRow"
+    %assign evalval = %<evalstr>
+    %if SIZE(evalval,0) > 0 && SIZE(evalval,1) > 0
+      %assign nterms = ParamSettings.NumNonZero%<A>InRow[iy]
+      %if nterms < RollThreshold
+        %assign tmp = LinLibSparseYEqAXFlat(y,iy,yIsSet,A,Aoffset,x,nterms)
+      %else
+        %assign tmp = LinLibSparseYEqAXRolled(y,iy,yIsSet,A,Aoffset,x,nterms)
+      %endif
+      %assign yIsSet = (tmp == 1) ? 1 : yIsSet
+      %assign Aoffset = Aoffset+nterms
+    %endif
+    %if yIsSet == 0
+      %if y == "Y"
+	%assign Yi = LibBlockOutputSignal(0, "", "", iy)
+      %elseif y == "dX"
+	%assign Yi = LibBlockContinuousStateDerivative( "", "", iy)
+      %else
+	%assign Yi = "%<y>[%<iy>]"
+      %endif
+      %<Yi> = 0.0;
+    %endif
+    %%
+    %% leave an empty space after each y[iy], but the last one
+    %%
+    %if iy < ny-1
+
+    %endif
+  %endforeach
+  %%
+%endfunction %% LinLibSparseYEqAXPlusBU
+
+
+%% Function: LinLibYEqAXPlusBU ===========================================
+%%
+%%
+%function LinLibYEqAXPlusBU(y, A, x, B, u, nA, mA, mB) Output
+    %% A*x
+    {
+      static const int dims[3] = { %<nA>, %<mA>, 1 };
+      rt_MatMultRR_Dbl(%<y>, %<A>, %<x>, &dims[0]);
+    }
+    %% B*u
+    {
+      static const int dims[3] = { %<nA>, %<mB>, 1 };
+      rt_MatMultAndIncRR_Dbl(%<y>, %<B>, %<u>, &dims[0]);
+    }
+%endfunction %% LinLibYEqAXPlusBU
+
+
+%% Function: LinLibSIMOSysOutputFcn ============================================
+%%
+%%
+%function LinLibSIMOSysOutputFcn(block, x, ny, nx) Output
+  %%
+  %assign noFeedThru = ( SIZE(D.Value,0)==0 || SIZE(D.Value,1)==0 )
+  %assign yrollRegion = [0:%<ny-1>]
+  %assign yrollVars = (noFeedThru) ? ["Y"] : ["Y", "<param>/D"]
+  %if !noFeedThru
+    %assign U = LibBlockInputSignal(0, "", "", 0)
+  %endif
+  %%
+  %roll yidx = yrollRegion, ylcv = RollThreshold, block, "Roller", yrollVars
+    %%
+    %assign Yi = LibBlockOutputSignal(0, "", ylcv, yidx)
+    %if !noFeedThru
+      %assign Di = LibBlockParameter(D, "", ylcv, yidx)
+      %assign OutputStr = LinLibEvalAXandAppend("",Di,U)
+      %if OutputStr != ""
+	%<Yi> = %<OutputStr>;
+      %endif
+    %else
+      %assign OutputStr = ""
+    %endif
+    %%
+    %if nx < RollThreshold
+      %assign rhsStr = ""
+      %foreach xidx = nx
+        %if x == "Xd"
+          %assign Xj = LibBlockDWork(DSTATE, "", "", xidx)
+        %elseif x == "Xc"
+          %assign Xj = LibBlockContinuousState("", "", xidx)
+        %else
+          %assign errTxt = "Unhandled input %<x>."
+          %<LibBlockReportError(block, errTxt)>
+        %endif
+        %assign Cij = LibBlockMatrixParameter(C,ylcv,"",yidx,"","",xidx)
+        %assign rhsStr = LinLibEvalAXandAppend(rhsStr,Cij,Xj)
+      %endforeach
+      %if rhsStr != ""
+        %assign prefix = ((OutputStr == "") ? "=" : "+=")
+        %<Yi> %<prefix> %<rhsStr>;
+      %endif
+    %else
+      %if x == "Xd"
+        %assign pX = "&%<LibBlockDWork(DSTATE, "", "", 0)>"
+      %elseif x == "Xc"
+        %assign pX = "&%<LibBlockContinuousState("", "", 0)>"
+      %else
+        %assign errTxt = "Unhandled input %<x>."
+        %<LibBlockReportError(block, errTxt)>
+      %endif
+      %assign pCmtx = LibBlockMatrixParameterAddr(C,ylcv,"",yidx,"","",0)
+      %assign nterms = ((OutputStr == "") ? (nx-1) : nx)
+      %% Note! : the RTW function outputs a 
+      %%         de-zeroed col-major-ified vector 
+      %assign nRows  = SIZE(C.Value,0)
+      {
+        int_T nx = %<nterms>;
+        const real_T *x = %<pX>;
+        const real_T *Cmtx = %<pCmtx>;
+        %if OutputStr == ""
+          %<Yi> = (*Cmtx) * (*x++);
+	  Cmtx += %<nRows>;
+	%endif
+        while (nx--) {
+          %<Yi> += (*Cmtx) * (*x++);
+	  Cmtx += %<nRows>;
+	}
+      }
+    %endif
+  %endroll
+%endfunction %% LinLibSIMOSysOutputFcn
+
+
+%% Function: LinLibCCformDerivFcn ==============================================
+%%
+%%
+%function LinLibCCformDerivFcn(nx) Output
+  %%
+  %assign U = LibBlockInputSignal(0, "", "", 0)
+  %assign dx = "%<LibBlockContinuousStateDerivative("","",0)>"
+  %if nx < RollThreshold
+    %assign rhsStr = ""
+    %foreach ix = nx
+      %assign Ai = LibBlockParameter(A, "", "", ix)
+      %assign Xi = LibBlockContinuousState("", "", ix)
+      %assign rhsStr = LinLibEvalAXandAppend(rhsStr,Ai,Xi)
+    %endforeach
+    %if ParamSettings.Realization == "UCCform"
+      %<dx> = %<U>;
+      %if rhsStr != ""
+        %<dx> += %<rhsStr>;
+      %endif
+      %foreach idx = nx-1
+        %assign ix = nx-idx-1
+        %<LibBlockContinuousStateDerivative("","",ix)>...
+	  = %<LibBlockContinuousState("", "", ix-1)>;
+      %endforeach
+    %elseif ParamSettings.Realization == "LCCform"
+      %<LibBlockContinuousStateDerivative("","",nx-1)>= %<U>;
+      %if rhsStr != ""
+	%<LibBlockContinuousStateDerivative("","",nx-1)>+= %<rhsStr>;
+      %endif
+      %foreach idx = nx-1
+        %<LibBlockContinuousStateDerivative("","",idx)>...
+	  = %<LibBlockContinuousState("", "", idx+1)>;
+      %endforeach
+    %endif
+  %else
+    int_T i;
+    const real_T *Amtx = %<LibBlockParameterAddr(A, "", "", 0)>;
+    const real_T *x = &%<LibBlockContinuousState("", "", 0)>;
+    real_T *dx = &%<LibBlockContinuousStateDerivative("", "",0)> ;
+
+    %if ParamSettings.Realization == "UCCform"
+      dx[0] = %<U>;
+      for (i=%<nx-1>; i>0; i--) {
+        dx[0] += Amtx[i]*x[i];
+        dx[i] = x[i-1];
+      }
+      dx[0] += Amtx[0]*x[0];
+    %elseif ParamSettings.Realization == "LCCform"
+      dx[%<nx-1>] = %<U>;
+      for (i=0; i<%<nx-1>; i++) {
+        dx[%<nx-1>] += Amtx[i]*x[i];
+        dx[i] = x[i+1];
+      }
+      dx[%<nx-1>] += Amtx[%<nx-1>]*x[%<nx-1>];
+    %endif
+  %endif
+  %%
+%endfunction %% LinLibCCformDerivFcn
+
+
+%% Function: LinLibCCformUpdateFcn =============================================
+%%
+%%
+%function LinLibCCformUpdateFcn(nx) Output
+  %%
+  %assign U = LibBlockInputSignal(0, "", "", 0)
+  %if nx == 1
+    %assign A0 = LibBlockParameter(A, "", "", 0)
+    %assign x0 = LibBlockDWork(DSTATE, "", "", 0)
+    %assign ax  = LinLibEvalAXandAppend("",A0,x0)
+    %assign ax = ((ax == "") ? "" : (" + " + ax))
+    \
+    %<x0> = %<U> %<ax>;
+  %elseif nx < RollThreshold
+    real_T xtmp = %<U>;
+    \
+    %assign rhsStr = ""
+    %foreach ix = nx
+      %assign Ai = LibBlockParameter(A, "", "", ix)
+      %assign Xi = LibBlockDWork(DSTATE, "", "", ix)
+      %assign rhsStr = LinLibEvalAXandAppend(rhsStr,Ai,Xi)
+    %endforeach
+    %if rhsStr != ""
+      xtmp += %<rhsStr>;
+    %endif
+    %if ParamSettings.Realization == "UCCform"
+      %foreach idx = nx-1
+        %assign ix = nx-idx-1
+        %assign Xi = LibBlockDWork(DSTATE, "", "", ix)
+        %<Xi> = %<LibBlockDWork(DSTATE, "", "", ix-1)>;
+      %endforeach
+      %assign x0 = LibBlockDWork(DSTATE, "", "", 0)
+      %<x0> = xtmp;
+      %%
+    %elseif ParamSettings.Realization == "LCCform"
+      %foreach idx = nx-1
+        %assign ix = idx
+        %assign Xi = LibBlockDWork(DSTATE, "", "", ix)
+        %<Xi> = %<LibBlockDWork(DSTATE, "", "", ix+1)>;
+      %endforeach
+      %assign Xn = LibBlockDWork(DSTATE, "", "", nx-1)
+      %<Xn> = xtmp;
+    %endif
+  %else
+    int_T i;
+    const real_T *Amtx = %<LibBlockParameterAddr(A, "", "", 0)>;
+    real_T *x = &%<LibBlockDWork(DSTATE, "", "", 0)>;
+    real_T xtmp = %<U>;
+    \
+
+    %if ParamSettings.Realization == "UCCform"
+      for (i=%<nx-1>; i>0; i--) {
+        xtmp += Amtx[i]*x[i];
+        x[i] = x[i-1];
+      }
+      x[0] = xtmp + Amtx[0]*x[0];
+    %elseif ParamSettings.Realization == "LCCform"
+      for (i=0; i<%<nx-1>; i++) {
+        xtmp += Amtx[i]*x[i];
+        x[i] = x[i+1];
+      }
+      x[%<nx-1>] = xtmp + Amtx[%<nx-1>]*x[%<nx-1>];
+    %endif
+  %endif
+  %%
+%endfunction %% LinLibCCformUpdateFcn
+
+
+%% Function: LinLibInitializeConditions ========================================
+%%
+%%
+%function LinLibInitializeConditions(block, system) Output
+  %assign ICstr = ""
+  %if SIZE(X0.Value,0) == 0 || SIZE(X0.Value,1) == 0
+    %assign ICstr = "0.0"
+  %elseif SIZE(X0.Value,1) == 1
+    %assign  ICstr = "%<LibBlockParameter(X0, "", "", 0)>"
+  %endif
+  %%
+  %if ContStates[0] > 0
+    %assign nx = ContStates[0]
+    %if ICstr == ""
+      %assign rollVars = ["Xc", "<param>/X0"]
+    %else
+      %assign rollVars = ["Xc"]
+    %endif
+  %else
+    %assert (NumDWork > 0)
+    %assign nx = LibBlockDWorkWidth(DSTATE)
+    %if ICstr == ""
+      %assign rollVars = ["<dwork>/DSTATE", "<param>/X0"]
+    %else
+      %assign rollVars = ["<dwork>/DSTATE"]
+    %endif
+  %endif
+  %%
+  %assign rollRegions = [0:%<nx-1>]
+  %roll xIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %if ContStates[0] > 0
+      %assign x = LibBlockContinuousState("", lcv, xIdx)
+    %else
+      %assign x = LibBlockDWork(DSTATE, "", lcv, xIdx)
+    %endif
+    %if ICstr == ""
+      %<x> = %<LibBlockParameter(X0, "", lcv, xIdx)>;
+    %else
+      %<x> = %<ICstr>;
+    %endif
+  %endroll
+%endfunction %% LinLibInitializeConditions
+
+
+%% Function: LinLibOutputs =====================================================
+%%
+%%
+%function LinLibOutputs(block, system) Output
+  %assign ninputs = LibBlockInputSignalWidth(0)
+  %assign noutputs = LibBlockOutputSignalWidth(0)
+  %if ContStates[0] > 0
+    %assign nstates = ContStates[0]
+  %elseif NumDWork > 0
+    %assign nstates = LibBlockDWorkWidth(DSTATE)
+  %else
+    %assign nstates = 0
+  %endif
+  %%
+  %if ISEMPTY(C.Value) && ISEMPTY(D.Value)
+    %foreach idx = noutputs
+      %<LibBlockOutputSignal(0, "", "", idx)> = 0.0;
+    %endforeach
+  %else
+    %if ParamSettings.Realization == "General"
+      %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+      %assign c = LibBlockParameterAddr(C, "", "", 0)
+      %assign d = LibBlockParameterAddr(D, "", "", 0)
+      %if ContStates[0] > 0
+        %assign x = "&%<LibBlockContinuousState("", "", 0)>"
+      %else
+        %assign x = LibBlockDWorkAddr(DSTATE, "", "", 0)
+      %endif
+      %<LinLibYEqAXPlusBU(y,c,x,d,u,noutputs,nstates,ninputs)>\
+    %elseif ParamSettings.Realization == "Sparse"
+      %assign x = ( (ContStates[0] > 0) ? "Xc" : "Xd" )
+      %<LinLibSparseYEqAXPlusBU("Y","C",x,"D","U",noutputs)>\
+    %elseif (ParamSettings.Realization == "UCCform") ||\
+            (ParamSettings.Realization == "LCCform")
+      %if ninputs != 1
+        %assign errTxt = "Cannot handle input signal of width %<ninputs>"
+	%<LibBlockReportError(block, errTxt)>
+      %endif
+      %assign x = ( (ContStates[0] > 0) ? "Xc" : "Xd" )
+      %<LinLibSIMOSysOutputFcn(block, x,noutputs,nstates)>\
+    %else
+      %assign errTxt = "Unknown realization: %<ParamSettings.Realization>"
+      %<LibBlockReportFatalError(block, errTxt)>
+    %endif
+  %endif
+%endfunction %% LinLibOutputs
+
+
+%% Function: LinLibDerivatives =================================================
+%%
+%%
+%function LinLibDerivatives(block, system) Output
+  %assign nstates = ContStates[0]
+  %assign ninputs = LibBlockInputSignalWidth(0)
+  %assign noutputs = LibBlockOutputSignalWidth(0)
+  %%
+
+  %if ParamSettings.Realization == "General"
+    %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+    %assign a = LibBlockParameterAddr(A, "", "", 0)
+    %assign b = LibBlockParameterAddr(B, "", "", 0)
+    %assign x = "&%<LibBlockContinuousState("", "", 0)>"
+    %assign dx = "&%<LibBlockContinuousStateDerivative("","",0)>"
+    %<LinLibYEqAXPlusBU(dx,a,x,b,u,nstates,nstates,ninputs)>\
+  %elseif ParamSettings.Realization == "Sparse"
+    %<LinLibSparseYEqAXPlusBU("dX","A","Xc","B","U",nstates)>\
+  %elseif ParamSettings.Realization == "UCCform" ||\
+          ParamSettings.Realization == "LCCform"
+    %<LinLibCCformDerivFcn(nstates)>\
+  %else
+    %assign errTxt = "Unknown realization: %<ParamSettings.Realization>"
+    %<LibBlockReportFatalError(block, errTxt)>
+  %endif
+%endfunction %% LinLibDerivatives
+
+
+%% Function: LinLibUpdate ======================================================
+%%
+%%
+%function LinLibUpdate(block, system) Output
+  %assign nstates = LibBlockDWorkWidth(DSTATE)
+  %assign ninputs = LibBlockInputSignalWidth(0)
+  %assign noutputs = LibBlockOutputSignalWidth(0)
+  %%
+  %if ParamSettings.Realization == "General"
+    %% static only because DOS doesn't work with arrays on stack
+    static real_T xnew[%<nstates>];
+    %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+    %assign a = LibBlockParameterAddr(A, "", "", 0)
+    %assign b = LibBlockParameterAddr(B, "", "", 0)
+    %assign xd = LibBlockDWorkAddr(DSTATE, "", "", 0)
+    %<LinLibYEqAXPlusBU("xnew",a,xd,b,u,nstates,nstates,ninputs)>\
+    (void)memcpy(%<xd>, xnew, sizeof(real_T)*%<nstates>);
+  %elseif ParamSettings.Realization == "Sparse"
+    %% static only because DOS doesn't work with arrays on stack
+    static real_T xnew[%<nstates>];
+    %<LinLibSparseYEqAXPlusBU("xnew","A","Xd","B","U",nstates)>\
+    %assign xd = "&%<LibBlockDWork(DSTATE, "", "", 0)>"
+    (void)memcpy(%<xd>, xnew, sizeof(real_T)*%<nstates>);
+  %elseif ParamSettings.Realization == "UCCform" ||\
+          ParamSettings.Realization == "LCCform"
+    %<LinLibCCformUpdateFcn(nstates)>\
+  %else
+    %assign errTxt = "Unknown realization: %<ParamSettings.Realization>"
+    %<LibBlockReportFatalError(block, errTxt)>
+  %endif
+%endfunction %% LinLibUpdate
+
+%endif %% _LINLIB_
+
+%% [EOF] linlib.tlc

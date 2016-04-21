@@ -1,0 +1,276 @@
+%% 
+%% $Revision $
+%% 
+%%
+%% Dongzhe Yang, 11-12-2002
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Shift block target file
+
+%implements ArithShift "C"
+
+%% Function: ShiftIsInFixptMode ======================================================
+%% Abstract:
+%%   
+%function ShiftIsInFixptMode() void
+  %assign u0DtId = LibBlockInputSignalAliasedThruDataTypeId(0)
+  %assign y0DtId = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %if (u0DtId == y0DtId && (u0DtId == tSS_DOUBLE || u0DtId == tSS_SINGLE)) 
+    %% homogeneous float
+    %return TLC_FALSE
+  %else
+    %return TLC_TRUE
+  %endif
+%endfunction
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if ShiftIsInFixptMode()
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%   y = u << power2Exponent
+%%
+%function Outputs(block, system) Output
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %assign u0DT  = FixPt_GetInputDataType(0)
+  %%
+  %copyrecord u0DTWithPow2Gain u0DT
+  %%
+  %% create header comment
+  %%
+  %openfile commentBuffer
+  %%
+  *  %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+  %%
+  %% add general comments
+  %%
+  %<FixPt_GeneralComments()>\
+  %%
+  %% END: header comment
+  %%
+  %closefile commentBuffer
+  %%
+  %<LibCacheBlockComment(block,commentBuffer)>\
+  %%
+  %assign castInWasUsed = 0
+  %%
+  %openfile gutsBuffer
+  %%
+  %% if input (and Output) are complex then two cases to handle
+  %% otherwise only one
+  %%
+  %assign yComplex = LibBlockOutputSignalIsComplex(0)
+  %%
+  %assign power2ExponentWidth  = LibBlockParameterWidth(Power2Exponent)
+  %%
+  %assign dLabel = "dblValueInputTemp"
+  %%
+  %assign dblDT = FixPt_GetDataTypeFromIndex(0)
+  %%
+  %assign rollVars = ["U", "Y", "P"]
+  %%
+  %assign noFloat = !FixPt_DataTypeIsFloat(y0DT) && ...
+    !FixPt_DataTypeIsFloat(u0DT)
+  %%
+  %assign nonScalarPower2Exponent = power2ExponentWidth > 1
+  %%
+  %assign noLoop = ( nonScalarPower2Exponent && noFloat)
+  %%
+  %if noLoop
+    %% 
+    %assign rollThres = power2ExponentWidth + 1
+    %%
+  %else
+    %%
+    %assign rollThres = LibBlockGetRollThreshold(block,RollThreshold)
+    %%
+  %endif
+  %%
+  %roll sigIdx = RollRegions, lcv = rollThres, block, "Roller", rollVars
+    %%
+    %assign riSigIdx = tRealPart + STRING(sigIdx)
+    %%
+    %assign u0Label = LibBlockInputSignal( 0, "", lcv, riSigIdx)
+    %assign y0Label = LibBlockOutputSignal(0, "", lcv, riSigIdx)
+    %%
+    %if yComplex
+      %%
+      %assign riImSigIdx = tImagPart + STRING(sigIdx)
+      %%
+      %assign u0ImLabel = LibBlockInputSignal( 0, "", lcv, riImSigIdx)
+      %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, riImSigIdx)
+    %endif
+    %%
+    %if noFloat
+      %%
+      %assign Power2ExponentValue = LibBlockParameterValue(Power2Exponent, sigIdx)
+      %%
+      %assign u0DTWithPow2Gain.FixedExp = u0DT.FixedExp + Power2ExponentValue
+      %%
+      %if u0DT.Bias != 0.0
+        %%
+        %assign evalStr = "(2^(%<Power2ExponentValue>))"
+        %%
+        %assign biasFactor = FEVAL("eval",evalStr)
+        %%
+        %assign u0DTWithPow2Gain.Bias = u0DT.Bias * biasFactor
+      %endif
+      %%
+      %<FixPt_Fix2FixAlwaysOutput(y0Label,y0DT,u0Label,u0DTWithPow2Gain,"Floor","Wrap")>\
+      %%
+      %if yComplex
+        %%
+        %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,u0ImLabel,u0DTWithPow2Gain,"Floor","Wrap")>\
+	%%
+      %endif
+      %%
+    %else
+      %%
+      %% input or output is floating point (possibly scaled-double)
+      %%
+      %assign retVecStr = FixPt_Fix2Fix(dLabel,dblDT,u0Label,u0DT,"Floor","Wrap")
+      %%
+      %if SIZE(retVecStr,1) == 3
+        %%
+        %assign uModLabel = retVecStr[1]
+      %else
+        %%
+        %assign castInWasUsed = 1
+        %assign uModLabel = dLabel
+      %endif
+      %%
+      %if !nonScalarPower2Exponent || power2ExponentWidth < rollThres
+	%% no loop or scalar p2e
+	%assign Power2ExponentValueOrLabel = LibBlockParameterValue(Power2Exponent, sigIdx)
+      %else
+	%assign Power2ExponentValueOrLabel = LibBlockParameter(Power2Exponent,"", lcv, sigIdx)
+      %endif
+      %%
+      %assign yCalcLabel =  LibGenSharedMathFcnCall("ldexp",tSS_DOUBLE,"%<uModLabel>","%<Power2ExponentValueOrLabel>")
+      %%
+      %<FixPt_Fix2FixAlwaysOutput(y0Label,y0DT,yCalcLabel,dblDT,"Floor","Wrap")>\
+      %%
+      %if yComplex
+        %%
+        %assign retVecStr = FixPt_Fix2Fix(dLabel,dblDT,u0ImLabel,u0DT,"Floor","Wrap")
+        %%
+        %if SIZE(retVecStr,1) == 3
+          %%
+          %assign uModLabel = retVecStr[1]
+        %else
+          %%
+          %assign castInWasUsed = 1
+          %assign uModLabel = dLabel
+        %endif
+        %%
+        %assign yCalcLabel =  LibGenSharedMathFcnCall("ldexp",tSS_DOUBLE,"%<uModLabel>","%<Power2ExponentValueOrLabel>")
+        %%
+        %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,yCalcLabel,dblDT,"Floor","Wrap")>\
+        %%
+      %endif
+    %endif
+  %endroll
+  %closefile gutsBuffer
+  %%
+  %openfile outBuffer
+  %%
+  %if castInWasUsed
+    {
+       %<dblDT.NativeType> %<dLabel>;
+  %endif
+  %<gutsBuffer>\
+  %%
+  %if castInWasUsed
+    }
+  %endif
+  %%
+  %% blank line for formating
+  
+  %closefile outBuffer
+  %return outBuffer
+%endfunction
+
+%% Functions: BlockOutputSignal ==========================================================
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %%
+  %switch retType
+    %case "Signal"
+      %%
+      %assign y0DT = FixPt_GetOutputDataType(0)
+      %%
+      %assign u0DT  = FixPt_GetInputDataType(0)
+      %%
+      %copyrecord u0DTWithPow2Gain u0DT
+      %%
+      %% parameter only allowed to be a scalar for expression folding
+      %%
+      %assign Power2ExponentValue = LibBlockParameterValue(Power2Exponent, 0)
+      %%
+      %assign u0Label = LibBlockInputSignal(0,ucv,lcv,idx)
+      %%
+      %if !FixPt_DataTypeIsFloat(y0DT) && ...
+	!FixPt_DataTypeIsFloat(u0DT)
+	%%
+	%assign u0DTWithPow2Gain.FixedExp = u0DT.FixedExp + Power2ExponentValue
+	%%
+	%if u0DT.Bias != 0.0
+	  %%
+	  %assign evalStr = "(2^(%<Power2ExponentValue>))"
+	  %%
+	  %assign biasFactor = FEVAL("eval",evalStr)
+	  %%
+	  %assign u0DTWithPow2Gain.Bias = u0DT.Bias * biasFactor
+	  %%
+	%endif
+	%%
+	%assign outExpr = FixPt_Fix2Fix_Expr(y0DT,u0Label,u0DTWithPow2Gain,"Floor","Wrap")
+	%%
+	%return outExpr
+      %else
+	%%
+	%% input or output is floating point (possibly scaled-double)
+	%%
+	%assign dblDT = FixPt_GetDataTypeFromIndex(0)
+	%%
+	%assign Power2ExponentWidth = LibBlockParameterWidth(Power2Exponent)
+	%%
+	%if Power2ExponentWidth > 1
+	  %assign Power2ExponentLabel = LibBlockParameter(Power2Exponent, ucv, lcv, idx)
+	%else 
+	  %assign Power2ExponentLabel = Power2ExponentValue
+	%endif
+	%%
+	%assign uModLabel = FixPt_Fix2Fix_Expr(dblDT,u0Label,u0DT,"Floor","Wrap")
+	%%
+	%assign yCalcLabel =  LibGenSharedMathFcnCall("ldexp",tSS_DOUBLE,"%<uModLabel>","%<Power2ExponentLabel>")
+	%%
+	%assign outExpr = FixPt_Fix2Fix_Expr(y0DT,yCalcLabel,dblDT,"Floor","Wrap")
+	%%
+	%return outExpr
+      %endif
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+  %%
+%endfunction
+
+%% [EOF] arithshift.tlc

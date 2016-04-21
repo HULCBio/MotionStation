@@ -1,0 +1,164 @@
+%% $RCSfile: sdspuencode.tlc,v $
+%% $Revision: 1.6.4.2 $ 
+%% $Date: 2004/04/12 23:09:58 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Uniformly quantizes and encodes input into N-bits.
+
+%implements sdspuencode "C"
+
+%include "dsplib.tlc"
+%include "dsp_intbounds.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %assign block = block + INPORT + OUTPORT
+  %%
+  %assign fcnUnsigned = 1
+  %assign fcnSigned   = 2
+  %%
+  %assign isDouble   = (LibBlockInputSignalDataTypeId(INPORT) == tSS_DOUBLE)
+  %assign dtype_cast = isDouble ? "Real" : "Real32" 
+  %assign isSigned   = (CAST("Number",SFcnParamSettings.ISSIGN[0]) == fcnSigned)
+  %assign Nbits      = CAST("Number",SFcnParamSettings.NBITS[0])
+  %assign Nbytes     = (Nbits <= 8) ? 1 : ((Nbits <= 16) ? 2 : 4)
+  %%
+  %% TLC Cast for parameters: V,T are of type dtype_cast (double or single)
+  %assign V = CAST(dtype_cast,SFcnParamSettings.PEAK[0])
+  %assign T = CAST(dtype_cast,FEVAL("pow2", Nbits)/(2*V))  %% T = (2^N)/(2*V)
+  %%
+  %% I/O Datatype casts:
+  %assign dtype_in   = isDouble ? "real_T" : "real32_T"
+  %if (isSigned)
+     %assign dtype_out = (Nbytes==1) ? "int8_T" : ((Nbytes==2) ? "int16_T" : "int32_T")
+  %else
+     %assign dtype_out = (Nbytes==1) ? "uint8_T" : ((Nbytes==2) ? "uint16_T" : "uint32_T")
+  %endif
+  %%
+  %assign block = block + isSigned + Nbits + V + T + dtype_in + dtype_out
+%endfunction
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Uniform Encoder (%<ParamSettings.FunctionName>) - %<Name> */
+  %<IntBoundCacheDefine(0,Nbits)> \
+  %if isSigned
+  %<IntBoundCacheDefine(1,Nbits)> \
+  %endif
+  %assign isCplx     = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign isContig   = IsInputPortContiguous(block,INPORT)
+{
+  %%
+  %<dtype_out> *y = (%<dtype_out> *)%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+  const %<dtype_in> V = %<V>; /* Peak */
+  const %<dtype_in> T = %<T>; /* 2^N /(2*V) */ 
+  %%
+  %if isContig
+    %%
+    %% Contiguous input: 
+    %%
+    %assign width = LibDataInputPortWidth(INPORT)
+    %if isCplx
+        /* Treating contiguous complex input as a real double length input */
+        %assign width = width*2
+    %endif   
+    %%
+    %<dtype_in> *uptr = (%<dtype_in> *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    %%
+    int_T i1;
+    for (i1=0; i1<%<width>; i1++) {
+        %%
+        %<dtype_in> u = ((*uptr++) + V) * T;
+        %<ScalarToInt(block)>
+    }
+  %else
+      %%
+      %% Discontiguous input:
+      %%
+      %assign rollVars = ["U"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %if !isCplx
+            %<RealToInt(block,lcv,sigIdx)>
+        %else
+            %<CplxToInt(block,lcv,sigIdx)>
+        %endif
+      %endroll
+   %endif
+}
+
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Local functions:
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: ScalarToInt
+%%
+%%    Saturate scalar input and cast to output data type.
+%%    This function is call directly in the contiguous case
+%%    and by Real and Complex functions in the discontiguous case.
+%%
+%function ScalarToInt(block) Output
+%%
+    %if isSigned
+        %assign LowerBoundMacro = IntBoundMacroName(1,Nbits,"MIN")
+        %assign UpperBoundMacro = IntBoundMacroName(1,Nbits,"MAX")
+        u += %<LowerBoundMacro>;
+    %else
+        %assign LowerBoundMacro = IntBoundMacroName(0,Nbits,"MIN")
+        %assign UpperBoundMacro = IntBoundMacroName(0,Nbits,"MAX")
+    %endif
+    if      (u < %<LowerBoundMacro>) u = %<LowerBoundMacro>;
+    else if (u > %<UpperBoundMacro>) u = %<UpperBoundMacro>;
+
+    *y++ = (%<dtype_out>)floor((real_T)u);
+%%
+%endfunction %% ScalarToInt
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: RealToInt
+%%
+%%    Quantize input by: u = (u+V)*T, and then call ScalarToUnsignInt
+%%    to saturate and cast. This function is called only in the 
+%%    discontiguous, real inputs.
+%%
+%function RealToInt(block,lcv,sigIdx) Output
+{
+    %<dtype_in> u = (%<LibBlockInputSignal(0, "", lcv, sigIdx)> + V)*T;
+    %<ScalarToInt(block)>
+}
+%%
+%endfunction %% RealToUnsignInt
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: CplxToInt
+%%
+%%    Quantize input by: u = (u+V)*T, and then call ScalarToUnsignInt
+%%    to saturate and cast. This function is called only in the 
+%%    discontiguous, complex inputs. The complex inputs are separated
+%%    into real and imaginary components and processed separatly.
+%%
+%function CplxToInt(block,lcv,sigIdx) Output
+{
+    %<dtype_in> u = (%<LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")> + V)*T;
+    %<ScalarToInt(block)>
+
+    u = (%<LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")> + V)*T;
+    %<ScalarToInt(block)>
+}
+%endfunction %% CplxToUnInt
+
+
+
+
+%% [EOF] sdspuencode.tlc

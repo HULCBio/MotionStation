@@ -1,0 +1,4 @@
+% PARSEIT   DEEï\åªÇÃç\ï∂âêÕ
+
+
+%   Copyright 1990-2002 The MathWorks, Inc.

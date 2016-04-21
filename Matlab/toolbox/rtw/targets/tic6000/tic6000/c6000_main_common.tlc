@@ -1,0 +1,211 @@
+%% c6000_main_common.tlc
+%% $Revision: 1.1.6.1 $ 
+%% $Date: 2004/01/22 18:26:00 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   TLC functions that are used in the generation
+%%   of main.c for both ERT and GRT-based C6000 
+%%   targets.  
+
+
+%selectfile NULL_FILE
+
+%% ==========================================================================
+%% Function: dsk_cpld_defines
+%% Abstract:  Render DSK defines used for LED and DIP Switch access.
+%%
+%function dsk_cpld_defines() void
+%openfile buff
+    %if (BoardType=="C6416DSK")
+        #define DSK_CPLD_BASE    0x60000000
+        #define DSK_USER_REG     0
+    %elseif (BoardType=="C6713DSK")
+        #define DSK_CPLD_BASE    0x90080000
+        #define DSK_USER_REG     0
+    %endif
+%closefile buff
+%return buff
+%endfunction %% dsk_cpld_defines
+
+
+%% ==========================================================================
+%% Function: render_target_setup
+%% Abstract:
+%%
+%function render_target_setup() void
+%openfile buff
+
+    %if OverrunAction != "None" && ...
+            ( OverrunNotificationMethod == "Turn_on_LEDs" || ...
+            OverrunNotificationMethod == "Print_message_and_turn_on_LEDs" )
+        %<setLEDs("off")>
+    %endif
+    %if (BoardType=="C6711DSK") && (LinkerCommandFile == "Full_memory_map") 
+
+        relocate_ISVT();
+    %endif
+    %if (BoardType=="C6711DSK" || BoardType=="C6416DSK" || BoardType=="C6713DSK") ...
+            && (LinkerCommandFile == "Full_memory_map")
+
+        turnOn_L2Cache();
+    %endif
+
+%closefile buff
+%return buff
+%endfunction %% render_target_setup
+
+
+%% ==========================================================================
+%% Function: debugMsgPrint
+%% Abstract:  Pring a message to the appropriate debugging output
+%%            medium.  If DSP/BIOS, this is the LOG message queue;
+%%            if not, this is STDOUT.
+%%
+%function debugMsgPrint(msg) void
+%openfile buff
+%if useDSPBIOS
+    LOG_printf(&LOG_MW1, "%<msg>");
+%else
+    puts("%<msg>\n");
+%endif
+%closefile buff
+%return buff
+%endfunction %% debugMsgPrint
+
+
+%% ==========================================================================
+%% Function: render_exitprocessing
+%% Abstract:
+%%
+%function render_exitprocessing() void
+%openfile buff
+
+/* Function: exitprocessing ----------------------------------
+ *
+ * Abstract:
+ *      Perform various tasks at program exit.
+ */
+
+void exitprocessing()
+{
+%if (IRInfo.DMAIntNeeded)
+	disable_DMA();
+%endif	
+	disable_interrupts();
+%if (useDSPBIOS)
+    UTL_halt();
+%endif
+
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_exitprocessing
+
+   
+%% ==========================================================================
+%% Function: setLEDs(val)
+%% Abstract:  Turn on or off all the LEDs on the current board.
+%%
+%function setLEDs(val) void
+%openfile buff
+    
+    %if val=="on"
+        /* turn on board LED(s) */
+        %if (BoardType=="C6711DSK")
+            *(volatile unsigned int *)(0x90080000) = 0;
+        %elseif (BoardType=="C6701EVM") 
+            %assign led_addr_reg = ("%<C6x_Memory_Map>" == "map0") ? "0x1380000" : "0x1780000"
+            (*((volatile unsigned char *)(%<led_addr_reg>))) |= 0x1;
+        %elseif (BoardType=="C6416DSK") || (BoardType=="C6713DSK")
+            *(volatile unsigned char *)(DSK_CPLD_BASE + DSK_USER_REG) |= 0x0F;
+        %else
+            %warning LED not implemented for this board
+        %endif
+    %else  %% off
+        /* turn off board LED(s) */
+        %if (BoardType=="C6711DSK")
+            *(volatile unsigned int *)(0x90080000) = 0x07000000;
+        %elseif (BoardType=="C6701EVM") 
+            %assign led_addr_reg = ("%<C6x_Memory_Map>" == "map0") ? "0x1380000" : "0x1780000"
+            (*((volatile unsigned char *)(%<led_addr_reg>))) &= 0xFE;
+        %elseif (BoardType=="C6416DSK") || (BoardType=="C6713DSK")
+            *(volatile unsigned char *)(DSK_CPLD_BASE + DSK_USER_REG) &= 0xF0;
+        %else
+            %warning LED not implemented for this board
+        %endif
+    %endif
+
+%closefile buff
+%return buff
+%endfunction %% setLEDs(val)
+
+
+%% ==========================================================================
+%% Function: render_interrupt_overrun_handling
+%% Abstract:
+%%
+%function render_interrupt_overrun_handling() void
+%openfile buff
+            %if OverrunNotificationMethod == "Print_message" || ...
+                    OverrunNotificationMethod == "Print_message_and_turn_on_LEDs"
+                %<debugMsgPrint("ISR overrun - base sample time is too fast")>
+            %endif
+            %if OverrunNotificationMethod == "Turn_on_LEDs" || ...
+                    OverrunNotificationMethod == "Print_message_and_turn_on_LEDs"
+                %<setLEDs("on")>
+            %endif
+            %if OverrunAction == "Notify_and_halt"
+                /* Halt */
+                %if useDSPBIOS
+                    exitprocessing();
+                %else
+                    break;
+                %endif
+            %endif
+%closefile buff
+%return buff
+%endfunction %% render_interrupt_overrun_handling
+
+
+%% ==========================================================================
+%% Function: enable_c6x_interrupts()
+%% Abstract:  Set the bits required to enable the appropriate 
+%%               C6000 interrupts used in this model
+%%
+%function enable_c6x_interrupts() void
+%openfile buff
+        /* Enable interrupts */
+        IRQ_globalEnable();
+        %if (IRInfo.DMAIntNeeded)
+        	IRQ_enable(IRQ_EVT_EDMAINT);	        /* enable EDMA-to-CPU interrupt   */	
+        %endif
+        %if (IRInfo.timerIntNeeded)	
+            IER |= 0x8002;                        /* enable timer interrupt (# 15) and NMI  */
+        %endif
+%closefile buff
+%return buff
+%endfunction %% enable_c6x_interrupts
+
+
+%% ==========================================================================
+%% Function: disable_c6x_interrupts()
+%% Abstract:  Set the bits required to disable the appropriate 
+%%               C6000 interrupts used in this model
+%%
+%function disable_c6x_interrupts() void
+%openfile buff
+        /* Disable interrupts */
+        IRQ_globalDisable();
+        %if (IRInfo.DMAIntNeeded)
+            IRQ_disable(IRQ_EVT_EDMAINT);
+        %endif
+        %if (IRInfo.timerIntNeeded)	
+            IER &= ~(0x8002);
+        %endif
+%closefile buff
+%return buff
+%endfunction %% disable_c6x_interrupts
+
+%% EOF  c6000_main_common.tlc

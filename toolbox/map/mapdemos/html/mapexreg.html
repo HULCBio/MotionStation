@@ -1,0 +1,591 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Georeferencing an Image to an Orthotile Base Layer</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-03-17">
+      <meta name="m-file" content="mapexreg"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Georeferencing an Image to an Orthotile Base Layer</h1>
+      <introduction>
+         <p>This demo illustrates one way to georegister an image by registering the image to an earth coordinate system and creating
+            a new "georeferenced" image. This demo requires the Image Processing Toolbox.
+         </p>
+         <p>In this demo, all georeferenced data are in the same earth coordinate system, the Massachusetts State Plane system (using
+            the North American Datum of 1983 in units of meters). This defines our "map coordinates." The georeferenced data include an
+            orthoimage base layer and a vector road layer.
+         </p>
+         <p>The data set to be georeferenced is a digital aerial photograph covering parts of the village of West Concord, Massachusetts,
+            collected in early spring, 1997.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Step 1: Render orthoimage base tiles in map coordinates</a></li>
+            <li><a href="#5">Step 2: Register aerial photograph to map coordinates</a></li>
+            <li><a href="#10">Step 3: Infer and apply geometric transformation</a></li>
+            <li><a href="#26">Step 4: Display the registered image in map coordinates</a></li>
+            <li><a href="#28">Step 5: Overlay vector road layer (from shapefile)</a></li>
+            <li><a href="#31">Credits</a></li>
+         </ul>
+      </div>
+      <h2>Step 1: Render orthoimage base tiles in map coordinates<a name="1"></a></h2>
+      <p>The orthoimage base layer is structured into 4000-by-4000 pixel tiles, with each pixel covering exactly one square meter in
+         map coordinates. Each tile is stored as a TIFF image with a world file. The aerial photograph of West Concord overlaps two
+         tiles in the orthoimage base layer. (For convenience, this demo actually works with two 2000-by-2000 sub-tiles extracted from
+         the larger 4000-by-4000 originals.  They have the same pixel size, but cover only the area of interest.)
+      </p>
+      <p>Read the worldfiles for the two tiles</p><pre class="codeinput">currentFormat = get(0,<span class="string">'format'</span>);
+format <span class="string">bank</span>
+R1 = worldfileread(<span class="string">'concord_ortho_w.tfw'</span>)
+R2 = worldfileread(<span class="string">'concord_ortho_e.tfw'</span>)
+format(currentFormat)
+</pre><pre class="codeoutput">
+R1 =
+
+             0         -1.00
+          1.00             0
+     206999.50     913000.50
+
+
+R2 =
+
+             0         -1.00
+          1.00             0
+     208999.50     913000.50
+
+</pre><p>Read the two orthophoto base tiles required to cover the extent of the aerial image.</p><pre class="codeinput">[baseImage1,cmap1] = imread(<span class="string">'concord_ortho_w.tif'</span>);
+[baseImage2,cmap2] = imread(<span class="string">'concord_ortho_e.tif'</span>);
+</pre><p>Display the images in their correct spatial positions.</p><pre class="codeinput">mapshow(baseImage1,cmap1,R1)
+ax1 = gca;
+mapshow(ax1,baseImage2,cmap2,R2)
+title(<span class="string">'Map View, Massachusetts State Plane Coordinates'</span>);
+xlabel(<span class="string">'Easting (meters)'</span>);
+ylabel(<span class="string">'Northing (meters)'</span>);
+</pre><img vspace="5" hspace="5" src="mapexreg_01.png"> <h2>Step 2: Register aerial photograph to map coordinates<a name="5"></a></h2>
+      <p>This step uses functions <tt>cpselect</tt>, <tt>cpstruct2pairs</tt>, <tt>cp2tform</tt>, <tt>tformfwd</tt>, and <tt>imtransform</tt> from the Image Processing Toolbox, in combination with <tt>pix2map</tt>.  Together, they enable georegistration based on control point pairs that relate the aerial photograph to the orthoimage
+         base layer.
+      </p>
+      <p>Read the aerial photo</p><pre class="codeinput">inputImage = imread(<span class="string">'concord_aerial_sw.jpg'</span>);
+figure, imshow(inputImage)
+title(<span class="string">'Unregistered Aerial Photograph'</span>)
+</pre><img vspace="5" hspace="5" src="mapexreg_02.png"> <p>Both orthophoto images are indexed images but <tt>cpselect</tt> only takes grayscale images, so convert them to grayscale.
+      </p><pre class="codeinput">baseGray1 = im2uint8(ind2gray(baseImage1,cmap1));
+baseGray2 = im2uint8(ind2gray(baseImage2,cmap2));
+</pre><p>Downsample the images by a factor of 2, then pick two separate sets of control point pairs: one for points in the aerial image
+         that appear in the first tile, and another for points that appear in the second tile.  Save the control point pairs to the
+         base workspace as control point structures named cpstruct1 and cpstruct2.
+      </p><pre class="codeinput">n = 2; <span class="comment">% downsample by a factor n</span>
+load <span class="string">mapexreg.mat</span> <span class="comment">% load some points that were already picked</span>
+
+cpselect(inputImage(1:n:end,1:n:end,1),<span class="keyword">...</span>
+         baseGray1(1:n:end,1:n:end),cpstruct1);
+
+cpselect(inputImage(1:n:end,1:n:end,1),<span class="keyword">...</span>
+         baseGray2(1:n:end,1:n:end),cpstruct2);
+</pre><p>This tool helps you pick pairs of corresponding control points. Control points are landmarks that you can find in both images,
+         like a road intersection, or a natural feature. Three pairs of control points have already been picked for each orthophoto
+         tile. If you want to proceed with these points, go to Step 3: Infer and apply geometric transformation. If you want to add
+         some additional pairs of points, do so by identifying landmarks and clicking on the images. Save control points by choosing
+         the <b>File</b> menu, then the <b>Save Points to Workspace</b> option. Save the points, overwriting variables <tt>cpstruct1</tt> and <tt>cpstruct2</tt>.
+      </p>
+      <h2>Step 3: Infer and apply geometric transformation<a name="10"></a></h2>
+      <p>Extract control point pairs from the control point structures.</p><pre class="codeinput">[input1,base1] = cpstruct2pairs(cpstruct1);
+[input2,base2] = cpstruct2pairs(cpstruct2);
+</pre><p>Account for downsampling by factor n.</p><pre class="codeinput">input1 = n*input1 - 1;
+base1  = n*base1  - 1;
+input2 = n*input2 - 1;
+base2  = n*base2  - 1;
+</pre><p>Transform base image coordinates into map (State Plane) coordinates.</p><pre class="codeinput">spatial1 = pix2map(R1,fliplr(base1));
+spatial2 = pix2map(R2,fliplr(base2));
+</pre><p>Combine the two sets of control points and infer a projective transformation. (The projective transformation should be a reasonable
+         choice, since the aerial image is from a frame camera and the terrain in this area is fairly gentle.)
+      </p><pre class="codeinput">input   = [input1;     input2];
+spatial = [spatial1; spatial2];
+
+tform = cp2tform(input,spatial,<span class="string">'projective'</span>);
+</pre><p>Compute and plot (2D) residuals.</p><pre class="codeinput">residuals = tformfwd(input,tform) - spatial;
+figure
+plot(residuals(:,1),residuals(:,2),<span class="string">'.'</span>)
+title(<span class="string">'Control Point Residuals'</span>);
+xlabel(<span class="string">'Easting offset (meters)'</span>);
+ylabel(<span class="string">'Northing offset (meters)'</span>);
+</pre><img vspace="5" hspace="5" src="mapexreg_03.png"> <p>Predict corner locations for the registered image, in map coordinates, and connect them to show the image outline.</p><pre class="codeinput">w = size(inputImage,2);
+h = size(inputImage,1);
+inputCorners = [0  0;
+                w  0;
+                w  h;
+                0  h;
+                0  0] + .5;
+outputCornersSpatial = tformfwd(inputCorners,tform);
+figure(get(ax1,<span class="string">'Parent'</span>))
+line(outputCornersSpatial(:,1),outputCornersSpatial(:,2),<span class="string">'Color'</span>,<span class="string">'w'</span>)
+</pre><img vspace="5" hspace="5" src="mapexreg_04.png"> <p>Calculate the average pixel size of the input image (in map units).</p><pre class="codeinput">d = [outputCornersSpatial(2,:) - outputCornersSpatial(1,:);<span class="keyword">...</span>
+     outputCornersSpatial(5,:) - outputCornersSpatial(4,:)];
+[theta,lengths] = cart2pol(d(:,1),d(:,2));
+pixelSize = lengths./[w; h]
+</pre><pre class="codeoutput">
+pixelSize =
+
+    0.8906
+    0.9096
+
+</pre><p>Variable <tt>pixelSize</tt> gives a starting point from which to select a width and height for the pixels in our georegistered output image.  In principle
+         we could select any size at all for our output pixels. However, if we make them too small we waste memory and computation
+         time, ending up with a big (many rows and columns) blurry image.  If we make them too big, we risk aliasing the image as well
+         as needlessly discarding information in the original image.  In general we also want our pixels to be square.  A reasonable
+         heuristic is to select a pixel size that is slightly larger than <tt>max(pixelSize)</tt> and is a "reasonable" number (i.e., 0.95 or 1.0 rather than 0.9096).  Here we chose 1, which means that each pixel in our
+         georegistered image will cover one square meter on the ground.  It's "nice" to have georegistered images that align along
+         integer map coordinates for display and analysis.
+      </p><pre class="codeinput">outputPixelSize = 1;
+</pre><p>Choose the output bounding box to align to a 1 meter grid.</p><pre class="codeinput">outputBoundingBox = [floor(min(outputCornersSpatial)); <span class="keyword">...</span>
+                     ceil(max(outputCornersSpatial))];
+left   = outputBoundingBox(1);
+right  = outputBoundingBox(2);
+bottom = outputBoundingBox(3);
+top    = outputBoundingBox(4);
+outputBoundingBoxClose = [left  top;
+                          left  bottom;
+                          right bottom;
+                          right top;
+                          left  top];
+</pre><p>Display a bounding box for the registered image.</p><pre class="codeinput">line(outputBoundingBoxClose(:,1),outputBoundingBoxClose(:,2),<span class="string">'Color'</span>,<span class="string">'r'</span>)
+</pre><img vspace="5" hspace="5" src="mapexreg_05.png"> <p>Find the centers of the upper left and lower right corner pixels.</p><pre class="codeinput">outputCornerCenters = <span class="keyword">...</span>
+    [left top; right bottom]<span class="keyword">...</span>
+    + [0.5 -0.5; -0.5 0.5] * outputPixelSize
+</pre><pre class="codeoutput">
+outputCornerCenters =
+
+   1.0e+05 *
+
+    2.0815    9.1258
+    2.0969    9.1144
+
+</pre><p>Transform the aerial image to an image that should fit just right within the "outputBoundingBox."</p><pre class="codeinput">registered = imtransform(inputImage,tform,<span class="keyword">...</span>
+                         <span class="string">'XData'</span>,outputCornerCenters(:,1)',<span class="keyword">...</span>
+                         <span class="string">'Ydata'</span>,outputCornerCenters(:,2)',<span class="keyword">...</span>
+                         <span class="string">'XYScale'</span>,outputPixelSize);
+figure, imshow(registered)
+</pre><img vspace="5" hspace="5" src="mapexreg_06.png"> <p>The registered image does not completely fill its bounding box, so it includes null-filled triangles.  Create an alpha data
+         mask to make these fill areas render as transparent.
+      </p><pre class="codeinput">alphaData = registered(:,:,1);
+alphaData(alphaData~=0) = 255;
+</pre><p>Create a reference matrix for the registered image.</p><pre class="codeinput">Rregistered = makerefmat(outputCornerCenters(1,1),<span class="keyword">...</span>
+                         outputCornerCenters(1,2),<span class="keyword">...</span>
+                         outputPixelSize,<span class="keyword">...</span>
+                        -outputPixelSize);
+</pre><p>Verify the new spatial structure by checking its bounding box.</p><pre class="codeinput">sizeRegistered = size(registered);
+boundingBoxCheck = mapbbox(Rregistered,sizeRegistered(1:2));
+isequal(boundingBoxCheck,outputBoundingBox)
+</pre><pre class="codeoutput">
+ans =
+
+     1
+
+</pre><p>Write the registered image as a TIFF with a world file, thereby georeferencing it to our map coordinates.</p><pre class="codeinput">imwrite(registered,<span class="string">'concord_aerial_sw_reg.tif'</span>);
+worldfilewrite(Rregistered,getworldfilename(<span class="string">'concord_aerial_sw_reg.tif'</span>));
+</pre><h2>Step 4: Display the registered image in map coordinates<a name="26"></a></h2><pre>  Display the registered image on the same (map coordinate) axes as the
+  orthoimage base tiles.</pre><pre class="codeinput">mapshow(baseImage1,cmap1,R1)
+ax2 = gca;
+mapshow(ax2,baseImage2,cmap2,R2)
+title(<span class="string">'Map View, Massachusetts State Plane Coordinates'</span>);
+xlabel(<span class="string">'Easting (meters)'</span>);
+ylabel(<span class="string">'Northing (meters)'</span>);
+
+h = mapshow(ax2,registered,Rregistered);
+set(h,<span class="string">'AlphaData'</span>,alphaData)
+</pre><img vspace="5" hspace="5" src="mapexreg_07.png"> <p>You can assess the registration by looking at features that span both the registered image and the orthophoto images.</p>
+      <h2>Step 5: Overlay vector road layer (from shapefile)<a name="28"></a></h2><pre>Use <tt>shapeinfo</tt> and <tt>shaperead</tt> to learn about the attributes of the
+vector road layer. Render the roads on the same axes and the base tiles
+and registerd image.</pre><pre class="codeinput">roadsfile  = <span class="string">'concord_roads.shp'</span>;
+roadinfo   = shapeinfo(roadsfile);
+roads = shaperead(roadsfile);
+</pre><p>Create symbolization based on the CLASS attribute (the type of road). Note that very minor roads have CLASS values equal to
+         6, so don't display them.
+      </p><pre class="codeinput">roadspec = makesymbolspec(<span class="string">'Line'</span>,<span class="keyword">...</span>
+                          {<span class="string">'CLASS'</span>,6,<span class="string">'Visible'</span>,<span class="string">'off'</span>});
+
+mapshow(ax2,roads,<span class="string">'SymbolSpec'</span>,roadspec,<span class="string">'Color'</span>,<span class="string">'cyan'</span>)
+</pre><img vspace="5" hspace="5" src="mapexreg_08.png"> <p>Observe that the <tt>roads</tt> line up quite well with the roads in the images. Two obvious linear features in the images are not roads but railroads. The
+         linear feature that trends roughly east-west and crosses both base tiles is the Fitchburg Commuter Rail Line of the Massachusetts
+         Bay Transportation Agency. The linear feature that trends roughly northwest-southeast is an abandoned railroad line.
+      </p>
+      <h2>Credits<a name="31"></a></h2>
+      <p>concord_orthow_w.tif, concord_ortho_e.tif, concord_roads.shp:</p><pre>  Office of Geographic and Environmental Information (MassGIS),
+  Commonwealth of Massachusetts  Executive Office of Environmental Affairs
+  <a href="http://www.state.ma.us/mgis">http://www.state.ma.us/mgis</a></pre><pre>  For more information, run:</pre><pre>  &gt;&gt; type concord_ortho.txt
+  &gt;&gt; type concord_roads.txt</pre><p>concord_aerial_sw.jpg</p><pre>  Visible color aerial photograph courtesy of mPower3/Emerge.</pre><pre>  For more information, run:</pre><pre>  &gt;&gt; type concord_aerial_sw.txt</pre><p class="footer">Copyright 1996-2004 The MathWorks, Inc.<br>
+         </p>
+      <!--
+##### SOURCE BEGIN #####
+%% Georeferencing an Image to an Orthotile Base Layer
+%
+% This demo illustrates one way to georegister an image by registering the
+% image to an earth coordinate system and creating a new "georeferenced"
+% image. This demo requires the Image Processing Toolbox.
+%
+% In this demo, all georeferenced data are in the same earth coordinate
+% system, the Massachusetts State Plane system (using the North American
+% Datum of 1983 in units of meters). This defines our "map coordinates."
+% The georeferenced data include an orthoimage base layer and a vector road
+% layer.
+%
+% The data set to be georeferenced is a digital aerial photograph covering
+% parts of the village of West Concord, Massachusetts, collected in early
+% spring, 1997.
+
+% Copyright 1996-2004 The MathWorks, Inc. 
+% $Revision: 1.1.6.3 $  $Date: 2004/03/24 20:41:14 $
+
+
+%% Step 1: Render orthoimage base tiles in map coordinates
+%
+% The orthoimage base layer is structured into 4000-by-4000 pixel tiles,
+% with each pixel covering exactly one square meter in map coordinates.
+% Each tile is stored as a TIFF image with a world file. The aerial
+% photograph of West Concord overlaps two tiles in the orthoimage base
+% layer. (For convenience, this demo actually works with two 2000-by-2000
+% sub-tiles extracted from the larger 4000-by-4000 originals.  They
+% have the same pixel size, but cover only the area of interest.)
+
+%%
+% Read the worldfiles for the two tiles
+
+currentFormat = get(0,'format');
+format bank
+R1 = worldfileread('concord_ortho_w.tfw')
+R2 = worldfileread('concord_ortho_e.tfw')
+format(currentFormat)
+
+%%
+% Read the two orthophoto base tiles required to cover the extent of the
+% aerial image. 
+
+[baseImage1,cmap1] = imread('concord_ortho_w.tif');
+[baseImage2,cmap2] = imread('concord_ortho_e.tif');
+
+%%
+% Display the images in their correct spatial positions.
+
+mapshow(baseImage1,cmap1,R1)
+ax1 = gca; 
+mapshow(ax1,baseImage2,cmap2,R2)
+title('Map View, Massachusetts State Plane Coordinates');
+xlabel('Easting (meters)');
+ylabel('Northing (meters)');
+
+%% Step 2: Register aerial photograph to map coordinates
+%
+% This step uses functions |cpselect|, |cpstruct2pairs|, |cp2tform|,
+% |tformfwd|, and |imtransform| from the Image Processing
+% Toolbox, in combination with |pix2map|.  Together, they enable
+% georegistration based on control point pairs that relate the aerial
+% photograph to the orthoimage base layer.
+
+%%
+% Read the aerial photo
+inputImage = imread('concord_aerial_sw.jpg');
+figure, imshow(inputImage)
+title('Unregistered Aerial Photograph')
+
+%%
+% Both orthophoto images are indexed images but |cpselect| only takes grayscale
+% images, so convert them to grayscale. 
+baseGray1 = im2uint8(ind2gray(baseImage1,cmap1));
+baseGray2 = im2uint8(ind2gray(baseImage2,cmap2));
+
+%%
+% Downsample the images by a factor of 2, then pick two separate sets of
+% control point pairs: one for points in the aerial image that appear in the
+% first tile, and another for points that appear in the second tile.  Save
+% the control point pairs to the base workspace as control point structures
+% named cpstruct1 and cpstruct2.
+
+n = 2; % downsample by a factor n
+load mapexreg.mat % load some points that were already picked
+
+cpselect(inputImage(1:n:end,1:n:end,1),...
+         baseGray1(1:n:end,1:n:end),cpstruct1);
+
+cpselect(inputImage(1:n:end,1:n:end,1),...
+         baseGray2(1:n:end,1:n:end),cpstruct2); 
+
+%%
+% This tool helps you pick pairs of corresponding control points. Control
+% points are landmarks that you can find in both images, like a road
+% intersection, or a natural feature. Three pairs of control points have
+% already been picked for each orthophoto tile. If you want to proceed with
+% these points, go to Step 3: Infer and apply geometric transformation. If
+% you want to add some additional pairs of points, do so by identifying
+% landmarks and clicking on the images. Save control points by choosing the
+% *File* menu, then the *Save Points to Workspace* option. Save the points,
+% overwriting variables |cpstruct1| and |cpstruct2|.
+
+%% Step 3: Infer and apply geometric transformation
+% Extract control point pairs from the control point structures.
+[input1,base1] = cpstruct2pairs(cpstruct1);
+[input2,base2] = cpstruct2pairs(cpstruct2);
+
+%%
+% Account for downsampling by factor n.
+input1 = n*input1 - 1;
+base1  = n*base1  - 1;
+input2 = n*input2 - 1;
+base2  = n*base2  - 1;
+
+%%
+% Transform base image coordinates into map (State Plane) coordinates.
+spatial1 = pix2map(R1,fliplr(base1));
+spatial2 = pix2map(R2,fliplr(base2));
+
+%%
+% Combine the two sets of control points and infer a projective transformation.
+% (The projective transformation should be a reasonable choice, since the
+% aerial image is from a frame camera and the terrain in this area is
+% fairly gentle.)
+input   = [input1;     input2];
+spatial = [spatial1; spatial2];
+
+tform = cp2tform(input,spatial,'projective');
+
+%%
+% Compute and plot (2D) residuals.
+residuals = tformfwd(input,tform) - spatial;
+figure
+plot(residuals(:,1),residuals(:,2),'.')
+title('Control Point Residuals');
+xlabel('Easting offset (meters)');
+ylabel('Northing offset (meters)');
+
+%%
+% Predict corner locations for the registered image, in map coordinates,
+% and connect them to show the image outline.
+w = size(inputImage,2);
+h = size(inputImage,1);
+inputCorners = [0  0;
+                w  0; 
+                w  h;
+                0  h;
+                0  0] + .5;
+outputCornersSpatial = tformfwd(inputCorners,tform);
+figure(get(ax1,'Parent'))
+line(outputCornersSpatial(:,1),outputCornersSpatial(:,2),'Color','w')
+
+%%
+% Calculate the average pixel size of the input image (in map units). 
+d = [outputCornersSpatial(2,:) - outputCornersSpatial(1,:);...
+     outputCornersSpatial(5,:) - outputCornersSpatial(4,:)];
+[theta,lengths] = cart2pol(d(:,1),d(:,2));
+pixelSize = lengths./[w; h] 
+
+%%
+% Variable |pixelSize| gives a starting point from which to select a width
+% and height for the pixels in our georegistered output image.  In
+% principle we could select any size at all for our output pixels. However,
+% if we make them too small we waste memory and computation time, ending up
+% with a big (many rows and columns) blurry image.  If we make them too
+% big, we risk aliasing the image as well as needlessly discarding 
+% information in the original image.  In general we also want our pixels to
+% be square.  A reasonable heuristic is to select a pixel size that is
+% slightly larger than |max(pixelSize)| and is a "reasonable" number (i.e.,
+% 0.95 or 1.0 rather than 0.9096).  Here we chose 1, which means that each
+% pixel in our georegistered image will cover one square meter on the
+% ground.  It's "nice" to have georegistered images that align along
+% integer map coordinates for display and analysis.
+outputPixelSize = 1;
+
+%%
+% Choose the output bounding box to align to a 1 meter grid.
+outputBoundingBox = [floor(min(outputCornersSpatial)); ...
+                     ceil(max(outputCornersSpatial))];
+left   = outputBoundingBox(1);
+right  = outputBoundingBox(2);
+bottom = outputBoundingBox(3);
+top    = outputBoundingBox(4);
+outputBoundingBoxClose = [left  top;
+                          left  bottom; 
+                          right bottom;
+                          right top;
+                          left  top];
+
+%%
+% Display a bounding box for the registered image.
+line(outputBoundingBoxClose(:,1),outputBoundingBoxClose(:,2),'Color','r')
+
+%%
+% Find the centers of the upper left and lower right corner pixels.
+outputCornerCenters = ...
+    [left top; right bottom]...    
+    + [0.5 -0.5; -0.5 0.5] * outputPixelSize
+
+%%
+% Transform the aerial image to an image that should fit just right
+% within the "outputBoundingBox."
+registered = imtransform(inputImage,tform,...
+                         'XData',outputCornerCenters(:,1)',...
+                         'Ydata',outputCornerCenters(:,2)',...
+                         'XYScale',outputPixelSize);
+figure, imshow(registered)
+
+%%
+% The registered image does not completely fill its bounding box, so
+% it includes null-filled triangles.  Create an alpha data mask
+% to make these fill areas render as transparent.
+alphaData = registered(:,:,1);
+alphaData(alphaData~=0) = 255;
+
+%%
+% Create a reference matrix for the registered image.
+Rregistered = makerefmat(outputCornerCenters(1,1),...
+                         outputCornerCenters(1,2),...
+                         outputPixelSize,...
+                        -outputPixelSize);
+
+%%
+% Verify the new spatial structure by checking its bounding box.
+sizeRegistered = size(registered);
+boundingBoxCheck = mapbbox(Rregistered,sizeRegistered(1:2));
+isequal(boundingBoxCheck,outputBoundingBox)
+
+%%
+% Write the registered image as a TIFF with a world file, thereby
+% georeferencing it to our map coordinates.
+imwrite(registered,'concord_aerial_sw_reg.tif');
+worldfilewrite(Rregistered,getworldfilename('concord_aerial_sw_reg.tif'));
+
+
+%% Step 4: Display the registered image in map coordinates
+%
+%    Display the registered image on the same (map coordinate) axes as the
+%    orthoimage base tiles.
+
+mapshow(baseImage1,cmap1,R1)
+ax2 = gca; 
+mapshow(ax2,baseImage2,cmap2,R2)
+title('Map View, Massachusetts State Plane Coordinates');
+xlabel('Easting (meters)');
+ylabel('Northing (meters)');
+
+h = mapshow(ax2,registered,Rregistered);
+set(h,'AlphaData',alphaData)
+
+%%
+% You can assess the registration by looking at features that span both
+% the registered image and the orthophoto images. 
+
+%% Step 5: Overlay vector road layer (from shapefile) 
+%
+%  Use |shapeinfo| and |shaperead| to learn about the attributes of the
+%  vector road layer. Render the roads on the same axes and the base tiles
+%  and registerd image.
+
+roadsfile  = 'concord_roads.shp';
+roadinfo   = shapeinfo(roadsfile);
+roads = shaperead(roadsfile);
+
+%%
+% Create symbolization based on the CLASS attribute (the type of road). Note
+% that very minor roads have CLASS values equal to 6, so don't display them.
+roadspec = makesymbolspec('Line',...
+                          {'CLASS',6,'Visible','off'});
+
+mapshow(ax2,roads,'SymbolSpec',roadspec,'Color','cyan')
+
+%% 
+% Observe that the |roads| line up quite well with the roads in the
+% images. Two obvious linear features in the images are not roads but
+% railroads. The linear feature that trends roughly east-west and crosses
+% both base tiles is the Fitchburg Commuter Rail Line of the Massachusetts
+% Bay Transportation Agency. The linear feature that trends roughly
+% northwest-southeast is an abandoned railroad line.
+
+
+%% Credits
+% concord_orthow_w.tif, concord_ortho_e.tif, concord_roads.shp:
+%
+%    Office of Geographic and Environmental Information (MassGIS),
+%    Commonwealth of Massachusetts  Executive Office of Environmental Affairs
+%    http://www.state.ma.us/mgis
+%
+%    For more information, run: 
+%    
+%    >> type concord_ortho.txt
+%    >> type concord_roads.txt
+%
+% concord_aerial_sw.jpg
+%
+%    Visible color aerial photograph courtesy of mPower3/Emerge.
+%
+%    For more information, run: 
+%    
+%    >> type concord_aerial_sw.txt
+%
+
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

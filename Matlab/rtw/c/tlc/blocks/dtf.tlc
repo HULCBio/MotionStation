@@ -1,0 +1,173 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Discrete Transfer Function block target file
+
+%implements "DiscreteTransferFcn" "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+  %% cache whether or not state initialization is required
+  %<SLibSetSkipInitializationFlag(system,block,[])>
+%endfunction
+
+
+%% InitializeConditions =======================================================
+%%
+%function InitializeConditions(block, system) Output
+  %if NumDWork > 0 && !block.SkipInitialization
+    /* %<Type> Block: %<Name> */
+    %if ParamSettings.Realization == "General"
+      %assign rollVars = ["<dwork>/DSTATE"]
+      %assign rollRegions = [0:%<LibBlockDWorkWidth(DSTATE)-1>]
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockDWork(DSTATE, "", lcv, sigIdx)> = 0.0;
+      %endroll
+    %else
+      %<LinLibInitializeConditions(block,system)>
+    %endif
+    
+  %endif
+%endfunction
+
+
+%% FcnNumElem ================================================================
+%% Abstract: return an element of the numerator
+%function FcnNumElem(rollR,numR,lcvR,idxR,rollC,lcvC,idxC) Output
+  %if rollR && rollC
+    %assign idxStr = "%<lcvR> + %<numR>*%<lcvC>"
+  %elseif rollR
+    %assign idxStr = "%<lcvR> + %<numR*idxC>"
+  %elseif rollC
+    %assign idxStr = "%<numR>*%<lcvC> + %<idxR>"
+  %else
+    %assign idxStr = idxR + numR*idxC
+  %endif
+  %if rollR || rollC
+    %<LibBlockParameter(Numerator, idxStr, "", 0)>
+  %else
+    %<LibBlockParameter(Numerator, "", "", idxStr)>
+  %endif
+%endfunction
+
+%% FcnTransFcnOutput
+%% Abstract: output code for a discrete transfer function
+%function FcnTransFcnOutput(block, system) Output
+    %assign nNumRows    = Numerator.Dimensions[0]
+    %assign nNumCols    = Numerator.Dimensions[1]
+    %assign nDenCols    = Denominator.Dimensions[1]
+    %assign feedThrough = nDenCols == nNumCols
+    %assign rowRollVars = ["y0"]
+    %assign rowRollReg  = [0:%<nNumRows-1>]
+    %if feedThrough
+      %assign U           = LibBlockInputSignal(0, "", "", 0)
+    %endif
+    %assign D0          = LibBlockParameter(Denominator, "", "", 0)
+    %roll rowIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rowRollVars
+      %assign rowRoll     = (lcvR != "")
+      %assign Yi = LibBlockOutputSignal(0, "", lcvR, rowIdx)
+      %assign colRollVars = ["<dwork>/DSTATE"]
+      %if feedThrough
+	%<Yi> = %<LibBlockParameter(Numerator, lcvR, "", rowIdx)> / %<D0>*%<U>;
+        %if nDenCols > 1
+  	  %assign colRollReg  = [0:%<nNumCols-2>]
+	  %roll colIdx = colRollReg, lcvC = RollThreshold, block, "Roller", colRollVars
+ 	    %assign colRoll = (lcvC != "")
+	    %<Yi> = %<Yi> + (\
+	    %if colRoll 
+	      %assign lcvCPlus1 = "(%<lcvC>+1)"
+	      %assign colIdxPlus1 = 0
+	    %else
+	      %assign lcvCPlus1 = ""
+	      %assign colIdxPlus1 = %<colIdx + 1>
+	    %endif
+            %assign x = LibBlockDWork(DSTATE, "", lcvC, colIdx)
+	    %<FcnNumElem(rowRoll,nNumRows,lcvR,rowIdx,colRoll,lcvCPlus1,colIdxPlus1)>\
+	      - %<LibBlockParameter(Numerator, lcvR, "", rowIdx)>*\
+	      %<LibBlockParameter(Denominator, lcvCPlus1, "", colIdxPlus1)> / %<D0>) / %<D0>*%<x>;
+	  %endroll 
+	%endif
+      %else
+	%<Yi> = 0.0;
+        %assign colRollReg  = [0:%<nNumCols-1>]
+	%roll colIdx = colRollReg, lcvC = RollThreshold, block, "Roller", colRollVars
+ 	  %assign colRoll = (lcvC != "")
+	  %<Yi> = %<Yi> + \
+	  %if colRoll 
+	    %assign lcvCPlusM = "(%<lcvC> + %<nDenCols-nNumCols - 1>)"
+	    %assign colIdxPlusM = 0
+	  %else
+	    %assign lcvCPlusM = ""
+	    %assign colIdxPlusM = %<colIdx + nDenCols - nNumCols - 1>
+	  %endif
+          %assign x = LibBlockDWork(DSTATE, "", lcvCPlusM, colIdxPlusM)
+          %<FcnNumElem(rowRoll,nNumRows,lcvR,rowIdx,colRoll,lcvC,colIdx)> / %<D0>*%<x>;
+	%endroll 
+      %endif
+    %endroll 
+%endfunction
+
+%% Outputs ====================================================================
+%%
+%function Outputs(block, system) Output
+  %if ParamSettings.Realization == "General"
+    %<FcnTransFcnOutput(block, system)>\
+  %else
+    %<LinLibOutputs(block, system)>\
+  %endif
+  
+%endfunction
+
+
+%% Update =====================================================================
+%%
+%function Update(block, system) Output
+  %if NumDWork > 0
+    /* %<Type> Block: %<Name> */
+    {
+    %if ParamSettings.Realization == "General"
+      %assign nx = LibBlockDWorkWidth(DSTATE)
+      %assign U = LibBlockInputSignal(0, "", "", 0)
+      %assign D0 = LibBlockParameter(Denominator, "", "", 0)
+      %% static only because DOS doesn't work with arrays on stack
+      static real_T xnew[%<nx>];
+      %assign xnew0 = "xnew[0]"
+      %<xnew0> = %<U>;
+      %assign region = [0:%<nx-1>]
+      %assign rollVars = ["<dwork>/DSTATE"]
+      %roll sigIdx = region, lcv = RollThreshold, block, "Roller", rollVars
+        %assign lcvPlus1 = (lcv != "") ? "%<lcv>+1" : ""
+        %assign sigIdxPlus1 = (lcv != "") ? "" : %<sigIdx + 1>
+        %<xnew0> = %<xnew0> -
+	  %<LibBlockParameter(Denominator, lcvPlus1, "", sigIdxPlus1)>*...
+	  %<LibBlockDWork(DSTATE, "", lcv, sigIdx)> / %<D0>;
+      %endroll
+
+      %if nx > 1
+        %assign region = [0:%<nx-2>]
+        %assign rollVars = ["<dwork>/DSTATE"]
+        %roll sigIdx = region, lcv = RollThreshold, block, "Roller", rollVars
+          %assign lcvPlus1 = (lcv != "") ? "%<lcv>+1" : ""
+          %assign sigIdxPlus1 = (lcv != "") ? "" : %<sigIdx + 1>
+          xnew%<SLibGet1DArrayIndexer(nx, "", lcvPlus1, sigIdxPlus1)> =...
+    	%<LibBlockDWork(DSTATE, "", lcv, sigIdx)>;
+        %endroll
+      %endif
+      %assign xd = "&%<LibBlockDWork(DSTATE, "", "", 0)>"
+      (void)memcpy(%<xd>, xnew, sizeof(real_T)*%<nx>);
+    %else
+      %<LinLibUpdate(block, system)>\
+    %endif
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] dtf.tlc

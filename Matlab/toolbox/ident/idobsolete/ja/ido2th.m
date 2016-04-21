@@ -1,0 +1,3 @@
+% IDO2TH ÇÕÅAå√Ç¢ä÷êîÇ≈Ç∑ÅB
+
+%   Copyright 1986-2001 The MathWorks, Inc.

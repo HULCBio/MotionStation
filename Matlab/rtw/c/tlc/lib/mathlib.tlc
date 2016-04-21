@@ -1,0 +1,761 @@
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: 
+%%
+%%   Methods and default data to allow target-specific datatyped
+%%   run-time library support.  The target must register replacement 
+%%   prototypes before including codegenentry.tlc.
+%%
+%%   NOTE: Since this file can be %included before codegenentry,
+%%         many common TLC constants and utilities are not
+%%         available for use in all methods in this library.
+%%
+%if EXISTS("_MATHLIB_") == 0
+%assign _MATHLIB_ = 1
+
+%if FILE_EXISTS("ertmathlib.tlc")
+  %include "ertmathlib.tlc"
+%endif
+
+%% Function: FcnCalcDatabaseRecordHashCode ====================================
+%% Abstract: 
+%%   Generate the hash code used to obtain the index into the table for
+%%   its corresponding record.
+%%
+%function FcnCalcDatabaseRecordHashCode(RTWName, RTWType) void
+  %% 
+  %% The hash code is currently implemented as the name 
+  %% concatenated with the data type name.
+  %%
+  %% Substitute underscore for illegal characters, e.g., ^ becomes _
+  %assign okRTWName = FEVAL("strrep",RTWName,"^","_")
+  %%
+  %% Generate the hash value
+  %return okRTWName + RTWType
+%endfunction
+
+
+%% Function: FcnGetDataTypeIdFromName =========================================
+%% Abstract:
+%%   Return the TLC data type ID from the given MATLAB, RTW, or C 
+%%   size-specific data type name.
+%%
+%%   The current implementation of the math library populates the 
+%%   function data table (both the default and target registration passes)
+%%   before the TLC data type ID's are defined, so MATLAB data type names 
+%%   are used, with later translation from TLC enums for sanity.
+%%
+%function FcnGetDataTypeIdFromName(dTypeName) void
+    %switch dTypeName
+     %case "double"
+     %case "real_T"
+      %return tSS_DOUBLE
+     %case "float"
+     %case "single"
+     %case "real32_T"
+      %return tSS_SINGLE
+     %case "int32_T"
+     %case "int32"
+      %return tSS_INT32
+     %case "int16_T"
+     %case "int16"
+      %return tSS_INT16
+     %case "int8_T"
+     %case "int8"
+      %return tSS_INT8
+     %case "uint32_T"
+     %case "uint32"
+      %return tSS_UINT32
+     %case "uint16_T"
+     %case "uint16"
+      %return tSS_UINT16
+     %case "uint8_T"
+     %case "uint8"
+      %return tSS_UINT8
+     %case "boolean_T"
+     %case "boolean"
+     %case "logical"
+       %return tSS_BOOLEAN
+     %case "pointer"
+       %return tSS_POINTER
+     %case "int_T"
+     %case "integer"
+       %return tSS_INTEGER
+     %case "double_unint32_T"
+       %return tSS_TIMER_UINT32_PAIR
+     %default
+      %exit "MATHLIB: Unsupported datatype %<dTypeName>."
+    %endswitch
+%endfunction %% FcnGetDataTypeIdFromName
+
+
+%% Function: FcnGetMathDataTypeNameFromId =====================================
+%% Abstract:
+%%    Return the canonical (MATLAB plus others) data type name given the 
+%%    TLC type ID.  Cannot just use SLibGetMLTypeFromId() because support
+%%    doesn't exist for all the TLC data types.
+%%
+%function FcnGetMathDataTypeNameFromId(dTypeId) void
+  %assign typeName = SLibGetMLDataTypeFromId(dTypeId)
+  %if ISEQUAL(typeName,"numeric")
+    %%
+    %% see if there is a better answer
+    %%
+    %switch dTypeId
+      %case tSS_INTEGER
+	%return "integer"
+      %case tSS_POINTER
+	%return "pointer"
+      %default
+	%return typeName
+    %endswitch
+  %endif
+  %return typeName
+%endfunction %% FcnGetMathDataTypeNameFromId
+
+
+%% Function: FcnGetMathFcnRecIdx ==============================================
+%% Abstract:
+%%   Return the index of the math function prototypes record 
+%%   for the requested math function signature.
+%%
+%%   Arguments:
+%%   - RTWName is the generic function name (string)
+%%   - RTWType is the MATLAB data type name, e.g., "double", "single", "uint8", 
+%%     etc., including "boolean" instead of "logical"
+%%
+%function FcnGetMathFcnRecIdx(RTWName, RTWType) void
+  %assign hashName = FcnCalcDatabaseRecordHashCode(RTWName, RTWType)
+  %if ISFIELD(::MathProtos, hashName)
+    %return GETFIELD(::MathProtos, hashName)
+  %else
+    %return (-1)
+  %endif
+%endfunction %% FcnGetMathFcnRecIdx
+
+
+%% Function: FcnGetMathFcnRecIdxFromId ========================================
+%% Abstract:
+%%   Return the index of the math function prototypes record 
+%%   for the requested math function signature's name and type ID.
+%%
+%%   Arguments:
+%%   - RTWName is the generic function name (string)
+%%   - RTWTypeId is the TLC type ID (tSS_DOUBLE, etc.)
+%%
+%function FcnGetMathFcnRecIdxFromId(RTWName, RTWTypeId) void
+  %assign RTWType = FcnGetMathDataTypeNameFromId(RTWTypeId)
+  %return FcnGetMathFcnRecIdx(RTWName, RTWType)
+%endfunction %% FcnGetMathFcnRecIdxFromId
+
+
+%% Function: FcnGetNumInputsFromDB ============================================
+%% Abstract:
+%%    Local function to return the number of inputs for a given record index
+%%    in the database.
+%%
+%function FcnGetNumInputsFromDB(idx) void
+  %return ::MathProtos.R[idx].NumInputs
+%endfunction %% FcnGetNumINputsFromDB
+
+
+%% DocFunction{Advanced Functions}: LibMathFcnExists ==========================
+%% Abstract:
+%%    Return whether or not an implementation function exists for a given
+%%    generic operation (function), given the specified function prototype.
+%%
+%function LibMathFcnExists(RTWFcnName, RTWFcnTypeId) void
+  %assign RTWType = FcnGetMathDataTypeNameFromId(RTWFcnTypeId)
+    %if EXISTS(::OrigName)
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  RTWFcnName, RTWType)
+    %else
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  RTWFcnName, RTWType)
+    %endif
+    
+  %return !ISEMPTY(FcnInfo)
+  
+%endfunction %% LibMathFcnExists
+
+
+%% DocFunction{Advanced Functions}: LibCreateHomogMathFcnRec ==================
+%%
+%function LibCreateHomogMathFcnRec(FcnName, FcnTypeId) void
+  %% Test that we can use call the UDD based math function attached to the model
+  %assign RTWType = FcnGetMathDataTypeNameFromId(FcnTypeId)
+  %if EXISTS(::OrigName)
+      %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  FcnName, RTWType)
+  %else
+      %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  FcnName, RTWType)
+  %endif
+      
+  %if ISEMPTY(FcnInfo)
+    %assign msg = "Database has no function '%<FcnName>' returning '%<RTWType>'"
+    %<LibReportFatalError(msg)>
+  %endif
+
+  %assign NumInputs = FcnInfo.NumInputs
+  %createrecord FcnRec { Name FcnName; RetTypeId FcnTypeId; NumArgs NumInputs }
+  %foreach k = NumInputs
+    %addtorecord FcnRec ArgList { Expr "u%<k>"; TypeId FcnTypeId; IsPtr 0; IsCplx 0; IsConst 1 }
+  %endforeach
+  %return FcnRec
+%endfunction
+
+
+%% DocFunction{Advanced Functions}: LibSetMathFcnRecArgExpr ===================
+%%
+%function LibSetMathFcnRecArgExpr(FcnRec, idx, argStr) void
+  %if idx < SIZE(FcnRec.ArgList,1)
+    %assign FcnRec.ArgList[idx].Expr = argStr
+  %else
+    %% START_ASSERT
+    %exit "Internal error:  argument index exceeds function prototype argument count"
+    %% END_ASSERT
+  %endif
+  %return FcnRec
+%endfunction %% LibSetMathFcnRecArgExpr
+
+
+%% DocFunction{Advanced Functions}: LibGetMathConstant ========================
+%% Abstract:
+%%    Return a valid math constant expression with the proper datatype.
+%%    This function can only be called after funclib.tlc is included.
+%%
+%function LibGetMathConstant(ConstName,ioTypeId) void
+
+  %% Test that we can use call the UDD based math function attached to the model
+  %assign RTWType = FcnGetMathDataTypeNameFromId(ioTypeId)
+    %if EXISTS(::OrigName)
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  ConstName, RTWType)
+    %else
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  ConstName, RTWType)
+    %endif
+    
+  %if ISEMPTY(FcnInfo)
+        %assign errorTxt = "MATHLIB: Could not find matching generic " + ...
+                           "signature for math constant %<ConstName>"
+        %exit "%<errorTxt>"
+  %else
+        %assign FcnName   = FcnInfo.FcnName
+        %assign FcnType   = FcnInfo.FcnType
+        %assign HdrFile   = FcnInfo.HdrFile
+  %endif
+
+  %assign FcnTypeId = FcnGetDataTypeIdFromName(FcnType)
+    
+  %if LibGetDataTypeIdAliasedThruToFromId(FcnTypeId) != ...
+    LibGetDataTypeIdAliasedThruToFromId(ioTypeId)
+    %assign outputCastBegin = "((%<LibGetDataTypeNameFromId(ioTypeId)>)"
+    %assign outputCastEnd   = ")"
+  %else
+    %assign outputCastBegin = ""
+    %assign outputCastEnd   = ""
+  %endif
+
+  %% --- Register references
+  
+  %if HdrFile != "<math.h>" && HdrFile != "math.h"
+    %if HdrFile == "rtlibsrc.h"
+      %assign ::CompiledModel.IncludeLibsrc = 1
+    %else
+      %<LibAddToCommonIncludes(HdrFile)>
+    %endif
+  %endif
+
+  %return (outputCastBegin + FcnName + outputCastEnd)
+
+%endfunction
+  
+  
+%% Function: SLibGenRTLibFcnCall ==============================================
+%% Abstract:
+%%  Generate an expression to perform the requested generic run-time function
+%%  consuming the required arguments contained in the FcnRec record's ArgList.
+%%  The resulting string is not an lvalue.  If the requested generic function 
+%%  is not supported, the empty string "" is returned.
+%%
+%%  If output type does not match generic output type, an output cast is added.
+%%  If an input arg type does not match the generic input type, a cast is
+%%  added to the input argument.
+%%
+%%  FcnRec record definition:
+%%    Name      - generic function name
+%%    RetTypeId - generic function return type (tSS_DOUBLE, void, etc.)
+%%    NumArgs   - length of ArgList
+%%    ArgList   - record array containing these fields:
+%%                Expr    - Expression for argument instance (string)
+%%                TypeId  - datatype ID of argument instance
+%%                IsPtr   - arg is a pointer
+%%                IsCplx  - arg is complex
+%%                IsConst - arg is const (read-only)
+%%
+%function SLibGenRTLibFcnCall(FcnRec) void
+    %% Test that we can use call the UDD based math function attached to the model
+    %assign RTWType = FcnGetMathDataTypeNameFromId(FcnRec.RetTypeId)
+    %if EXISTS(::OrigName)
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  FcnRec.Name, RTWType)
+    %else
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  FcnRec.Name, RTWType)
+    %endif
+    
+  %if ISEMPTY(FcnInfo)
+        %return ""
+  %else
+        %assign FcnName   = FcnInfo.FcnName
+        %assign FcnType   = FcnInfo.FcnType
+        %assign HdrFile   = FcnInfo.HdrFile
+        %assign NumInputs = FcnInfo.NumInputs
+  %endif
+
+  %if NumInputs != FcnRec.NumArgs
+    %% START_ASSERT
+    %assign msg = "Number of arguments indicated in FcnRec must match"...
+      "generic operation's number of arguments."
+    %<LibReportFatalError(msg)>
+    %% END_ASSERT
+  %endif
+
+  %% Manage header file inclusion
+  %if HdrFile != "<math.h>" && HdrFile != "math.h"
+    %if HdrFile == "rtlibsrc.h"
+      %assign ::CompiledModel.IncludeLibsrc = 1
+    %else
+      %<LibAddToCommonIncludes(HdrFile)>
+    %endif
+  %endif
+  
+  %assign FcnTypeId = FcnGetDataTypeIdFromName(FcnType)
+  
+  %% Type cast the return value if needed
+  %if LibGetDataTypeIdAliasedThruToFromId(FcnTypeId) != ...
+    LibGetDataTypeIdAliasedThruToFromId(FcnRec.RetTypeId)
+    %assign outExpr = "(%<LibGetDataTypeNameFromId(FcnRec.RetTypeId)>)"
+  %else
+    %assign outExpr = ""
+  %endif
+  %assign outExpr = outExpr + FcnName + "("
+
+  %% Generate the callsite arg list
+  %foreach k = NumInputs
+    %if k > 0
+      %assign comma = ","
+    %else
+      %assign comma = ""
+    %endif
+    %% Handle input arg casting, if needed
+    %if LibGetDataTypeIdAliasedThruToFromId(FcnRec.ArgList[k].TypeId) != ...
+      LibGetDataTypeIdAliasedThruToFromId(FcnRec.RetTypeId)
+      %assign castExpr = "(%<LibGetDataTypeNameFromId(FcnRec.RetTypeId)>)"
+    %else
+      %assign castExpr = ""
+    %endif
+    %assign outExpr = "%<outExpr>%<comma>%<castExpr>%<FcnRec.ArgList[k].Expr>"
+  %endforeach
+  %return "%<outExpr>)"
+%endfunction %% SLibGenRTLibFcnCall
+
+
+%% Function: LibGenMathFcnCall ================================================
+%% Abstract:
+%%    Return a complete callsite expression for a math function in the
+%%    target environment given the following function prototype info:
+%%
+%%       o) RTWFcnName - Generic function name
+%%       o) RTWFcnType - type needed for function I/O (e.g., tSS_DOUBLE)
+%%       o) input1Arg  - string expression of input arg 1 of type RTWFcnType
+%%       o) input2Arg  - if needed, addition input of type RTWFcnType
+%%
+%%    If no specification is found that exactly matches the
+%%    given prototype, this function returns the output name 
+%%    along with the casts needed at each position (input, output).
+%%
+%%    If use of a function requires a #include of a file besides math.h
+%%    then the use of this function triggers the generation of the
+%%    include file associated with this function.  See LibAddToModelHeaders
+%%    to see how this mechanism works.
+%%
+%%
+%function LibGenMathFcnCall(RTWFcnName, RTWFcnTypeId, input1Arg, input2Arg) void
+
+    %% Test that we can use call the UDD based math function attached to the model
+    %assign RTWType = FcnGetMathDataTypeNameFromId(RTWFcnTypeId)
+    %if EXISTS(::OrigName)
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  RTWFcnName, RTWType)
+    %else
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  RTWFcnName, RTWType)
+    %endif
+    
+  %if ISEMPTY(FcnInfo)
+        %% START_ASSERT
+        %%
+        %% it is OK not to find a matching generic, return "" to tell the block
+        %% "No Match Found: you are on your own for this one".
+        %%
+        %return ""
+        %% END_ASSERT
+  %else
+        %assign FcnName   = FcnInfo.FcnName
+        %assign FcnType   = FcnInfo.FcnType
+        %assign HdrFile   = FcnInfo.HdrFile
+        %assign NumInputs = FcnInfo.NumInputs
+  %endif
+
+  %if FcnName != ""
+    %if HdrFile != "<math.h>" && HdrFile != "math.h"
+      %if HdrFile == "rtlibsrc.h"
+        %assign ::CompiledModel.IncludeLibsrc = 1
+      %else
+        %<LibAddToCommonIncludes(HdrFile)>
+      %endif
+    %endif
+    
+    %assign FcnTypeId = FcnGetDataTypeIdFromName(FcnType)
+    
+    %if LibGetDataTypeIdAliasedThruToFromId(FcnTypeId) != ...
+      LibGetDataTypeIdAliasedThruToFromId(RTWFcnTypeId)
+      %assign outputCast = "(%<LibGetDataTypeNameFromId(RTWFcnTypeId)>)"
+    %else
+      %assign outputCast = ""
+    %endif
+
+    %assign callexpr = outputCast + FcnName + "(" + input1Arg
+    %if NumInputs == 2
+      %if input2Arg != ""
+        %assign callexpr = callexpr + ", " + input2Arg
+      %else
+	%% START_ASSERT
+        %assign errorTxt = "MATHLIB: Call to function %<RTWFcnName> " + \
+                           "requires two nonempty inputs."
+        %exit "%<errorTxt>"
+	%% END_ASSERT
+      %endif
+    %endif  
+    %assign callexpr = callexpr + ")"
+    %return callexpr
+  %else
+    %return ""
+  %endif
+  
+%endfunction %% LibGenMathFcnCall
+
+%% Function: LibGenSharedMathFcnCall ================================================
+%function LibGenSharedMathFcnCall(RTWFcnName, RTWFcnTypeId, input1Arg, input2Arg) void
+%% under backwards compatiability mode, it's identical to LibGenMathFcnCall.
+%% under shared mode, it will also record include file requirements into stack.
+%assign returnValue = LibGenMathFcnCall(RTWFcnName, RTWFcnTypeId, input1Arg, input2Arg)
+
+%if EXISTS(::GenUtilsSrcInSharedLocation) && (::GenUtilsSrcInSharedLocation == 1)
+  %% shared mode
+   %% below code is identical to LibGenMathFcnCall(), as we need cache 
+   %% header files.  
+    %% Test that we can use call the UDD based math function attached to the model
+    %assign RTWType = FcnGetMathDataTypeNameFromId(RTWFcnTypeId)
+    %if EXISTS(::OrigName)
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::OrigName,  RTWFcnName, RTWType)
+    %else
+        %assign FcnInfo = FEVAL("rtwgettargetfcnlib", ::CompiledModel.Name,  RTWFcnName, RTWType)    
+    %endif    
+    %if ISEMPTY(FcnInfo)
+        %assign HdrFile   = ""
+    %else
+        %assign HdrFile   = FcnInfo.HdrFile
+    %endif
+    %<LibAddtoSharedUtilsIncludes(HdrFile)>
+  %return returnValue
+%else
+  %% backwards compatiability mode
+  %return returnValue
+%endif
+
+%endfunction %% LibGenSharedMathFcnCall
+
+
+%% Function: SLibRegisterDefaultMathFcnPrototypes =============================
+%% Abstract:
+%%
+%%    Create a database of default settings for operations that can be replaced 
+%%    by target specific operations.  In this implementation, only constants,
+%%    homogenous functions, and macros are supported.  Note: not all supported 
+%%    operations have a default implementation!  The table is added to the 
+%%    CompiledModel data structure.  Future implementations will do this when
+%%    the .rtw file is generated instead of waiting until the TLC phase.
+%%
+%%    Names of math library operations for the ANSI C environment (math.h names)
+%%    are implemented here, supplemented by functions from the RTW run-time 
+%%    library.  If a target function doesn't exist for a generic function, the 
+%%    convention is to return "" and it is the caller's responsibility to handle 
+%%    this, probably by inlining an algorithm.  If the table is searched and
+%%    no matching generic is found, the empty string "" is also returned.
+%%
+%%    Currently, all functions in this default dataset are accessed via 
+%%    prototypes defined in rtwlibsrc.h and math.h.
+%%
+%%    The function replacement table has the following fields:
+%%      RTWName     - generic name of operation
+%%      RTWType     - Data type name of result (MATLAB names)
+%%      FcnName     - symbol name to be used in the generated code
+%%      FcnType     - Data type name of function return value (MATLAB names)
+%%      OK          - 1 for expression compliant implementations, or 0
+%%      NumInputs   - number of arguments to the function (or operation)
+%%      HdrFile     - name of the header file
+%%     (Accessed)   - (QE test runtime item) field is populated for test  
+%%                    coverage data collection
+%%
+%%    Note: data type names in this implementation are done using MATLAB text 
+%%          names because TLC type names and type ID's have not been defined 
+%%          when this table is instantiated.
+%%
+%%
+%function SLibRegisterDefaultMathFcnPrototypes() void
+
+  %%
+  %%    *** DO NOT ACCESS THESE RECORDS DIRECTLY   ***
+  %%        FIELDS MAY CHANGE IN FUTURE RELEASES
+  %% 
+  %%    *** Modify via LibRegisterMathFcnPrototype() ***
+  %%    *** Access via LibGenMathFcnExpr()           ***
+  %%
+  %% Assume all  functions have homogeneous datatyping and complexity,
+  %% e.g., all real double in/out or all real single in/out.
+  %%
+
+  %assign tD   = "double"
+  %assign tS   = "single"
+  %assign tI32 = "int32"
+  %assign tI16 = "int16"
+  %assign tI8  = "int8"
+  %assign tU32 = "uint32"
+  %assign tU16 = "uint16"
+  %assign tU8  = "uint8"
+  %assign ti   = "integer"
+  %assign tp   = "pointer"
+  
+  %assign mh = "<math.h>"
+  %assign fh = "<float.h>"
+  %assign rl = "rtlibsrc.h"
+
+%createrecord M { R { RTWName "magnitude^2"; RTWType tD; FcnName ""; FcnType tD; OK 0; NumInputs 1; HdrFile mh}}
+%addtorecord  M R { RTWName "sqrt"  ; RTWType tD; FcnName "sqrt" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "floor" ; RTWType tD; FcnName "floor"; \
+                                                                   FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "ceil"  ; RTWType tD; FcnName "ceil" ; \
+                                                                   FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "round" ; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "fix"   ; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "abs"   ; RTWType tD; FcnName "fabs" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "mod"   ; RTWType tD; FcnName "" ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "pow"   ; RTWType tD; FcnName "pow"  ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "power" ; RTWType tD; FcnName "pow"  ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "square"; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "exp"   ; RTWType tD; FcnName "exp"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "ln"    ; RTWType tD; FcnName "log"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "log"   ; RTWType tD; FcnName "log"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "log10" ; RTWType tD; FcnName "log10"; FcnType tD; OK 0; \
+                                                                                     NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "10^u"  ; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "conj"  ; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "rem"   ; RTWType tD; FcnName ""     ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "sin"   ; RTWType tD; FcnName "sin"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "cos"   ; RTWType tD; FcnName "cos"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "tan"   ; RTWType tD; FcnName "tan"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "asin"  ; RTWType tD; FcnName "asin"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "acos"  ; RTWType tD; FcnName "acos"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atan"  ; RTWType tD; FcnName "atan"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atan2" ; RTWType tD; FcnName "rt_atan2"; FcnType tD; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "raw_atan2" ; RTWType tD; FcnName "atan2"; FcnType tD; OK 0; \
+                                                                                     NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "sinh"  ; RTWType tD; FcnName "sinh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "cosh"  ; RTWType tD; FcnName "cosh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "tanh"  ; RTWType tD; FcnName "tanh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "asinh" ; RTWType tD; FcnName "asinh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "acosh" ; RTWType tD; FcnName "acosh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atanh" ; RTWType tD; FcnName "atanh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "sign"  ; RTWType tD; FcnName "rt_SGN"; FcnType tD; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "saturate"  ; RTWType tD; FcnName "rt_SATURATE"; FcnType tD; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tD; FcnName "rt_MIN";FcnType tD; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tD; FcnName "rt_MAX";FcnType tD; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "hypot" ; RTWType tD; FcnName "rt_hypot"; FcnType tD; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "reciprocal"; RTWType tD; FcnName "" ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "transpose";  RTWType tD; FcnName "" ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "hermitian";  RTWType tD; FcnName "" ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+
+%% --- single datatype I/O
+%addtorecord  M R { RTWName "magnitude^2"; RTWType tS; FcnName ""; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "sqrt"  ; RTWType tS; FcnName "sqrt" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "floor" ; RTWType tS; FcnName "floor"; \
+                                                                   FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "ceil"  ; RTWType tS; FcnName "ceil" ; \
+                                                                   FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "round" ; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "fix"   ; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "abs"   ; RTWType tS; FcnName "rt_ABS" ;  \
+                                                                   FcnType tS; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tS; FcnName "" ; FcnType tD; OK 0; \
+                                                                                     NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "pow"   ; RTWType tS; FcnName "pow"  ; FcnType tD; OK 0; \
+                                                                                     NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "power" ; RTWType tS; FcnName "pow"  ; FcnType tD; OK 0; \
+                                                                                     NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "square"; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "exp"   ; RTWType tS; FcnName "exp"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "ln"    ; RTWType tS; FcnName "log"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "log"   ; RTWType tS; FcnName "log"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "log10" ; RTWType tS; FcnName "log10"; FcnType tD; OK 0; \
+                                                                                     NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "10^u"  ; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "conj"  ; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "rem"   ; RTWType tS; FcnName ""     ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "sin"   ; RTWType tS; FcnName "sin"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "cos"   ; RTWType tS; FcnName "cos"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "tan"   ; RTWType tS; FcnName "tan"  ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "asin"  ; RTWType tS; FcnName "asin"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "acos"  ; RTWType tS; FcnName "acos" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atan"  ; RTWType tS; FcnName "atan" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atan2" ; RTWType tS; FcnName "rt_atan232"; FcnType tS; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "raw_atan2" ; RTWType tS; FcnName "atan2"; FcnType tD; OK 0; \
+                                                                                     NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "sinh"  ; RTWType tS; FcnName "sinh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "cosh"  ; RTWType tS; FcnName "cosh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "tanh"  ; RTWType tS; FcnName "tanh" ; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "asinh" ; RTWType tS; FcnName "asinh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "acosh" ; RTWType tS; FcnName "acosh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "atanh" ; RTWType tS; FcnName "atanh"; FcnType tD; OK 0; NumInputs 1; HdrFile mh}
+%addtorecord  M R { RTWName "sign"  ; RTWType tS; FcnName "rt_FSGN"; FcnType tS; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "saturate"  ; RTWType tS; FcnName "rt_SATURATE"; FcnType tS; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tS; FcnName "rt_MIN"; FcnType tS; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tS; FcnName "rt_MAX"; FcnType tS; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "hypot" ; RTWType tS; FcnName "rt_hypot32"; FcnType tS; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "reciprocal"; RTWType tS; FcnName "" ; FcnType tD; OK 0; NumInputs 1; HdrFile ""}
+%addtorecord  M R { RTWName "transpose";  RTWType tS; FcnName "" ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+%addtorecord  M R { RTWName "hermitian";  RTWType tS; FcnName "" ; FcnType tD; OK 0; NumInputs 2; HdrFile mh}
+
+%% --- int32 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tI32;FcnName "rt_SATURATE"; FcnType tI32; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tI32; FcnName "" ; 	       FcnType tI32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tI32; FcnName "" ; 	       FcnType tI32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tI32; FcnName "rt_MIN";      FcnType tI32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tI32; FcnName "rt_MAX";      FcnType tI32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tI32; FcnName "rt_ABS"; FcnType tI32; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tI32; FcnName "rt_SGN"; FcnType tI32; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- integer datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType ti;FcnName "rt_SATURATE"; FcnType ti; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType ti; FcnName "" ; FcnType ti; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType ti; FcnName "" ; FcnType ti; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType ti; FcnName "rt_MIN"; FcnType ti; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType ti; FcnName "rt_MAX"; FcnType ti; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType ti; FcnName "rt_ABS"; FcnType ti; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType ti; FcnName "rt_SGN"; FcnType tI32; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- int16 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tI16;FcnName "rt_SATURATE"; FcnType tI16; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tI16; FcnName "" ; FcnType tI16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tI16; FcnName "" ; FcnType tI16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tI16; FcnName "rt_MIN"; FcnType tI16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tI16; FcnName "rt_MAX"; FcnType tI16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tI16; FcnName "rt_ABS"; FcnType tI16; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tI16; FcnName "rt_SGN"; FcnType tI16; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- int8 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tI8;FcnName "rt_SATURATE"; FcnType tI8; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tI8; FcnName "" ; FcnType tI8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tI8; FcnName "" ; FcnType tI8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tI8; FcnName "rt_MIN"; FcnType tI8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tI8; FcnName "rt_MAX"; FcnType tI8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tI8; FcnName "rt_ABS"; FcnType tI8; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tI8; FcnName "rt_SGN"; FcnType tI8; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- uint32 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tU32;FcnName "rt_SATURATE"; FcnType tU32; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tU32; FcnName "" ; FcnType tU32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tU32; FcnName "" ; FcnType tU32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tU32; FcnName "rt_MIN"; FcnType tU32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tU32; FcnName "rt_MAX"; FcnType tU32; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tU32; FcnName "rt_ABS"; FcnType tU32; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tU32; FcnName "rt_UNSGN"; FcnType tU32; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- uint16 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tU16;FcnName "rt_SATURATE"; FcnType tU16; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tU16; FcnName "" ; FcnType tU16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tU16; FcnName "" ; FcnType tU16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tU16; FcnName "rt_MIN"; FcnType tU16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tU16; FcnName "rt_MAX"; FcnType tU16; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tU16; FcnName "rt_ABS"; FcnType tU16; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tU16; FcnName "rt_UNSGN"; FcnType tU16; OK 0; NumInputs 1; HdrFile rl}
+
+%% --- uint8 datatype I/O
+%addtorecord  M R { RTWName "saturate";RTWType tU8;FcnName "rt_SATURATE"; FcnType tU8; OK 0; NumInputs 3; HdrFile rl}
+%addtorecord  M R { RTWName "mod"   ; RTWType tU8; FcnName "" ; FcnType tU8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "rem"   ; RTWType tU8; FcnName "" ; FcnType tU8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "min"   ; RTWType tU8; FcnName "rt_MIN"; FcnType tU8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "max"   ; RTWType tU8; FcnName "rt_MAX"; FcnType tU8; OK 0; NumInputs 2; HdrFile rl}
+%addtorecord  M R { RTWName "abs"   ; RTWType tU8; FcnName "rt_ABS"; FcnType tU8; OK 0; NumInputs 1; HdrFile rl}
+%addtorecord  M R { RTWName "sign"  ; RTWType tU8; FcnName "rt_UNSGN"; FcnType tU8; OK 0; NumInputs 1; HdrFile rl}
+
+%%
+%% ======   Constants    
+%%
+%% --- double constants
+%addtorecord  M R { RTWName "RT_PI"    ; RTWType tD; FcnName "RT_PI"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_E"     ; RTWType tD; FcnName "RT_E";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_LOG10E"; RTWType tD; FcnName "RT_LOG10E"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_LN_10" ; RTWType tD; FcnName "RT_LN_10";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+
+%addtorecord  M R { RTWName "PI"       ; RTWType tD; FcnName "RT_PI"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "E"        ; RTWType tD; FcnName "RT_E";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "LOG10E"   ; RTWType tD; FcnName "RT_LOG10E"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "LN_10"    ; RTWType tD; FcnName "RT_LN_10";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "EPS"      ; RTWType tD; FcnName "DBL_EPSILON"; FcnType tD; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "EPSILON"  ; RTWType tD; FcnName "DBL_EPSILON"; FcnType tD; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "MAX_VAL"  ; RTWType tD; FcnName "DBL_MAX"; FcnType tD; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "MIN_VAL"  ; RTWType tD; FcnName "DBL_MIN"; FcnType tD; OK 0; NumInputs 0; HdrFile fh}
+
+%% --- single constants
+%addtorecord  M R { RTWName "RT_PI"    ; RTWType tS; FcnName "RT_PI"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_E"     ; RTWType tS; FcnName "RT_E";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_LOG10E"; RTWType tS; FcnName "RT_LOG10E"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "RT_LN_10" ; RTWType tS; FcnName "RT_LN_10";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+
+%addtorecord  M R { RTWName "PI"       ; RTWType tS; FcnName "RT_PI"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "E"        ; RTWType tS; FcnName "RT_E";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "LOG10E"   ; RTWType tS; FcnName "RT_LOG10E"; FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "LN_10"    ; RTWType tS; FcnName "RT_LN_10";  FcnType tD; OK 0; NumInputs 0; HdrFile rl}
+%addtorecord  M R { RTWName "EPS"      ; RTWType tS; FcnName "FLT_EPSILON"; FcnType tS; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "EPSILON"  ; RTWType tS; FcnName "FLT_EPSILON"; FcnType tS; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "MAX_VAL"  ; RTWType tS; FcnName "FLT_MAX"; FcnType tS; OK 0; NumInputs 0; HdrFile fh}
+%addtorecord  M R { RTWName "MIN_VAL"  ; RTWType tS; FcnName "FLT_MIN"; FcnType tS; OK 0; NumInputs 0; HdrFile fh}
+
+%%
+%% Create initial set of hashcode variables for the database  and set the 
+%% corresponding index into the variables.  This algorithm results in O(1) 
+%% TLC table accesses instead of O(n) since TLC's GETFIELD built-in uses a 
+%% hashing mechanism to access the field.
+
+%foreach idx = SIZE(M.R,1)
+  %assign hashCodeFieldName = ...
+    FcnCalcDatabaseRecordHashCode(M.R[idx].RTWName, M.R[idx].RTWType)
+  %assign resCode = SETFIELD(M, hashCodeFieldName, idx)
+%endforeach
+
+%assign ::MathProtos = M
+  
+%endfunction %% SLibRegisterDefaultMathFcnPrototypes
+
+%% ----------------------------------------------------------------------------
+
+
+%% 	     **************************
+%% ------    *** Initialize mathlib ***
+%% 	     **************************
+
+%%  %<SLibRegisterDefaultMathFcnPrototypes()>
+
+
+%% ----------------------------------------------------------------------------
+
+%endif %% _MATHLIB_
+
+%% [EOF] mathlib.tlc

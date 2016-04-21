@@ -1,0 +1,494 @@
+%% $RCSfile: sdspfirdn.tlc,v $
+%% $Revision: 1.13.4.2 $ 
+%% $Date: 2004/04/12 23:08:38 $
+%%
+%% Dale Shpak, Steve Conahan
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: FIR Decimator
+%%
+
+%implements sdspfirdn "C"
+
+%include "dsplib.tlc"
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %assign INPORT       = 0
+    %assign OUTPORT      = 0
+    %assign INPORTWIDTH  = LibDataInputPortWidth(INPORT)
+    %assign OUTPORTWIDTH = LibDataOutputPortWidth(OUTPORT)
+    %assign block = block + INPORT + OUTPORT + INPORTWIDTH + OUTPORTWIDTH
+    %%
+    %% Coefficients and filter
+    %% (Note: The two PWork elements are used differently here
+    %%        than from their use in the S-function)
+    %%
+    %assign CFF_PTR  = 0
+    %assign CFF_BASE = 1
+    %assign FILTER   = SFcnParamSettings.FILTER
+    %assign block = block + CFF_PTR + CFF_BASE + FILTER
+    %%
+    %% Complexity and other flags
+    %%
+    %assign DATA_COMPLEX    = (LibBlockInputSignalIsComplex(INPORT) != 0)
+    %assign FILT_COMPLEX    = TYPE(SFcnParamSettings.FILTER[0]) == "Complex"
+    %assign OUT_COMPLEX     = (FILT_COMPLEX || DATA_COMPLEX)
+    %assign ORDER           = SIZE(SFcnParamSettings.FILTER,0) * SIZE(SFcnParamSettings.FILTER,1) - 1
+    %assign DFACTOR         = SFcnParamSettings.DFACTOR
+    %assign FRAMING         = SFcnParamSettings.FRAMING
+    %assign block = block + DATA_COMPLEX + FILT_COMPLEX + OUT_COMPLEX
+    %assign block = block + ORDER + DFACTOR + FRAMING
+    %%
+    %% Data types
+    %%
+    %assign DAT_T  = (DATA_COMPLEX) ? "creal_T" : "real_T"
+    %assign FILT_T = (FILT_COMPLEX) ? "creal_T" : "real_T"
+    %assign OUT_T  = (OUT_COMPLEX)  ? "creal_T" : "real_T"
+    %assign block = block + DAT_T + FILT_T + OUT_T
+    %%
+    %% Simulation/runtime parameters for low-latency operation
+    %%
+    %assign IS_SINGLE_RATE   = LibIsSFcnSingleRate(block)
+    %assign IS_MULTI_TASKING = IsModelMultiTasking()
+    %assign block = block + IS_SINGLE_RATE + IS_MULTI_TASKING
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset FIR Decimation %<Type> (%<ParamSettings.FunctionName>) - %<Name> */
+{
+    %%
+    %% We do not support discontiguous inputs
+    %if (!IsInputPortContiguous(block,INPORT))
+        %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign NUM_CHANS = SFcnParamSettings.NUM_CHANS
+    %assign LENGTH    = SIZE(SFcnParamSettings.FILTER,1)
+    %assign NROWS     = LENGTH / DFACTOR
+    %assign IC        = SFcnParamSettings.IC
+    %assign IC_ROWS   = SFcnParamSettings.IC_ROWS
+    %assign IC_COLS   = SFcnParamSettings.IC_COLS
+    %assign IC_CPLX   = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign NUM_IC    = SIZE(SFcnParamSettings.IC,1)
+    %assign IC_T      = IC_CPLX ? "creal_T" : "real_T"
+    %%
+    %% We only need ICs in certain cases for this block.
+    %% Do NOT define the IC array variable if we do not need to!!!
+    %%
+    %% The required cases where ICs are needed are as follows:
+    %%
+    %% CONDITION 1 - Block MULTI-RATE and model MULTI-TASKING
+    %% CONDITION 2 - Block FRAME-BASED and block MULTI-RATE (regardless of tasking)
+    %%
+    %% These two conditions are defined below this line.
+    %%
+    %assign COND1_NEED_ICS         = ((!IS_SINGLE_RATE) && IS_MULTI_TASKING)
+    %assign CONST_SIZE_FRAM        = 1
+    %assign COND2_NEED_ICS         = ( (NUM_CHANS != -1) && (FRAMING == CONST_SIZE_FRAM) && (!IS_SINGLE_RATE) )
+    %assign NEED_EXTRA_LATENCY_ICS = (COND1_NEED_ICS || COND2_NEED_ICS)
+    %%
+    %if NEED_EXTRA_LATENCY_ICS
+        /* Block initial conditions */
+        %if (NUM_IC > 1)
+            %<IC_T> ic[%<NUM_IC>] = {
+            %%
+            %% Number of ICs is greater than one, so we have to build up a variable.
+            %%
+            %assign astr    = ""
+            %assign count   = 0
+            %if (IC_CPLX)
+                %foreach Col = IC_COLS
+                    %foreach Row = IC_ROWS
+                        %assign astr  = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+                        %assign count = count + 1
+                        %if (count < NUM_IC)
+                            %assign astr = astr + ","
+                        %else
+                            %assign astr = astr + "};"
+                        %endif
+                    %endforeach %% IC_ROWS
+                    %<astr>
+                    %assign astr    = ""
+                %endforeach %% IC_COLS
+            %else
+                %foreach Col = IC_COLS
+                    %foreach Row = IC_ROWS
+                        %assign astr = astr + "%<IC[count]>"
+                        %assign count   = count + 1
+                        %if (count < NUM_IC)
+                            %assign astr = astr + ","
+                        %else
+                            %assign astr = astr + "};"
+                        %endif
+                    %endforeach %% IC_ROWS
+                    %<astr>
+                    %assign astr    = ""
+                %endforeach %% IC_COLS
+            %endif %% IC_CPLX
+        %endif %% (NUM_IC > 1)
+    %endif %% NEED_EXTRA_LATENCY_ICS
+    %%
+
+    /* Filter coefficients */
+    static %<FILT_T> filter[%<LENGTH>] = {
+    %assign astr    = ""
+    %assign count   = 0
+    %if (FILT_COMPLEX)
+        %foreach Col = DFACTOR
+            %foreach Row = NROWS
+                %assign astr = astr + "{%<REAL(SFcnParamSettings.FILTER[count])>,%<IMAG(SFcnParamSettings.FILTER[count])>}"
+                %assign count   = count + 1
+                %if (count < LENGTH)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach %% Row
+            %<astr>
+            %assign astr    = ""
+        %endforeach %% Col
+    %else
+        %foreach Col = DFACTOR
+            %foreach Row = NROWS
+                %assign astr = astr + "%<SFcnParamSettings.FILTER[count]>"
+                %assign count   = count + 1
+                %if (count < LENGTH)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach %% Row
+            %<astr>
+            %assign astr    = ""
+        %endforeach %% Col
+    %endif
+
+    /* Initialize the internal buffers with block initial conditions */
+    %%
+    %% The ICs must be filled in according to the OUTPORTWIDTH
+    %% because downsample causes the output to be smaller than
+    %% the input when the mode forces sample rates equal.
+    %%
+    {
+        %if (FILT_COMPLEX || DATA_COMPLEX)
+            creal_T *outBuf = %<LibBlockDWorkAddr(OutBuff, "", "", 0)>;
+        %else
+            real_T *outBuf = %<LibBlockDWorkAddr( OutBuff, "", "", 0)>;
+        %endif
+        int i;
+
+        for (i=0; i<%<OUTPORTWIDTH>; i++) {
+        %%
+        %if (NUM_IC <= 1) 
+        %%
+            /* Scalar IC */
+        	%if NUM_IC == 0
+    	      %assign IC_re = 0.0
+    	      %assign IC_im = 0.0
+        	%else
+        	  %assign IC_re = REAL(IC[0])
+        	  %if !IC_CPLX
+        	    %assign IC_im = 0.0
+        	  %else
+        	    %assign IC_im = IMAG(IC[0])
+        	  %endif
+    	    %endif
+     	    %if !(FILT_COMPLEX || DATA_COMPLEX)
+        	  *outBuf++ = %<IC_re>;
+    	    %else
+        	  outBuf->re     = %<IC_re>;
+        	  (outBuf++)->im = %<IC_im>;
+    	    %endif
+        %else
+            /* Vector IC */
+        	%%
+        	%% We are not using memcopy here because if the input
+        	%% is complex and the ic is real, we fill in the imaginary
+        	%% part with zeros.
+        	%%
+        	%if !(FILT_COMPLEX || DATA_COMPLEX)
+    	      *outBuf++ = ic[i];
+        	%else
+        	  outBuf->re     = %<(IC_CPLX) ? "ic[i].re" : "ic[i]">; 
+        	  (outBuf++)->im = %<(IC_CPLX) ? "ic[i].im"  : 0.0>;
+        	%endif
+        %endif
+        } %% end for OUTPORTWIDTH
+    }
+
+    /*
+     * Initialize the counters and pointers.
+     */
+
+    %<LibBlockDWork(TapDelayIndex, "", "", 0)> = %<LibBlockDWork(OutIdx, "", "", 0)> = 0;
+    %<LibBlockDWork(OutBuff1,      "", "", 0)> = 1;
+
+    %if NEED_EXTRA_LATENCY_ICS
+        %if COND1_NEED_ICS
+            %%
+            %% Latency Case: COND1_NEED_ICS (comments only)
+            %%
+            /* In MULTI-RATE and MULTI-TASKING mode (as per simulation params).  */
+            /* We cannot be guaranteed that the inputs are always available on   */
+            /* the first time sample hit in this mode (depending on the model    */
+            /* signal arrival times - remember that this mode is both time-based */
+            /* AND task-based, so nothing is guaranteed with respect to data     */
+            /* arrival. By setting this flag to false, a single output-width     */
+            /* delay is always inserted in this mode for consistent behavior.    */
+        %else
+            %%
+            %% Latency Case: COND2_NEED_ICS (comments only)
+            %%
+            /* When the block is FRAME-BASED with MAINTAIN FRAME SIZE chosen as     */
+            /* the framing mode while in a SINGLETASKING OR MULTITASKING mode such  */
+            /* that the block is also MULTIRATE (i.e. input port faster than output */
+            /* if the decimation factor is greater than one) then there will be     */
+            /* INHERENT LATENCY due to causality (the fact that NOT enough samples  */
+            /* will be available on the first sample hit to fill an entire frame).  */
+            /* By setting this flag to false, a single output-width delay is always */
+            /* inserted in this mode for consistent (and causal) behavior.          */
+        %endif %% COND1_NEED_ICS
+        %<LibBlockDWork(InBuff1, "", "", 0)> = 0;
+    %else
+        /* In this mode we are guaranteed that the first time-sample hit has  */
+        /* an input sample ready to process, indicated by this flag set true. */
+        %<LibBlockDWork(InBuff1, "", "", 0)> = 1;
+    %endif %% NEED_EXTRA_LATENCY_ICS
+
+    /* Start with the last filter phase so that output agrees with MATLAB's upfirdn */
+    %<LibBlockDWork(PhaseIdx, "", "", 0)> = %<DFACTOR - 1>;
+    %<LibBlockPWork("", "", "", CFF_PTR)> = filter + %<LENGTH - LENGTH / DFACTOR>;
+    %<LibBlockPWork("", "", "", CFF_BASE)> = filter;
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset FIR Decimation %<Type> (%<ParamSettings.FunctionName>) - %<Name> */
+{
+    /* ****************************** */
+    /* Input port polyphase filtering */
+    /* ****************************** */
+
+    %if (!IS_SINGLE_RATE)
+        /* Only do this computation if there is any new data at the input port. */
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>)
+    %endif
+    {
+        %<GenerateInportPolyphaseCode(block)>
+    }
+    /*****END input port polyphase filter processing*****/
+
+
+    /* ***************************** */
+    /* Output port buffer processing */
+    /* ***************************** */
+
+    %if (!IS_SINGLE_RATE)
+        /* Only provide the next downsampled output value if it is requested */
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>)
+    %endif
+    {
+        %<GenerateOutportSampBufCode(block)>
+    }
+    /*****END output port buffer processing*****/
+}
+%endfunction  %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateInportPolyphaseCode ======================================
+%%
+%function GenerateInportPolyphaseCode(block) Output
+    %%
+    %assign NUM_CHANS     = SFcnParamSettings.NUM_CHANS
+    %%
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS = INPORTWIDTH
+        %assign FRAME     = 1
+    %else
+        %assign FRAME     = INPORTWIDTH / NUM_CHANS
+    %endif
+    %%
+    %assign OFRAME = OUTPORTWIDTH / NUM_CHANS
+    %%
+    %<DAT_T>    *x    = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<DAT_T>    *tap0 = %<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+    %<OUT_T>    *sums = %<LibBlockDWorkAddr(Sums,         "", "", 0)>;
+    %<OUT_T>    *y0   = %<LibBlockDWorkAddr(OutBuff,      "", "", 0)>;
+    %<FILT_T>   *cff;
+    boolean_T   iBuff1;
+    int_T       curPhaseIdx, curTapIdx, curOutBufIdx;
+
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        iBuff1       = %<LibBlockDWork(InBuff1,       "", "", 0)>;
+        curPhaseIdx  = %<LibBlockDWork(PhaseIdx,      "", "", 0)>;
+        curTapIdx    = %<LibBlockDWork(TapDelayIndex, "", "", 0)>;
+        curOutBufIdx = %<LibBlockDWork(OutIdx,        "", "", 0)>;
+        cff          = %<LibBlockPWork("","","",CFF_PTR)>;
+
+        {
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+            %<DAT_T> u      = *x++;
+            %<DAT_T> *start = tap0 + curTapIdx + 1;
+            %<DAT_T> *mem   = start;
+
+            %if (DATA_COMPLEX)
+                %if (FILT_COMPLEX)
+                    sums->re += u.re * (cff->re) - u.im * (cff->im);
+                    sums->im += u.re * (cff->im) + u.im * (cff->re);
+                    ++cff;
+                        
+                    /* Perform the convolution for this phase (on every dFactor samples)
+                     * until we reach the start of the (linear) state memory */
+                    while ((mem -= %<DFACTOR>) >= tap0) {
+                        sums->re += (mem->re) * (cff->re) - (mem->im) * (cff->im);
+                        sums->im += (mem->re) * (cff->im) + (mem->im) * (cff->re);
+                        ++cff;
+                    }
+
+                    /* wrap the state memory pointer to the next element */
+                    mem += %<ORDER + DFACTOR>;
+
+                    /* Finish the convolution for this phase */
+                    while ((mem -= %<DFACTOR>) >= start) {
+                        sums->re += (mem->re) * (cff->re) - (mem->im) * (cff->im);
+                        sums->im += (mem->re) * (cff->im) + (mem->im) * (cff->re);
+                        ++cff;
+                    }
+                %else  %% Complex data, real filter
+                    sums->re += u.re * (*cff  );
+                    sums->im += u.im * (*cff++);
+
+                    /* Perform the convolution for this phase (on every dFactor samples)
+                     * until we reach the start of the (linear) state memory */
+                    while ((mem -= %<DFACTOR>) >= tap0) {
+                        sums->re += (mem->re) * (*cff  );
+                        sums->im += (mem->im) * (*cff++);
+                    }
+
+                    /* wrap the state memory pointer to the next element */
+                    mem += %<ORDER + DFACTOR>;
+
+                    /* Finish the convolution for this phase */
+                    while ((mem -= %<DFACTOR>) >= start) {
+                        sums->re += (mem->re) * (*cff  );
+                        sums->im += (mem->im) * (*cff++);
+                    }
+                %endif
+            %else
+                %if (FILT_COMPLEX) %% Real data, complex filter
+                    sums->re += u * ( cff->re   );
+                    sums->im += u * ((cff++)->im);
+
+                    /* Perform the convolution for this phase (on every dFactor samples)
+                     * until we reach the start of the (linear) state memory */
+                    while ((mem -= %<DFACTOR>) >= tap0) {
+                        sums->re += (*mem) * ( cff->re   );
+                        sums->im += (*mem) * ((cff++)->im);
+                    }
+
+                    /* wrap the state memory pointer to the next element */
+                    mem += %<ORDER + DFACTOR>;
+
+                    /* Finish the convolution for this phase */
+                    while ((mem -= %<DFACTOR>) >= start) {
+                        sums->re += (*mem) * ( cff->re   );
+                        sums->im += (*mem) * ((cff++)->im);
+                    }
+                %else %% Real data, real filter
+                    *sums += u * (*cff++);
+
+                    /* Perform the convolution for this phase (on every dFactor samples)
+                     * until we reach the start of the (linear) state memory */
+                    while ((mem -= %<DFACTOR>) >= tap0) *sums += (*mem) * (*cff++);
+
+                    /* wrap the state memory pointer to the next element */
+                    mem += %<ORDER + DFACTOR>;
+
+                    /* Finish the convolution for this phase */
+                    while ((mem -= %<DFACTOR>) >= start) *sums += (*mem) * (*cff++);
+                %endif
+            %endif
+                    
+            if ( (++curPhaseIdx) >= %<DFACTOR> ) {
+                /* Output and update the counters modulo their buffer size */
+                %<OUT_T> *y = y0 + curOutBufIdx;
+                if (iBuff1) y += %<OUTPORTWIDTH>;
+
+                *y++ = *sums;
+
+                %if (OUT_COMPLEX)
+                    sums->re = sums->im = (real_T) 0.0;
+                %else
+                    *sums = (real_T) 0.0;
+                %endif
+
+                if ( (++curOutBufIdx) >= %<OFRAME> ) {
+                    curOutBufIdx = 0;
+                    iBuff1       = !iBuff1;
+                }
+
+                curPhaseIdx = 0;
+                cff         = %<LibBlockPWork("","","",CFF_BASE)>;
+            }
+
+            /* Save the current input value */
+            if ( (++curTapIdx) >= %<ORDER> ) curTapIdx = 0;
+
+            *(tap0 + curTapIdx) = u;
+        %endroll %% FRAME
+        }
+
+        %if (NUM_CHANS > 1)
+            ++sums;
+            tap0 += %<ORDER>;
+            y0 += %<OFRAME>;
+        %endif
+	%endroll %% CHANNEL
+
+    /* Update stored indices for next time */
+    %<LibBlockPWork("", "", "", CFF_PTR)> = cff;
+    %<LibBlockDWork(PhaseIdx,      "", "", 0)> = curPhaseIdx;
+    %<LibBlockDWork(TapDelayIndex, "", "", 0)> = curTapIdx;
+    
+    if (curOutBufIdx == %<OFRAME>) curOutBufIdx = 0;
+
+    %<LibBlockDWork(OutIdx,  "", "", 0)> = curOutBufIdx;
+    %<LibBlockDWork(InBuff1, "", "", 0)> = iBuff1;
+%endfunction %% GenerateInportPolyphaseCode
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateOutportSampBufCode ======================================
+%%
+%function GenerateOutportSampBufCode(block) Output
+    /* Write out double-buffered data */
+    %<OUT_T> *yout = %<LibBlockOutputSignalAddr(OUTPORT,  "", "", 0)>;
+    %<OUT_T> *y    = %<LibBlockDWorkAddr(       OutBuff, "", "", 0)>;
+
+    if (%<LibBlockDWork(OutBuff1, "", "", 0)>) y += %<OUTPORTWIDTH>;
+        
+    %roll sigIdx1 = [ 0:%<OUTPORTWIDTH - 1> ], lcv1 = 2, block, "InlineRoller"
+        *yout++ = *y++;
+    %endroll
+    %<LibBlockDWork(OutBuff1, "", "", 0)> = !(%<LibBlockDWork(OutBuff1, "", "", 0)>);
+%endfunction %% GenerateOutportSampBufCode
+
+
+%% [EOF] sdspfirdn.tlc

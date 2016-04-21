@@ -1,0 +1,157 @@
+%% ==============================================================================
+%% $RCSfile: formatexport.tlc,v $
+%% $Revision: 1.23.4.13 $
+%% $Date: 2004/04/14 23:48:15 $
+%%
+%% Abstract:
+%%   This system file creates code for the model.h file.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%% 
+%selectfile NULL_FILE
+
+%include "formatrtm.tlc"
+
+%if EXISTS("_FORMATEXPORT_") == 0
+%assign _FORMATEXPORT_ = 1
+
+%realformat "CONCISE"
+
+%%*****************************************************************************
+%% NOTE: This file is not used for model reference. If you are updating
+%% this file, please update ModelrefHandleExportFileInfo in
+%% formatmodelref.tlc file.
+%%
+%assert (!IsModelReferenceTarget())
+
+
+%% Function: SLibFormatExport ==================================================
+%% Abstract:
+%%   Function to create and cache exported symbols in the model.h file sections.
+%%
+%function SLibFormatExport() void
+  
+  %assign isSfcnForm = (CodeFormat == "S-Function")
+  %assign baseFile = GetBaseFile("SystemHeader")
+  
+  
+  %if CodeFormat == "Embedded-C" && ...
+    (!GenerateGRTWrapper || ExtMode || NumContStates)
+    %% Export model functions
+    %%
+    %%   Initialize function
+    %%
+    %assign rootSystem = System[NumSystems-1]
+    %openfile entryPointFcns
+    
+      /* Model entry point functions */
+    %if NumSynchronousSampleTimes > 1 && !SLibSingleTasking()
+      %if MultiInstanceERTCode
+        extern void %<Name>_SetEventsForThisBaseStep(boolean_T *eventFlags, %<tSimStructType> *rtm);
+      %else
+        extern void %<Name>_SetEventsForThisBaseStep(boolean_T *eventFlags);
+      %endif       
+    %endif
+    
+    extern void %<Name>_initialize(%<SLibModelFcnArgs("Initialize",TLC_FALSE,"")>);
+    %%
+    %%   step function(s)
+    %%
+    %if (GenerateSampleERTMain || GenerateGRTWrapper || RateBasedStepFcn) ...
+      && SLibIsRateGrouping()
+      %foreach tid = NumSynchronousSampleTimes
+        %if (tid == 1) && Tid01Eq
+          %continue
+        %endif
+        %assign rootSystem.CurrentTID = tid
+        %if CombineOutputUpdateFcns
+          %if (tid == 0) && (NumContStates > 0)
+            extern void %<Name>_step%<tid>(%<SLibModelFcnArgs("UpdateContStates" ,TLC_FALSE,"")>);
+          %else
+            extern void %<Name>_step%<tid>(%<SLibModelFcnArgs("OutputUpdate",TLC_FALSE,"")>);
+          %endif
+        %else
+  	extern void %<Name>_output%<tid>(%<SLibModelFcnArgs("Output",TLC_FALSE,"")>);
+  	%if (tid == 0) && (NumContStates > 0)
+  	  extern void %<Name>_update%<tid>(%<SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")>);
+  	%else
+  	  extern void %<Name>_update%<tid>(%<SLibModelFcnArgs("RootUpdate",TLC_FALSE,"")>);
+  	%endif
+        %endif
+      %endforeach
+    %else
+      %assign rootSystem.CurrentTID = ""
+      %if CombineOutputUpdateFcns
+        %if (NumContStates > 0)
+          extern void %<Name>_step(%<SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")>);
+        %else
+            extern void %<Name>_step(%<SLibModelFcnArgs("OutputUpdate",TLC_FALSE,"")>);
+        %endif
+      %else
+        extern void %<Name>_output(%<SLibModelFcnArgs("Output",TLC_FALSE,"")>);
+        %if (NumContStates > 0)
+  	extern void %<Name>_update(%<SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")>);
+        %else
+  	extern void %<Name>_update(%<SLibModelFcnArgs("RootUpdate",TLC_FALSE,"")>);
+        %endif
+      %endif
+    %endif
+    %%
+    %%   terminate function
+    %%
+    %if IncludeMdlTerminateFcn == 1
+      extern void %<Name>_terminate(%<SLibModelFcnArgs("Terminate",TLC_FALSE,"")>);
+    %endif
+    %closefile entryPointFcns
+    %<SLibSetModelFileAttribute(baseFile, "ExternFcns", entryPointFcns)>
+    %undef entryPointFcns
+  %endif
+  
+  
+  %openfile externDataBuf
+  %% ===========================================================================
+  %% Add typedefs that support the profiler
+  %%
+  %<SLibGenProfTypeDef()>\
+  %%
+  %closefile externDataBuf
+  %<SLibSetModelFileAttribute(baseFile, "ExternData", externDataBuf)>
+  %undef externDataBuf
+  
+  
+  %% =========================================================================
+  %% Information related to the rtModel
+  %%
+  %assign rtmRet = SLibGenRTMTypedefAndMacros()
+  %if !WHITE_SPACE(rtmRet[0])
+    %% This is type decl, instead of "typedef".  Put into Typedefs symbol instead
+    %% of Declarations symbol.  Consistant with formatmodelref.tlc
+    %<SLibSetModelFileAttribute(baseFile, "Typedefs", rtmRet[0])>
+  %endif
+  %if !WHITE_SPACE(rtmRet[1])
+    %<SLibSetModelFileAttribute(baseFile, "Defines", rtmRet[1])>
+  %endif
+  %if !WHITE_SPACE(rtmRet[2])
+    %<SLibSetModelFileAttribute(baseFile, "Declarations", rtmRet[2])>
+  %endif
+  %undef rtmRet
+  
+  %if GenRTModel && !EmptyRealTimeObject
+    %assign typesFile = SLibAddModelFile("SystemHeader","Simulink","%<Name>_types")
+    %openfile opaqTypedefBuf
+    %<RTMsGenOpaqueTypedef(CompiledModel.System[NumSystems-1])>\
+    %closefile opaqTypedefBuf
+    %<SLibSetModelFileAttribute(typesFile, "Typedefs", opaqTypedefBuf)>
+    %undef opaqTypedefBuf
+  %endif
+  
+  %<SLibGenRTModelHFile()>
+  
+  %undef baseFile
+  %undef isSfcnForm
+  
+%endfunction
+
+%endif %% _FORMATEXPORT_
+
+%% [EOF] formatexport.tlc

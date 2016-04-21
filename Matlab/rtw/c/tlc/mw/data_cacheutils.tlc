@@ -1,0 +1,296 @@
+%% ============================================================================
+%% File: data_cacheutils.tlc
+%%
+%% Abstract:
+%%   
+%%   
+%% $Revision: 1.1.6.4 $ 
+%% $Date: 2003/10/14 18:02:29 $
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%% 
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_DATA_CACHEUTILS_") == 0
+%assign _DATA_CACHEUTILS_ = 1
+
+
+%% Data buffers are organized in CompiledModel/System as follows:
+%% CompiledModel/System {
+%%   DataBuffers {
+%%     NumObjectTypes: 1
+%%     ObjectType {
+%%       Name: "Parameters"
+%%       NumSections: 1
+%%       Section {
+%%         Name: "ExportedGlobal"
+%%         NumBuffers 3
+%%         Buffer {
+%%           Name: "Typedef"
+%%           Comment: ""
+%%           Code: ""
+%%           File: ""
+%%         }
+%%         Buffer {
+%%           Name: "Decl"
+%%           Comment: ""
+%%           Code: ""
+%%           File: ""
+%%         }
+%%         Buffer {
+%%           Name: "Instance"
+%%           Comment: ""
+%%           Code: ""
+%%           File: ""
+%%         }
+%%         BufferMap {
+%%           Typedef:  ... pointer to ObjectType[0].Section[0].Buffer[0]
+%%           Decl:     ... pointer to ObjectType[0].Section[0].Buffer[1]
+%%           Instance: ... pointer to ObjectType[0].Section[0].Buffer[2]
+%%         }
+%%       }
+%%       SectionMap {
+%%         SimulinkGlobal:  ... pointer to ObjectType[0].Section[0]
+%%       }
+%%     }
+%%     ObjectTypeMap {
+%%       Parameters:  ... pointer to ObjectType[0]
+%%     }
+%%   }
+%% }
+
+
+
+%% Function: SLibCreateDataBufferSection ======================================
+%% Abstract:
+%%   Generic function for caching data buffers for a specific object type
+%%
+%% NOTE:
+%%   The record that is passed in could be CompiledModel/System.
+%%
+%function SLibCreateDataBuffer(record, objType, section, buffer) void
+
+  %% Create DataBuffers record.
+  %if !ISFIELD(record, "DataBuffers")
+    %assign newDataBuffersRec = DataBuffers { ...
+      NumObjectTypes 0; ...
+      ObjectType []; ...
+      ObjectTypeMap {} ...
+    }
+    %addtorecord record DataBuffers newDataBuffersRec
+  %endif
+  %assign record = record.DataBuffers
+  
+  %% Create record for this ObjectType.
+  %if !ISFIELD(record.ObjectTypeMap, objType)
+    %assign newObjTypeRec = ObjectType { ...
+      Name "%<objType>"; ...
+      NumSections 0; ...
+      Section []; ...
+      SectionMap {} ...
+    }
+    
+    %% Add newObjType to DataBuffers.
+    %assign idx = record.NumObjectTypes
+    %assign record.ObjectType = record.ObjectType + newObjTypeRec
+    %addtorecord record.ObjectTypeMap %<objType> record.ObjectType[idx]
+    %assign record.NumObjectTypes = idx+1
+  %endif
+  %assign record = record.ObjectTypeMap.%<objType>
+  
+  %% Create record for this Section.
+  %if !ISFIELD(record.SectionMap, section)
+    %assign newSection = Section { ...
+      Name "%<section>"; ...
+      NumBuffers 0; ...
+      Buffer []; ...
+      BufferMap {} ...
+    }
+    
+    %% Add newSection to this ObjectType.
+    %assign idx = record.NumSections
+    %assign record.Section = record.Section + newSection
+    %addtorecord record.SectionMap %<section> record.Section[idx]
+    %assign record.NumSections = idx+1
+  %endif
+  %assign record = record.SectionMap.%<section>
+  
+  %% Create record for this Buffer
+  %if ISFIELD(record.BufferMap, buffer)
+    %assign fcnName = "SLibCreateDataBufferSection"
+    %assign errTxt = "%<fcnName>, %<objType>.%<section>.%<buffer> already exists"
+    %<LibReportFatalError(errTxt)>
+  %endif
+  
+  %assign newBuffer = Buffer { ...
+    Name    "%<buffer>"; ...
+    Comment INVALID_BUFFER; ...
+    Code    INVALID_BUFFER; ...
+    File    INVALID_BUFFER ...
+  }
+    
+  %% Add newBuffer to this Section.
+  %assign idx = record.NumBuffers
+  %assign record.Buffer = record.Buffer + newBuffer
+  %addtorecord record.BufferMap %<buffer> record.Buffer[idx]
+  %assign record.NumBuffers = idx+1
+  
+%endfunction %% SLibCreateDataBuffer
+
+
+%% Function: SLibSetDataBufferPart ================================================
+%% Abstract:
+%%   Generic function for caching a data buffer
+%%
+%function SLibSetDataBufferPart(record, objType, section, buffer, part, value) void
+
+  %assign bufRecord = FcnGetDataBufferRecord(record, objType, section, buffer)
+  %assert (TYPE(bufRecord) == "Scope")
+  
+  %assign bufRecord.%<part> = value
+  
+  %assign newValue = bufRecord.%<part>
+
+%endfunction %% SLibSetDataBufferPart
+
+
+%% Function: SLibGetDataBufferPart ================================================
+%% Abstract:
+%%
+%function SLibGetDataBufferPart(recpord, objType, section, buffer, part) void
+
+  %assign bufRecord = FcnGetDataBufferRecord(record, objType, section, buffer)
+  
+  %if (TYPE(bufRecord) == "Scope")
+    %return bufRecord.%<part>
+  %else
+    %return ""
+  %endif
+  
+%endfunction %% SLibGetDataBufferPart
+
+
+%% Function: SLibGetDataBuffer ================================================
+%% Abstract:
+%%
+%function SLibGetDataBuffer(record, objType, section, buffer) void
+
+  %if SLibDataBufferIsEmpty(record, objType, section, buffer)
+    %return ""
+  %else
+    %assign bufRecord = FcnGetDataBufferRecord(record, objType, section, buffer)
+    
+    %assign code    = bufRecord.Code
+    %if TYPE(code) == "Number"
+      %<LibReportFatalError("Attempt to access data buffer before it is set.")>
+    %endif
+    
+    %assign comment = bufRecord.Comment
+    %if TYPE(comment) == "Number"
+      %assign comment = ""
+    %endif
+    
+    %return "%<comment>%<code>"
+  %endif
+  
+%endfunction %% SLibGetDataBuffer
+
+
+%% Function: SLibDataBufferIsEmpty ============================================
+%% Abstract:
+%%
+%function SLibDataBufferIsEmpty(record, objType, section, buffer) void
+
+  %assign bufRecord = FcnGetDataBufferRecord(record, objType, section, buffer)
+
+  %if TYPE(bufRecord) == "Scope"
+    %% NOTE:
+    %% Only the "Code" part is used to check if a data buffer is empty.
+    %return WHITE_SPACE(bufRecord.Code)
+  %else
+    %return TLC_TRUE
+  %endif  
+  
+%endfunction %% SLibDataBufferIsEmpty
+
+
+%% Function: FcnGetDataBufferRecord ==========================================
+%% Abstract:
+%%   Local function to provide mapping to the correct Buffer record
+%%
+%function FcnGetDataBufferRecord(record, objType, section, buffer) void
+
+  %if !EXISTS(record.DataBuffers)
+    %return INVALID_BUFFER
+  %endif
+  %assign record = record.DataBuffers.ObjectTypeMap
+  
+  %if !EXISTS(record.%<objType>)
+    %return INVALID_BUFFER
+  %endif
+  %assign record = record.%<objType>.SectionMap
+  
+  %if !EXISTS(record.%<section>)
+    %return INVALID_BUFFER
+  %endif
+  %assign record = record.%<section>.BufferMap
+
+  %if !EXISTS(record.%<buffer>)
+    %return INVALID_BUFFER
+  %endif
+  
+  %% The buffer exists, return it.
+  %return record.%<buffer>
+
+%endfunction %% FcnGetDataBufferRecord
+
+
+%% Function: FcnDisplayDataBuffers ============================================
+%% Abstract:
+%%   This function is intended for debugging purposes only.
+%%
+%function FcnDisplayDataBuffers(record) void
+
+  %selectfile STDOUT
+  %if EXISTS(record.DataBuffers)
+    %with record.DataBuffers
+      DataBuffers {
+	NumObjectTypes: %<NumObjectTypes>
+	%foreach OT_idx = NumObjectTypes
+	  %with ObjectType[OT_idx]
+	    ObjectType {
+	      Name: "%<Name>"
+	      NumSections: %<NumSections>
+	      %foreach S_idx = NumSections
+		%with Section[S_idx]
+		  Section {
+		    Name: "%<Name>"
+		    NumBuffers: %<NumBuffers>
+		    %foreach B_idx = NumBuffers
+		      %with Buffer[B_idx]
+			Buffer {
+			  Name: "%<Name>"
+			  Comment: %<Comment>
+			  Code: %<Code>
+			  File: %<File>
+			}
+		      %endwith %% Buffer[B_idx]
+		    %endforeach %% B_idx = NumBuffers
+		  }
+		%endwith %% Section[S_idx]
+	      %endforeach %% S_idx = NumSection
+	    }
+	  %endwith %% ObjectType[OT_idx]
+	%endforeach %% OT_idx = NumObjectTypes
+      }
+    %endwith %% record.DataBuffers
+  %endif %% EXISTS(record.DataBuffers)
+  %selectfile NULL_FILE
+  
+%endfunction %% FcnDisplayDataBuffers
+
+
+%endif %% EXISTS("_DATA_CACHEUTILS_")
+
+%% [EOF] data_cacheutils.tlc

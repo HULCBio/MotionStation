@@ -1,0 +1,223 @@
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: From File block target file
+%%      This file has two major sections, the first part is for "RSIM" which
+%%      handles opening and reading data from a .mat file at the start of
+%%      a simulation to allow new mat files to be read in without recompiling
+%%      the model.
+%%
+%%      The second part is the default handling where we load the whole .mat
+%%      file into memory at the time of code generation. This is typically
+%%      the mode of operation for real-time applications since they generally
+%%      lack a file system
+%implements FromFile "C"
+
+
+
+
+
+%% Start ======================================================================
+%% Abstract:
+%%      Load the from file .mat data into a PWork pointer
+%%
+%function Start(block, system) Output
+  /* %<Type> Block: %<Name> */
+  {
+    %if EXISTS("_RSIM_")
+        %assign ::GBLFrFStartIdx = ::GBLFrFStartIdx + 1
+        %assign origFilename = STRING(ParamSettings.FileName)
+        %assign width = ParamSettings.Width
+	%assign frfIdx = ::GBLFrFStartIdx
+	/* Load data from %<origFilename> or different file if remapped */
+	const char *result;
+	if ((result=rt_ReadFromfileMatFile("%<origFilename>",%<width>, ...
+	  &gblFrFInfo[%<frfIdx>])) != NULL) {
+          %<RTMSetErrStat("result")>;
+	  return;
+	}
+
+	%<LibBlockPWork(PrevTimePtr,"","",0)> = (void *) ...
+	  gblFrFInfo[%<frfIdx>].tuDataMatrix;
+    }
+    %else %% end section for RSIM
+      %assign TUBufferName = "tuData"
+      %assign block = block + TUBufferName
+      %assign nterms = SIZE(ParamSettings.TUdata,1)
+      %%
+      %% generate the numbers for the data declaration
+      %%
+      %assign valuesVecName = ""
+      %assign tmpVar = valuesVecTemp { ...
+	Value  ParamSettings.TUdata ; ...
+	DataTypeIdx tSS_DOUBLE }
+      %assign valuesVecVal = LibPrepParameter(valuesVecTemp)
+      %openfile valuesBuffer
+      %assign nonFiniteIndices = ...
+	GENERATE_FORMATTED_VALUE(valuesVecVal, valuesVecName)
+      %closefile valuesBuffer
+      %%
+      %% check for and handle any non-finite values
+      %%
+      %assign asgnStr = ""
+      %if nonFiniteIndices[0][0] >= 0
+	%foreach i = SIZE(nonFiniteIndices,0)
+	  %assign tui = CAST("Real",ParamSettings.TUdata[%<nonFiniteIndices[i][1]>])
+	  %if !ISFINITE(tui)
+	    %assign asgnStr = asgnStr + "%<TUBufferName>[%<i>] = %<tui>;\n"
+	  %endif
+	%endforeach
+      %endif
+      %%
+      %% Data can be declared constant if there are no non-finite values
+      %%
+      %if WHITE_SPACE(asgnStr)
+        %assign prefix = "const"
+      %else
+        prefix = ""
+      %endif
+      %%
+      %% Now actually declare the (finite) data
+      %%
+      static %<prefix> real_T %<TUBufferName>[%<nterms>] = %<valuesBuffer>;
+      %%
+      %% Initialize non-finite entries in the data to their NaN or Inf values.
+      %%
+      %if !WHITE_SPACE(asgnStr)
+
+        /* (re)initialize non-finites */
+        %<asgnStr>
+      %endif
+
+      %<LibBlockPWork(PrevTimePtr,"","",0)> = (void *) &%<TUBufferName>[0];
+    }
+  %endif %% end loading/setting up data for NON-RSIM use
+
+%endfunction
+
+
+%% Output =====================================================================
+%% Abstract:
+%%      Output data from specified .mat file at each time point.
+%%
+%function Outputs(block, system) Output
+  %if Accelerator
+    /* Call into Simulink for From File */
+    %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+    
+  %else
+  {
+    %assign npoints = ParamSettings.NumPoints
+    static const real_T *pStart = NULL;
+    static boolean_T initBasePtr = TRUE;
+    const real_T  *pT     = %<LibBlockPWork(PrevTimePtr,"","",0)>;
+    real_T        time    = %<LibGetTaskTimeFromTID(block)>;
+    const real_T  *pU     = NULL;
+
+    if (initBasePtr == TRUE) {
+        pStart = (real_T *) %<LibBlockPWork(PrevTimePtr,"","",0)>;
+        initBasePtr = FALSE;
+    }
+
+    %if EXISTS("_RSIM_")
+      %assign ::GBLFrFOutputIdx = ::GBLFrFOutputIdx + 1
+      %assign frfIdx = GBLFrFOutputIdx
+      pU = pStart + gblFrFInfo[%<frfIdx>].nptsPerSignal - 2;
+    %else
+      pU = pStart + %<npoints-2>;
+    %endif
+
+    %%
+    %% Update current time pointer such that: pT[0] <= time < pT[1]
+    %%
+
+    if (time <= pStart[0]) {
+      pT = pStart;
+    } else if (time >= pU[0]) {
+      pT = pU;
+    } else {
+      %if DoAsserts == 1
+        assert((pStart <= pT) && (pT <= pU));
+      %endif
+      if (time < pT[0]) {
+        while (time < pT[0]) {
+          %if DoAsserts == 1
+            assert(pStart <= pT);
+          %endif
+          pT--;
+        }
+      } else {
+        while (time >= pT[1]) {
+          %if DoAsserts == 1
+            assert(pT <= pU);
+          %endif
+          pT++;
+    	  }
+	}
+    }
+    %<LibBlockPWork(PrevTimePtr,"","",0)> = (void *) pT;
+
+    %if EXISTS("_RSIM_")
+        pU = pT + gblFrFInfo[%<frfIdx>].nptsPerSignal;
+    %else
+	pU = pT + %<npoints>;
+    %endif
+
+    %%
+    %% Compute the outputs.
+    %%
+    %assign noutputs = LibBlockOutputSignalWidth(0)
+    %assign rollVars = ["Y"]
+    if (pT[0] == pT[1]) {
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+        %<y> = pU[ (time < pT[0]) ? 0 : 1 ];
+        %if (lcv != "") || (lcv == "" && idx < noutputs-1)
+	   %if EXISTS("_RSIM_")
+             pU += gblFrFInfo[%<frfIdx>].nptsPerSignal;
+	   %else
+	     pU += %<npoints>;
+	   %endif
+        %endif
+      %endroll
+    } else {
+      real_T f = (pT[1]-time)/(pT[1]-pT[0]);
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+        if (pU[0] == pU[1]) {
+          %<y> = pU[0];
+        } else {
+          %<y> = f*pU[0]+(1.0-f)*pU[1];
+	}
+        %if (lcv != "") || (lcv == "" && idx < noutputs-1)
+	  %if EXISTS("_RSIM_")
+            pU += gblFrFInfo[%<frfIdx>].nptsPerSignal;
+	  %else
+	    pU += %<npoints>;
+          %endif
+        %endif
+      %endroll
+    }
+  }
+
+  %endif
+%endfunction
+
+%% Output =====================================================================
+%% Abstract:
+%%      Output data from specified .mat file at each time point.
+%%
+%function Terminate(block, system) Output
+  %if EXISTS("_RSIM_")
+    %if  ::numFrFBlocks > 0 
+      %assign ::GBLFrFTermIdx = ::GBLFrFTermIdx + 1
+      /* %<Type> Block: %<Name> */
+      if(gblFrFInfo[%<::GBLFrFTermIdx>].tuDataMatrix != NULL){
+	rt_FREE(gblFrFInfo[%<::GBLFrFTermIdx>].tuDataMatrix);
+      }
+    %endif
+  %endif    
+%endfunction
+%% [EOF] fromfile.tlc

@@ -1,0 +1,292 @@
+%% 
+%% $Revision: 1.1.6.6 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Library that provides hooks for targets to specify profiling code.
+%%
+
+%% What profiling hooks do we provide?
+%% -----------------------------------
+%% For any target, we provide hooks for adding profiling code to
+%% various sections of the generated code. These various hooks are
+%% as follows:
+%% - Hook to add header file(s) which contains profiling function
+%%   declarations
+%% - Hook to add typedefs that support the profiler
+%% - Hook to create global variables for profiler objects
+%% - Hook to add global extern declarations of profiler objects
+%% - Hook to add declarations of profiler variables within the 
+%%   scope of a System's Output/Update/OutputUpdate function
+%% - Hook to add functionality for starting the profile operation
+%%   at the beginning of the code segment for a System's
+%%   Output/Update/OutputUpdate function
+%% - Hook to add functionality for ending the profile operation
+%%   at the end of the code segment for a System's
+%%   Output/Update/OutputUpdate function
+%% - Hook to tabulate the profiler results in the terminate 
+%%   function of a system.
+%%
+
+%% How do you use the profiling hooks in your target?
+%% --------------------------------------------------
+%% 1. For your target, create a TLC file containing functions that 
+%%    are written according to the format specified in Step 3.
+%% 
+%% 2. In your target.tlc file, create a global variable 
+%%    'ProfilerTLC' and assign to it the name of your profiling
+%%    TLC file. To turn profiling On/Off from your target TLC
+%%    file, use another global called 'ProfileGenCode'. Make this
+%%    variable have a value of 'TLC_TRUE' to turn on profiling.
+%% 
+%% 3. Format for target-specific profiling TLC file:
+%%
+%%    Functions section - 
+%%    In this section, you should implement the TLC functions
+%%    corresponding to one or more of the hooks specified
+%%    above. Each function is written with pre-determined inputs
+%%    and outputs. The functions and their output type is specified
+%%    below:
+%%
+%%    Function           InputArgs          OutputType  
+%%    -----------------------------------------------------------
+%%    ProfHeaders         void             Return array of header file names
+%%
+%%    ProfTypedefs        void             Output typedefs
+%%
+%%    ProfGlobalData      system           Ouptut global data for given system     
+%%
+%%    ProfExternDataDecls system           Ouptut extern decls for given system     
+%% 
+%%    ProfSysDecl         system           Output declarations for given system
+%%                        functionType     for given functionType
+%%
+%%    ProfSysStart        system           Output profiler start commands for 
+%%                        functionType     for given system & functionType
+%%
+%%    ProfSysEnd          system           Output profiler end commands for 
+%%                        functionType     for given system & functionType
+%%
+%%    ProfSysTerminate    system           Output profiler termination code
+%%                                         for given system
+
+%if EXISTS("_PROF_") == 0
+%assign _PROF_ = 1
+
+%function SLibSetupProf() void
+
+  %if EXISTS(ProfileIncludePath) && ProfileIncludePath != ""
+    %addincludepath ProfileIncludePath
+  %endif
+
+  %if EXISTS(ProfileGenCode) && ProfileGenCode && ...
+    EXISTS(ProfilerTLC)
+    %if IsModelReferenceTarget()
+      %assign ::ProfilerTLC = ""
+      %assign warnMsg = "The Model reference target does not support " ...
+	"profiling.  No profiling code is generated"
+      %warning %<warnMsg>
+    %else
+      %generatefile ProfilerType "%<ProfilerTLC>"
+    %endif
+  %else
+    %assign ::ProfilerTLC = ""
+  %endif
+  
+  %createrecord ::ProfilerRecord {   \
+    Type        "ProfilerType";  \
+    ProfTLCFile ProfilerTLC      \
+  }
+  
+%endfunction
+  
+%function ProfilerFunctionExists(fcnName) void
+  %assign retVal = TLC_FALSE
+  %if ::ProfilerRecord.ProfTLCFile != ""
+    %assign retVal = GENERATE_FUNCTION_EXISTS(::ProfilerRecord, fcnName)
+  %endif
+  %return retVal
+%endfunction
+
+
+%% Function: SLibGetProfCache =============================================
+%% Abstract:
+%%    Returns the ProfCache record if it exists, empty string otherwise
+%%    SLibGetProfCache and SLibSetProfCache are used for passing profiler code 
+%%    related information between functions. For example, we can pass global 
+%%    variable names of profiler objects between ProfGlbExtData and ProfGlbData
+%%    functions using this function pair. 
+%%
+%function SLibGetProfCache(system) void
+  %if EXISTS(system.ProfCache)
+    %return system.ProfCache
+  %else
+    %return ""
+  %endif
+%endfunction
+
+%% Function: SLibSetProfCache =============================================
+%% Abstract:
+%%    Add the ProfCache record to system
+%function SLibSetProfCache(system, rec) void
+
+  %addtorecord system ProfCache rec
+  
+%endfunction
+
+%% Function: SLibGenProfHeaders ============================================
+%% Abstract:
+%%    Generate code for including profiling header files 
+%%
+%function SLibGenProfHeaders() void
+  %assign hdr = ""
+  %if ProfilerFunctionExists("ProfilerHeaders")
+    %assign hdr = GENERATE(::ProfilerRecord, "ProfilerHeaders")
+  %endif
+  %if !ISEMPTY(hdr)
+    %% hdr contains an array of header files
+    %assign s = SIZE(hdr)
+    %assign numHdr = s[1]
+    %foreach hIdx = numHdr
+      %<LibAddToCommonIncludes(hdr[hIdx])>
+    %endforeach
+  %endif
+%endfunction
+
+%% Function: SLibGenProfTypeDef ============================================
+%% Abstract:
+%%    Generate code for typedefs of profiler objects
+%function SLibGenProfTypeDef() Output
+  %if ProfilerFunctionExists("ProfilerTypeDefs")
+    %assign tmp = GENERATE(::ProfilerRecord, "ProfilerTypeDefs")
+    %<tmp>
+  %endif
+%endfunction
+
+%% Function: SLibGenProfGlbExtData ============================================
+%% Abstract:
+%%    Generate code for global extern variable declarations of profiler 
+%%    objects
+%function SLibGenProfGlbExtData() Output
+  %if ProfilerFunctionExists("ProfilerGlobalExterns")
+    %with CompiledModel
+      %% For each system in CompiledModel, we check if the AddProfilerCode 
+      %% option is turned on, if so, generate code for global extern variable 
+      %% declarations of profiler objects
+      %foreach idx = NumSystems
+	%assign sys = System[idx]
+	%assign tmp = GENERATE(::ProfilerRecord, "ProfilerGlobalExterns", sys)
+	%<tmp>
+      %endforeach
+    %endwith
+  %endif
+%endfunction
+
+%% Function: SLibGenProfGlbData ============================================
+%% Abstract:
+%%    Generate code for creating global variables of profiler objects
+%function SLibGenProfGlbData() Output
+  %if  ProfilerFunctionExists("ProfilerGlobalData")
+    %with CompiledModel
+      %% For each system in CompiledModel, we check if the AddProfilerCode 
+      %% option is turned on, if so, generate code for creating global variables
+      %% of profiler objects
+      %foreach idx = NumSystems
+	%assign sys = System[idx]
+	%assign tmp = GENERATE(::ProfilerRecord, "ProfilerGlobalData", sys)
+	%<tmp>
+      %endforeach
+    %endwith
+  %endif
+%endfunction
+
+%% Function: SLibGenProfSysDeclare ============================================
+%% Abstract:
+%%    Generate code for adding declarations of profiler variables within the 
+%%    scope of a System's fcn (Output/Update/OutputUpdate) function
+%function SLibGenProfSysDeclare(system, fcn) 
+  %if  ProfilerFunctionExists("ProfilerSystemDecls")
+    %openfile tmpBuff
+    %% If InLine option is turned on, we add an extra { in generated code 
+    %if LibSystemIsInlined(system) 
+      {
+    %endif  
+    %assign tmp = GENERATE(::ProfilerRecord, "ProfilerSystemDecls", system, fcn)
+    %<tmp>
+    %closefile tmpBuff
+    %return tmpBuff
+  %else
+    %return ""
+  %endif
+%endfunction
+
+%% Function: SLibGenProfSysStart ============================================
+%% Abstract:
+%%    Generate code for  starting the profile operation at the beginning of the 
+%%    code segment for a System's fcn (Output/Update/OutputUpdate) function
+%function SLibGenProfSysStart(system, fcn) 
+  %if ProfilerFunctionExists("ProfilerSystemStart")
+    %openfile tmpBuff
+    %% If InLine option is turned on and ProfilerSystemDecls doesn't exist,
+    %% we add { here.
+    %if LibSystemIsInlined(system) && ...
+      !ProfilerFunctionExists("ProfilerSystemDecls") 
+      {
+    %endif	
+    %assign tmp = GENERATE(::ProfilerRecord, "ProfilerSystemStart", system, fcn)
+    %<tmp>
+    %closefile tmpBuff
+    %return tmpBuff
+  %else
+    %return ""
+  %endif
+  
+%endfunction
+
+%% Function: SLibGenProfSysEnd ============================================
+%% Abstract:
+%%    Generate code for  ending the profile operation at the beginning of the 
+%%    code segment for a System's fcn (Output/Update/OutputUpdate) function
+%function SLibGenProfSysEnd(system, fcn) 
+  %if ProfilerFunctionExists("ProfilerSystemFinish")
+    %openfile tmpBuff
+    %assign tmp = GENERATE(::ProfilerRecord, "ProfilerSystemFinish", system, fcn)
+    %<tmp>
+    %% If InLine option is turned on, we add } in the generated code 
+    %if LibSystemIsInlined(system)
+    }
+  %endif
+  %closefile tmpBuff
+  %return tmpBuff
+%else
+  %return ""
+%endif
+%endfunction
+
+%% Function: SLibGenProfSysTerminate ========================================
+%% Abstract:
+%%    Generate code for tabulating the profiler results in the terminate 
+%%    function of a system  
+%function SLibGenProfSysTerminate(system) 
+  %if ProfilerFunctionExists("ProfilerSystemTerminate")
+    %openfile tmpBuff
+    %assert system.Type == "root"
+    %with CompiledModel
+      %foreach idx =  NumSystems
+	%assign sys = System[idx]
+	%assign tmp = GENERATE(::ProfilerRecord, "ProfilerSystemTerminate", sys)
+	%<tmp>
+      %endforeach
+      %closefile tmpBuff
+    %endwith
+    %return tmpBuff
+  %else
+    %return ""
+  %endif
+%endfunction
+
+%endif %% _PROF_
+
+%% [EOF] prof.ttlc

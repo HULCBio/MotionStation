@@ -1,0 +1,369 @@
+%% =============================================================================
+%% File: prm_simulinkglobal.tlc
+%%
+%% Abstract:
+%%   
+%%   
+%% $Revision: 1.1.6.8 $ 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%% 
+%% =============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_PRM_SIMULINKGLOBAL_") == 0
+%assign _PRM_SIMULINKGLOBAL_ = 1
+
+%include "prm_cacheutils.tlc"
+
+
+%% Function: SLibCacheSimulinkGlobalPrmBuffers =================================
+%% Abstract:
+%%   Generate the Decl & Instance buffers for SimulinkGlobal parameters.
+%%  
+%function SLibCacheSimulinkGlobalPrmBuffers(startIdx) void
+
+  %if SLibAreSimulinkGlobalParamsUnstructured()
+    %% Create parameter buffers
+    %<SLibCreatePrmBuffer("UnstructuredSimulinkGlobal", "Decl")>
+    %<SLibCreatePrmBuffer("UnstructuredSimulinkGlobal", "Instance")>
+    
+    %% Generate the parameter declaration buffer
+    %assign declBuffer = FcnGenUnstructuredSimulinkGlobalPrmDecl(startIdx)
+    %<SLibSetPrmBufferPart("UnstructuredSimulinkGlobal", "Decl", "Code", declBuffer)>
+    
+    %% Generate the parameter instantiation buffer
+    %%
+    %% NOTE:
+    %% Always generate the ParamsInst buffer to be included in:
+    %% - top_model.c   (if reqInsts.ParamsInst == TLC_TRUE), or
+    %% - submodel_sf.c (if generating code for model reference target)
+    %assign instanceBuffer = FcnGenUnstructuredSimulinkGlobalPrmInstance(startIdx)
+    %<SLibSetPrmBufferPart("UnstructuredSimulinkGlobal", "Instance", "Code", instanceBuffer)>
+  %else
+    %% Create parameter buffers
+    %<SLibCreatePrmBuffer("SimulinkGlobal", "Instance")>
+    %<LibAddToCompiledModel("NumPrmStructElements", INVALID_COUNTER)>
+
+    %% Generate the parameter structure declaration & typedef for each system
+    %<FcnGenAllSimulinkGlobalPrmStructDecls()>
+    
+    %% Generate the parameter structure instantiation buffer
+    %assign result = FcnGenSimulinkGlobalPrmInstance()
+    %<SLibSetPrmBufferPart("SimulinkGlobal", "Instance", "Code", result[0])>
+    %assign CompiledModel.NumPrmStructElements = result[1]
+  %endif
+    
+%endfunction %% SLibCacheSimulinkGlobalPrmBuffers
+
+
+%% Function: FcnGenUnstructuredSimulinkGlobalPrmDecl =============================================
+%% Abstract:
+%%   Generate the UnstructuredSimulinkGlobal parameters declaration buffer
+%%
+%function FcnGenUnstructuredSimulinkGlobalPrmDecl(startIdx) void
+
+  %assign cacheBuffer = ""
+  %foreach prmIdx = NumInrtP
+    %assign mdlParam = Parameter[startIdx + prmIdx]
+    %assign cacheBuffer = cacheBuffer + SLibGenModelParamDefn(mdlParam)
+  %endforeach
+  
+  %return cacheBuffer
+
+%endfunction %% FcnGenUnstructuredSimulinkGlobalPrmDecl
+
+
+%% Function: FcnGenUnstructuredSimulinkGlobalPrmInstance =======================================
+%% Abstract:
+%%   Generate the constant parameters instantiation buffer
+%%
+%function FcnGenUnstructuredSimulinkGlobalPrmInstance(startIdx) void
+
+  %assign cacheBuffer = "" 
+  %foreach prmIdx = NumInrtP
+    %assign mdlParam = Parameter[startIdx + prmIdx]
+    %assign cacheBuffer = cacheBuffer + SLibGenUnstrModelParamInstance(mdlParam)
+  %endforeach
+
+  %return cacheBuffer
+  
+%endfunction %% FcnGenUnstructuredSimulinkGlobalPrmInstance
+
+
+%% Function: FcnGenAllSimulinkGlobalPrmStructDecls =============================
+%% Abstract:
+%%   Generate the parameter structure declarations for each system.
+%%
+%function FcnGenAllSimulinkGlobalPrmStructDecls() void
+  %foreach sysIdx = NumSystems
+    %assign sys = System[sysIdx]
+
+    %% Create parameter buffers
+    %<SLibCreateSystemPrmBuffer(sys, "SimulinkGlobal", "Typedef")>
+    %<SLibCreateSystemPrmBuffer(sys, "SimulinkGlobal", "Decl")>
+
+    %% Generate the parameter structure typedef & decl buffers for this system
+    %assign result = FcnGenOneSimulinkGlobalPrmStructDecl(sysIdx)
+    %<SLibSetSystemPrmBufferPart(sys, "SimulinkGlobal", "Typedef", "Code", result[0])>
+    %<SLibSetSystemPrmBufferPart(sys, "SimulinkGlobal", "Decl", "Code", result[1])>
+    
+  %endforeach
+%endfunction %% FcnGenAllSimulinkGlobalPrmStructDecls
+
+
+%% Function: FcnGenOneSimulinkGlobalPrmStructDecl ==============================
+%% Abstract:
+%%   Generate the structure declaration for the given system.
+%%
+%function FcnGenOneSimulinkGlobalPrmStructDecl(sysIdx) void
+  %assign result = ["", ""]
+  %if SLibSystemHasOwnDataScope(System[sysIdx])
+    %assign parameterBuff = SLibGetSystemParameters(sysIdx)
+    %assign userTypeAndPrmStructDecl = ""
+    %assign prmStructTypedef = ""
+    %if (sysIdx < (NumSystems-1))
+      %assign identifier = "rtP%<FcnGetSystemIdentifier(sysIdx)>"
+      %openfile comment
+      /* Parameters for system: '%<System[sysIdx].Name>' */
+      %closefile comment
+    %else %% RootSystem (sysIdx == NumSystems-1)
+      %assign  identifier = tParametersType
+      %openfile comment
+      /* Parameters (auto storage) */
+      %closefile comment
+    %endif
+    %%
+    %assign userTypes = LibDumpTypedefsCache()
+    %if sysIdx == (NumSystems-1)
+      %assign ::CompiledModel.TypedefsCache = ""
+    %endif
+    %% xxx (pjackson) User-types should be removed from parameter code
+    %%
+    %% Insert user-defined types before defining the parameter structure
+    %%
+    %if userTypes!=""
+      %assign userTypeAndPrmStructDecl = userTypeAndPrmStructDecl + userTypes
+    %endif
+    %if parameterBuff[1] > 0
+      %%
+      %% Generate the structure declaration
+      %%
+      %openfile prmStructDecl
+      
+      %<comment>\
+      %<SLibAddPreStructTypedefPragma("_%<identifier>")>\
+      struct _%<identifier> {
+	%<parameterBuff[0]>
+      };
+      %<SLibAddPostStructTypedefPragma("_%<identifier>")>\
+      %closefile prmStructDecl
+      %assign userTypeAndPrmStructDecl = ...
+	userTypeAndPrmStructDecl + prmStructDecl
+      %%
+      %% Generate the structure typedef
+      %%
+      %openfile prmStructTypedef
+      
+      %<comment> \
+      %<SLibAddPreStructTypedefPragma(identifier)>\      
+      typedef struct _%<identifier> %<identifier>;
+      %<SLibAddPostStructTypedefPragma(identifier)>\
+      %closefile prmStructTypedef
+    %endif
+    %%
+    %assign result[0] = "%<prmStructTypedef>"
+    %assign result[1] = "%<userTypeAndPrmStructDecl>"
+  %endif
+  %return result
+%endfunction %% FcnGenOneSimulinkGlobalPrmStructDecl
+
+
+%% Function: FcnGenSimulinkGlobalPrmInstance ===================================
+%% Abstract:
+%%   Generate the instantiation of the parameters structure
+%%
+%function FcnGenSimulinkGlobalPrmInstance() void
+  
+  %if IsModelReferenceTarget()
+    %assign result = FcnScopeParameters(NumSystems-2, 0)
+  %else
+    %assign result = FcnScopeParameters(NumSystems-1, 0)
+  %endif
+
+  %return result
+
+%endfunction %% FcnGenSimulinkGlobalPrmInstance
+
+
+%%Function: SLibGetSystemParameters ============================================
+%%Abstract:
+%%  Returns the contents of a systems parameter structure.
+%%
+%function SLibGetSystemParameters(sysIdx) void
+  %assign sysParams = ""
+  %assign paramArg = System[sysIdx].Interface.PrmArgDef
+  %assign childTypedefs = ...
+    FcnGetChildSystemTypedefs(sysIdx, "rtP", "Parameters")
+  %assign numElements   = childTypedefs[1]
+  %assign res           = ["", 0]
+  %openfile sysParams
+  %if paramArg.NumFlatFields > 0
+    %with CompiledModel.ModelParameters
+      %foreach prmIdx = paramArg.NumFlatFields
+	%assign prm = Parameter[paramArg.FirstLocation + prmIdx]
+	%if !ISEMPTY(prm.Value) && prm.Width > 0 && !SLibOmitParameter(prm)
+	  %assign dataType = SLibGetRecordDataTypeName(prm, "")
+	  %assign  comment = SLibGenModelPrmDefnComment(prm)
+	  %assign optWidth = LibOptionalVectorWidth(prm.Width)
+	  %<dataType> %<prm.Identifier>%<optWidth>; %<comment>
+	  %assign numElements = numElements + 1
+	%endif
+	%if prm.Padding != 0 
+	  %assign optPadWidth = LibOptionalVectorWidth(prm.Padding)
+	  char pad_%<prm.Identifier>%<optPadWidth>;
+	%endif
+      %endforeach
+    %endwith
+  %endif
+  %<childTypedefs[0]>
+  %closefile sysParams
+  %if !ISFIELD(System[sysIdx], "HasParametersArg")
+    %addtorecord System[sysIdx] HasParametersArg (numElements == 0 ? 0 : 1)
+  %endif
+  %if numElements > 0
+    %assign res[0] = "%<sysParams>"
+    %assign res[1] = numElements
+  %endif
+  %return res %% return [%<sysParams>, %<numElements>]
+%endfunction %% SLibGetSystemParameters
+
+
+%% Function: FcnScopeParameters ================================================
+%% Abstract:
+%%    This function generates a systems non-inlined parameter initialization.
+%%    This function also calls SLibChildScopeValues to inline any child-system
+%%    structure initialization.
+%%
+%% Arguments:
+%%        sysIdx - index for the system to generate initialization
+%%     mdlPrmPtr - index into the ModelParametes vector, that points
+%%                 to the first element of a system instance parameter
+%%                 vector (simliar to first-instance index but also for
+%%                 second and greater instance of a system)
+%%
+%function FcnScopeParameters(sysIdx, mdlPrmPtr) void
+  %assign prmBuff = ""
+  %assign paramArg = System[sysIdx].Interface.PrmArgDef
+  %assign numElements = 0
+  %assign comma = ""
+  %assign res = ["", 0, 0]
+  %% --- comment generation variables ---
+  %assign bGenerateComments = SLibCommentParameterInstances()
+  %assign scalC = ""
+  %assign vectC = ""
+  
+  %openfile prmBuff
+  %if paramArg.NumFlatFields > 0
+    %with CompiledModel.ModelParameters
+      %% Assert that this function is being called for the first
+      %% system parameter for System[sysIdx]
+      %assert (InlineParameters || ...
+	(sysIdx == Parameter[mdlPrmPtr].OwnerSysIdx[0]))
+      %assert (InlineParameters || (mdlPrmPtr == 0) || ...
+	(sysIdx != Parameter[mdlPrmPtr-1].OwnerSysIdx[0]) || ...
+	(Parameter[mdlPrmPtr].OwnerSysIdx[1] != ...
+	Parameter[mdlPrmPtr-1].OwnerSysIdx[1]))
+      %%
+      %foreach prmIdx = paramArg.NumFlatFields
+	%assign prm = Parameter[mdlPrmPtr+prmIdx]
+	%if !ISEMPTY(prm.Value) && !SLibOmitParameter(prm)
+	  %if bGenerateComments
+	    %if prm.Width > 1
+	      %assign scalC = ""
+	      %assign vectC = GetParameterComment(prm)
+	    %else
+	      %assign scalC = " /*" + GetParameterComment(prm) + " */"
+	      %assign vectC = ""
+	    %endif
+	  %endif
+	  %assign numElements = numElements + prm.Width
+	  %assign initString = comma + " " + SLibGetFormattedPrmValue(prm, vectC)
+	  %<initString> \
+	  %assign comma = ", %<scalC>\n"
+	  %if prm.Padding != 0 
+	    %if prm.Padding == 1
+	      %<comma> 'a' \
+	    %else
+	      %assign padInit = ""
+	      %foreach loopIdx = prm.Padding
+		%assign padInit = padInit +"a"
+	      %endforeach
+	      %<comma> "%<padInit>" \
+	      %% Add initialization for padding char
+	    %endif	    
+	  %endif
+	%endif
+      %endforeach
+    %endwith
+  %endif
+  %assign childValues = SLibChildScopeValues(sysIdx, ...
+    mdlPrmPtr+paramArg.NumFlatFields, "Parameters")
+  %assign numElements = numElements + childValues[1]
+  %if childValues[1] > 0
+    %<comma>%<childValues[0]> \
+  %else
+    %<scalC>
+  %endif
+  %closefile prmBuff
+  
+  %if numElements > 0
+    %assign res[0] = "%<prmBuff>"
+    %assign res[1] = numElements
+  %endif
+  %assign res[2] = childValues[2]
+  %return res
+%endfunction %% FcnScopeParameters
+
+
+%% Function: LibParametersStructIsEmpty ========================================
+%% Abstract:
+%%   NOTE: All calls to this function could be modified to be calls to
+%%   (CompiledModel.NumPrmStructElements == 0).   However, to facilitate
+%%   code readability, we will keep this as a wrapper function for now.
+%%               
+%function LibParametersStructIsEmpty() void
+  
+  %if EXISTS(CompiledModel.NumPrmStructElements)
+    %% Counter should not be accessed before it has been set.
+    %assert (CompiledModel.NumPrmStructElements != INVALID_COUNTER)
+    
+    %return (CompiledModel.NumPrmStructElements == 0)
+  %else
+    %return TLC_TRUE
+  %endif
+  
+%endfunction %% LibParametersStructIsConst
+
+
+%% Function: SLibAreSimulinkGlobalParamsUnstructured ==========================
+%% Abstract:
+%%   For models that are model reference submodels or for models that contain
+%%   model reference blocks (e.g., model reference top model), we treat
+%%   SimulinkGlobal parameters as if they were Exported Global (unstructured).
+%%
+%function SLibAreSimulinkGlobalParamsUnstructured()
+  %if Accelerator
+    %assert !IsModelReferenceTarget()
+    %return TLC_FALSE
+  %elseif (IsModelReferenceTarget() || HasModelReferenceBlocks())
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction 
+
+
+%endif %% EXISTS("_PRM_SIMULINKGLOBAL_")
+
+%% [EOF] prm_simulinkglobal.tlc

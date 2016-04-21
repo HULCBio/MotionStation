@@ -1,0 +1,407 @@
+%% File : sfun_nddirectlook.tlc generated from sfun_nddirectlook.ttlc revsion 1.11
+%% $Date: 2002/04/10 18:18:17 $
+%%
+%% Rob Aberg, 24-Jul-1999
+%% Copyright 1990-2002 The MathWorks, Inc.
+%%
+%% Abstract: N-D Direct Lookup Table block target file
+
+%implements sfun_nddirectlook "C"
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%    Register for expression folding.
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+%% Function: FcnGetTmpInputVarName =============================================
+%% Abstract:
+%%    Return the name of the temporary variable to use
+%%    in the generated code.  The temp var takes the raw 
+%%    input value and clips it to valid table indices.
+%%
+%function FcnGetTmpInputVarName() void
+  %return "rt_uClip"
+%endfunction
+
+%% Function: FcnGenClipCode ====================================================
+%% Abstract:
+%%    Calculate the min and max for the type given and 
+%%    generate clip code for variable u if needed.
+%%
+%function FcnGenClipCode(typeId, maxIdx) void
+  %assign maxClip  = 0
+  %assign zeroClip = 0
+  %%
+  %% NOTE: inputs are never complex.
+  %%
+  %switch typeId
+    %case tSS_DOUBLE
+    %case tSS_SINGLE
+      %assign zeroClip = 1
+      %assign maxClip  = 1
+      %break
+    %case tSS_INT8
+      %assign zeroClip = 1
+      %if maxIdx < INT8MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_BOOLEAN
+      %% special case,
+      %% don't clip
+      %assign maxClip = 0
+      %break
+    %case tSS_UINT8
+      %if maxIdx < UINT8MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_INT16
+      %assign zeroClip = 1
+      %if maxIdx < INT16MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_UINT16
+      %if maxIdx < UINT16MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_INTEGER
+      %assign zeroClip = 1
+      %if maxIdx < INT32MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_INT32
+      %assign zeroClip = 1
+      %if maxIdx < INT32MAX
+	%assign maxClip = 1
+      %endif
+      %break
+    %case tSS_UINT32
+      %if maxIdx < UINT32MAX
+	%assign maxClip = 1
+      %endif
+      %break
+  %endswitch
+  %%
+  %%
+  %assign u = FcnGetTmpInputVarName()
+  %if zeroClip == 1 && maxClip == 1
+    %%
+    %% Saturate input value to [0, maxIdx]
+    %%
+    $if(c)
+    %assign satFcnRec = LibCreateHomogMathFcnRec("saturate", typeId)
+    %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, "%<u>")
+    %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, "0")
+    %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, "%<maxIdx>")
+    %assign clipCode = "%<u> = %<SLibGenRTLibFcnCall(satFcnRec)>;"
+  %elseif zeroClip == 0 && maxClip == 1
+    %%
+    %% Enforce input value <= maxIdx
+    %%
+    %assign clipCode = "%<u> = %<LibGenMathFcnCall("min", typeId, "%<u>", "%<maxIdx>")>;"
+  %elseif zeroClip == 1 && maxClip == 0
+    %%
+    %% enforce input value > 0
+    %%
+    %assign clipCode = "%<u> = %<LibGenMathFcnCall("max", typeId, "%<u>", "0")>;"
+  %else
+    %assign clipCode = ""
+  %endif
+  %return clipCode
+%endfunction
+
+%% Function: FcnForceIntType ======================================================
+%% Abstract:
+%%    If input type is floating point, use int, otherwise just return
+%%    the input type ID.
+%%
+%function FcnForceIntType(typeId) void
+  %if typeId == tSS_DOUBLE || typeId == tSS_SINGLE
+    %return tSS_INTEGER
+  %else
+    %return typeId
+  %endif
+%endfunction
+  
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%    Use memcpy for > 1 element, array ref for 1 element outputs.
+%%
+%function Outputs(block, system) Output
+  %if SFcnParamSettings.tabIsInput == 1
+    %assign numInputIndices = NumDataInputPorts - 1
+    %assign tablePortIdx    = NumDataInputPorts - 1
+  %else
+    %assign numInputIndices = NumDataInputPorts
+  %endif
+  %assign numOutputDims = CAST("Number",SFcnParamSettings.numTDims - numInputIndices)
+  %assign dimSize = SFcnParamSettings.tabDims
+  %foreach idx = SFcnParamSettings.numTDims
+    %if idx == 0
+      %assign dimSize[0] = 1
+    %else
+      %assign dimSize[idx] = dimSize[idx-1] * SFcnParamSettings.tabDims[idx-1]
+    %endif
+  %endforeach
+  %%
+  %% determine the output chunk size
+  %%
+  %assign eltDataTypeName = LibBlockOutputSignalDataTypeName(0,"")
+  %assign outputSize      = "sizeof(%<eltDataTypeName>)*%<dimSize[numOutputDims]>"
+  %%
+  %assign ND = "%<CAST("Number",SFcnParamSettings.numTDims)>-dimensional"
+  %assign needOpen = 0
+  %assign needEnd  = 0
+  %switch numOutputDims
+    %case 0
+      %if LibBlockOutputSignalWidth(0) == 1
+	%assign oShape = "a Scalar"
+      %else
+	%assign needOpen = 1
+	%assign oShape = "%<LibBlockOutputSignalWidth(0)> Scalars"
+      %endif
+      %break
+    %case 1
+      %assign oShape = "a Column"
+      %break
+    %case 2
+      %assign oShape = "a 2-D Matrix"
+  %endswitch
+
+  /* LookupNDDirect: '%<Name>' */
+  /* %<ND> Direct Look-Up returning %<oShape> */
+  %if numOutputDims == 0
+    %%
+    %% block can roll
+    %%
+    %if SFcnParamSettings.tabIsInput == 1
+      %%
+      %% generate roll variables string
+      %%
+      %assign rollVarString = "["
+      %foreach idx = numInputIndices
+	%assign rollVarString = rollVarString + "\"u%<idx>\", "
+      %endforeach
+      %assign rollVarString = rollVarString + "\"Y\"]"
+      %assign rollVars = %<rollVarString>
+      %%
+      %% generate roll region from intersection of inputs
+      %%
+      %assign dRollRegions = DataInputPort[0].RollRegions
+      %foreach idx = numInputIndices
+	%if SIZE(DataInputPort[idx].RollRegions,1) > SIZE(dRollRegions,1) 
+	  %assign dRollRegions = DataInputPort[idx].RollRegions
+	%endif
+      %endforeach
+    %else
+      %%
+      %% generic roll
+      %%
+      %assign rollVars = ["U","Y"]
+      %assign dRollRegions = RollRegions
+    %endif
+    %%
+    %roll sigIdx=dRollRegions, lcv=1, block, "Roller", rollVars
+      %if numInputIndices > 1
+	%if SIZE(dRollRegions,1) == 1
+	  %assign needEnd = 1
+	  {
+        %else
+	  %assign needEnd = 0
+	%endif
+	%assign uType = LibGetDataTypeNameFromId(tSS_INTEGER)
+	%%
+	%% Do we need the clipping temp var? find out here
+	%%
+	%assign needU = 0
+	%foreach portIdx = numInputIndices
+	  %assign maxIdx = CAST("Number", ...
+	    %<SFcnParamSettings.tabDims[portIdx+numOutputDims]-1>)
+	  %assign iTypeId  = LibBlockInputSignalDataTypeId(portIdx)
+	  %assign clipCode = FcnGenClipCode(iTypeId,maxIdx)
+	  %if SIZE(clipCode,1) > 0
+	    %assign needU = 1
+	  %endif
+	%endforeach
+	%if needU == 1
+	  %assign uTmp = FcnGetTmpInputVarName()
+	  %<uType> %<uTmp>;
+	%endif
+	%<uType> tableOffset;
+	%foreach portIdx = numInputIndices
+	  %if portIdx == 0
+	    %assign eqStr = "="
+	  %else
+	    %assign eqStr = "+="
+	  %endif
+	  %assign u = LibBlockInputSignal(portIdx, "", lcv, sigIdx)
+	  %assign maxIdx = CAST("Number", ...
+	    %<SFcnParamSettings.tabDims[portIdx+numOutputDims]-1>)
+	  %assign numElements = CAST("Number", %<dimSize[portIdx+numOutputDims]>)
+	  %assign iTypeId  = LibBlockInputSignalDataTypeId(portIdx)
+	  %assign clipCode = FcnGenClipCode(iTypeId,maxIdx)
+	  %if SIZE(clipCode,1) > 0
+	    %assign uTmp = FcnGetTmpInputVarName()
+	    %<uTmp> = (%<uType>)%<u>;
+	    %<clipCode>
+	    %if numElements > 1
+	      tableOffset %<eqStr> %<numElements> * %<uTmp>;
+	    %else
+	      tableOffset %<eqStr> %<uTmp>;
+	    %endif
+	  %else
+	    %if numElements > 1
+	      tableOffset %<eqStr> %<numElements> * (%<uType>)%<u>;
+	    %else
+	      tableOffset %<eqStr> (%<uType>)%<u>;
+	    %endif
+	  %endif
+	%endforeach
+	
+	%if SFcnParamSettings.tabIsInput == 0
+	  %assign tableValue = LibBlockParameter(table, "tableOffset", "", 0)
+	%else
+	  %assign tableValue = LibBlockInputSignal(tablePortIdx, "tableOffset", "", 0)
+	%endif
+      %else
+	%%
+	%% only one input, clip if necessary, if not use it directly 
+	%%
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%assign maxIdx = CAST("Number", %<SFcnParamSettings.tabDims[numOutputDims]-1>)
+	%assign numElements = CAST("Number", %<dimSize[numOutputDims]>)
+	%assign uTypeId  = FcnForceIntType(LibBlockInputSignalDataTypeId(0))
+	%assign uType    = LibGetDataTypeNameFromId(uTypeId)
+        %assign iTypeId  = LibBlockInputSignalDataTypeId(0)
+	%assign clipCode = FcnGenClipCode(iTypeId,maxIdx)
+	%if SIZE(clipCode,1) > 0
+	  %assign uTmp = FcnGetTmpInputVarName()
+	  %if SIZE(dRollRegions,1) == 1
+	    %assign needEnd = 1
+	    {
+	  %else
+	    %assign needEnd = 0
+	  %endif
+	  %if uTypeId == LibBlockInputSignalDataTypeId(0)
+	    %<uType> %<uTmp> = %<u>;
+	  %else
+	    %<uType> %<uTmp> = (%<uType>)%<u>;
+	  %endif
+	  
+	  %<clipCode>
+	  %assign tableOffset = uTmp
+	%else
+	  %%
+	  %% If there is no clip code and only one input, the index type
+	  %% now MUST be an integer, so a cast is never needed.
+	  %%
+	  %assign tableOffset = "%<u>"
+	%endif
+	%if SFcnParamSettings.tabIsInput == 0
+	  %assign tableValue = LibBlockParameter(table, tableOffset, "", 0)
+	%else
+	  %assign tableValue = LibBlockInputSignal(tablePortIdx, tableOffset, "", 0)
+	%endif
+      %endif
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)	
+      %<y> = %<tableValue>;
+    %endroll
+  %else
+    %%
+    %% No roll, copying multiple table elements for scalar inputs
+    %%
+    %% Process Input(s)
+    %%
+    %if numInputIndices > 1
+      %assign needEnd = 1
+      {
+      %assign uType = LibGetDataTypeNameFromId(tSS_INTEGER)
+      %assign uTmp  = FcnGetTmpInputVarName()
+      %<uType> %<uTmp>;
+      %<uType> tableOffset;
+
+      %foreach portIdx = numInputIndices
+	%if portIdx == 0
+	  %assign eqStr = "="
+	%else
+	  %assign eqStr = "+="
+	%endif
+	%assign u = LibBlockInputSignal(portIdx, "", "", 0)
+	%assign maxIdx = CAST("Number", ...
+	  %<SFcnParamSettings.tabDims[portIdx+numOutputDims]-1>)
+	%assign numElements = CAST("Number", %<dimSize[portIdx+numOutputDims]>)
+	%assign iTypeId  = FcnForceIntType(LibBlockInputSignalDataTypeId(0))
+	%assign clipCode = FcnGenClipCode(iTypeId,maxIdx)
+	%if SIZE(clipCode,1) > 0
+	  %<uTmp> = (%<uType>)%<u>;
+	  %<clipCode>
+	  tableOffset %<eqStr> %<numElements> * %<uTmp>;
+	%else
+	  tableOffset %<eqStr> %<numElements> * (%<uType>)%<u>;
+	%endif
+      %endforeach
+    %else
+      %%
+      %% just one index into table
+      %%
+      %assign u = LibBlockInputSignal(0, "", "", 0)
+      %assign maxIdx = CAST("Number", %<SFcnParamSettings.tabDims[numOutputDims]-1>)
+      %assign numElements = CAST("Number", %<dimSize[numOutputDims]>)
+      %assign uTypeId  = FcnForceIntType(LibBlockInputSignalDataTypeId(0))
+      %assign uType    = LibGetDataTypeNameFromId(uTypeId)
+      %assign uTmp     = FcnGetTmpInputVarName()
+      %assign clipCode = FcnGenClipCode(uTypeId,maxIdx)
+      %assign needEnd  = 0
+      %%
+      %if SIZE(clipCode,1) > 0
+	%assign needEnd = 1
+	{
+	%if uTypeId == LibBlockInputSignalDataTypeId(0)
+	  %<uType> %<uTmp> = %<u>;
+	%else
+	  %<uType> %<uTmp> = (%<uType>)%<u>;
+	%endif
+	
+	%<clipCode>
+	%assign tableOffset = "%<numElements>*%<uTmp>"
+      %else
+	%%
+	%% If there is no clip code and only one input, the index type
+	%% now MUST be an integer, so a cast is never needed.
+	%%
+	%assign idxTypedU = u
+
+	%assign tableOffset = "%<numElements>*%<idxTypedU>"
+      %endif
+    %endif
+    %%
+    %% Process Output
+    %%
+    %if numInputIndices > 1
+      %assign tOffset = "tableOffset"
+    %else
+      %assign tOffset = tableOffset
+    %endif
+    %assign yPtr = LibBlockOutputSignalAddr(0, "", "", 0)
+    %if SFcnParamSettings.tabIsInput == 0
+      %assign tablePtr = LibBlockParameterAddr(table, "%<tOffset>", "", 0)
+    %else
+      %assign tablePtr = LibBlockInputSignalAddr(tablePortIdx,"%<tOffset>","",0)
+    %endif
+    
+    (void) memcpy( (void *)%<yPtr>, (void *)%<tablePtr>, %<outputSize>);
+  %endif
+  %%
+  %%
+  %if needEnd == 1
+    }
+  %endif
+    
+%endfunction

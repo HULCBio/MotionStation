@@ -1,0 +1,654 @@
+%%
+%% Abstract: Signal Processing Blockset sine wave source block - table lookup generation code
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% $Revision: 1.10.4.4 $ $Date: 2004/04/12 23:09:41 $
+%% $RCSfile: sdspsine2_table.tlc,v $
+%%
+
+
+%function TableLookup_BlockInstanceSetup(block, system) Output
+%%
+    %% Setup quarter-cycle table macros
+    %% NOTE: This must be run on a block-instance specific basis,
+    %%       and not for the block type, since we do not want these
+    %%       definitions defined unless a block actually requires
+    %%       quarter-cycle table support.
+    %%       so we check so that we do not define these more than once:
+    %%
+    %if isQrtrTable
+        %if JustCreatedCompiledModelRecord("DSPSineBlockQrtrTableHandler")
+            %%
+            %<LibCacheDefine("\n/* For use with quarter-cycle table lookup mode of the Sine Wave block: */")>
+            %<LibCacheDefine("#define DSP_SINE_TBL_STATE_REV(X) ((X) & 0x01)\n")>
+            %<LibCacheDefine("#define DSP_SINE_TBL_STATE_NEG(X) ((X) & 0x02)\n")>
+            %%
+            %assign buf = "#define DSP_SINE_UPDATE_QRTR_PTRS(SpP, offset, state) \\" + "\n"
+            %assign buf = buf + "if (DSP_SINE_TBL_STATE_REV(*(state))) {if (--*(offset) == 0      ) (++*(state));} \\" + "\n"
+            %assign buf = buf + "else {if (++*(offset) == (SpP)-1) (++*(state));}" + "\n"
+            %<LibCacheDefine(buf)>
+            %<LibCacheDefine("\n")>
+        %endif
+    %endif
+%endfunction
+
+
+%% Function: TableLookupStart =============================================
+%%
+%function TableLookupStart(block) Output
+    %if isQrtrTable
+      %if (SFcnParamSettings.TStart == 0)
+        %<TableLookupReset_QrtrCycle(block)>
+      %else
+        %error "Non-zero start times not supported for quarter-cycle tables."
+      %endif
+    %else
+      %if (SFcnParamSettings.TStart == 0)
+        %<TableLookupReset_FullCycle(block)>
+      %else
+        %<TableLookupCatchup_FullCycle(block)>
+      %endif
+    %endif
+    
+%endfunction
+
+
+%% Function: TableLookupReEnable =============================================
+%%
+%function TableLookupReEnable(block) Output
+  %if isQrtrTable
+    %if SFcnParamSettings.ResetState == "Reset"
+      %<TableLookupReset_QrtrCycle(block)>
+    %else
+      %% Catchup to simulation time
+      %error "Catch-up to simulation time not implemented for quarter-cycle tables."
+    %endif
+  %else
+    %if SFcnParamSettings.ResetState == "Reset"
+      %<TableLookupReset_FullCycle(block)>
+    %else
+      %% Catchup to simulation time
+      %<TableLookupCatchup_FullCycle(block)>
+    %endif
+  %endif
+%endfunction
+
+
+%function TableLookupReset_QrtrCycle(block) Output
+  %%
+  %% Block time is ZERO (easier case)
+  %%
+  %assign numCombos = SFcnParamSettings.numCombos
+  %assign num       = (IS_COMPLEX) ? 2*numCombos : numCombos
+  %%
+  /* Quarter-cycle table lookup, restart at time zero */
+  %if num == 1
+    %<LibBlockDWork(TableIdx,"","",0)> = %<LibBlockParameter(Idx_SineTable,"","",0)>;
+    %<LibBlockDWork(TableState,"","",0)> = %<LibBlockParameter(State_SineTable,"","",0)>;
+  %else 
+    memcpy(%<LibBlockDWorkAddr(TableIdx,"","",0)>, %<LibBlockParameterAddr(Idx_SineTable,"","",0)>, %<num>*sizeof(uint16_T));
+    memcpy(%<LibBlockDWorkAddr(TableState,"","",0)>, %<LibBlockParameterAddr(State_SineTable,"","",0)>, %<num>*sizeof(int8_T));
+  %endif
+%endfunction
+
+
+%function TableLookupReset_FullCycle(block) Output
+  %%
+  %% Block time is ZERO (easier case)
+  %%
+  %assign numCombos = SFcnParamSettings.numCombos
+  %%
+  /* Full-cycle table lookup, restart at time zero */
+  %if numCombos == 1
+    %<LibBlockDWork(TableIdx,"","",0)> = 0;
+  %else 
+    memset(%<LibBlockDWorkAddr(TableIdx,"","",0)>, 0, %<numCombos>*sizeof(uint16_T));
+  %endif
+%endfunction
+
+
+%function TableLookupCatchup_FullCycle(block) Output
+  %%
+  %% Block time is NON-ZERO
+  %%
+  %assign numCombos = SFcnParamSettings.numCombos
+  %%
+  /* Full-cycle table lookup, catch up to present simulation time */
+  {
+    const real_T Ts = %<LibBlockSampleTime(block) / nSamps>;
+    %if numCombos > 1
+      int_T i;
+      for (i=0; i<%<numCombos>; i++) {            
+        %<LibBlockDWork(TableIdx,"i","",0)> =
+          (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % %<LibBlockParameter(SpP_SineTable,"i","",0)>);
+      }
+    %else
+      %<LibBlockDWork(TableIdx,"","",0)> = 
+      (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % %<LibBlockParameter(SpP_SineTable,"","",0)>);
+    %endif
+  }
+%endfunction
+
+
+%% Function: TableLookup =====================================================
+%%
+%function TableLookup(block) Output
+    %%
+    %if isQrtrTable
+        %<TableLookup_QrtrCycle(block)>
+    %else
+        %<TableLookup_FullCycle(block)>
+    %endif
+    %%
+%endfunction
+
+
+%function TableLookup_QrtrCycle(block) Output
+    %%
+    %if (isTableWithAmpEncoded == 1)
+        %if scalarY
+            %<TableLookup_QrtrCycle_AmpEncoded_Scalar(block)>
+        %else
+            %<TableLookup_QrtrCycle_AmpEncoded(block)>
+        %endif
+    %else
+        %<TableLookup_QrtrCycle_AmpNotEncoded(block)>
+    %endif
+    %%
+%endfunction
+
+
+%function TableLookup_FullCycle(block) Output
+    %%
+    %if (isTableWithAmpEncoded == 1)
+        %if scalarY
+            %<TableLookup_FullCycle_AmpEncoded_Scalar(block)>
+        %else
+            %<TableLookup_FullCycle_AmpEncoded(block)>
+        %endif
+    %else
+        %<TableLookup_FullCycle_AmpNotEncoded(block)>
+    %endif
+    %%
+%endfunction
+
+
+%% TableLookup FullCycle Output Functions ====================================
+%%
+%function TableLookup_FullCycle_AmpEncoded_Scalar(block) Output
+    %% Scalar output sample:
+    %%
+    %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")> = %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","","%<tRealPart>0")>;
+    %if IS_COMPLEX
+        %<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")> = %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","","%<tImagPart>0")>;
+    %endif
+    %%
+    if (++(%<tableOffsets_str>) >= %<LibBlockParameter(SpP_SineTable,"","",0)>) {
+        %<tableOffsets_str> = 0; /* Increment and wrap */
+    }
+
+%endfunction
+
+
+%function TableLookup_FullCycle_AmpEncoded(block) Output
+    %%
+    %% Non-scalar output
+    %%
+    /* Full cycle sine table lookup */
+   {
+        %if (nChans > 1)
+            %assign tableDtype = "%<LibBlockParameterDataTypeName(Values_SineTable, "")>"
+	    const %<tableDtype> *table = %<LibBlockParameterAddr(Values_SineTable,"","",0)>;  %% dType
+        %endif
+        %%
+        %if nChans > 1
+           %<dType> *y = (%<dType> *)(%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>);
+           %assign Ystr = "*y++"
+        %else
+           %% Only to be used when nSamps > 1 when nChans == 1
+           %% If nSamps==1, another special case is used that ignores these assignments:
+           %assign Ystr = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+        %endif
+        %%
+        %if nChans > 1
+            uint16_T *tableOffsets     = %<LibBlockDWorkAddr(TableIdx,"","",0)>;
+            %assign   tableOffsets_str = "*tableOffsets"
+        %else
+            %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+        %endif
+        %%
+        %% Amplitude is encoded in the table:
+        %%
+        %if nChans > 1
+            %% Multiple channel case
+            int_T i;
+            for (i=0; i < %<nChans>; i++) {
+                %%
+                %if nSamps > 1
+                    %% Have multiple samples per frame:
+                    const uint16_T SpP = %<LibBlockParameter(SpP_SineTable,"i","",0)>;
+                    %assign SpP_str = "SpP"
+                %else
+                    %% Single sample per frame:
+                    %assign SpP_str = LibBlockParameter(SpP_SineTable,"i","",0)
+                %endif
+        %else
+                %% Single channel case - inline the SpP reference
+                %assign SpP_str = LibBlockParameter(SpP_SineTable,"","",0)
+        %endif
+                %%
+                %if nSamps > 1
+                    int_T j;
+                    for (j=0; j < %<nSamps>; j++) {
+                %endif
+                %%
+                %%
+                %if nChans > 1
+                        %<Ystr> = table[%<tableOffsets_str>];
+                %else
+                        %<Ystr> = %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","",0)>;
+                %endif
+                        if (++(%<tableOffsets_str>) >= %<SpP_str>) {
+                            %<tableOffsets_str> = 0; /* Increment and wrap */
+                        }
+                %%
+                %if nSamps > 1
+                    }
+                %endif
+                %%
+        %if nChans > 1
+                %% No need to increment table pointers if no other channels exist
+                tableOffsets++;
+                table += %<SpP_str>;
+            }
+        %endif
+   }
+
+%endfunction
+
+
+%function TableLookup_FullCycle_AmpNotEncoded(block) Output
+    %%
+    %assign str = IS_COMPLEX ? "complex " : ""
+    /* Full cycle %<str>sine table lookup */
+   {
+        %if !scalarY
+            %% Non-scalar output:
+            %%
+            %if nChans > 1
+               %<dType> *y = (%<dType> *)(%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>); 
+               %assign Ystr    = "*y++"
+               %assign Ystr_re =  "y->re"
+               %assign Ystr_im =  "(y++)->im"
+            %else
+               %% Only to be used when nSamps > 1 when nChans == 1
+               %% If nSamps==1, another special case is used that ignores these assignments:
+
+               %error "Error in sdspsine2_table.tlc - should not get here"
+
+               %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+               %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","","%<tRealPart>0")>"
+               %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","","%<tImagPart>0")>"
+            %endif
+            %%
+            %if nChans > 1
+                uint16_T *tableOffsets     = %<LibBlockDWorkAddr(TableIdx,"","",0)>;
+                %assign   tableOffsets_str = "*tableOffsets"
+            %else
+                %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+            %endif
+        %else
+            %% Scalar output sample:
+            %%
+            %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+        %endif
+        %%
+        %%
+        const uint16_T orig_offset = %<tableOffsets_str>;
+        %%
+        %% amp must be a vector if it is not encoded
+        %% therefore nChans must be > 1 
+        %%
+
+        %assign ampDtype = "%<LibBlockParameterDataTypeName(Amplitude, "")>"
+        const %<ampDtype> *amp = %<LibBlockParameterAddr(Amplitude, "", "", 0)>;
+        %%
+        int_T i;
+        for (i=0; i++ < %<nChans>; ) {  /* Loop over each amplitude */
+            %if nSamps > 1
+                int_T j;
+                for (j=0; j++ < %<nSamps>;) {
+            %endif
+                %%
+                    %if (IS_COMPLEX) 
+                        y->re     = (%<dTypeP>)(%<ampstr_cos> %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","","%<tRealPart>0")>);
+                        (y++)->im = (%<dTypeP>)(%<ampstr_cos> %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","","%<tImagPart>0")>);
+                    %else
+                        *y++ = (%<dTypeP>)(%<ampstr_cos> %<LibBlockParameter(Values_SineTable,"%<tableOffsets_str>","",0)>);
+                    %endif
+                    if (++(%<tableOffsets_str>) >= %<LibBlockParameter(SpP_SineTable,"","",0)>) {
+                       %<tableOffsets_str> = 0;   /* Increment and wrap */
+                    }
+            %if nSamps > 1
+                }
+            %endif
+            amp++;
+            if (i<%<nChans>) %<tableOffsets_str> = orig_offset;
+        }
+   }
+
+%endfunction %% TableLookup_FullCycle_AmpNotEncoded
+
+
+%% TableLookup QrtrCycle Output Functions ====================================
+%%
+%function TableLookup_QrtrCycle_AmpEncoded_Scalar(block) Output
+    %% Scalar output sample:
+    %%
+    %assign str = IS_COMPLEX ? "complex " : ""
+    /* Quarter-cycle %<str>scalar sine table lookup: */
+    %assign tableOffsets0_str = LibBlockDWork(TableIdx,"","",0)
+    %assign tableOffsets1_str = LibBlockDWork(TableIdx,"","",1)
+    %%
+    %% Get table values for next output:
+    %%
+%if 0
+    %% Ternary operator format:
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")> = \
+                            (DSP_SINE_TBL_STATE_NEG(%<LibBlockDWork(TableState,"","",0)>))
+           ? -%<LibBlockParameter(Values_SineTable,"%<tableOffsets0_str>","",0)>
+           :  %<LibBlockParameter(Values_SineTable,"%<tableOffsets0_str>","",0)>;
+    %<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")> = \
+                            (DSP_SINE_TBL_STATE_NEG(%<LibBlockDWork(TableState,"","",1)>))
+           ? -%<LibBlockParameter(Values_SineTable,"%<tableOffsets1_str>","",0)>
+           :  %<LibBlockParameter(Values_SineTable,"%<tableOffsets1_str>","",0)>;
+%else
+    %% Separate negative conversions
+    %% Negate output values depending on table state:
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")> = \
+               %<LibBlockParameter(Values_SineTable,"%<tableOffsets0_str>","",0)>;
+    if (DSP_SINE_TBL_STATE_NEG(%<LibBlockDWork(TableState,"","",0)>)) {
+        %<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")> = \
+       -%<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")>;
+    }
+    %if IS_COMPLEX
+        %<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")> = \
+               %<LibBlockParameter(Values_SineTable,"%<tableOffsets1_str>","",1)>;
+        if (DSP_SINE_TBL_STATE_NEG(%<LibBlockDWork(TableState,"","",1)>)) {
+            %<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")> = \
+           -%<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")>;
+        }
+    %endif
+%endif
+    %%
+    %% Update state:
+    %%
+    DSP_SINE_UPDATE_QRTR_PTRS(%<LibBlockParameter(SpP_SineTable,"","",0)>, \
+                              %<LibBlockDWorkAddr(TableIdx,"","",0)>, \
+                              %<LibBlockDWorkAddr(TableState,"","",0)>);
+    %if IS_COMPLEX
+        DSP_SINE_UPDATE_QRTR_PTRS(%<LibBlockParameter(SpP_SineTable,"","",0)>, \
+                                  %<LibBlockDWorkAddr(TableIdx,"","",1)>, \
+                                  %<LibBlockDWorkAddr(TableState,"","",1)>);
+    %endif
+
+%endfunction %% TableLookup_QrtrCycle_AmpEncoded_Scalar
+
+
+%% Helper functions for TableLookup_QrtrCycle_AmpEncoded:
+%%
+%function Render_QrtrCycle_Table_AmpEncoded_MultiChan(block, SpP_str, \
+                                         Ystr_re, Ystr_im, \
+                                         tableOffsets0_pstr, tableOffsets1_pstr, \
+                                         tableOffsets0_str, tableOffsets1_str, \
+                                         tableState0_pstr, tableState1_pstr, \
+                                         tableState0_str, tableState1_str) Output
+    %%
+    %% Get table values for next output:
+    %% Negate output values depending on table state:
+    %%
+    %<Ystr_re> = table[%<tableOffsets0_str>];
+    if (DSP_SINE_TBL_STATE_NEG(%<tableState0_str>)) {
+        %<Ystr_re> = -%<Ystr_re>;
+    }
+    %if IS_COMPLEX
+        %<Ystr_im> = table[%<tableOffsets1_str>];
+        if (DSP_SINE_TBL_STATE_NEG(%<tableState1_str>)) {
+            %<Ystr_im> = -%<Ystr_im>;
+        }
+    %endif
+    %%
+    %% Update state:
+    %%
+    DSP_SINE_UPDATE_QRTR_PTRS(%<SpP_str>, %<tableOffsets0_pstr>, %<tableState0_pstr>);
+    %if IS_COMPLEX
+        DSP_SINE_UPDATE_QRTR_PTRS(%<SpP_str>, %<tableOffsets1_pstr>, %<tableState1_pstr>);
+    %endif
+    %%
+%endfunction %% Render_QrtrCycle_Table_AmpEncoded_MultiChan
+
+
+%function Render_QrtrCycle_Table_AmpEncoded_SingleChan(block, SpP_str, amp_str, \
+                                         Ystr_re, Ystr_im, \
+                                         tableOffsets0_pstr, tableOffsets1_pstr, \
+                                         tableOffsets0_str, tableOffsets1_str, \
+                                         tableState0_pstr, tableState1_pstr, \
+                                         tableState0_str, tableState1_str) Output
+    %%
+    %% Get table values for next output:
+    %% Negate output values depending on table state:
+    %%
+    %<Ystr_re> = (%<dTypeP>)(%<amp_str>%<LibBlockParameter(Values_SineTable,"%<tableOffsets0_str>","",0)>);
+    if (DSP_SINE_TBL_STATE_NEG(%<tableState0_str>)) {
+        %<Ystr_re> = -%<Ystr_re>;
+    }
+    %if IS_COMPLEX
+        %<Ystr_im> = (%<dTypeP>)(%<amp_str>%<LibBlockParameter(Values_SineTable,"%<tableOffsets1_str>","",0)>);
+        if (DSP_SINE_TBL_STATE_NEG(%<tableState1_str>)) {
+            %<Ystr_im> = -%<Ystr_im>;
+        }
+    %endif
+    %%
+    %% Update state:
+    %%
+    DSP_SINE_UPDATE_QRTR_PTRS(%<SpP_str>, %<tableOffsets0_pstr>, %<tableState0_pstr>);
+    %if IS_COMPLEX
+        DSP_SINE_UPDATE_QRTR_PTRS(%<SpP_str>, %<tableOffsets1_pstr>, %<tableState1_pstr>);
+    %endif
+    %%
+%endfunction %% Render_QrtrCycle_Table_AmpEncoded_SingleChan
+
+
+%function TableLookup_QrtrCycle_AmpEncoded(block) Output
+    %%
+    %% Non-scalar output
+    %%
+    %assign str = IS_COMPLEX ? "complex " : ""
+    /* Qrtr cycle %<str>sine table lookup */
+   {
+        %if (nChans > 1)
+            %assign tableDtype = "%<LibBlockParameterDataTypeName(Values_SineTable, "")>"
+	    const %<tableDtype> *table = %<LibBlockParameterAddr(Values_SineTable,"","",0)>;
+        %endif
+        %%
+        %if nChans > 1
+           %<dType> *y = (%<dType> *)(%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>);
+           %if IS_COMPLEX
+               %assign Ystr_re =  "y->re"
+               %assign Ystr_im =  "y->im"
+           %else
+               %assign Ystr_re = "*y"
+               %assign Ystr_im = ""
+            %endif
+        %else
+           %% Only to be used when nSamps > 1 when nChans == 1
+           %% If nSamps==1, another special case is used that ignores these assignments:
+           %if IS_COMPLEX
+               %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","","%<tRealPart>0")>"
+               %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","","%<tImagPart>0")>"
+            %else
+               %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+               %assign Ystr_im = ""
+            %endif
+        %endif
+        %%
+        %if nChans > 1
+            uint16_T *tableOffsets       = %<LibBlockDWorkAddr(TableIdx,"","",0)>;
+            %assign   tableOffsets0_pstr = "&tableOffsets[0]"
+            %assign   tableOffsets1_pstr = "&tableOffsets[1]"
+            %assign   tableOffsets0_str  = "tableOffsets[0]"
+            %assign   tableOffsets1_str  = "tableOffsets[1]"
+            int8_T   *tableState         = %<LibBlockDWorkAddr(TableState,"","",0)>;
+            %assign   tableState0_pstr   = "&tableState[0]"
+            %assign   tableState1_pstr   = "&tableState[1]"
+            %assign   tableState0_str    = "tableState[0]"
+            %assign   tableState1_str    = "tableState[1]"
+        %else
+            %assign   tableOffsets0_pstr = LibBlockDWorkAddr(TableIdx,"","",0)
+            %assign   tableOffsets1_pstr = LibBlockDWorkAddr(TableIdx,"","",1)
+            %assign   tableOffsets0_str  = LibBlockDWork(TableIdx,"","",0)
+            %assign   tableOffsets1_str  = LibBlockDWork(TableIdx,"","",1)
+            %assign   tableState0_pstr   = LibBlockDWorkAddr(TableState,"","",0)
+            %assign   tableState1_pstr   = LibBlockDWorkAddr(TableState,"","",1)
+            %assign   tableState0_str    = LibBlockDWork(TableState,"","",0)
+            %assign   tableState1_str    = LibBlockDWork(TableState,"","",1)
+        %endif
+        %%
+        %% Amplitude is encoded in the table:
+        %%
+        %if nChans > 1
+            %% Multiple channel case
+            int_T i;
+            for (i=0; i < %<nChans>; i++) {
+                %%
+                %if nSamps > 1
+                    %% Have multiple samples per frame:
+                    const uint16_T SpP = %<LibBlockParameter(SpP_SineTable,"i","",0)>;
+                    %assign SpP_str = "SpP"
+                %else
+                    %% Single sample per frame:
+                    %assign SpP_str = LibBlockParameter(SpP_SineTable,"i","",0)
+                %endif
+        %else
+                %% Single channel case - inline the SpP reference
+                %assign SpP_str = LibBlockParameter(SpP_SineTable,"","",0)
+        %endif
+                %%
+                %if nSamps > 1
+                    int_T j;
+                    for (j=0; j < %<nSamps>; j++) {
+                %endif
+                    %if nChans > 1
+                        %<Render_QrtrCycle_Table_AmpEncoded_MultiChan(block, SpP_str, \
+                                             Ystr_re, Ystr_im, \
+                                             tableOffsets0_pstr, tableOffsets1_pstr, \
+                                             tableOffsets0_str, tableOffsets1_str, \
+                                             tableState0_pstr, tableState1_pstr, \
+                                             tableState0_str, tableState1_str)>
+                    %else
+                        %<Render_QrtrCycle_Table_AmpEncoded_SingleChan(block, SpP_str, "", \
+                                             Ystr_re, Ystr_im, \
+                                             tableOffsets0_pstr, tableOffsets1_pstr, \
+                                             tableOffsets0_str, tableOffsets1_str, \
+                                             tableState0_pstr, tableState1_pstr, \
+                                             tableState0_str, tableState1_str)>
+                    %endif
+                    %%
+                    %if nChans > 1
+                        y++; /* Next output element */
+                    %endif
+                    %%
+                %if nSamps > 1
+                    }
+                %endif
+                %%
+        %if nChans > 1
+                %% No need to increment table pointers if no other channels exist
+                %if IS_COMPLEX
+                    tableOffsets += 2;
+                    tableState   += 2;
+                %else
+                    tableOffsets++;
+                    tableState++;
+                %endif
+                table += %<SpP_str>;
+            }
+        %endif
+   }
+
+%endfunction %% TableLookup_QrtrCycle_AmpEncoded
+
+
+%function TableLookup_QrtrCycle_AmpNotEncoded(block) Output
+    %assign str = IS_COMPLEX ? "complex " : ""
+    /* Quarter cycle %<str>sine table lookup */
+   {
+        %<dType> *y = (%<dType> *)(%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>);
+        %if IS_COMPLEX
+           %assign Ystr_re =  "y->re"
+           %assign Ystr_im =  "y->im"
+        %else
+           %assign Ystr_re = "*y"
+           %assign Ystr_im = ""
+        %endif
+        %%
+        %assign tableOffsets0_pstr = LibBlockDWorkAddr(TableIdx,"","",0)
+        %assign tableOffsets1_pstr = LibBlockDWorkAddr(TableIdx,"","",1)
+        %assign tableOffsets0_str  = LibBlockDWork(TableIdx,"","",0)
+        %assign tableOffsets1_str  = LibBlockDWork(TableIdx,"","",1)
+        %assign tableState0_pstr   = LibBlockDWorkAddr(TableState,"","",0)
+        %assign tableState1_pstr   = LibBlockDWorkAddr(TableState,"","",1)
+        %assign tableState0_str    = LibBlockDWork(TableState,"","",0)
+        %assign tableState1_str    = LibBlockDWork(TableState,"","",1)
+        %%
+        %% amp must be a vector if it is not encoded
+        %% therefore nChans must be > 1 
+        %%
+        const uint16_T orig_offset0 = %<LibBlockDWork(TableIdx,"","",0)>;
+        const int8_T   orig_state0  = %<LibBlockDWork(TableState,"","",0)>;
+        %if IS_COMPLEX
+            const uint16_T orig_offset1 = %<LibBlockDWork(TableIdx,"","",1)>;
+            const int8_T orig_state1    = %<LibBlockDWork(TableState,"","",1)>;
+        %endif
+        %%
+        int_T i;
+        for (i=0; i < %<nChans>; i++) {
+            %%
+            %assign SpP_str = LibBlockParameter(SpP_SineTable,"i","",0)
+            %%
+            %if nSamps > 1
+                int_T j;
+                for (j=0; j < %<nSamps>; j++) {
+            %endif
+                %assign amp_str = "%<LibBlockParameter(Amplitude, "i", "", 0)>" + " * "
+                %<Render_QrtrCycle_Table_AmpEncoded_SingleChan(block, SpP_str, amp_str, \
+                                     Ystr_re, Ystr_im, \
+                                     tableOffsets0_pstr, tableOffsets1_pstr, \
+                                     tableOffsets0_str, tableOffsets1_str, \
+                                     tableState0_pstr, tableState1_pstr, \
+                                     tableState0_str, tableState1_str)>
+                %%
+                y++; /* Next output element */
+                %%
+            %if nSamps > 1
+                }
+            %endif
+            %%
+            if (i<%<nChans-1>) {
+                %<LibBlockDWork(TableIdx,"","",0)> = orig_offset0;
+                %<LibBlockDWork(TableState,"","",0)> = orig_state0;
+                %if IS_COMPLEX
+                    %<LibBlockDWork(TableIdx,"","",1)> = orig_offset1;
+                    %<LibBlockDWork(TableState,"","",1)> = orig_state1;
+                %endif
+            }
+       }
+   }
+%endfunction
+
+
+%% [EOF] sdspsine2_table.tlc

@@ -1,0 +1,187 @@
+%%
+%% $Revision: 1.13 $ 
+%% $RCSfile: vxtask.tlc,v $
+%%
+%% Abstract:
+%%      TLC file for the VxWorks Task Block.
+%% Author:
+%%      Pete Szpak, Jim Carrick
+%% Date:
+%%      10-15-97
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+
+%implements "vxtask" "C"
+
+%include "vxlib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      Find the function-call subsystems that are attached to the task
+%%      block and
+%%
+%%      o Spawn the downstream task in the model's start function.
+%%        The tasked is spawned with the name specified in the dialog
+%%        window.  If a task name is not specified the task name is 
+%%        determined by the O/S.
+%%
+%%      o Insert intertask synchronization code into the task block system's
+%%        output/update function and the downstream system's output/update
+%%        function.  For example, if a binary semaphore protocall is
+%%        specified then a semGive is inserted in the the task block function
+%%        and a semTake is inserted into the downsteam system function.          
+%%
+%function BlockInstanceSetup(block, system) void
+  
+  %assign sysIdx = system.CallSites[0][2]
+  %assign blkIdx = system.CallSites[0][3]
+  %assign taskBlock = CompiledModel.System[sysIdx].Block[blkIdx]
+  %assign sourceType = IDNUM(taskBlock.ControlInputPort.SignalSrc[0])
+  
+  %% Determine masked block name for error reporting
+  %assign sysId = %<SYSNAME(taskBlock.Name)>[0]
+  %assign idIdx = %<IDNUM(sysId)>[1] - 1
+  %assign parentName = CompiledModel.Subsystem[idIdx].Name
+  %assign taskBlockName = STRING(LibUnmangledPathName(parentName))
+
+  %% The input to the task block is unconnected
+  %if sourceType[0]  == "G"
+    %assign wrnTxt = "The input for VxWorks Task block '%<taskBlockName>' is " ...
+      "unconnected."
+    %warning %<wrnTxt>
+  %endif
+  
+  %% Get downstream block if there is one
+  %if "%<SFcnSystemOutputCall[0].BlockToCall>" == "unconnected"
+    %assign wrnTxt = "The output for VxWorks Task block '%<taskBlockName>' is " ...
+      "unconnected.  No code will be generated for this block."
+    %warning %<wrnTxt>
+  %else
+    %% Find the downstream function-call subsystem.
+    %% Simulink will have already verified that, if connected at all,  it is 
+    %% a function-call subsystem and that it is the only destination.  The 
+    %% remaining test is whether the destination has other function-call 
+    %% sources besides this Task block which is not allowed since the Task block
+    %% modifies the code of the function-call subsystem.
+    %% That test can done by checking ssBlock.ControlInputPort.Width.
+    
+    %% Get downstream block using SFcnSystemOutputCall.BlockToCall
+    %assign ssSysIdx = SFcnSystemOutputCall[0].BlockToCall[0]
+    %assign ssBlkIdx = SFcnSystemOutputCall[0].BlockToCall[1]
+    %assign ssBlock = CompiledModel.System[ssSysIdx].Block[ssBlkIdx]
+    %assign block = block + ssBlock
+    %% Check to see if this is a direct connection
+    %if (ssBlock.ControlInputPort.Width != 1)
+      %assign errTxt = "The VxWorks Task block '%<taskBlockName>' " ...
+	"output must be directly connected to one function-call subsystem. " ...
+	"Also, no other block can drive the function-call subsystem."
+      %exit RTW Fatal: %<errTxt>
+    %endif    
+    
+    %% Assume it is a subsystem block(Simulink checked for a f-c subsys already).
+    %assign taskSystem = System[ssBlock.ParamSettings.SystemIdx]
+    %assign block = block + taskSystem
+    
+    %% Only support binary semaphores for now
+    %%
+    %% The semaphore name is
+    %%   o specifiedTaskName_semaphore   (task name specified)
+    %%   o taskBlockIdentifier_semaphore (task name not specified)
+    %%
+    %if SFcnParamSettings.TaskName == ""
+      %assign taskName = ssBlock.Identifier
+      %assign taskSemaphoreName = "%<ssBlock.Identifier>_semaphore"
+    %else		 
+      %assign taskName = SFcnParamSettings.TaskName
+      %assign taskSemaphoreName = "%<taskName>_semaphore"
+    %endif
+    %assign block = block + taskName
+    %assign block = block + taskSemaphoreName
+    
+    %% Insert code into the actual task system
+    %openfile buffer
+    /* wait for semaphore to be released by system: %<parentName> */
+    for(;;) {
+      if (semTake(*(SEM_ID *)%<LibBlockPWork(SemID,"","",0)>,NO_WAIT) != ERROR) {
+	logMsg("Rate for function-call subsystem %<taskSystem.OutputUpdateFcn>()"
+	"too fast.\n",0,0,0,0,0,0);
+	#if STOPONOVERRUN
+	logMsg("Aborting real-time simulation.\n",0,0,0,0,0,0);
+	semGive(stopSem);
+	return(ERROR);
+	#endif
+      } else {
+	semTake(*(SEM_ID *)%<LibBlockPWork(SemID,"","",0)>, WAIT_FOREVER);
+      }
+      
+      %closefile buffer
+      %<LibSystemOutputCustomCode(taskSystem, buffer, "execution")>
+      %openfile buffer
+    }
+    %closefile buffer
+    %<LibSystemUpdateCustomCode(taskSystem, buffer, "trailer")>
+    
+    %% Declare stopSem as external so model can be stopped if function-call
+    %% subsystem can't keep up with semaphore rate.
+    %openfile buffer
+    extern SEM_ID stopSem;
+    %closefile buffer
+    %<LibCacheFunctionPrototype(buffer)>
+  %endif
+%endfunction
+  
+%function BlockInstanceData(block, system) Output
+  %if EXISTS("ssBlock")
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %% Declare the semaphore depending on the Code Format.
+    /*      VxWorks binary semaphore for task: %<ssBlock.Name> */
+    %if UsingMalloc == 1
+      %<LibBlockPWork(SemID,"","",0)> = malloc(sizeof(SEM_ID));
+      rt_VALIDATE_MEMORY(%<tSimStruct>, %<LibBlockPWork(SemID,"","",0)>);
+    %else
+      static SEM_ID %<taskSemaphoreName>;
+      %<LibBlockPWork(SemID,"","",0)> = (void *)&%<taskSemaphoreName>;
+    %endif
+  %endif
+%endfunction
+
+%function Start(block, system) Output
+  %if EXISTS("ssBlock")
+    %% Declare the semaphore depending on the Code Format and spawn
+    %% the function-call subsystem as a task.
+    
+    /* create and spawn task: %<ssBlock.Name> */
+    if ((*(SEM_ID *)%<LibBlockPWork(SemID,"","",0)> = 
+    semBCreate(SEM_Q_PRIORITY, SEM_EMPTY)) == NULL) {
+      ssSetErrorStatus(%<tSimStruct>,"semBCreate call failed for block %<ssBlock.Name>.\n");
+    }
+    %% Because only 1 control element is allowed, the 2nd argument to the f-c subsystem is 0.
+    if ((%<LibBlockIWork(TaskID,"","",0)> = taskSpawn("%<taskName>", \
+    %<SFcnParamSettings.Priority>,
+    VX_FP_TASK, %<SFcnParamSettings.StackSize>, (FUNCPTR)%<taskSystem.OutputUpdateFcn>, 
+    (int_T)%<tSimStruct>, 0, 0, 0, 0, 0, 0, 0, 0, 0)) == ERROR) {
+      ssSetErrorStatus(%<tSimStruct>,"taskSpawn call failed for block %<ssBlock.Name>.\n");
+    }
+  %endif
+%endfunction
+
+%function Outputs(block, system) Output
+  %if EXISTS("ssBlock")
+    /* release semaphore for system task: %<taskSystem.Name> */
+    semGive(*(SEM_ID *)%<LibBlockPWork(SemID,"","",0)>);
+  %endif
+%endfunction
+	
+%function Terminate(block, system) Output
+  %if EXISTS("ssBlock")
+    /* destroy task: %<ssBlock.Name> */
+    taskDelete(%<LibBlockIWork(TaskID,"","",0)>);
+    %if UsingMalloc == 1
+      rt_FREE(%<LibBlockPWork(SemID,"","",0)>);
+    %endif
+  %endif
+%endfunction
+
+%% [EOF] vxtask.tlc
+
+

@@ -1,0 +1,93 @@
+<html lang="en">
+<head>
+<title>Indexed Assignment Optimization - GNU Octave</title>
+<meta http-equiv="Content-Type" content="text/html">
+<meta name="description" content="GNU Octave">
+<meta name="generator" content="makeinfo 4.13">
+<link title="Top" rel="start" href="index.html#Top">
+<link rel="up" href="Indexing-Objects.html#Indexing-Objects" title="Indexing Objects">
+<link rel="prev" href="Defining-Indexing-And-Indexed-Assignment.html#Defining-Indexing-And-Indexed-Assignment" title="Defining Indexing And Indexed Assignment">
+<link href="http://www.gnu.org/software/texinfo/" rel="generator-home" title="Texinfo Homepage">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<style type="text/css"><!--
+  pre.display { font-family:inherit }
+  pre.format  { font-family:inherit }
+  pre.smalldisplay { font-family:inherit; font-size:smaller }
+  pre.smallformat  { font-family:inherit; font-size:smaller }
+  pre.smallexample { font-size:smaller }
+  pre.smalllisp    { font-size:smaller }
+  span.sc    { font-variant:small-caps }
+  span.roman { font-family:serif; font-weight:normal; } 
+  span.sansserif { font-family:sans-serif; font-weight:normal; } 
+--></style>
+</head>
+<body>
+<div class="node">
+<a name="Indexed-Assignment-Optimization"></a>
+<p>
+Previous:&nbsp;<a rel="previous" accesskey="p" href="Defining-Indexing-And-Indexed-Assignment.html#Defining-Indexing-And-Indexed-Assignment">Defining Indexing And Indexed Assignment</a>,
+Up:&nbsp;<a rel="up" accesskey="u" href="Indexing-Objects.html#Indexing-Objects">Indexing Objects</a>
+<hr>
+</div>
+
+<h4 class="subsection">34.3.2 Indexed Assignment Optimization</h4>
+
+<p>Octave's ubiquitous lazily-copied pass-by-value semantics implies
+a problem for performance of user-defined subsasgn methods.  Imagine
+a call to subsasgn:
+
+<pre class="example">       ss = substruct ("()",{1});
+       x = subsasgn (x, ss, 1);
+</pre>
+   <p class="noindent">and the corresponding method looking like this:
+
+<pre class="example">       function x = subsasgn (x, ss, val)
+         ...
+         x.myfield(ss.subs{1}) = val;
+       endfunction
+</pre>
+   <p>The problem is that on entry to the subsasgn method, <code>x</code> is still
+referenced from the caller's scope, which means that the method will
+first need to unshare (copy) <code>x</code> and <code>x.myfield</code> before performing
+the assignment.  Upon completing the call, unless an error occurs,
+the result is immediately assigned to <code>x</code> in the caller's scope,
+so that the previous value of <code>x.myfield</code> is forgotten.  Hence, the
+Octave language implies a copy of N elements (N being the size of
+<code>x.myfield</code>), where modifying just a single element would actually
+suffice, i.e., degrades a constant-time operation to linear-time one. 
+This may be a real problem for user classes that intrinsically store large
+arrays.
+
+   <p>To partially solve the problem, Octave uses a special optimization for
+user-defined subsasgn methods coded as m-files.  When the method
+gets called as a result of the built-in assignment syntax (not direct subsasgn
+call as shown above), i.e.
+
+<pre class="example">       x(1) = 1;
+</pre>
+   <p><b>AND</b> if the subsasgn method is declared with identical input and output argument,
+like in the example above, then Octave will ignore the copy of <code>x</code> inside
+the caller's scope; therefore, any changes made to <code>x</code> during the method
+execution will directly affect the caller's copy as well. 
+This allows, for instance, defining a polynomial class where modifying a single
+element takes constant time.
+
+   <p>It is important to understand the implications that this optimization brings. 
+Since no extra copy of <code>x</code> in the caller's scope will exist, it is
+<em>solely</em> the callee's responsibility to not leave <code>x</code> in an invalid
+state if an error occurs throughout the execution.  Also, if the method
+partially changes <code>x</code> and then errors out, the changes <em>will</em> affect
+<code>x</code> in the caller's scope.  Deleting or completely replacing <code>x</code>
+inside subsasgn will not do anything, however, only indexed assignments matter.
+
+   <p>Since this optimization may change the way code works (especially if badly
+written), a built-in variable <code>optimize_subsasgn_calls</code> is provided to
+control it.  It is on by default.  Another option to avoid the effect is to
+declare subsasgn methods with different output and input arguments, like this:
+
+<pre class="example">       function y = subsasgn (x, ss, val)
+         ...
+       endfunction
+</pre>
+   </body></html>
+

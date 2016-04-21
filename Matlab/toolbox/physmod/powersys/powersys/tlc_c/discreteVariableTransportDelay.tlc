@@ -1,0 +1,358 @@
+%% -----------------------------------------------------------------------------
+%% File : discreteVariableTransportDelay.tlc
+%% -----------------------------------------------------------------------------
+%%
+%% Discrete variable transport delay.
+%% 
+%% Delay input(s) an integral number of time steps
+%%
+%% Signal input(s) are received on port 0
+%%
+%% Real delay comes from input port 1
+%% Delay time value must be between 0 and a user determined maximum.
+%% Delay values are limited to the maximum.
+%% Time value is transformed into a discrete delay (number of samples).
+%%
+%% Delayed values are stored into a ring buffer having sufficient space
+%% for the maximum delay.
+%%
+%% -----------------------------------------------------------------------------
+%%
+%% Copyright 1997-2002 TransEnergie Technologies Inc., under sublicense
+%% from Hydro-Quebec, and The MathWorks, Inc.
+%%
+%% Author: Raymond Roussel                                      July 2001
+%%
+
+%% $Revision: 1.1.6.1 $
+
+%implements "discreteVariableTransportDelay" "C"
+
+
+%function BlockTypeSetup(block, system) void
+
+
+  %openfile buf_include
+#include <math.h>
+#include <stdlib.h>
+  %closefile buf_include
+
+
+  %<LibCacheIncludes(buf_include)>
+
+
+  %openfile buf_define
+#define MAX_DELAY_BUFFER_SIZE      32768
+  %if CodeFormat == "Embedded-C"
+#ifndef ssGetFixedStepSize
+#define ssGetFixedStepSize(S)   (S).stepSize
+#endif /* ssGetFixedStepSize */
+  %endif
+  %closefile buf_define
+
+
+  %<LibCacheDefine(buf_define)>
+
+
+%endfunction
+
+
+  
+%% BlockInstanceSetup =========================================================
+%% Abstract:
+%%   It is sometimes more desirable to dynamically allocate the buffers
+%%   for discrete transport delay blocks so they are not in the .bss section.
+%%   To do this, assign DiscreteVDelayBlocksUseMalloc=1
+%%   in you system target file.
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign AlwaysUseMalloc = 0
+  %if EXISTS("DiscreteVDelayBlocksUseMalloc")
+    %if LibIsEqual(DiscreteVDelayBlocksUseMalloc, 1)
+      %assign AlwaysUseMalloc = 1
+    %endif
+  %endif
+  %assign block = block + AlwaysUseMalloc
+%endfunction
+  
+%% BlockInstanceData ==========================================================
+%% Abstract:
+%%      Create any persistant data that isn't in Work Vectors.
+%%
+%function BlockInstanceData(block, system) Output
+  %assign max_delay  = block.SFcnParamSettings.maxDelay
+  %assign buf_sz = LibBlockIWork(bufSz, "", "", 0)
+  %assign sample_time = block.SFcnParamSettings.sampleTime
+  %assign sizeB = CAST("Number", (max_delay / sample_time) + 1)
+  %if sizeB < 0 || sizeB > 32000
+    %assign sizeB = 32000
+  %endif
+  %assign Ip0DtIdx = block.DataInputPort[0].DataTypeIdx
+  %assign DtTypeId = CompiledModel.DataTypes.DataType[Ip0DtIdx].Id
+  %assign DtType = LibGetDataTypeNameFromId(DtTypeId)
+  /* %<Type> Block: %<Name> */
+  {
+
+
+    %%
+    %% allocate or declare buffers
+    %%
+    %if UsingMalloc || AlwaysUseMalloc
+      %<buf_sz> = %<sizeB>;
+
+
+      %assign rollVars = [ "<pwork>/uBuffers" ]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+
+
+        %<u_buffer> = calloc(%<buf_sz>, sizeof(%<DtType>));
+        rt_VALIDATE_MEMORY(%<tSimStruct>, %<u_buffer>);
+
+
+      %endroll
+    %else
+      %assign blockWidth = LibBlockInputSignalWidth(0)
+      static %<DtType> dvtd_buffer[%<blockWidth> * %<sizeB>];
+
+
+      %<buf_sz> = %<sizeB>;
+
+
+      %assign rollVars = [ "<pwork>/uBuffers" ]
+      %assign bufIdx = 0
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+
+
+        %<u_buffer> = (void *)&dvtd_buffer[%<bufIdx>];
+        %assign bufIdx = bufIdx + %<sizeB>
+
+
+      %endroll
+    %endif
+
+
+
+  }
+%endfunction    
+
+
+%function DvtdInitValue(ivpar, lcv, pidx) void
+  %if(SIZE(ivpar, 1) == 1)
+    %% One initial value
+    %assign str = ivpar[0]
+  %else
+    %% Many initial values
+    %if(lcv == "")
+      %% Not rolling
+      %assign str = ivpar[pidx]
+    %else
+      %% Rolling
+      %assign str = "initValues[%<lcv>]"
+   %endif
+  %endif
+  %return str
+%endfunction
+
+
+%function Start(block, system) Output
+
+
+  %assign ind_beg = LibBlockIWork(indBeg, "", "", 0)
+  %assign ind_end = LibBlockIWork(indEnd, "", "", 0)
+  %assign buf_sz = LibBlockIWork(bufSz, "", "", 0)
+  %assign max_discr_delay = LibBlockIWork(maxDiscrDelay, "", "", 0)
+  %assign Ip0DtIdx = block.DataInputPort[0].DataTypeIdx
+  %assign DtTypeId = CompiledModel.DataTypes.DataType[Ip0DtIdx].Id
+  %assign DtType = LibGetDataTypeNameFromId(DtTypeId)
+  %assign ParInitValue = SFcnParamSettings.initValue
+  %assign init_value_size  = SIZE(ParInitValue,1)
+
+
+  /* %<Type> block: %<Name> */
+
+
+  {
+  %if(init_value_size > 1 && WILL_ROLL(RollRegions, RollThreshold))
+    %openfile initValuesInitializations
+      %foreach idx = init_value_size
+        %if(idx == init_value_size - 1)
+        %<SFcnParamSettings.initValue[idx]>
+        %else
+        %<SFcnParamSettings.initValue[idx]>,
+        %endif
+      %endforeach
+    %closefile initValuesInitializations
+#infdef __STDC__
+    static
+#endif
+    %<DtType> initValues[] = {
+    %<initValuesInitializations>
+    };
+  %endif
+
+
+      %<max_discr_delay> = %<buf_sz> - 1;
+            
+      /* Assign default sample(s) */
+
+
+      %assign rollVars = [ "<pwork>/uBuffers" ]
+
+
+      %if(init_value_size == 1)
+        /* Single initial value */
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+          %assign init_value = DvtdInitValue(ParInitValue, lcv, idx)
+
+
+          if(%<u_buffer> != NULL)
+            *((%<DtType> *)%<u_buffer>) = (%<DtType>)%<init_value>;
+        %endroll
+      %else
+        /* One initial value per u0 element */
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+          %assign init_value = DvtdInitValue(ParInitValue, lcv, idx)
+
+
+          if(%<u_buffer> != NULL)
+            *((%<DtType> *)%<u_buffer>) = (%<DtType>)%<init_value>;
+        %endroll
+      %endif
+
+
+
+      /* Set work values */
+
+
+      %<ind_beg> = 0;
+      %<ind_end> = 1;
+  }
+
+
+%endfunction
+  
+%function Outputs(block, system) Output
+  %assign ind_beg = LibBlockIWork(indBeg, "", "", 0)
+  %assign ind_end = LibBlockIWork(indEnd, "", "", 0)
+  %assign buf_sz = LibBlockIWork(bufSz, "", "", 0)
+  %assign max_discr_delay = LibBlockIWork(maxDiscrDelay, "", "", 0)
+  %assign Ip0DtIdx = block.DataInputPort[0].DataTypeIdx
+  %assign DtTypeId = CompiledModel.DataTypes.DataType[Ip0DtIdx].Id
+  %assign DtType = LibGetDataTypeNameFromId(DtTypeId)
+  %assign Delay = LibBlockInputSignal(1,"","",0)
+  %assign sample_time = block.SFcnParamSettings.sampleTime
+
+
+  %%
+  /* %<Type> block: %<Name> */
+
+
+  {
+    int_T  indDelayed;
+    int_T  discreteDelay;
+
+
+    /* Input present value(s) */
+
+
+    %assign rollVars = [ "U0",  "<pwork>/uBuffers" ]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0,"",lcv,idx)
+      %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+      ((%<DtType> *)%<u_buffer>)[%<ind_end>] = %<u>;
+    %endroll
+
+
+    /* Calculate delayed index */
+
+
+    discreteDelay =
+       (int_T)floor((%<Delay>/%<sample_time>) + 0.5);
+    
+    if(discreteDelay > %<max_discr_delay>)
+        discreteDelay = %<max_discr_delay>;
+        
+    indDelayed = %<ind_end> - ((discreteDelay > 0) ? discreteDelay : 0);
+    
+
+
+    if( indDelayed < 0)
+    {
+        if( %<ind_beg> == 0 )
+            indDelayed = 0;
+        else
+            indDelayed += %<buf_sz>;
+    }
+
+
+    /* Output past value(s) */
+    
+    %assign rollVars = [ "Y", "<pwork>/uBuffers" ]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign y = LibBlockOutputSignal(0,"",lcv,idx)
+      %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+      %<y> = ((%<DtType> *)%<u_buffer>)[indDelayed];
+    %endroll
+  }
+
+
+%endfunction
+
+
+%function Update(block, system) Output
+
+
+  %assign ind_beg = LibBlockIWork(indBeg, "", "", 0)
+  %assign ind_end = LibBlockIWork(indEnd, "", "", 0)
+  %assign buf_sz = LibBlockIWork(bufSz, "", "", 0)
+
+
+  /* %<Type> block: %<Name> */
+  {
+    int_T  indBeg = %<ind_beg>;
+    int_T  indEnd = %<ind_end>;
+    int_T  bufSz  = %<buf_sz>;
+    
+    
+    indEnd = indEnd < bufSz-1 ? indEnd+1 : 0;
+    
+    if (indEnd == indBeg) {
+      indBeg = indBeg < bufSz-1 ? indBeg+1 : 0;
+    }
+
+
+    %<ind_beg> = indBeg;
+    %<ind_end> = indEnd;
+
+
+  }
+%endfunction
+
+
+%function Terminate(block, system) Output
+
+
+  /* %<Type> block: %<Name> */
+  {
+    %if UsingMalloc || AlwaysUseMalloc
+      /* Free memory */
+
+
+      %assign rollVars = [ "<pwork>/uBuffers" ]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign u_buffer = LibBlockPWork(uBuffers, "", lcv, idx)
+
+
+        if(%<u_buffer> != NULL) {
+          free(%<u_buffer>);
+        }
+      %endroll
+    %else
+    /* Nothing to do! */
+    %endif
+  }
+%endfunction

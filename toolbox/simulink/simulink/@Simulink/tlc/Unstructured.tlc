@@ -1,0 +1,354 @@
+%% $Revision $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+
+%% Make sure no white space in this file shows up in code.
+%selectfile NULL_FILE
+
+%% Target language is C
+%implements * "C"
+
+
+%%=============================================================================
+%function ExpandGnd(width, cmplx, gnd) void
+  %if cmplx
+    %assign gnd = "{%<gnd>, %<gnd>}"
+  %endif
+  %if width == 1
+    %if TYPE(gnd) == "String"
+      %return gnd
+    %else
+      %return STRING(gnd)
+    %endif
+  %else
+    %openfile gndBuf
+    {
+    %foreach idx = width
+      %if idx < (width - 1)
+        %<gnd>,
+      %else
+        %<gnd>
+      %endif
+    %endforeach
+    }\
+    %closefile gndBuf
+    %return gndBuf
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function GetPointerForClass(cscDefn, msDefn) void
+
+  %if cscDefn.DataAccess == "Pointer"
+    %return "*"
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function GetPointerForData(cscDefn, msDefn, datarec) void
+
+  %assign dataAccess = SLibGetDataAccess(cscDefn, datarec)
+  %if dataAccess == "Pointer"
+    %return "*"
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function GetDeclCommentForData(cscDefn, msDefn, record) void
+  %% The data's DataScope shall not be "File" if getting here
+  %% The data's DataInit shall not be "Macro" if getting here
+
+  %% Put Description field of SDO in comments if the option is on
+  %assign desc = SLibGetDescriptionForData(record)
+  %assign desc = ISEMPTY(desc) ? "" : "/* %<desc> */"
+
+  %return ["", "%<desc>", ""]
+
+%endfunction
+
+
+%%=============================================================================
+%function GetDeclUnstructured(cscDefn, msDefn, record) void
+  %% The data's DataScope shall not be "File" if getting here
+  %% The data's DataInit shall not be "Macro" if getting here
+
+  %assign id = LibGetRecordIdentifier(record)
+
+  %assign pointer   = GetPointerForData(cscDefn, msDefn, record)
+  %assign qualifier = SLibGetQualifier(msDefn)
+  %assign dt        = LibGetRecordCompositeDataTypeName(record)
+  %assign width     = LibGetDataWidth(record)
+  %assign dims      = (width == 1) ? "" : "[%<width>]"
+  %return "extern " + ...
+    qualifier + ...
+    dt + ...
+    " " + ...
+    pointer + ...
+    id + ...
+    dims + ...
+    ";"
+%endfunction
+
+
+%%=============================================================================
+%function GetDefnCommentForData(cscDefn, msDefn, record) void
+  %% The data's DataScope shall not be "Imported" when getting here,
+  %% because Imported should not be defined by us.
+
+  %% Put Description field of SDO in comments if the option is on
+  %assign desc = SLibGetDescriptionForData(record)
+  %assign desc = ISEMPTY(desc) ? "" : "/* %<desc> */"
+
+  %return ["", "%<desc>", ""]
+%endfunction
+
+
+%%=============================================================================
+%function GetDefnUnstructured(cscDefn, msDefn, record) void
+  %% The data's DataScope shall not be "Imported" when getting here,
+  %% because Imported should not be defined by us.
+
+  %assign id = LibGetRecordIdentifier(record)
+
+  %if cscDefn.DataInit == "Macro"
+    %<LibCustomStorageVerifyRecordIsScalar(record)>
+    %<LibCustomStorageVerifyRecordIsNonComplex(record)>
+    %assign typeandname = "#define " + id
+    %assign initStr     = LibParameterInstanceInitStr(record)
+    %assign initStr     = " %<initStr>"
+    %assign terminator  = ""
+  
+  %else
+    %assign pointer      = GetPointerForData(cscDefn, msDefn, record)
+    %assign qualifier    = SLibGetQualifier(msDefn)
+    %assign dt           = LibGetRecordCompositeDataTypeName(record)
+    %assign width        = LibGetDataWidth(record)
+    %assign dims         = (width == 1) ? "" : "[%<width>]"
+    %assign typeandname  = qualifier + dt + " " + pointer + id + dims
+    %assign initStr        = ""
+    %if cscDefn.DataInit == "Static" && cscDefn.DataAccess == "Direct"
+      %if record.RecordType == "ModelParameter"
+        %assign initStr = LibParameterInstanceInitStr(record)
+      %else
+        %assign width    = LibGetDataWidth(record)
+        %assign cmplx    = SLibGetRecordIsComplex(record)
+	%assign dtIdx    = LibGetRecordDataTypeId(record)
+	%assign ground   = LibGetGroundInitFromId(dtIdx)
+	%assign initStr  = ExpandGnd(width, cmplx, ground)
+      %endif
+      %assign initStr = " = %<initStr>"
+    %endif
+    %assign terminator = ";"
+  %endif
+
+  %return typeandname + ...
+    initStr + ...
+    terminator
+%endfunction
+
+
+%% Function: GetCSCTypeComment =================================================
+%function GetCSCTypeComment(cscDefn, msDefn, record) void
+  %assign rtnStr="/* Type definition for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCTypeComment
+
+
+%% Function: GetCSCDeclComment =================================================
+%function GetCSCDeclComment(cscDefn, msDefn, record) void
+  %assign rtnStr ="/* Declaration for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCDeclComment
+
+
+%% Function: GetCSCDefnComment =================================================
+%function GetCSCDefnComment(cscDefn, msDefn, record) void
+  %assign rtnStr = "/* Definition for custom storage class: %<cscDefn.Name> */"
+
+  %return rtnStr
+%endfunction  %% of GetCSCDefnComment
+
+
+%% Function: DataAccess =========================================================
+%% Abstract:
+%%   DataAccess provides an API for requesting code fragments or other
+%%   information corresponding to data of a custom storage class.
+%%
+%function DataAccess(record, request, idx, reim) void
+
+  %assign cscDefn = SLibGetCSCDefForData(record)
+  %assign msDefn = SLibGetMemorySectionDefForData(record)
+
+  %switch request
+
+    %case "declComment"
+      %assert !cscDefn.IsGrouped
+
+      %return GetDeclCommentForData(cscDefn, msDefn, record)
+      %break
+
+    %case "declare"
+      %assert !cscDefn.IsGrouped
+
+      %return GetDeclUnstructured(cscDefn, msDefn, record)
+      %break
+
+    %case "defnComment"
+      %assert !cscDefn.IsGrouped
+
+      %return GetDefnCommentForData(cscDefn, msDefn, record)
+      %break
+
+    %case "define"
+      %assert !cscDefn.IsGrouped
+
+      %return GetDefnUnstructured(cscDefn, msDefn, record)
+      %break
+
+    %case "contents"
+      %assign pointer = GetPointerForData(cscDefn, msDefn, record)
+      %if cscDefn.IsGrouped
+        %if cscDefn.DataAccess == "Direct"
+          %assign delim = "."
+        %else
+          %assign delim = "->"
+        %endif
+
+        %% The data is accessed as <STRUCT_NAME><delim><DATA_NAME>
+        %assign sname = cscDefn.CSCTypeAttributes.StructName
+        %assign rtn = sname + delim + ...
+          LibDefaultCustomStorageContents(record, idx, reim)
+
+      %else
+        %assign rtn = pointer + ...
+          LibDefaultCustomStorageContents(record, idx, reim)
+      %endif
+
+      %if !ISEMPTY(pointer)
+        %assign rtn = "(" + rtn + ")"
+      %endif
+      %return rtn
+      %break
+
+    %case "address"
+      %if ( cscDefn.DataInit == "Macro" ) || ...
+          ( cscDefn.IsGrouped && ...
+            cscDefn.CSCTypeAttributes.BitPackBoolean )
+        %assign cscName = cscDefn.Name
+        %return "address not supported for %<cscName>"
+      %else
+        %return "&(%<DataAccess(record, "contents", idx, reim)>)"
+      %endif
+      %break
+
+    %case "initialize"
+      %if cscDefn.DataInit == "Dynamic"  %% xxx (yxiao): with memset to zero ??
+        %assign gndValue = LibGetGroundValue(record, tRealPart)
+        %return ...
+          "%<DataAccess(record, "contents", idx, reim)> = " + ...
+          "%<gndValue>;"
+      %else
+        %return ""
+      %endif
+      %break
+
+    %case "layout"
+      %if ( cscDefn.DataInit == "Macro" ) || ...
+          ( cscDefn.IsGrouped && ...
+            cscDefn.CSCTypeAttributes.BitPackBoolean )
+        %return ["other"]
+      %else
+        %% LibDefaultCustomStorageLayout is the default layout function, and may
+        %% be used when the data is laid out in memory like built-in Simulink
+        %% data.  If the data is not laid out in memory like Simulink data,
+        %% return the vector ["other"].
+        %return LibDefaultCustomStorageLayout(record)
+      %endif
+      %break
+
+    %default
+
+      %% You should invoke LibDefaultCustomStorageUnknownClassAccessType
+      %% for unrecognized requests.  It gracefully errors for unhandled
+      %% critical cases, and supplies safe defaults for unhandled
+      %% noncritical requests.
+      %return LibDefaultCustomStorageUnknownDataAccessType ...
+        (record, request, idx, reim)
+      %break
+
+  %endswitch
+
+%endfunction
+
+
+%% Function: ClassAccess ========================================================
+%% Abstract:
+%%   ClassAccess provides an API for requesting information or actions
+%%   corresponding to a custom storage class.
+%%
+%% NOTE:
+%%   Expecting record of GlobalMemoryMap->CustomData,
+%%   not CompiledModel->CustomStorageClass.
+
+%function ClassAccess(record, request) void
+
+  %assign cscDefn = SLibGetCSCDefForCSC(record)
+  %assign msDefn = SLibGetMemorySectionDefForCSC(record)
+  
+  %switch request
+      
+    %case "setup"
+      %% xxx what to do with memset ??
+      %%     to add ClassAccess "groupInit" and DataAccess "init" ??
+      
+      %return ""
+      %break
+
+    %case "comment"
+      %assign rtnStr = "/* Custom storage class: %<cscDefn.Name> */"
+
+      %return rtnStr
+      %break
+
+    %case "typeComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCTypeComment(cscDefn, msDefn, record)
+      %break
+
+    %case "declComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCDeclComment(cscDefn, msDefn, record)
+      %break
+
+    %case "defnComment"
+      %assert cscDefn.CommentSource == "Default"
+
+      %return GetCSCDefnComment(cscDefn, msDefn, record)
+      %break
+
+    %default
+
+      %% You should invoke LibDefaultCustomStorageUnknownClassAccessType
+      %% for unrecognized requests.  It gracefully errors for unhandled
+      %% critical cases, and supplies safe defaults for unhandled
+      %% noncritical requests.
+      %return LibDefaultCustomStorageUnknownClassAccessType(record, request)
+      %break
+
+  %endswitch
+
+%endfunction
+
+
+%% [EOF]

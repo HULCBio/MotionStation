@@ -1,0 +1,163 @@
+%% $RCSfile: sdsprandsrc2.tlc,v $
+%% $Revision: 1.12.4.3 $
+%% $Date: 2004/04/12 23:09:30 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Generate Uniform or Normal (Gaussian) Random Numbers 
+%%
+
+%implements "sdsprandsrc2" "C"
+
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+
+%assign OUTPORT = 0
+%assign IS_COMPLEX = LibBlockOutputSignalIsComplex(OUTPORT)
+%assign INHERIT_ON = (block.SFcnParamSettings.InheritOn == "Yes")
+%assign src_type   = block.SFcnParamSettings.SrcType
+%assign IS_UNIFORM = CAST("Boolean",(src_type == "Uniform"))    
+%assign normMethod = block.SFcnParamSettings.NormMethod
+%assign IS_ZIGGURAT = CAST("Boolean",(normMethod == "Ziggurat"))    
+%assign cltLen     = CAST("Number", SFcnParamSettings.cltLen)
+%assign nChans     = CAST("Number", SFcnParamSettings.nChans)
+%assign nSamps     = CAST("Number", SFcnParamSettings.nSamps)
+%assign IS_DOUBLE  = CAST("Boolean",SFcnParamSettings.IsDouble == "Yes")
+%% We should NOT just call LibBlockOutputSignalDataTypeName.  Need 64_T's
+%if IS_DOUBLE
+  %% Must cast because we want real64_T but we get real_T.
+  %if IS_COMPLEX
+    %assign dType = "(creal64_T *)"
+  %else
+    %assign dType = "(real64_T *)"
+  %endif
+  %<Include_rt_header(block,"dsprandsrc64bit_rt")>
+%else
+  %% Don't need to cast for single - everything is already of the right type.
+  %assign dType = ""
+  %<Include_rt_header(block,"dsprandsrc32bit_rt")>
+%endif
+%assign block = block + ...
+                IS_COMPLEX  + INHERIT_ON + IS_UNIFORM + ...
+                IS_ZIGGURAT + normMethod + cltLen     + ...
+                src_type    + nChans     + OUTPORT    + ...
+                dType       + nSamps     + IS_DOUBLE
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ================================================
+%% Abstract:
+%%      Initialize the real and/or imag seeds for all channels.
+%%        Compute the first random seed
+%%
+%function Start(block, system) Output
+  /* Signal Processing Blockset Random Source (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %assign initSeedLen = LibBlockParameterSize(InitSeed)[0] * LibBlockParameterSize(InitSeed)[1]
+    uint32_T *seeds = %<LibBlockDWorkAddr(SEED_DWORK,"","",0)>;
+    %if (initSeedLen < nChans)
+      %% initSeedLen must be == 1 (else there would be an
+      %% error in mdlCheckParams), so we can just do:
+      /* create seed for each channel */
+      %if IS_DOUBLE
+        MWDSP_RandSrcCreateSeeds_64(%<LibBlockParameter(InitSeed,"","",0)>,seeds,%<nChans>);
+      %else
+        MWDSP_RandSrcCreateSeeds_32(%<LibBlockParameter(InitSeed,"","",0)>,seeds,%<nChans>);
+      %endif
+    %else
+      /* copy seeds to seed buffer */
+      memcpy(seeds,%<LibBlockParameterAddr(InitSeed,"","",0)>,%<initSeedLen>*sizeof(uint32_T));
+    %endif
+    /* initialize state buffer */
+    %if (IS_UNIFORM)
+      %if (IS_DOUBLE)
+        MWDSP_RandSrcInitState_U_64(seeds,%<LibBlockDWorkAddr(STATE_DWORK,"","",0)>,%<nChans>);
+      %else
+        MWDSP_RandSrcInitState_U_32(seeds,%<LibBlockDWorkAddr(STATE_DWORK,"","",0)>,%<nChans>);
+      %endif
+    %else
+      %if (IS_ZIGGURAT)
+        MWDSP_RandSrcInitState_GZ(seeds,%<LibBlockDWorkAddr(STATE_DWORK,"","",0)>,%<nChans>);
+      %else
+        %if (IS_DOUBLE)
+          MWDSP_RandSrcInitState_GC_64(seeds,%<LibBlockDWorkAddr(STATE_DWORK,"","",0)>,%<nChans>);
+        %else
+          MWDSP_RandSrcInitState_GC_32(seeds,%<LibBlockDWorkAddr(STATE_DWORK,"","",0)>,%<nChans>);
+        %endif
+      %endif
+    %endif
+  }
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs =============================================================
+%%
+%function Outputs(block, system) Output   
+  /* Signal Processing Blockset Random Source (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if IS_UNIFORM
+    %assign minLen = LibBlockParameterSize(Min)[0] * LibBlockParameterSize(Min)[1]
+    %assign maxLen = LibBlockParameterSize(Max)[0] * LibBlockParameterSize(Max)[1]
+    %assign state  = LibBlockDWorkAddr(STATE_DWORK,"","",0)
+    %assign mins   = LibBlockParameterAddr(Min,"","",0)
+    %assign maxs   = LibBlockParameterAddr(Max,"","",0)
+    %assign y      = "%<dType>%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"
+    %if IS_COMPLEX
+      %if IS_DOUBLE
+        MWDSP_RandSrc_U_Z(%<y>,%<mins>,%<minLen>,%<maxs>,%<maxLen>,%<state>,%<nChans>,%<nSamps>);
+      %else
+        MWDSP_RandSrc_U_C(%<y>,%<mins>,%<minLen>,%<maxs>,%<maxLen>,%<state>,%<nChans>,%<nSamps>);
+      %endif
+    %else
+      %if IS_DOUBLE
+        MWDSP_RandSrc_U_D(%<y>,%<mins>,%<minLen>,%<maxs>,%<maxLen>,%<state>,%<nChans>,%<nSamps>);
+      %else
+        MWDSP_RandSrc_U_R(%<y>,%<mins>,%<minLen>,%<maxs>,%<maxLen>,%<state>,%<nChans>,%<nSamps>);
+      %endif
+    %endif
+  %else
+    %assign meanLen = LibBlockParameterSize(Mean)[0] * LibBlockParameterSize(Mean)[1]
+    %assign varLen  = LibBlockParameterSize(Variance)[0] * LibBlockParameterSize(Variance)[1]
+    %assign state   = LibBlockDWorkAddr(STATE_DWORK,"","",0)
+    %assign means   = "%<dType>%<LibBlockParameterAddr(Mean,"","",0)>"
+    %assign vars    = LibBlockParameterAddr(Variance,"","",0)
+    %assign y       = "%<dType>%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"
+    %if IS_ZIGGURAT
+      %if IS_COMPLEX
+        %if IS_DOUBLE
+          MWDSP_RandSrc_GZ_Z(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>);
+        %else
+          MWDSP_RandSrc_GZ_C(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>);
+        %endif
+      %else
+        %if IS_DOUBLE
+          MWDSP_RandSrc_GZ_D(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>);
+        %else
+          MWDSP_RandSrc_GZ_R(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>);
+        %endif
+      %endif
+    %else %% Summation of uniform values
+      %assign cltVec = LibBlockDWorkAddr(CLT_DWORK,"","",0)
+      %if IS_COMPLEX
+        %if IS_DOUBLE
+          MWDSP_RandSrc_GC_Z(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>,%<cltVec>,%<cltLen>);
+        %else
+          MWDSP_RandSrc_GC_C(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>,%<cltVec>,%<cltLen>);
+        %endif
+      %else
+        %if IS_DOUBLE
+          MWDSP_RandSrc_GC_D(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>,%<cltVec>,%<cltLen>);
+        %else
+          MWDSP_RandSrc_GC_R(%<y>,%<means>,%<meanLen>,%<vars>,%<varLen>,%<state>,%<nChans>,%<nSamps>,%<cltVec>,%<cltLen>);
+        %endif
+      %endif
+    %endif    
+  %endif
+%endfunction
+
+
+%% [EOF] sdsprandsrc.tlc

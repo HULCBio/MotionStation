@@ -1,0 +1,86 @@
+%% sdsplpc2cc.tlc
+%% Abstract: TLC for Signal Processing Blockset  LPC to/from Cepstral coefficients conversion block (sdsplpc2cc)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.2.4.2 $ $Date: 2004/04/12 23:08:52 $
+
+%implements "sdsplpc2cc" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT       = 0
+  %assign INPORT_POWER = 1
+  %assign OUTPORT      = 0
+  %assign OUTPORT_ENERGY = 1
+  %assign dtype     = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign inSingle  = (dtype == "real32_T") ? 1 : 0
+  %assign convType  = %<SFcnParamSettings.ConversionType>
+  %assign power_nonunity = %<SFcnParamSettings.Power_via_inport>
+  %assign outPower  = %<SFcnParamSettings.Output_power>
+  %assign normalize = %<SFcnParamSettings.DoNormalization>
+  %assign block = block + INPORT + INPORT_POWER + OUTPORT + OUTPORT_ENERGY + dtype\
+                + inSingle + convType + power_nonunity+normalize+outPower
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsplpc2cc_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset LPC to/from CC (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %assign str      = (inSingle) ? "F" : "" 
+    %assign str1     = (inSingle) ? "f" : "" 
+    %assign suffx    = (inSingle) ? "_R" : "_D" 
+    %assign u_ptr    = LibBlockInputSignalAddr(INPORT, "", "", 0)
+    %assign y_ptr    = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign Nlpc     = LibBlockInputSignalWidth(INPORT)
+    %assign Nceps    = LibBlockOutputSignalWidth(OUTPORT)
+    %if (convType == 1) 
+      %if normalize
+      {
+          %<dtype> *NormA   = %<LibBlockDWorkAddr(NormalizedLPC, "", "", "")>;
+          const %<dtype> *A = %<u_ptr>; 
+          if (A[0] != 1.0%<str>) {
+              /* we need to read in the first value and divide the entire input vector by that value.*/
+              int_T j;
+              for (j = 1; j <= %<Nlpc>; j++) {
+                NormA[j] = A[j] / A[0];
+              }
+              NormA[0] = 1.0%<str>;
+              MWDSP_Lpc2Cc%<suffx>(NormA, %<y_ptr>, %<Nlpc-1>, %<Nceps>);
+          } else {
+              MWDSP_Lpc2Cc%<suffx>(%<u_ptr>, %<y_ptr>, %<Nlpc-1>, %<Nceps>);
+          }
+      }
+      %else
+        MWDSP_Lpc2Cc%<suffx>(%<u_ptr>, %<y_ptr>, %<Nlpc-1>, %<Nceps>);
+      %endif
+      %if (power_nonunity)
+        /* We need to re-calculate the first cepstral coefficient based on Linear prediction error power*/
+        *(%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>) = log%<str1>(*(%<LibBlockInputSignalAddr(INPORT_POWER, "", "", 0)>));
+        %endif
+    %else 
+        %if outPower
+            *(%<LibBlockOutputSignalAddr(OUTPORT_ENERGY, "", "", 0)>)= exp%<str1>(*(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>));
+        %endif   
+        MWDSP_Cc2Lpc%<suffx>(%<u_ptr>, %<y_ptr>, %<Nlpc-1>);
+    %endif
+%endfunction %% Outputs
+
+
+%% EOF: sdsplpc2cc.tlc

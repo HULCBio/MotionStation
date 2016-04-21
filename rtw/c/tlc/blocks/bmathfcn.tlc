@@ -1,0 +1,1496 @@
+%% $Revision: 1.1.6.4 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Math block target file
+
+%implements Math "C"
+
+%% Function: Round =============================================================
+%% Abstract:
+%%   Compute ret = round(val) given data type
+%%
+%function Round(val, ret, dType) Output
+  %assign valTypeName = LibGetDataTypeNameFromId(dType)
+  %assign targetHasRoundFcn = LibMathFcnExists("round", dType)
+  %%
+  %if targetHasRoundFcn == 0
+    %% target does not have a round fcn--use the fallback calculation
+    %assign dtHalf = SLibGetFormattedValueFromId(dType,0.5)
+    %assign dtZero = SLibGetFormattedValueFromId(dType,0)
+    %assign absCall    = LibGenMathFcnCall("abs",dType, val, "")
+    %assign absOffset  =  "(%<absCall> + %<dtHalf>)"
+    %assign floorCall  = LibGenMathFcnCall("floor", dType, absOffset, "")
+    {
+    %<valTypeName> t;	   
+    \
+    t =  %<floorCall>;
+    %<ret> = ((%<val> < %<dtZero>) ? -t : t);
+    }
+  %else
+    %% use target's round function
+    %assign roundCall = LibGenMathFcnCall("round", dType, val, "")
+    %<ret> = %<roundCall>;
+  %endif
+  %%
+%endfunction
+
+%% Function: Fix =============================================================
+%% Abstract:
+%%   Compute ret = fix(val) given data type
+%%
+%function Fix(val, ret, dType) Output
+  %assign valTypeName = LibGetDataTypeNameFromId(dType)
+  %assign targetHasFixFcn = LibMathFcnExists("fix", dType)
+  %%
+  %if targetHasFixFcn == 0
+    %% target does not have a round fcn--use the fallback calculation
+    %assign absCall = LibGenMathFcnCall("abs",dType, val,"")
+    %assign floorCall = LibGenMathFcnCall("floor",dType, absCall,"")
+    %assign dtZero = SLibGetFormattedValueFromId(dType,0)
+    {
+    %<valTypeName> t;
+    \
+    t =  %<floorCall>;
+    %<ret> = ((%<val> < %<dtZero>) ? -t : t);
+    }
+  %else
+    %% use target's round function
+    %assign fixCall = LibGenMathFcnCall("fix", dType, val, "")
+    %<ret> = %<fixCall>;
+  %endif
+  %%
+%endfunction
+
+
+%% Function: BlockFixptInstanceSetup ===============================================
+%% Abstract:
+%% 	Pre-code generation work for fixpt mode
+%%
+%function BlockFixptInstanceSetup(block, system) void
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>\
+    %%
+    %% Currently, do not support
+    %%   o multi-chunk math
+    %%   o input bias non-zero
+    %%   0 output bias non-zero
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% Check if output has non-zero bias
+    %%
+    %if y0DT.Bias != 0
+      %%START_ASSERT
+      %openfile errTxt
+For code generation, fixed-point multiplication and division
+do not support non-zero biases.
+Output Bias = %<y0DT.Bias>
+Block: '%<SLibBlkName(block)>'
+      %closefile errTxt
+      %exit %<errTxt>
+      %%END_ASSERT
+    %endif
+    %%
+    %% Check each input for non-zero bias
+    %%
+    %foreach ipIdx = NumDataInputPorts
+      %%
+      %assign uiDT = FixPt_GetInputDataType(ipIdx)
+      %%
+      %if uiDT.Bias != 0
+        %%START_ASSERT
+        %openfile errTxt
+For code generation, fixed-point multiplication and division
+do not support non-zero biases.
+Input%<ipIdx> Bias = %<uiDT.Bias>
+Block: '%<SLibBlkName(block)>'
+        %closefile errTxt
+        %exit %<errTxt>
+        %%END_ASSERT
+      %endif
+    %endforeach
+    %%
+    %% Turn off expression folding if bits per long is less than
+    %% 32 as assumed in the simulink code for the product block
+    %% this is conservative, but the case where bits per long is less
+    %% than 32 bits seems very rare.
+    %%
+    %if IntegerSizes.LongNumBits >= 32
+      %%
+      %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+      %%
+    %endif
+%endfunction
+
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign mathOperator = ParamSettings.Operator
+  %if ( block.InFixptMode )
+    %<BlockFixptInstanceSetup(block, system)>\
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>\
+  %endif
+%endfunction
+
+
+%% Function: FcnMathComment ===================================================
+%% Abstract:
+%%      Function to return extra info for block
+%%
+%function FcnMathComment(block,mathOperator) Output
+  %%
+  * Op: %<mathOperator>
+  %if block.InFixptMode
+    %%
+    %<FixPt_GeneralComments()>\
+  %endif
+  %%
+%endfunction
+
+
+%% Function: FixPt_Square ==========================================================
+%% Abstract:
+%%   Calculates square of a fixed point complex number.
+%%   This block can operate in an element by element vector product
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied to
+%%   produce a scalar output.
+%%
+%function Mathfcn_FixPt_Square(block, system) Output
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %%
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %%
+    %assign y0RadixDT.Bias      = 0.0
+    %%    
+    %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+        %%
+        %copyrecord y0CorrectionDT y0RadixDT
+        %%
+        %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+    %endif
+    %%
+    %% create RadixOnly version of first Input Data Type
+    %%
+    %assign u0DT = FixPt_GetInputDataType(0)
+    %%
+    %copyrecord u0RadixDT u0DT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %%
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+      %%
+      %assign y0RadixDT.FixedExp = y0RadixDT.FixedExp + iFixExpCorrection
+      %%
+    %endif
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %if lcv == "" && sigIdx != 0
+	%% blank line for formating
+        
+        %%
+      %endif
+      %%
+      %assign tmpLabel = "yTemp"
+      %%
+      %assign reSigIdx = tRealPart + STRING(sigIdx)
+      %%
+      %assign imSigIdx = tImagPart + STRING(sigIdx)
+      %%
+      %% Get first input
+      %%
+      %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+      %%
+      %if u0IsComplex
+        %%
+	%assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+        %%
+      %endif
+      %%
+      %% Get output
+      %% Note that the complex part of y0 is always zero (if it is required
+      %% by the user at all). So we don't operate on it.
+      %%
+      %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+      %%
+      %if y0IsComplex
+        %%
+	%assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+        %%
+      %endif
+      %%
+      %if u0IsComplex
+	%%
+        %% Do complex multiply
+        %% Algorithm:
+        %% y.re = u.re*u.re - u.im*u.im
+        %% y.im = 2*(u.re*u.im)
+        %%      = (u.re*u.im) << 1
+        %%
+        {
+          %%
+          %<y0DT.NativeType> %<tmpLabel>;
+          %%
+          %% y.re (y0DT) = u.re * u.re (u0DT)
+          %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+          %% tmp  (y0DT) = u.im * u.im (u0DT)
+          %%
+	  %<FixPt_Multiply(tmpLabel,y0RadixDT,...
+	    u0ImLabel,u0RadixDT,...
+	    u0ImLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+          %% y.re -= tmp (y0DT)
+          %%
+	  %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+	    tmpLabel,y0RadixDT,...
+	    FixPtSaturationMode)>\
+	  %%
+          %% y.im (y0DT) = u.re*u.im (u0DT)
+          %%
+	  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    u0ImLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+          %% y.im = y.im << 1  (y0DT)
+          %%
+          %assign y0ImTimes2 = LibGenArithShiftLeft(y0ImLabel,y0RadixDT,1)
+          %%
+          %<y0ImLabel> = %<y0ImTimes2>;
+	  %%
+	  %%  handle fractional slope adjustment if necessary
+	  %%
+	  %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	    %%
+	    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	      y0ReLabel,y0RadixDT,...
+	      STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+            %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+              y0ImLabel,y0RadixDT,...
+              STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+              FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+	  %endif
+	}
+	%%
+      %else
+	%%
+	%%u0 is not complex; just real multiply
+	%%
+        {
+	%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	  u0ReLabel,u0RadixDT,...
+	  u0ReLabel,u0RadixDT,...
+	  FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+        %% if y0 is complex, set y0ImLabel to zero
+        %%
+        %if y0IsComplex
+          %%
+        %<y0ImLabel> = (%<y0DT.NativeType>) (0);
+          %%
+        %endif
+	%%
+	%%  handle fractional slope adjustment if necessary
+	%%
+	%if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	  %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    y0ReLabel,y0RadixDT,...
+	    STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+	%endif
+	%%
+        } 
+      %endif
+      %%
+    %endroll
+    %%
+%endfunction %%end Mathfcn_FixPt_Square
+
+
+%% Function: Mathfcn_FixPt_MagSquared ==========================================================
+%% Abstract:
+%%   Calculates magnitude squared for a fixed point complex number.
+%%   This block can operate in an element by element vector product
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied to
+%%   produce a scalar output.
+%%
+%function Mathfcn_FixPt_MagSquared(block, system) Output
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %%
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %%
+    %assign y0RadixDT.Bias      = 0.0
+    %%    
+    %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+        %%
+        %copyrecord y0CorrectionDT y0RadixDT
+        %%
+        %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+    %endif
+    %%
+    %% create RadixOnly version of first Input Data Type
+    %%
+    %assign u0DT = FixPt_GetInputDataType(0)
+    %%
+    %copyrecord u0RadixDT u0DT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %%
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+      %%
+      %assign y0RadixDT.FixedExp = y0RadixDT.FixedExp + iFixExpCorrection
+      %%
+    %endif
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %if lcv == "" && sigIdx != 0
+	%% blank line for formating
+        
+        %%
+      %endif
+      %%
+      %assign tmpLabel = "yTemp"
+      %%
+      %assign reSigIdx = tRealPart + STRING(sigIdx)
+      %%
+      %assign imSigIdx = tImagPart + STRING(sigIdx)
+      %%
+      %% Get first input
+      %%
+      %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+      %%
+      %if u0IsComplex
+        %%
+	%assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+        %%
+      %endif
+      %%
+      %% Get output
+      %% Note that the complex part of y0 is always zero (if it is required
+      %% by the user at all). So we don't operate on it.
+      %%
+      %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+      %%
+      %if u0IsComplex
+	%%
+        {
+          %% Create temporary storage
+	  %<y0DT.NativeType> %<tmpLabel>;
+          %%
+          %% y.re (y0DT) = u.re * u.re (u0DT)
+          %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+          %% tmp  (y0DT) = u.im * u.im (u0DT)
+          %%
+	  %<FixPt_Multiply(tmpLabel,y0RadixDT,...
+	    u0ImLabel,u0RadixDT,...
+	    u0ImLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+          %% y.re += tmp
+          %%
+	  %<FixPt_AccumPos(y0ReLabel,y0RadixDT,...
+	    tmpLabel,y0RadixDT,...
+	    FixPtSaturationMode)>\
+	  %%
+	  %%  handle fractional slope adjustment if necessary
+	  %%
+          %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	    %%
+	    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	      y0ReLabel,y0RadixDT,...
+	      STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+	  %endif
+	}
+	%%
+      %else
+	%%
+	%%u0 is not complex
+	%%
+	%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	  u0ReLabel,u0RadixDT,...
+	  u0ReLabel,u0RadixDT,...
+	  FixPtRoundingMode,FixPtSaturationMode)>\
+	%%
+	%%  handle fractional slope adjustment if necessary
+	%%
+	%if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	  %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    y0ReLabel,y0RadixDT,...
+	    STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+          %%
+	%endif
+	%%
+      %endif
+      %%
+    %endroll
+    %%
+%endfunction %% end Mathfcn_FixPt_MagSquared
+
+
+%% Function: Mathfcn_FixPt_Conj ===============================================
+%% Abstract:
+%%   Output function for fixpt mode for conjugate operation.
+%%   This block can operate in an element by element vector product
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied to
+%%   produce a scalar output.
+%%
+%function Mathfcn_FixPt_Conj(block,system) Output
+  %%
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %%
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %% create RadixOnly version of output Data Type
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %assign y0DataTypeIdx = FixPt_GetOutputDataTypeId(0)
+  %%
+  %% Get Input Data Type
+  %%
+  %assign u0DT = FixPt_GetInputDataType(0)
+  %%
+  %assign u0DataTypeIdx = FixPt_GetInputDataTypeId(0)
+  %%
+  %if u0DataTypeIdx != y0DataTypeIdx || FixPt_DataTypeIsFloat(y0DT)
+    %%
+    %<LibBlockReportFatalError(block, "MathFcn fixed-point conjugate used with unsupported data types.")>\
+  %endif
+  %%
+  %assign rollVars = ["U", "Y"]
+  %%
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %if lcv == "" && sigIdx != 0
+      %% blank line for formating
+      
+      %%      
+    %endif
+    %%
+    %assign reSigIdx = tRealPart + STRING(sigIdx)
+    %%
+    %assign imSigIdx = tImagPart + STRING(sigIdx)
+    %%
+    %% Get first input
+    %%
+    %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+    %%
+    %if u0IsComplex
+      %%
+      %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+      %%
+    %endif
+    %%
+    %% Get output
+    %% Note that the complex part of y0 is always zero (if it is required
+    %% by the user at all). So we don't operate on it.
+    %%
+    %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+    %%
+    %if y0IsComplex
+      %%
+      %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+      %%
+    %endif
+    %%
+    %assign outMax = FixPt_GetMaxStr(y0DT)
+    %%
+    %assign outMin = SPow2NegStr(y0DT.RequiredBits-1)
+    %%
+    %if u0IsComplex
+      %%
+      %<y0ReLabel> = %<u0ReLabel>;
+      %%
+      %if FixPtSaturationMode == "Saturate"
+	%%
+	if( %<u0ImLabel> <= %<outMin> )
+	{
+	  %<y0ImLabel> = %<outMax>;
+	}
+	else
+	{
+	  %<y0ImLabel> = -%<u0ImLabel>;
+	}
+      %else
+      %%
+      %<y0ImLabel> = -%<u0ImLabel>;
+      %%
+      %endif
+      %%
+      %<FixPt_EmulationSignExt(y0ImLabel,y0DT)>\
+      %%
+    %else
+      %%
+      %%u0 is not complex
+      %%
+      %<y0ReLabel> = %<u0ReLabel>;
+      %%
+    %endif
+    %%
+  %endroll    
+  %%
+%endfunction %%end Mathfcn_FixPt_Conj 
+
+
+%% Function: Mathfcn_FixPt_Reciprocal =================================================
+%% Synopsis:
+%%      FixPt_Reciprocal(cLabel,cDT,bLabel,bDT,roundMode,satMode)
+%%
+%%      cLabel,cDT = record describing output
+%%      bLabel,bDT = record describing input
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%
+%%function FixPt_Reciprocal(cLabel,cDT,bLabel,bDT,roundMode,satMode) Output
+%function Mathfcn_FixPt_Reciprocal(block,system) Output
+  %%
+  %% TODO: ASSERT NON COMPLEX
+  %%
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %%
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %% create RadixOnly version of output Data Type
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %copyrecord y0RadixDT y0DT
+  %%
+  %assign y0RadixDT.FracSlope = 1.0
+  %%
+  %assign y0RadixDT.Bias      = 0.0
+  %%    
+  %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+    %%
+    %copyrecord y0CorrectionDT y0RadixDT
+    %%
+    %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+  %endif
+  %%
+  %% create RadixOnly version of first Input Data Type
+  %%
+  %assign u0DT = FixPt_GetInputDataType(0)
+  %%
+  %copyrecord u0RadixDT u0DT
+  %%
+  %assign u0RadixDT.FracSlope = 1.0
+  %%
+  %assign u0RadixDT.Bias      = 0.0
+  %%
+  %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+    %%
+    %assign y0RadixDT.FixedExp = y0RadixDT.FixedExp + iFixExpCorrection
+    %%
+  %endif
+  %%
+  %assign rollVars = ["U", "Y"]
+  %%
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %if lcv == "" && sigIdx != 0
+      %% blank line for formating
+      
+      %%
+    %endif
+    %%
+    %assign tmpLabel = "yTemp"
+    %%
+    %assign reSigIdx = tRealPart + STRING(sigIdx)
+    %%
+    %assign imSigIdx = tImagPart + STRING(sigIdx)
+    %%
+    %% Get first input
+    %%
+    %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+    %%
+    %% Get output
+    %% Note that the complex part of y0 is always zero (if it is required
+    %% by the user at all). So we don't operate on it.
+    %%
+    %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+    %%
+    %<FixPt_Reciprocal ( y0ReLabel, y0RadixDT, ...
+      u0ReLabel, u0RadixDT, ...
+      FixPtRoundingMode,FixPtSaturationMode)>\
+    %%
+    %%  handle fractional slope adjustment if necessary
+    %%
+    %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+      %%
+      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+        y0ReLabel,y0RadixDT,...
+        STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+        FixPtRoundingMode,FixPtSaturationMode)>\
+      %%
+    %endif
+    %%
+    %%
+  %endroll
+  %%
+%endfunction %%end Mathfcn_FixPt_Reciprocal
+
+
+%% Function: UnaryMinusZeroBias ===============================================
+%% Abstract:
+%%   Negate the input and saturate if required. This function outputs code.
+%%   Assumes inputs to have no bias. Also, if yDT is NOT of type single or
+%%   double, it explicitly assumes FixPtSaturationMode is filled in.
+%%
+%function UnaryMinus_ZeroBias (yLabel,yDT,uLabel,inFixptModeFlag) Output
+  %%
+  %if !inFixptModeFlag || FixPt_DataTypeIsFloat(yDT)
+    %%
+    %assign FixPtSaturationMode = "Wrap"
+    %%
+  %endif
+  %%
+  %if ISEQUAL(FixPtSaturationMode,"Saturate")
+    %%
+    %assign outMax = FixPt_GetMaxStr(yDT)
+    %%
+    %assign outMin = SPow2NegStr(yDT.RequiredBits-1)
+    %%
+    %<yLabel> = ( %<uLabel> <= %<outMin> ) ? %<outMax> : -%<uLabel>;
+    %%
+    %<FixPt_EmulationSignExt(yLabel,yDT)>\
+    %%
+  %else
+    %%
+    %<yLabel> = -%<uLabel>;
+    %%
+  %endif
+  %%
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%   The Math block implements the following "basic" math functions:
+%%   exp,log,10^u,log10,square,sqrt,pow,reciprocal,hypot,mod,rem
+%%   plus matrix transpose and hermitian as well.
+%%
+%function Outputs(block, system) Output
+  %assign mathOperator = ParamSettings.Operator
+  %%
+  %% BEGIN FIXPT CALLS
+  %%
+  %if block.InFixptMode && ...
+    mathOperator != "transpose" && mathOperator != "hermitian"
+    %%
+    %% BEGIN FIXPT COMMENTS
+    %%
+  /* %<block.Name>
+     %<FcnMathComment(block,mathOperator)>\
+  */
+    %%
+    %% END FIXPT COMMENTS
+    %%
+    %% Fixpt function calls
+    %%
+    %switch mathOperator 
+        %%
+      %case "magnitude^2"
+        %<Mathfcn_FixPt_MagSquared(block,system)>\
+        %break
+        %%
+      %case "conj"
+        %<Mathfcn_FixPt_Conj(block,system)>\
+        %break
+        %%
+      %case "square"
+        %<Mathfcn_FixPt_Square(block,system)>\
+        %break
+        %%
+      %case "reciprocal"
+        %<Mathfcn_FixPt_Reciprocal(block,system)>\
+        %break
+        %%
+      %default
+        %<LibBlockReportFatalError(block, "MathFcn used in fixed-point mode with a function that was not supported.")>
+        %%
+    %endswitch
+    %return
+  %endif
+  %%
+  %% END FIXPT CALLS
+  %% Outputs returns at this point if in fixpt mode
+  %%
+  %% BEGIN ADDITIONAL COMMENTS FOR MATH BLOCK (NON-FIXPT)
+  %%
+  /* Operator : %<mathOperator> */
+  %%
+  %%END COMMENTS
+  %%
+  %assign inputComplex = 0
+  %foreach ip = NumDataInputPorts
+    %if LibBlockInputSignalIsComplex(ip)
+      %assign inputComplex = 1
+      %break
+    %endif
+  %endforeach
+  %assign outputComplex = LibBlockOutputSignalIsComplex(0)
+  %%
+  %% Special case - No code generated for Math block configured as:
+  %% Conj, real input, real output, reuse input/output buffer
+  %if ((mathOperator == "conj") && (inputComplex == 0) && ...
+       (outputComplex == 0)     && (LibBlockInputSignalBufferDstPort(0) == 0))
+    %% Do quick exit from output function for special case (Conj)
+    %return ""
+  %endif
+  %%
+  %assign transpose = 0
+  %if ((mathOperator == "transpose") || (mathOperator == "hermitian"))
+    %assign transpose = 1
+  %endif
+  %%
+  %%
+  %% All Block I/O for this block has the same base data type,
+  %% but not necessarily the same complexity.  "Base data type"
+  %% means the data type of the .re and .im pieces, not the 
+  %% (maybe) composite of .re and .im.
+  %%
+  %assign ioBaseType     = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+  %assign ioBaseTypeName = LibBlockOutputSignalDataTypeName(0,tRealPart)
+  %if ioBaseType == tSS_SINGLE
+    %assign dtDowncast = "(" + ioBaseTypeName + ")"
+  %else
+    %assign dtDowncast = ""
+  %endif
+  %assign dtCastSuff = ""
+  %%
+  %% Datatyped constants
+  %%
+  %assign dtZero = SLibGetFormattedValueFromId(ioBaseType,0)
+  %assign dtHalf = SLibGetFormattedValueFromId(ioBaseType,0.5)
+  %assign dtOne  = SLibGetFormattedValueFromId(ioBaseType,1)
+  %assign dtTwo  = SLibGetFormattedValueFromId(ioBaseType,2)
+  %assign dtTen  = SLibGetFormattedValueFromId(ioBaseType,10)
+  %%
+  %if transpose==0
+    %if ((mathOperator == "pow") &&  (inputComplex == 1))
+      %%START_ASSERT
+      %assign errTxt="Complex signals not supported in Real-Time Workshop " ...
+	"for the operator %<mathOperator>"
+      %<LibBlockReportError(block, errTxt)>
+      %%END_ASSERT
+    %endif
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %if NumDataInputPorts==2
+	%assign u2 = LibBlockInputSignal(1, "", lcv, sigIdx)
+      %endif
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %%
+      %if (inputComplex == 1)
+	%assign ur = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign ui = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+      %endif
+      %if (outputComplex == 1)
+	%assign yr = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign yi = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+      %endif
+      %%
+      %%
+      %% Cases :
+      %%    exp,log,10^u,log10,square,sqrt,pow,reciprocal,hypot,mod,rem
+      %%
+      %if NumDataInputPorts==2
+	%switch mathOperator
+	  %case "pow"
+	    %if (outputComplex == 1)
+	      %assign y = yr
+	    %endif
+	    if ((%<u> < 0.0) && (%<u2> != %<LibGenMathFcnCall("floor",\
+	                                      ioBaseType,"%<u2>","")>)) {
+	      %<y> = -%<LibGenMathFcnCall("pow",ioBaseType,"-%<u>","%<u2>")>;
+	    } else {
+	      %<y> = %<LibGenMathFcnCall("pow",ioBaseType,"%<u>","%<u2>")>;
+	    }
+	    %if (outputComplex == 1)
+	      %<yi> = %<dtZero>;
+	    %endif
+	    %break
+	  %case "mod"
+	    %if (outputComplex == 1)
+	      %assign y = yr
+	    %endif
+            %if LibMathFcnExists("mod",ioBaseType)
+	      %<y> = %<LibGenMathFcnCall("mod",ioBaseType,"%<u>","%<u2>")>;
+	    %elseif ioBaseType == tSS_DOUBLE || ioBaseType == tSS_SINGLE
+	      %% Previous implementation for double/float mod is not correct
+	      %% for some special cases, the change here is to use Matlab
+	      %% implementation which accounts for the accuracy lost in
+	      %% the division (u / u2)
+              %assign uTypeName = LibBlockInputSignalDataTypeName(0, "")
+	      %assign quotAbsDiff = LibGenMathFcnCall("abs", ioBaseType, "(uDiv - uDivRound)", "")
+	      %assign quotAbsTimesEps = "%<LibGetMathConstant("EPSILON",ioBaseType)> * %<LibGenMathFcnCall("abs", ioBaseType, "uDiv", "")>"
+	      if (%<u2> == %<dtZero>) {
+	        %<y> = %<u>;
+	      } else if (%<u2> == %<LibGenMathFcnCall("floor", ioBaseType, u2, "")>) {
+		/* Integer denominator.  Use conventional formula.*/
+		%assign floorCall = LibGenMathFcnCall("floor",ioBaseType, "(%<u>) / (%<u2>)","")
+		%<y> = (%<u> - %<u2> * %<floorCall>);
+	      } else { 
+		/* Noninteger denominator. Check for nearly integer quotient.*/
+		%<uTypeName> uDivRound;
+	        %<uTypeName> uDiv = %<u> / %<u2>;
+		%<Round("uDiv", "uDivRound", ioBaseType)>
+		if (%<quotAbsDiff> <= %<quotAbsTimesEps>) {
+		  %<y> = %<SLibGetFormattedValueFromId(ioBaseType,0)>;
+		} else {
+		  %<y> = (uDiv - %<LibGenMathFcnCall("floor", ioBaseType, "uDiv", "")>) * %<u2>;
+		}
+              }
+	    %elseif SLibIsSignedFromId(ioBaseType)
+              if (%<u2> == %<dtZero>) {
+	        %<y> = %<u>;
+              } else {
+  	        {
+		  div_t division = div(%<u>,%<u2>);
+		  %<SLibAddToCommonIncludes("<stdlib.h>")>
+ 	        \
+                  if ((%<u> < 0) ^ (%<u2> < 0)) {
+		      %<y> = %<u> - %<u2> * (division.quot - 1);
+		  } else {
+		      %<y> = division.rem;
+		  }
+		}
+              }
+	    %else
+              if (%<u2> == %<dtZero>) {
+	        %<y> = %<u>;
+              } else {
+		%<y> = %<u> % %<u2>;
+              }
+	    %endif
+	    %if (outputComplex == 1)
+	      %<yi> = %<dtZero>;
+	    %endif
+	    %break
+	  %case "rem"
+	    %if (outputComplex == 1)
+	      %assign y = yr
+	    %endif
+            %if LibMathFcnExists("rem",ioBaseType)
+	      %<y> = %<LibGenMathFcnCall("rem",ioBaseType,"%<u>","%<u2>")>;
+	    %elseif ioBaseType == tSS_DOUBLE || ioBaseType == tSS_SINGLE
+	      %% Previous implementation for double/float rem is not correct
+	      %% for some special cases, the change here is to use Matlab
+	      %% implementation which accounts for the precision lost in
+	      %% the division (u / u2)
+	      %assign quotAbsDiff = LibGenMathFcnCall("abs", ioBaseType, "(uDiv - uDivRound)", "")
+	      %assign quotAbsTimesEps = "%<LibGetMathConstant("EPSILON",ioBaseType)> * %<LibGenMathFcnCall("abs", ioBaseType, "uDiv", "")>"
+	      {
+	        %<ioBaseTypeName> u2Fix;
+		%<ioBaseTypeName> uDiv;
+	        %<ioBaseTypeName> uDivFix;
+	      \
+	        %<Fix(u2, "u2Fix", ioBaseType)>
+	        if (%<u2> == %<dtZero>) {
+	          %<y> = %<dtDowncast>%<LibRealNonFinite(nan)>%<dtCastSuff>;
+	        } else if ( %<u2> == u2Fix ) {
+		  /* Integer denominator.  Use conventional formula.*/
+		  uDiv = %<u> / %<u2>;
+		  %<Fix("uDiv", "uDivFix", ioBaseType)>
+		  %<y> = (%<u> - uDivFix * %<u2>);
+	        } else { 
+                  /* Noninteger denominator. Check for nearly integer quotient.*/
+		  %<ioBaseTypeName> uDivRound;
+		  uDiv = %<u> / %<u2>;
+		  %<Round("uDiv", "uDivRound", ioBaseType)>
+		  if (%<quotAbsDiff> <= %<quotAbsTimesEps>) {
+		    %<y> = %<SLibGetFormattedValueFromId(ioBaseType,0)>;
+		  } else {
+		    %<Fix("uDiv", "uDivFix", ioBaseType)>
+		    %<y> = (uDiv - uDivFix) * %<u2>;
+		  }
+	        }
+	      }
+	    %elseif SLibIsSignedFromId(ioBaseType)
+              if (%<u2> == %<dtZero>) {
+	        %<y> = %<u>;
+              } else {
+  	        {
+		  div_t division = div(%<u>,%<u2>);
+		  %<SLibAddToCommonIncludes("<stdlib.h>")>
+ 	        \
+		  %<y> = division.rem;
+		}
+              }
+	    %else
+              if (%<u2> == %<dtZero>) {
+	        %<y> = %<u>;
+              } else {
+		%<y> = %<u> % %<u2>;
+              }
+	    %endif
+	    %if (outputComplex == 1)
+	      %<yi> = %<dtZero>;
+	    %endif
+	    %break
+	  %case "hypot"
+	    %assign hypotCall = LibGenMathFcnCall("hypot",ioBaseType,"%<u>","%<u2>")
+	    %if (outputComplex == 1)
+	      %<yr> = %<hypotCall>;
+	      %<yi> = %<dtZero>;
+	    %else
+	      %<y> = %<hypotCall>;
+	    %endif
+	    %break
+	  %default
+	    %%START_ASSERT
+	    %<LibReportFatalError("Internal error generating code for " + ... 
+	    "operation: %<mathOperator>")>
+	    %%END_ASSERT
+	%endswitch
+      %else
+	%switch mathOperator
+	  %case "10^u"
+	    %if (inputComplex == 1)
+	      {
+	      %<ioBaseTypeName> tmp = \
+	      %<LibGetMathConstant("LN_10",ioBaseType)>;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+	      %endif
+	      %assign powCall = LibGenMathFcnCall("10^u",ioBaseType, "%<ur>", "")
+	      %if ISEMPTY(powCall)
+		%% explicit fcn not available, use fallback calculation
+		%assign powCall = LibGenMathFcnCall("pow",ioBaseType, \
+		                                    "%<dtTen>","%<ur>")
+	      %endif
+	      %assign cosCall = LibGenMathFcnCall("cos",ioBaseType, \
+	                                          "tmp * %<ui>","")
+	      %assign sinCall = LibGenMathFcnCall("sin",ioBaseType, \
+	                                          "tmp * %<ui>","")
+	      \
+	        %<yr> = %<powCall> * %<cosCall>;
+		%<yi> = %<powCall> * %<sinCall>;
+	      }
+	    %else
+	      %assign powCall = LibGenMathFcnCall("10^u",ioBaseType, "%<u>", "")
+	      %if ISEMPTY(powCall)
+		%% explicit fcn not available, use fallback calculation
+		%assign powCall = LibGenMathFcnCall("pow",ioBaseType, \
+		                                    "%<dtTen>","%<u>")
+	      %endif
+	      %if (outputComplex == 1)
+		%<yr> = %<powCall>;
+		%<yi> = %<dtZero>;
+	      %else
+		%<y> = %<powCall>;
+	      %endif
+	    %endif
+	    %break
+	  %case "log"
+	    %if (inputComplex == 1)
+	      {
+	      %assign hypotCall = LibGenMathFcnCall("hypot",ioBaseType, \
+	                                            "%<ur>", "%<ui>")
+	      %<ioBaseTypeName> r = %<hypotCall>;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+	      %endif
+	      \
+	        if (r == %<dtZero>) {
+		  %<yr> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		  %<yi> = %<dtZero>;
+		} else {
+		  %<yr> = %<LibGenMathFcnCall("log",ioBaseType,"r","")>;
+		  %% We do not need to use rt_atan2 since
+		  %% r == 0.0 above if and only if both
+		  %% ui and ur are zero.  Since we are in
+		  %% the else case, this must not be true
+		  %% and we can call atan2 directly.
+		  %% (See rtw/c/libsrc/rt_atan2.c).
+		  %<yi> = %<LibGenMathFcnCall("raw_atan2",ioBaseType,ui,ur)>;
+		}
+	      }
+	    %else
+	      %if (outputComplex == 1)
+		if (%<u> < %<dtZero>) {
+		  %<yr> = %<LibGenMathFcnCall("log",ioBaseType,"-%<u>","")>;
+		  %<yi> = %<LibGetMathConstant("PI",ioBaseType)>;
+		} else if (%<u> == %<dtZero>) {
+		  %<yr> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		  %<yi> = %<dtZero>;
+		} else {
+		  %<yr> = %<LibGenMathFcnCall("log",ioBaseType,u,"")>;
+		  %<yi> = %<dtZero>;
+		}
+	      %else
+		if (%<u> <= %<dtZero>) {
+		  %<y> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		} else {
+		  %<y> = %<LibGenMathFcnCall("log",ioBaseType,u,"")>;
+		}
+	      %endif
+	    %endif
+	    %break
+	  %case "log10"
+	    %if (inputComplex == 1)
+	      {
+	      %<ioBaseTypeName> r = %<LibGenMathFcnCall("hypot",\
+	                                       ioBaseType,ur, ui)>;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+	      %endif
+	      \
+	        if (r == %<dtZero>) {
+		  %<yr> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		  %<yi> = %<dtZero>;
+		} else {
+		  %<yr> = %<LibGenMathFcnCall("log",ioBaseType,"r","")> \
+		           * %<LibGetMathConstant("LOG10E",ioBaseType)>;
+		  %% We do not need to use rt_atan2 since
+		  %% r == 0.0 above if and only if both
+		  %% ui and ur are zero.  Since we are in
+		  %% the else case, this must not be true
+		  %% and we can call atan2 directly.
+		  %% (See rtw/c/libsrc/rt_atan2.c).
+		  %<yi> = %<LibGenMathFcnCall("raw_atan2",ioBaseType,ui,ur)> \
+		           * %<LibGetMathConstant("LOG10E",ioBaseType)>;
+		}
+	      }
+	    %else
+	      %if (outputComplex == 1)
+		if (%<u> < %<dtZero>) {
+		  %<yr> = %<LibGenMathFcnCall("log10",ioBaseType,\
+		                               "-%<u>","")>;
+		  %<yi> = %<LibGetMathConstant("LOG10E",ioBaseType)> * \
+		           %<LibGetMathConstant("PI",ioBaseType)>;
+		} else if (%<u> == %<dtZero>) {
+		  %<yr> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		  %<yi> = %<dtZero>;
+		} else {
+		  %<yr> = %<LibGenMathFcnCall("log10",ioBaseType,\
+		                               u,"")>;
+		  %<yi> = %<dtZero>;
+		}
+	      %else
+		if (%<u> <= %<dtZero>) {
+		  %<y> = %<dtDowncast>%<LibRealNonFinite(-inf)>%<dtCastSuff>;
+		} else {
+		  %<y> = %<LibGenMathFcnCall("log10",ioBaseType,\
+		                              u,"")>;
+		}
+	      %endif
+	    %endif
+	    %break
+	  %case "square"
+	    %if (inputComplex == 1)
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		{
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+		\
+	      %endif
+	      %<yr> = %<ur> * %<ur> - %<ui> * %<ui>;
+	      %<yi> = %<dtTwo> * %<ur> * %<ui>;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		}
+	      %endif
+	    %else
+	      %if (outputComplex == 1)
+		%<yr> = %<u> * %<u>;
+		%<yi> = %<dtZero>;
+	      %else
+		%<y> = %<u> * %<u>;
+	      %endif
+	    %endif
+	    %break
+	  %case "sqrt"
+	    %if (inputComplex == 1)
+	      %assign absCall   = LibGenMathFcnCall("abs",ioBaseType,ur,"")
+	      %assign hypotCall = LibGenMathFcnCall("hypot",ioBaseType,ur,ui)
+	      %assign sqrtArg   = "%<dtHalf> * (%<hypotCall> + %<absCall>)" 
+	      {
+	      %<ioBaseTypeName> s1;
+	      %<ioBaseTypeName> s2;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+	      %endif
+	      \
+	        s1 = %<LibGenMathFcnCall("sqrt",ioBaseType,sqrtArg,"")>;
+		s2 = %<LibGenMathFcnCall("sign",ioBaseType,ui,"")> * \
+		      %<LibGenMathFcnCall("abs",ioBaseType,"s1","")>;
+		if (%<ur> >= %<dtZero>) {
+		  %<yr> = s1;
+		} else {
+		  %<yr> = %<dtHalf> * (%<ui> / s2);
+		}
+		if (%<ur> <= %<dtZero>) {
+		  %<yi> = s2;
+		} else {
+		  %<yi> = %<dtHalf> * (%<ui> / s1);
+		}
+	      }
+	    %else
+	      %if (outputComplex == 1)
+		if (%<u> < %<dtZero>) {
+		  %<yr> = %<dtZero>;
+		  %<yi> = %<LibGenMathFcnCall("sqrt",ioBaseType,"-%<u>","")>;
+		} else {
+		  %<yr> = %<LibGenMathFcnCall("sqrt",ioBaseType,u,"")>;
+		  %<yi> = %<dtZero>;
+		}
+	      %else
+		if (%<u> < %<dtZero>) {
+		  %<y> = -%<LibGenMathFcnCall("sqrt",ioBaseType,"-%<u>","")>;
+		} else {
+		  %<y> = %<LibGenMathFcnCall("sqrt",ioBaseType,u,"")>;
+		}
+	      %endif
+	    %endif
+	    %break
+	  %case "reciprocal"
+	    %if (inputComplex == 1)
+	      %assign absUr = LibGenMathFcnCall("abs",ioBaseType,ur,"")
+	      %assign absUi = LibGenMathFcnCall("abs",ioBaseType,ui,"")
+	      {
+	      %<ioBaseTypeName> s   = %<absUr> + %<absUi>;
+	      %<ioBaseTypeName> ars = %<dtOne>/s;
+	      %<ioBaseTypeName> brs = %<ur>/s;
+	      %<ioBaseTypeName> bis = %<ui>/s;
+	      %<ioBaseTypeName> d   = (brs * brs + bis * bis);
+	      \
+	        %<yr> = (ars * brs)/d;
+		%<yi> = (- (ars * bis))/d;
+	      }
+	    %else
+	      %if (outputComplex == 1)
+		%<yr> = %<dtOne>/(%<u>);
+		%<yi> = %<dtZero>;
+	      %else
+		%<y> = %<dtOne>/(%<u>);
+	      %endif
+	    %endif
+	    %break
+	  %case "magnitude^2"
+	    %if (outputComplex == 1)
+	      %assign y = yr
+	    %endif
+	    %if (inputComplex == 1)
+	      %<y> = %<ur> * %<ur> + %<ui> * %<ui>;
+	    %else
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		%<y> *= %<u>;
+	      %else
+		%<y> = %<u> * %<u>;
+	      %endif
+	    %endif
+	    %if (outputComplex == 1)
+	      %<yi> = %<dtZero>;
+	    %endif
+	    %break
+	  %case "conj"
+	    %if (inputComplex == 1)
+	      %<yr> = %<ur>;
+              %%
+              %assign yDT = FixPt_GetOutputDataType(0)
+              %%
+              %<UnaryMinus_ZeroBias(yi,yDT,ui,block.InFixptMode)>\
+              %%
+	    %else
+	      %if (outputComplex == 1)
+		%<yr> = %<u>;
+		%<yi> = %<dtZero>;
+	      %else
+		%<y> = %<u>;
+	      %endif
+	    %endif
+	    %break
+	  %case "exp"
+	    %if (inputComplex == 1)
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		{
+		%<ioBaseTypeName> tmpRe = %<ur>;
+		%assign ur = "tmpRe"
+		\
+	      %endif
+	      %assign expCall = LibGenMathFcnCall("exp",ioBaseType,ur,"")
+	      %assign cosCall = LibGenMathFcnCall("cos",ioBaseType,ui,"")
+	      %assign sinCall = LibGenMathFcnCall("sin",ioBaseType,ui,"")
+	      %<yr> = %<expCall> * %<cosCall>;
+	      %<yi> = %<expCall> * %<sinCall>;
+	      %if (LibBlockInputSignalBufferDstPort(0) == 0)
+		}
+	      %endif
+	    %else
+	      %assign expCall = LibGenMathFcnCall("exp",ioBaseType,u,"")
+	      %if (outputComplex == 1)
+		%<yr> = %<expCall>;
+		%<yi> = %<dtZero>;
+	      %else
+		%<y> = %<expCall>;
+	      %endif
+	    %endif
+	    %break
+	  %default
+	    %%START_ASSERT
+	    %<LibReportFatalError("Internal error generating code for " + ... 
+	    "operation: %<mathOperator>")>
+	    %%END_ASSERT
+	%endswitch
+      %endif
+    %endroll
+  %else
+    %assign numDims   = LibBlockOutputSignalNumDimensions(0)
+    %assign dims      = LibBlockOutputSignalDimensions(0)
+    %assign ncols     = (%<numDims> == 2) ? %<dims[1]> : 1
+    %assign nrows     = %<dims[0]>
+    %assign herm      = 0
+    %assign intTname  = LibGetDataTypeNameFromId(tSS_UINT32)
+    %if (mathOperator == "hermitian")
+      %assign herm = 1
+    %endif
+    %if ((ncols == 1) || (nrows == 1))
+      %if (LibBlockInputSignalBufferDstPort(0) != 0)
+	%% Vector Input: Simple copy is sufficient
+	%assign rollVars = ["U", "Y"]
+	%roll sigIdx = RollRegions,lcv = RollThreshold,block,"Roller",rollVars
+	  %assign u_re = LibBlockInputSignal(0,"",lcv,"%<tRealPart>%<sigIdx>")
+	  %assign y_re = LibBlockOutputSignal(0,"",lcv,"%<tRealPart>%<sigIdx>")
+	  %<y_re> = %<u_re>;
+	  %if (outputComplex)
+	    %assign y_im = LibBlockOutputSignal(0,"",lcv,"%<tImagPart>%<sigIdx>")
+	  %endif
+	  %if (inputComplex)
+	    %assign u_im = LibBlockInputSignal(0,"",lcv,"%<tImagPart>%<sigIdx>")
+            %if(herm)
+              %%
+              %assign yDT = FixPt_GetOutputDataType(0)
+              %%
+              %<UnaryMinus_ZeroBias(y_im,yDT,u_im,block.InFixptMode)>\
+              %%
+            %else
+              %<y_im> = %<u_im>;
+            %endif
+          %elseif (outputComplex)
+            %<y_im> = %<dtZero>;
+          %endif
+        %endroll
+      %elseif (herm && inputComplex)
+        %assign rollVars = ["U", "Y"]
+        %roll sigIdx = RollRegions,lcv = RollThreshold,block,"Roller",rollVars
+          %assign u_im = LibBlockInputSignal(0,"",lcv,"%<tImagPart>%<sigIdx>")
+          %assign y_im = LibBlockOutputSignal(0,"",lcv,"%<tImagPart>%<sigIdx>")
+          %%
+          %assign yDT = FixPt_GetOutputDataType(0)
+          %%
+          %<UnaryMinus_ZeroBias(y_im,yDT,u_im,block.InFixptMode)>\
+          %%
+        %endroll
+      %endif
+    %else
+      %% Block requires a contiguous input signal
+      %% Matrix Input:  need to actually move data to transpose
+      %if (LibBlockInputSignalBufferDstPort(0) != 0)
+        %% Inplace transpose not needed.
+        {
+        %<intTname> count = 0;
+	%<intTname> row = 0;
+	%<intTname> col = 0;
+	\
+	for (row= 0; row <  %<nrows>; row++) {
+	  for (col= 0; col <  %<ncols>; col++) {
+	    %assign u_re = LibBlockInputSignal(0,"count","", "%<tRealPart>")
+	    %assign y_re = LibBlockOutputSignal(0,"row + %<nrows> * col", "", "%<tRealPart>")
+	    %<y_re> = %<u_re>;
+	    %if (inputComplex)
+	      %assign u_im = LibBlockInputSignal(0,"count","", "%<tImagPart>")
+	      %assign y_im = LibBlockOutputSignal(0,"row + %<nrows> * col", "", "%<tImagPart>")
+              %if (herm)
+                %%
+                %assign yDT = FixPt_GetOutputDataType(0)
+                %%
+                %<UnaryMinus_ZeroBias(y_im,yDT,u_im,block.InFixptMode)>\
+                %%
+              %else
+                %<y_im> = %<u_im>;
+              %endif
+            %elseif (outputComplex)
+              %assign y_im = LibBlockOutputSignal(0,"row + %<nrows> * col", "", "%<tImagPart>")
+	      %<y_im> = %<dtZero>;
+            %endif
+            count++;
+          }
+        }
+	}
+      %else
+	%% Inplace transpose needed. 
+	%% Assume nrows = ncols
+	{
+	%<ioBaseTypeName> tmpRe = %<dtZero>;
+	%if (inputComplex)
+	  %<ioBaseTypeName> tmpIm = %<dtZero>;
+	%endif
+	%<intTname> row = 0;
+	%<intTname> col = 0;
+	\
+	for (row= 0; row <  %<nrows>; row++) {
+	  %assign rowstart = (herm) ? "row" : "row+1" 
+	  for (col= %<rowstart>; col <  %<ncols>; col++) {
+	    %assign y1_re = LibBlockOutputSignal(0,"row*%<nrows>+col","","%<tRealPart>")
+	    %assign y2_re = LibBlockOutputSignal(0,"col*%<ncols>+row","","%<tRealPart>")
+	    tmpRe = %<y1_re>;
+	    %<y1_re> = %<y2_re>;
+	    %<y2_re> = tmpRe;
+	    %if (inputComplex)
+	      %assign y1_im = LibBlockOutputSignal(0,"row*%<nrows>+col","","%<tImagPart>")
+	      %assign y2_im = LibBlockOutputSignal(0,"col*%<ncols>+row","","%<tImagPart>")
+	      tmpIm = %<y1_im>;
+	      %if (herm)
+                %%
+                %assign yDT = FixPt_GetOutputDataType(0)
+                %%
+              %<UnaryMinus_ZeroBias(y1_im,yDT,y2_im,block.InFixptMode)>\
+                %%
+              %<UnaryMinus_ZeroBias(y2_im,yDT,tmpIm,block.InFixptMode)>\
+                %%
+              %else %% herm == 0
+                %%
+              %<y1_im> = %<y2_im>;
+	      %<y2_im> = tmpIm;
+                %%
+              %endif %% if (herm)
+              %%
+            %endif %%if (inputComplex)
+	  }
+	}
+	}
+      %endif
+    %endif
+  %endif
+  %%
+%endfunction %% Outputs
+
+
+
+%% Function: BlockOutputSignal ================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %assign mathOperator = ParamSettings.Operator
+  %%<LibCacheBlockComment(block, FcnMathComment(block,mathOperator))>\
+  /*
+  %<FcnMathComment(block,mathOperator)>\
+  */
+  %%
+  %% Error checking
+  %%
+  %switch mathOperator
+    %case "hypot"
+    %case "10^u"
+    %case "square"
+    %case "magnitude^2"
+    %case "reciprocal"
+    %case "exp"
+    %case "conj"
+      %break
+    %default
+      %%START_ASSERT
+      %<LibReportFatalError("Output Expression Undefined for Math Block " + ...
+	" with operation %<mathOperator>")>
+      %%END_ASSERT
+  %endswitch
+  %%
+  %assign u           = LibBlockInputSignal(0, ucv, lcv, idx)
+  %assign ioBaseType  = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+  %%
+  %if LibMathFcnExists(mathOperator, ioBaseType)
+    %%
+    %% hypot and exp are *required* to exist, so 
+    %% they are never generated in the else case.
+    %%
+    %assign u2 = (NumDataInputPorts==2) ? LibBlockInputSignal(1,ucv,lcv,idx) : ""
+    %return LibGenMathFcnCall(mathOperator, ioBaseType, u, u2)
+  %else
+    %switch mathOperator
+      %case "square"
+      %case "magnitude^2"
+	%return "(%<u> * %<u>)"
+      %case "reciprocal"
+	%assign dtOne = SLibGetFormattedValueFromId(ioBaseType,1)
+	%return "(%<dtOne>/(%<u>))"
+      %case "10^u"
+	%assign dtTen   = SLibGetFormattedValueFromId(ioBaseType,10)
+	%assign fcnCall = LibGenMathFcnCall("pow", ioBaseType, dtTen, u)
+	%return fcnCall
+      %case "conj"
+	%return u
+      %case "hypot"
+      %case "exp"
+	%%START_ASSERT
+	%<LibReportFatalError("%<mathOperator> undefined, but is needed.")>
+	%%END_ASSERT
+    %endswitch
+  %endif
+%endfunction
+
+%% [EOF] bmathfcn.tlc

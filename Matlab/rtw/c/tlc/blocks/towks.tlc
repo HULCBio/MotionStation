@@ -1,0 +1,241 @@
+%% $Revision: 1.1.6.6 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      To Workspace block target file. For use with standard .mat file
+%%      logging.
+%%
+
+%implements ToWorkspace "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%      If we are using the standard .mat file logging then write out
+%%      call to create the data logging variable. In addition, if the scope
+%%      is constant then we need to log the data once here.
+%%
+%function Start(block, system) Output
+  %if CodeFormat == "S-Function"
+    %assign warnTxt = "ToWorkspace blocks not currently supported " ...
+      "for S-Function code format.  Block disabled."
+    %<LibBlockReportWarning(block, warnTxt)>
+  %else
+    %if MatFileLogging != 0 && (TargetType == "RT" || EXISTS("_RSIM_"))
+      %assign name          = ParamSettings.VariableName
+      %assign maxDataPoints = ParamSettings.MaxDataPoints[0]
+      %assign decimation    = ParamSettings.Decimation[0]
+      %assign width         = LibBlockInputSignalWidth(0)
+      %assign nDims         = LibBlockInputSignalNumDimensions(0)
+      %assign dims          = LibBlockInputSignalDimensions(0)
+      %assign sigDTypeId = LibBlockInputSignalDataTypeId(0)
+      %assign logDTypeId = SLibSigToLogDataType(sigDTypeId, tSS_DOUBLE)
+      %assign logDTypeEnum  = LibGetDataTypeEnumFromId(logDTypeId)
+      %assign cmplx         = LibBlockInputSignalIsComplex(0)
+      %assign frameData     = LibBlockInputSignalIsFrameData(0)
+      %assign logVar        = LibBlockPWork(LoggedData, "", "", 0)
+      %assign ts            = LibBlockSampleTime(block)
+      %%
+      /* %<Type> Block: %<Name> */
+      %if ParamSettings.SaveFormat == "Array"
+       {
+        %if nDims == 1
+          int_T  dimensions[1] = {%<dims[0]>};
+        %else
+          int_T  dimensions[2] = {%<dims[0]>, %<dims[1]>};
+        %endif
+	
+	%<SLibGenLogVarCreate(logVar, name, logDTypeEnum, 0, cmplx, ...
+	  frameData, width, nDims, "dimensions", maxDataPoints, decimation, ...
+	  ts, 1)>
+          if (%<logVar> == NULL) return;
+        }
+      %else
+      {
+        %assign typeQ    = "static "
+        %assign label    = ParamSettings.Label
+        %%
+        %<typeQ> int_T            rt_ToWksWidths[]         = {%<width>};
+        %<typeQ> int_T            rt_ToWksNumDimensions[]  = {%<nDims>};
+        %if nDims == 1
+          %<typeQ> int_T            rt_ToWksDimensions[]   = {%<dims[0]>};
+        %else
+          %<typeQ> int_T            rt_ToWksDimensions[]   = {%<dims[0]>, %<dims[1]>};
+        %endif
+        %<typeQ> BuiltInDTypeId   rt_ToWksDataTypeIds[]    = {%<logDTypeEnum>};
+        %<typeQ> int_T            rt_ToWksComplexSignals[] = {%<cmplx>};
+        %<typeQ> int_T            rt_ToWksFrameData[]      = {%<frameData>};
+        %<typeQ> const char_T     *rt_ToWksLabels[]       = {"%<label>"};
+        %<typeQ> RTWLogSignalInfo rt_ToWksSignalInfo       = {
+          1,
+          rt_ToWksWidths,
+          rt_ToWksNumDimensions,
+          rt_ToWksDimensions,
+          rt_ToWksDataTypeIds,
+          rt_ToWksComplexSignals,
+          rt_ToWksFrameData,
+          rt_ToWksLabels,
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+	  NULL,
+          NULL
+        };
+        %assign blockPath = LibGetFormattedBlockPath(block)
+        %<typeQ> const char_T rt_ToWksBlockName[]          = "%<blockPath>";
+
+        %assign logTime  = (ParamSettings.SaveFormat == "StructureWithTime")
+	%<SLibGenStructLogVarCreate(logVar, name, logTime, maxDataPoints, ...
+	  decimation, ts, "&rt_ToWksSignalInfo", "rt_ToWksBlockName")>
+        if (%<logVar> == NULL) return;
+      }
+      %endif
+
+    %endif
+  %endif
+%endfunction %% Start
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      If we are using the standard .mat file logging and the to workspace
+%%      block is not constant, then write out a call to log data. If the
+%%      sample time of the to workspace is triggered, then we log whenever we
+%%      are called, otherwise we log only in major time steps. Constant
+%%      sample are handled in the Start function.
+%%
+%function Outputs(block, system) Output
+  %if  (MatFileLogging != 0) ...
+    && (TargetType == "RT" || EXISTS("_RSIM_")) ...
+    && (CodeFormat != "S-Function")
+    
+    %assign arrayFormat = (ParamSettings.SaveFormat == "Array")
+    %assign logVar = LibBlockPWork(LoggedData, "", "", 0)
+    %assign sigDTypeId    = LibBlockInputSignalDataTypeId(0)
+    %assign logDTypeId = SLibSigToLogDataType(sigDTypeId, tSS_DOUBLE)
+    %if ParamSettings.InputContiguous == "yes" && ...
+      LibIsBuiltInDataType(sigDTypeId)
+      %assign inpPtr = "%<LibBlockInputSignalAddr(0, "", "", 0)>"
+      %if arrayFormat
+        %if EXISTS("_RSIM_FULL_")
+	  if (%<RTMGet("LogOutput")>) {
+	%endif
+	%<SLibGenLogVarUpdate("(LogVar*) (%<logVar>)", inpPtr)>
+	%if EXISTS("_RSIM_FULL_")
+	  }
+	%endif
+      %else
+        %if ParamSettings.SaveFormat == "StructureWithTime"
+          {
+            double locTime = %<LibGetTaskTimeFromTID(block)>;
+          %assign timePtr = "&locTime"
+        %else
+          %assign timePtr = "NULL"
+        %endif
+        %if EXISTS("_RSIM_FULL_")
+	  if (%<RTMGet("LogOutput")>) {
+	%endif
+	%<SLibGenStructLogVarUpdate(logVar, timePtr, inpPtr)>
+	%if EXISTS("_RSIM_FULL_")
+	  }
+	%endif
+        %if ParamSettings.SaveFormat == "StructureWithTime"
+          }
+        %endif
+      %endif
+    %else
+    {
+      %assign width = LibBlockInputSignalWidth(0)
+      %assign cmplx = LibBlockInputSignalIsComplex(0)
+      %if LibIsBuiltInDataType(sigDTypeId)
+      %assign dtype = LibBlockInputSignalDataTypeName(0,"")
+      %else
+        %if !cmplx
+          %assign dtype = LibGetDataTypeNameFromId(logDTypeId)
+        %else
+          %assign dtype = LibGetDataTypeComplexNameFromId(logDTypeId)
+        %endif
+      %endif
+      %% static only for DOS because it doesn't work with arrays on stack.
+      %assign typeQualifier = ""
+      %if EXISTS("_RT_DOS_")
+        %assign typeQualifier = "static"
+      %endif
+      %<typeQualifier> %<dtype> u[%<width>];
+\
+
+      %assign rollVars = ["U"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign input = LibBlockInputSignal(0,"",lcv,idx)
+        %assign rhs = LibGetIndexedElement("u", width, lcv, idx)
+        %if LibIsBuiltInDataType(sigDTypeId)
+        %<rhs> = %<input>;
+        %else
+          %assign convertBetweenFcn = ...
+            LibConvertBetweenTLCFcnName(sigDTypeId)
+          %if LibConvertBetweenTLCFcnFile(sigDTypeId) != ""
+            %include "%<LibConvertBetweenTLCFcnFile(sigDTypeId)>"
+          %endif
+          %assign status = LibComplexConvertBetweenForSrcId(...
+            logDTypeId, sigDTypeId, cmplx, input, "", rhs)
+          %if status != 1
+	    %%START_ASSERT
+            %assign errTxt = ...
+              "Error: funcion %<convertBetweenFcn> doesn't support " ...
+              "converting the input signal to type double."
+            %<LibBlockReportFatalError(block, errTxt)>
+	    %%END_ASSERT
+          %endif
+        %endif
+      %endroll
+
+      %if arrayFormat
+        %if EXISTS("_RSIM_FULL_")
+	  if (%<RTMGet("LogOutput")>) {
+	%endif
+	%<SLibGenLogVarUpdate("(LogVar*)%<logVar>", "u")>
+        %if EXISTS("_RSIM_FULL_")
+	  }
+	%endif
+      %else
+        %if ParamSettings.SaveFormat == "StructureWithTime"
+          {
+            double locTime = %<LibGetTaskTimeFromTID(block)>;
+            %assign timePtr = "&locTime"
+        %else
+          %assign timePtr = "NULL"
+        %endif
+        %if EXISTS("_RSIM_FULL_")
+	  if (%<RTMGet("LogOutput")>) {
+	%endif
+	%<SLibGenStructLogVarUpdate(logVar, timePtr, "u")>
+        %if EXISTS("_RSIM_FULL_")
+	  }
+	%endif
+        %if ParamSettings.SaveFormat == "StructureWithTime"
+          }
+        %endif
+      %endif
+    }
+    %endif
+  %elseif Accelerator
+    /* Call into Simulink for To Workspace */
+    %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+
+  %endif
+
+%endfunction %% Outputs
+
+
+%% [EOF] towks.tlc

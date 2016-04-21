@@ -1,0 +1,308 @@
+%%
+%% Abstract: Signal Processing Blockset sine wave source block
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% $Revision: 1.21.4.4 $ $Date: 2004/04/01 16:05:02 $
+%% $RCSfile: sdspsine2.tlc,v $
+%%
+
+%implements sdspsine2 "C"
+
+%include "sdspsine2_diff.tlc"
+%include "sdspsine2_trig.tlc"
+%include "sdspsine2_table.tlc"
+
+%% Function: BlockOutputSignal ===============================================
+%% Abstract:
+%%    Currently, only used in full-cycle table lookup mode, when samples per
+%%    frame equals the length of the table.  Use of this function is controlled
+%%    by the S-Function, which sets ssSetOutputPortIsConstOutputExpr and 
+%%    enables the use of this function.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %return LibBlockParameter(Values_SineTable,ucv,lcv,idx)
+    %case "SignalAddr"
+      %return LibBlockParameterAddr(Values_SineTable,ucv,lcv,idx)
+    %default
+      %assign errTxt = "Unhandled retType: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+%endfunction
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign OUTPORT     = 0
+  %assign isDiscrete  = CAST("Boolean",(SFcnParamSettings.SampleMode == "Discrete"))
+  %assign IS_COMPLEX  = CAST("Boolean",(SFcnParamSettings.OutputType == "Complex"))
+  %assign IS_SINGLE   = CAST("Boolean",(SFcnParamSettings.OutputDataType == "Single"))
+  %assign dType       = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+  %assign dTypeP      = LibBlockOutputSignalDataTypeName(OUTPORT,tRealPart)
+
+  %assign isTable     = CAST("Boolean", (SFcnParamSettings.CompMethod == "TableLookup"))
+  %assign isQrtrTable = isTable && \
+                        CAST("Boolean", (SFcnParamSettings.TableSize == "QrtrCycle"))
+  %assign isTableWithAmpEncoded = isTable && \
+                        CAST("Boolean",(SFcnParamSettings.isTableWithAmpEncoded == "Yes"))
+
+  %assign outWidth    = LibBlockOutputSignalWidth(OUTPORT)
+  %assign nSamps      = (isDiscrete) ? SFcnParamSettings.FrameLength : 1
+  %assign nChans      = outWidth / nSamps
+  %assign scalarY     = (nSamps * nChans == 1)
+
+  %assign InlineParams = (InlineParameters != 0)
+
+  %assign block = block + OUTPORT + IS_COMPLEX + IS_SINGLE + dType +dTypeP + isTableWithAmpEncoded ...
+                        + outWidth + nSamps + nChans + scalarY + isDiscrete + isQrtrTable ...
+                        + InlineParams
+
+  %<TableLookup_BlockInstanceSetup(block, system)>
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================
+%%
+%function Start(block, system) Output
+  %if (isDiscrete)
+    /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - '%<Name>' - Start */
+    %if SFcnParamSettings.CompMethod == "Differential"
+      %<DiffStart(block)>
+    %elseif SFcnParamSettings.CompMethod == "TrigFcn"
+      %<TrigFcnStart(block)>
+    %elseif SFcnParamSettings.CompMethod == "TableLookup"
+      %<TableLookupStart(block)>
+    %endif
+  %endif
+  
+%endfunction  %% Start
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %% xxx When we know how to figure out if the block is in an enabled subsystem,
+  %% xxx then correct the following line to use this information.  That is,
+  %% xxx DO NOT generate any code below if we are not in an enabled subsystem
+  %% xxx (the code would be dead code for this case since we will never re-enable)
+  %assign blockIsInAnEnabledSubsystem = 1
+  %%
+  %if (isDiscrete)
+    %if blockIsInAnEnabledSubsystem
+      /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - '%<Name>' - InitializeConditions
+       *
+       * This code only executes when block is re-enabled in an enabled subsystem
+       * when the enabled subsystem states on re-enabling are set to "Reset".
+       */
+      %%
+      %% xxx The following check may be removed
+      %% xxx when the flag "blockIsInAnEnabledSubsystem"
+      %% xxx can be explicitly determined above
+      %%
+      %if ( (SFcnParamSettings.TStart != 0.0) && (SFcnParamSettings.ResetState == "Reset") )
+        %% Protect against this code being executed at mdlStart
+        %% when there is a non-zero start time (since t != 0.0).
+        %% Otherwise it is safe to execute the code below (but wasteful).
+        if (%<LibGetT()> != %<SFcnParamSettings.TStart>)
+        {
+          /*
+           * Not at initial start time -> we are being RE-ENABLED here.
+           * States will be reset (to new state at present time or at t=0)
+           */
+      %else
+        %% Protection against being called at mdlStart time not required
+        %% since TStart == 0.0, and both catchup to sim and reset mode act
+        %% the same way at t == TStart == 0.0 anyway.
+        {
+      %endif
+        %if SFcnParamSettings.CompMethod == "Differential"
+          %<DiffReEnable(block)>
+        %elseif SFcnParamSettings.CompMethod == "TrigFcn"
+          %<TrigFcnReEnable(block)>
+        %elseif SFcnParamSettings.CompMethod == "TableLookup"
+          %<TableLookupReEnable(block)>
+        %endif
+      } /* end of code for sine wave state reset upon re-enable */
+    %endif %% blockIsInAnEnabledSubsystem
+  %endif %% isDiscrete
+  
+%endfunction  %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - '%<Name>' - Output */
+  %%
+  %if (SFcnParamSettings.CompMethod != "Differential")
+    %<AmpFreqPhase(block)>\
+  %endif
+  %%
+  %if isDiscrete
+    %if SFcnParamSettings.CompMethod == "TrigFcn"
+      %<DiscreteTrigOutput(block)>
+    %elseif SFcnParamSettings.CompMethod == "TableLookup"
+      %<TableLookup(block)>
+    %else
+      %<Differential(block)>
+    %endif
+  %else
+    %<Continuous(block)>
+  %endif
+   
+%endfunction  %% Outputs
+
+
+%% Function: AmpFreqPhase =====================================================
+%%
+%function AmpFreqPhase(block) void
+
+    %% Assign appropriate variables for amplitude, frequency, and phase:
+    %% ++ is for framebased.
+
+    %if (!isTableWithAmpEncoded)
+	%assign amp     = LibBlockParameter(Amplitude,  "", "", 0)
+	%assign ampIncr = (LibBlockParameterSize(Amplitude)[0] * LibBlockParameterSize(Amplitude)[1] ) > 1
+
+	%if !ampIncr
+	    %% amp is a scalar
+	    %if InlineParams && (%<LibBlockParameterValue(Amplitude,0)> == 1.0)
+		    %assign ampstr_cos = " "
+		    %assign ampstr_sin = ampstr_cos
+	     %else
+		    %assign ampscalar   = LibBlockParameter(Amplitude,  "", "", 0)
+		    %assign ampstr_cos  = "%<ampscalar> *"
+		    %assign ampstr_sin  = ampstr_cos
+	     %endif
+	%else
+          %assign ampstr_cos = "(*amp) *"
+          %assign ampstr_sin = "(*amp++) *"
+	%endif
+	%assign block = block + amp + ampIncr + ampstr_cos + ampstr_sin
+    %endif
+
+    %if (SFcnParamSettings.SampleMode == "Continuous" ) || \
+        (SFcnParamSettings.CompMethod != "TableLookup")
+
+	%assign freq     = LibBlockParameter(Frequency,  "", "", 0)
+	%assign freqIncr = (LibBlockParameterSize(Frequency)[0] * LibBlockParameterSize(Frequency)[1]) > 1
+
+	%if !freqIncr
+	    %% freq is a scalar
+	    %if InlineParams && (%<LibBlockParameterValue(Frequency,0)> == 1.0)
+		%assign freqstr_cos = ""
+		%assign freqstr_sin = freqstr_cos
+	    %else
+		%assign freqscalar  = LibBlockParameter(Frequency,  "", "", 0)
+		%assign freqstr_cos = "%<freqscalar> *"
+		%assign freqstr_sin = freqstr_cos
+	    %endif
+	%else
+	    %assign freqstr_cos = "(*freq) *"
+	    %assign freqstr_sin = "(*freq++) *"
+	%endif
+	%assign block = block + freqIncr + freqstr_cos + freqstr_sin
+
+	%assign phase     = LibBlockParameter(Phase,  "", "", 0)
+	%assign phaseIncr = (LibBlockParameterSize(Phase)[0] * LibBlockParameterSize(Phase)[1]) > 1
+
+	%if !phaseIncr
+	    %% phase is a scalar
+	    %if InlineParams && (%<LibBlockParameterValue(Phase,0)> == 0.0)
+		%assign phasestr_cos = " "
+		%assign phasestr_sin = phasestr_cos
+	    %else
+		%assign phasescalar  = LibBlockParameter(Phase,  "", "", 0)  
+		%assign phasestr_cos = "+ %<phasescalar>"
+		%assign phasestr_sin = phasestr_cos
+	    %endif
+	%else
+	    %assign phasestr_cos = "+ (*phase)"
+	    %assign phasestr_sin = "+ (*phase++)"
+	%endif
+	%assign block = block + phase + phaseIncr + phasestr_cos + phasestr_sin
+    %endif
+
+%endfunction %% AmpFreqPhase
+
+
+%% Function: Continuous =======================================================
+%%
+%function Continuous(block) Output
+  /* Continuous mode: */
+  {
+    %% The parentheses are important for numerical precision within the simulation.
+    const %<dTypeP> t = %<SFcnParamSettings.Pi2> * (%<dTypeP>)(%<LibGetTaskTimeFromTID(block)>);%% was DSP_TWO_PI b4
+    %if outWidth == 1
+        %%
+        %assign y = LibBlockOutputSignal(OUTPORT, "","",0)
+        %%
+        %if IS_COMPLEX
+          %if IS_SINGLE
+            %% SINGLE-PRECISION FLOATING-POINT
+            %<y>.re = %<ampstr_cos> cosf(%<freqstr_cos> t %<phasestr_cos>);
+            %<y>.im = %<ampstr_sin> sinf(%<freqstr_sin> t %<phasestr_sin>);
+          %else
+            %% DOUBLE-PRECISION FLOATING-POINT
+            %<y>.re = %<ampstr_cos> cos(%<freqstr_cos> t %<phasestr_cos>);
+            %<y>.im = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+          %endif
+        %else
+          %if IS_SINGLE
+            %% SINGLE-PRECISION FLOATING-POINT
+            %<y> = %<ampstr_sin> sinf(%<freqstr_sin> t %<phasestr_sin>);
+          %else
+            %% DOUBLE-PRECISION FLOATING-POINT
+            %<y> = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+          %endif
+        %endif
+    %else
+        %%
+        %% Non-scalar output width
+        %%
+        %<dType> *y = %<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;
+        %if ampIncr  
+            %<dTypeP> *amp   = (%<dTypeP> *)%<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+        %endif
+        %if freqIncr
+            %<dTypeP> *freq  = (%<dTypeP> *)%<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+        %endif
+        %if phaseIncr
+            %<dTypeP> *phase = (%<dTypeP> *)%<LibBlockParameterAddr(Phase,  "", "", 0)>;
+        %endif      
+        %%
+        %% The code:
+        %%
+        int_T i;
+        for (i = 0; i < %<outWidth>; i++) {
+            %if IS_COMPLEX
+              %if IS_SINGLE
+                %% SINGLE-PRECISION FLOATING-POINT
+                y->re     = %<ampstr_cos> cosf(%<freqstr_cos> t %<phasestr_cos>);
+                (y++)->im = %<ampstr_sin> sinf(%<freqstr_sin> t %<phasestr_sin>);
+              %else
+                %% DOUBLE-PRECISION FLOATING-POINT
+                y->re     = %<ampstr_cos> cos(%<freqstr_cos> t %<phasestr_cos>);
+                (y++)->im = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+              %endif
+            %else
+              %if IS_SINGLE
+                %% SINGLE-PRECISION FLOATING-POINT
+                *y++ = %<ampstr_sin> sinf(%<freqstr_sin> t %<phasestr_sin>);
+              %else
+                %% DOUBLE-PRECISION FLOATING-POINT
+                *y++ = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+              %endif
+            %endif
+        }
+    %endif
+  }
+
+%endfunction %% Continuous
+
+
+%% [EOF] sdspsine2.tlc

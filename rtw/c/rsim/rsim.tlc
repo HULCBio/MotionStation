@@ -1,0 +1,316 @@
+%% SYSTLC: Rapid Simulation Target \
+%% TMF: rsim_default_tmf MAKE: make_rtw EXTMODE: ext_comm
+
+
+%% File: rsim.tlc
+%% Abstract:
+%%	System target file for the Rapid Simulation Target (rsim).
+%%
+%% $Revision: 1.27.4.10 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%% Abstract: Rapid Simulation Target -- system target file.
+
+
+%assign TargetType = "NRT"
+%assign Language   = "C"
+%assign tMdlRefSfcnS = "rtS"
+%assign tMdlRefSfcnSType = "SimStruct *const"
+
+%if EXISTS("CompiledModel")
+  %switch RSIM_SOLVER_SELECTION
+    %case 1
+      %% auto
+      %if ISEQUAL(CompiledModel.SolverType, "VariableStep")
+	%assign _RSIM_FULL_=1
+      %endif
+      %break
+    %case 2
+      %% use solver module
+      %if ISEQUAL(CompiledModel.SolverType, "FixedStep")
+	%if ISEQUAL(CompiledModel.FixedStepOpts.SolverMode, "MultiTasking")
+	  %assign msg = ...
+	    "RSIM with Simulink solver module does not support " + ...
+	    "Multitasking execution. Set RSIM solver selection " + ...
+	    "option to either 'auto' or 'use RTW fixed step solvers' " + ...
+	    "to execute this model in multitasking mode."
+	  %exit %<msg>
+	%endif
+      %endif
+      %assign _RSIM_FULL_=1
+      %break
+    %case 3
+      %% use rtw fixed step solvers
+      %if ISEQUAL(CompiledModel.SolverType, "VariableStep")
+	%assign msg = ...
+	  "RSIM is configured to use RTW fixed-step solvers, " + ...
+	  "but the model is using variable-step solver '" + ...
+	  CompiledModel.Solver + "'. " + ...
+	  "Either change RSIM solver selection to use Simulink solver " ...
+	    "module or switch to a fixed-step solver."
+	%exit %<msg>
+      %endif
+      %break
+    %default
+      %exit "Fatal Error: Invalid value " + ...
+	"%<RSIM_SOLVER_SELECTION> for variable RSIM_SOLVER_SELECTION"
+  %endswitch
+%endif
+
+%selectfile NULL_FILE
+%assign _RSIM_            =  1
+%assign GBLFrFStartIdx    = -1
+%assign GBLFrFOutputIdx   = -1
+%assign GBLFrFTermIdx     = -1
+%assign GBLFrWksStartIdx  = -1
+%assign GBLFrWksOutputIdx = -1
+%assign DataTypeTransInfo =  1
+
+%assign MatFileLogging = 1
+
+%include "genmap.tlc"
+%include "hookslib.tlc"
+
+%% Prior to parsing name replacements strings for "to file" and
+%% "from file" blocks, we malloc memory for these strings.
+%% In typical RTW targets, BlockTypeSetup will initialize
+%% numbers of blocks of a certain type, etc. However, since rsim_main
+%% parses before model start, and we need to know the
+%% number of "to file" and "from file" blocks, when the number of
+%% these blocks is zero, we cannot rely on BlockTypeSetup for
+%% this information.
+%%
+%% Whether a "from file" or "to file" block is used in model or not,
+%% rsim.tlc can determine the number of instances -- including zero if
+%% that is the case. Then, the parser can use this info to determine
+%% whether or not to malloc and whether a user is trying to rename a
+%% such a block type when none may exist in a model.
+
+
+%openfile initGlobalParamBuffer
+
+%assign numFrFiles = 0
+%assign numToFiles = 0
+%assign numFrFBlocks = 0
+%assign numToFBlocks = 0
+%assign numFromWksBlocks = 0
+%foreach idx = CompiledModel.NumBlockTypeCounts
+  %if CompiledModel.BlockTypeCount[idx].Type == "FromFile"
+    %assign numFrFBlocks = %<CompiledModel.BlockTypeCount[idx].Count>
+  %endif
+  %if CompiledModel.BlockTypeCount[idx].Type == "ToFile"
+    %assign numToFBlocks = %<CompiledModel.BlockTypeCount[idx].Count>
+  %endif
+  %if CompiledModel.BlockTypeCount[idx].Type == "FromWorkspace"
+    %assign numFromWksBlocks = %<CompiledModel.BlockTypeCount[idx].Count>
+  %endif
+%endforeach
+
+%if EXISTS(CompiledModel.UniqueFromFiles)
+  %assign numFrFiles = SIZE(CompiledModel.UniqueFromFiles,1)
+%endif
+
+%if EXISTS(CompiledModel.UniqueToFiles)
+  %assign numToFiles= SIZE(CompiledModel.UniqueToFiles,1)
+%endif
+
+%if CompiledModel.ModelReferenceTargetType == "NONE"
+const int_T gblNumToFiles = %<numToFiles>;
+const int_T gblNumFrFiles = %<numFrFiles>;
+const int_T gblNumFrWksBlocks = %<numFromWksBlocks>;
+%endif
+
+%if numFrFBlocks == 0
+static FrFInfo gblFrFInfo[1];
+%else
+static FrFInfo gblFrFInfo[%<numFrFBlocks>];
+%endif
+
+%closefile initGlobalParamBuffer
+%<LibPrmFileCustomCode(initGlobalParamBuffer,"header")>
+
+
+
+%if CompiledModel.ModelReferenceTargetType == "NONE"
+%openfile externGlobalParamBuffer
+extern const int_T gblNumToFiles;
+extern const int_T gblNumFrFiles;
+extern const int_T gblNumFrWksBlocks;
+
+%closefile externGlobalParamBuffer
+%<LibHeaderFileCustomCode(externGlobalParamBuffer,"trailer")>
+%endif
+
+%include "codegenentry.tlc"
+
+%% The contents between 'BEGIN_RTW_OPTIONS' and 'END_RTW_OPTIONS' are strictly
+%% written by the standard format. We need to use this structure in RTW
+%% options GUI function rtwoptionsdlg.m file.
+%%
+/%
+  BEGIN_RTW_OPTIONS
+
+  rtwoptions(1).prompt        = 'RSIM code generation options';
+  rtwoptions(1).type          = 'Category';
+  rtwoptions(1).enable        = 'on';
+  rtwoptions(1).default       = 2;   % number of items under this
+                                     % category excluding this one.
+  rtwoptions(1).popupstrings  = '';
+  rtwoptions(1).tooltip       = '';
+  rtwoptions(1).callback      = '';
+  rtwoptions(1).opencallback  = '';
+  rtwoptions(1).closecallback = '';
+  rtwoptions(1).tlcvariable   = '';
+  rtwoptions(1).makevariable  = '';
+
+  rtwoptions(2).prompt        = 'Solver selection';
+  rtwoptions(2).type          = 'Popup';
+  rtwoptions(2).default       = 'auto';
+  rtwoptions(2).value         = 1;
+  rtwoptions(2).popupstrings  = ['auto|', ...
+                                 'Use Simulink solver module|', ...
+			         'Use RTW fixed-step solvers'];
+  rtwoptions(2).tlcvariable   = 'RSIM_SOLVER_SELECTION';
+  rtwoptions(2).makevariable  = 'RSIM_SOLVER_SELECTION';
+  rtwoptions(2).tooltip       = ...
+    ['Selects the solver to use with RSIM. The ''auto'' ',sprintf('\n'), ...
+    'setting uses Simulink solver module if the model ',sprintf('\n'), ...
+    'uses a variable-step solver, and uses RTW fixed-step ',sprintf('\n'), ...
+    'solvers, otherwise.'];
+
+  rtwoptions(3).prompt       = 'PC MATLAB ROOT';
+  rtwoptions(3).type         = 'NonUI';
+  rtwoptions(3).default      = strrep(matlabroot,'\','\\');
+  rtwoptions(3).tlcvariable  = '';
+  rtwoptions(3).makevariable = 'PCMATLABROOT';
+  rtwoptions(3).tooltip      = '';
+
+  rtwoptions(4).prompt         = 'External Mode code generation options';
+  rtwoptions(4).type           = 'Category';
+  rtwoptions(4).enable         = 'on';
+  rtwoptions(4).default        = 5;   % number of items under this category
+                                      % excluding this one.
+  rtwoptions(4).popupstrings  = '';
+  rtwoptions(4).tlcvariable   = '';
+  rtwoptions(4).tooltip       = '';
+  rtwoptions(4).callback      = '';
+  rtwoptions(4).opencallback  = '';
+  rtwoptions(4).closecallback = '';
+  rtwoptions(4).makevariable  = '';
+
+  rtwoptions(5).prompt         = 'External mode';
+  rtwoptions(5).type           = 'Checkbox';
+  rtwoptions(5).default        = 'off';
+  rtwoptions(5).tlcvariable    = 'ExtMode';
+  rtwoptions(5).makevariable   = 'EXT_MODE';
+  rtwoptions(5).tooltip        = ...
+    ['Adds communication support',sprintf('\n'), ...
+    'for use with Simulink external mode'];
+
+  % Enable/disable other external mode controls.
+  rtwoptions(5).callback       = [ ...
+    'DialogFig = get(gcbo,''Parent'');',...
+    'sl(''extmodecallback'', ''extmode_checkbox_callback'', DialogFig);', ...
+    ];
+
+  rtwoptions(6).prompt         = 'Transport';
+  rtwoptions(6).type           = 'Popup';
+  rtwoptions(6).default        = 'tcpip';
+  rtwoptions(6).popupstrings   = ['tcpip|', ...
+                                  'serial_win32'];
+  rtwoptions(6).tlcvariable    = 'ExtModeTransport';
+  rtwoptions(6).makevariable   = 'EXTMODE_TRANSPORT';
+  rtwoptions(6).tooltip        = ...
+    ['Chooses transport mechanism for external mode'];
+
+  % Synchronize with "External mode" checkbox option
+  rtwoptions(6).opencallback   = [ ...
+    'ExtModeTable = {''tcpip''         ''ext_comm'';', ...
+                     '''serial_win32'' ''ext_serial_win32_comm''};', ...
+    'ud = DialogUserData;', ...
+    'ud = extmodecallback(''transport_popup_opencallback'',model,DialogFig,ud,ExtModeTable);', ...
+    'DialogUserData = ud;', ...
+    ];
+
+  % Set extmode mex-file according to extmode transport mechanism.
+  rtwoptions(6).closecallback  = [ ...
+    'ExtModeTable = {''tcpip''         ''ext_comm'';', ...
+                     '''serial_win32'' ''ext_serial_win32_comm''};', ...
+    'ud = DialogUserData;', ...
+    'ud = extmodecallback(''transport_popup_closecallback'',model,DialogFig,ud,ExtModeTable);', ...
+    'DialogUserData = ud;', ...
+    ];
+
+  rtwoptions(7).prompt         = 'Static memory allocation';
+  rtwoptions(7).type           = 'Checkbox';
+  rtwoptions(7).default        = 'off';
+  rtwoptions(7).tlcvariable    = 'ExtModeStaticAlloc';
+  rtwoptions(7).makevariable   = 'EXTMODE_STATIC_ALLOC';
+  rtwoptions(7).tooltip        = ...
+    ['Forces external mode to use static',sprintf('\n'), ...
+    'instead of dynamic memory allocation'];
+
+  % Enable/disable external mode static allocation size selection.
+  rtwoptions(7).callback       = [ ...
+    'DialogFig = get(gcbo,''Parent'');',...
+    'sl(''extmodecallback'', ''staticmem_checkbox_callback'', DialogFig);', ...
+    ];
+
+  % Synchronize with "External mode" checkbox option
+  rtwoptions(7).opencallback   = [ ...
+    'extmodecallback(''staticmem_checkbox_opencallback'',DialogFig);', ...
+    ];
+
+  rtwoptions(8).prompt         = 'Static memory buffer size';
+  rtwoptions(8).type           = 'Edit';
+  rtwoptions(8).default        = '1000000';
+  rtwoptions(8).tlcvariable    = 'ExtModeStaticAllocSize';
+  rtwoptions(8).makevariable   = 'EXTMODE_STATIC_ALLOC_SIZE';
+  rtwoptions(8).tooltip        = ...
+    ['Size of external mode static allocation buffer'];
+
+  % Synchronize with "External mode static allocation" option
+  rtwoptions(8).opencallback   = [ ...
+    'extmodecallback(''staticmemsize_edit_opencallback'',DialogFig);', ...
+    ];
+
+  rtwoptions(9).prompt       = 'External mode testing';
+  rtwoptions(9).type         = 'NonUI';
+  rtwoptions(9).default      = '0';
+  rtwoptions(9).tlcvariable  = 'ExtModeTesting';
+  rtwoptions(9).makevariable = 'TMW_EXTMODE_TESTING';
+  rtwoptions(9).tooltip      = ...
+    ['Internal testing flag for Simulink external mode'];
+
+if 0
+  rtwoptions(10).prompt        = 'Make deployable directory';
+  rtwoptions(10).type          = 'Checkbox';
+  rtwoptions(10).default       = 'off';
+  rtwoptions(10).tlcvariable   = 'MAKE_DEPLOY_DIR';
+  rtwoptions(10).makevariable  = 'MAKE_DEPLOY_DIR';
+  rtwoptions(10).tooltip       = '';
+
+  rtwoptions(11).prompt        = 'Use system library';
+  rtwoptions(11).type          = 'Checkbox';
+  rtwoptions(11).default       = 'off';
+  rtwoptions(11).tlcvariable   = 'USE_LIB_PATH';
+  rtwoptions(11).makevariable  = 'USE_LIB_PATH';
+  rtwoptions(11).tooltip       = '';
+end
+
+  %----------------------------------------%
+  % Configure RTW code generation settings %
+  %----------------------------------------%
+
+  rtwgensettings.IsRSim = 'yes';
+  rtwgensettings.BuildDirSuffix = '_rsim_rtw';
+
+  END_RTW_OPTIONS
+ %/
+/%
+  BEGIN_CONFIGSET_TARGET_COMPONENT
+
+  targetComponentClass = 'RTW.RSimTargetCC';
+
+  END_CONFIGSET_TARGET_COMPONENT
+ %/

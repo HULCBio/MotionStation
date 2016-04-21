@@ -1,0 +1,1198 @@
+%% ============================================================================
+%% File : ertlib.tlc
+%%
+%% Abstract:
+%%   This is the system library file for RTW's Embedded-C code format.
+%%
+%% $Revision: 1.1.8.16 $
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_ERTLIB_") == 0
+%assign _ERTLIB_ = 1
+
+%include "ertmdlrefabstime.tlc"
+%include "ertmdlreftiming.tlc"
+%include "ertmodelarg.tlc"
+%include "ertcontstate.tlc"
+%include "ertextmode.tlc"
+%include "ertmdlrefcontinuous.tlc"
+
+%addtorecord CompiledModel RequireMapTIDViaFunction 0
+
+%% Function: LibDumpERTAndModelrefRegExecution ================================
+%% Abstract:
+%%   Dumps the model registration code.
+%%
+%function LibDumpERTAndModelrefRegExecution() Output
+  %assign tmpBlockFcn = ::BlockFcn
+  %assign addr = IsMultiInsatnceERTOrModelReference() ? "" : "&"
+  %assign stepSize = FundamentalStepSize
+  %%
+  %% Initialize real-time object
+  %%
+  %if RealTimeModelAccessed
+    %assign baseSysIdx = GetBaseSystemIdx()
+    /* initialize real-time model */
+    (void)memset((char_T *)%<tSimStruct>, 0, sizeof(%<tSimStructType>));
+    %<LibAccessArg(CompiledModel.System[baseSysIdx].Interface.RTMArgDef)>
+  %endif
+  %%
+  %% Create Solver data
+  %if LibIsContinuous(0) && !IsModelReferenceTarget()
+    %<FcnCreateAndInitializeSolverData()>
+  %endif
+
+  %if GenerateGRTWrapper || NumChildSFunctions
+    %% Initialize timing info.
+    %% Initialize timing fields if the IsReqFcn of this field returns true.
+    %%
+    %% To support GRT interface, non-inline sfunction, or model-ref,
+    %% some timing fields that are not used in ert are required and need to be 
+    %% initialized. These fields are initialized here.
+    %%
+    /* Initialize timing info */
+    %if RTMVanillaIsReqFcn() || RTMChildSfunctionIsReqFcn()
+      {
+	int_T  *mdlTsMap      = %<RTMGet("SampleTimeTaskIDArray")>;
+	int_T i;
+	
+	for(i = 0; i < %<NumSynchronousSampleTimes>; i++) {
+	  mdlTsMap[i] = i;
+	}	
+	%<RTMSet("SampleTimeTaskIDPtr", "&mdlTsMap[0]")>;
+	%<RTMSet("SampleTimePtr", "&%<RTMGet("SampleTimeArray")>[0]")>;
+	%<RTMSet("OffsetTimePtr", "&%<RTMGet("OffsetTimeArray")>[0]")>;
+	%<LibDumpModelInitializeSampleTimes()>\
+      }
+    %endif
+
+    %if RTMTimePtrIsReqFcn()
+      %<RTMSet("TPtr", "&%<RTMGet("TaskTimeArray")>[0]")>;
+    %endif
+
+    %if RTMChildSfunctionIsReqFcn() || GenerateGRTWrapper
+      {
+	int_T  *mdlSampleHits = %<RTMGet("SampleHitArray")>;
+	%if SLibSingleTasking()
+	  int_T i;
+
+	  for(i = 0; i < %<NumSynchronousSampleTimes>; i++) {
+	    mdlSampleHits[i] = 1;
+	  }
+	%elseif RTMChildSfunctionIsReqFcn()
+	  int_T *mdlPerTaskSampleHits = %<RTMGet("PerTaskSampleHitsArray")>;
+	  
+	  %<RTMSet("PerTaskSampleHitsPtr", "&mdlPerTaskSampleHits[0]")>;
+	  mdlSampleHits[0] = 1;
+	%endif
+	%<RTMSet("SampleHitPtr", "&mdlSampleHits[0]")>;
+      }
+    %endif
+  %elseif ( LibIsContinuous(0) && ...
+    !::ModelReferenceTargetWithGlobalTiming && ...
+    !IsModelReferenceForASimstructBasedTarget() )
+    %assert RTMTimePtrIsReqFcn()
+    %<RTMSet("TPtr", "&%<RTMGet("TaskTimeArray")>[0]")>;
+  %endif
+  %if ::ModelReferenceTargetWithGlobalTiming
+    %% This is model reference target with global timing engine.
+    %% So we declare the global timing  variables at the top of
+    %% model.c, and extern them in model_private.h
+    %<FcnInitializeModelRefGlobalTimingEngine()>
+  %endif
+  %if !IsModelReferenceForASimstructBasedTarget()
+
+    %% Non-inlined S-function not supported for model reference RTW target yet
+    %if NumChildSFunctions
+      %assert !IsModelReferenceRTWTarget() %% Not supported yet
+    %endif
+
+    %%
+    %% Setup absolute time
+    %%
+    %if (SLibNeedAbsoluteTime() || MatFileLogging || ExtMode || ForceAbsoluteTime) ...
+      && !IsModelReferenceTarget()
+      %if ISINF(StopTime)
+	%assign stopTime = -1
+      %elseif !ISFINITE(StopTime)
+	%assign errTxt = "Stop time must be 0.0, inf, or finite: %<StopTime>"
+	%<LibReportError(errTxt)>
+      %else
+	%assign stopTime = StopTime
+      %endif
+
+      %if StartTime != 0.0
+	%assign warnTxt = "Start time must be 0.0 for ERT target: %<StartTime>."
+	%<LibReportWarning(warnTxt)>
+	%if GenerateGRTWrapper
+	   %<RTMSet("TStart","%<StartTime>")>;
+	%endif
+      %endif
+
+      %if PurelyIntegerCode && MatFileLogging
+	%<LibReportError("Do not yet support integer-only MAT-file logging.")>
+      %elseif PurelyIntegerCode && !MatFileLogging
+	%% nop
+      %else
+	%if MatFileLogging || ForceAbsoluteTime
+	  %% Initialize stop time
+	  %<RTMSet("TFinal","%<stopTime>")>;
+	%endif
+	%foreach tid = NumSampleTimes
+	  %if ISFIELD(SampleTime[tid], "needFloatTime") && ...
+	    !PurelyIntegerCode
+	    %<RTMGet("StepSize%<tid>")>  = %<SampleTime[tid].ClockTickStepSize>;
+	  %endif
+	%endforeach
+      %endif
+    %endif
+
+    %if RTMFirstInitCondFlagIsReqFcn()
+      %<RTMSet("FirstInitCond", 1)>;
+    %endif
+
+    %% All offsets will be initialized by the top model
+    %% when using the global timing engine
+    %if !::ModelReferenceTargetWithGlobalTiming
+      %<FcnInitializeSampleTimeOffsets()>
+    %endif
+
+    %if IsModelReferenceTarget()
+      %% Setup the error status flag
+      %if !SuppressErrorStatus
+	/* initialize error status */
+	%<RTMSet("ErrorStatusPointer", "rt_errorStatus")>;
+      %endif
+      %% Setup the stop requested flag
+      %if RTMStopReqAccessed()
+	/* initialize stop requested flag */
+	%<RTMSet("StopRequestedPtr", "rt_stopRequested")>;
+
+      %endif
+      %% Setup the rtwsolverinfo
+      %if LibIsContinuous(0)
+        /* initialize RTWSolverInfo */
+        %<RTMSet("RTWSolverInfo", "rt_solverInfo")>;
+        %<FcnModelRefCreateAndInitializeSolverData()>
+      %endif
+    %else
+      %%
+      %% Initialize error status (only if real-time model has not been accessed
+      %% since this will force a memset of rtM regardless).
+      %%
+      %if !SuppressErrorStatus && !RealTimeModelAccessed
+
+	/* initialize error status */
+	%<RTMSet("ErrorStatus","(const char_T *)0")>;
+      %endif
+    %endif
+    %%
+    %% Setup data logging
+    %%
+    %if MatFileLogging == 1
+      %assert(!IsModelReferenceTarget())
+      %% data logging setup
+      %<SLibDumpModelRegDataLoggingSetup()>
+    %endif
+    %%
+    %% Setup external mode
+    %%
+    %if ExtMode == 1
+      %assert(!IsModelReferenceTarget())
+      %if CodeFormat == "Embedded-C"
+
+	/* external mode info */
+	%<SLibDumpModelChecksumReg()>
+
+	%% Dump the system mode vector addresses.
+	%<SLibDumpExtModeReg()>
+      %endif
+    %endif
+  %else
+    %if !::ModelReferenceTargetWithGlobalTiming
+      %<FcnInitializeSampleTimeOffsets()>
+    %endif
+    %<RTMSet("MdlRefSfcnS", tMdlRefSfcnS)>;
+  %endif %% !IsModelReferenceForASimstructBasedTarget
+
+  %if NumChildSFunctions || GenerateGRTWrapper
+    %% SolverInfo
+    %assign solverInfo = "%<RTMGetSolverInfo()>"
+    %<RTMSet("RTWSolverInfoPtr", solverInfo)>;
+    %% StepSize
+    %<RTMSet("StepSize", FixedStepOpts.FixedStep)>;
+    %<RTMSolverSet("FixedStepSize", FixedStepOpts.FixedStep)>;
+    %% SolverMode
+    %if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+      %<RTMSolverSet("SolverMode", "SOLVER_MODE_MULTITASKING")>;
+    %else
+      %<RTMSolverSet("SolverMode", "SOLVER_MODE_SINGLETASKING")>;
+    %endif
+  %endif
+
+
+  %if ZeroInternalMemoryAtStartup
+    %% Block I/O
+    %if !LibBlockIOStructIsEmpty() || ...
+      !SLibExportedGlobalSignalsIsEmpty() || ...
+      !SLibCustomDataBufferIsEmpty("Decl")
+      %openfile zeroMemBuf
+      %if !LibBlockIOStructIsEmpty()
+	%assign blockIO = IsModelReferenceTarget() ? "localB" : "%<tBlockIO>"
+	/* block I/O */
+	void *b = (void *) %<addr>%<blockIO>;
+	%if GenerateGRTWrapper
+	  %<RTMSet("BlockIO", "b")>;
+	%endif
+      %endif
+      %% Note, the first argument is not used in SLibInitBlockIO
+      %<SLibInitBlockIO(1, "b")>\
+      %closefile zeroMemBuf
+      %if !WHITE_SPACE(zeroMemBuf)
+        {
+          %<zeroMemBuf>\
+        }
+      %endif
+    %endif
+    %%
+    %%  Parameter
+    %%
+    %if !LibParametersStructIsEmpty() && GenerateGRTWrapper
+      /* parameters */
+      %<RTMSet("DefaultParam", "(real_T *) &%<tParameters>")>;
+    %endif
+    %%
+    %% States
+    %%
+    %if NumContStates>0 && !IsModelReferenceTarget()
+      /* states */
+      {
+        int_T i;
+        real_T *x = (real_T *) %<addr>%<tContState>;
+	%if GenerateGRTWrapper
+	  %<RTMSet("ContStates", "x")>;
+	%endif
+        for(i = 0; i < (int_T)(sizeof(%<tContStateType>)/sizeof(real_T)); i++)
+	{
+	  x[i] = 0.0;
+	}
+
+      }
+    %endif
+    %%
+    %% DWork with internal storage
+    %%
+    %if CompiledModel.NumNonExternalDWork > 0 && !IsModelReferenceTarget()
+
+      /* data type work */
+      %assign initVars = SLibInitDWork()
+      %assign dw     = "%<tDWork>"
+      %assign dwType = "%<tDWorkType>"
+      %if GenerateGRTWrapper
+	%<RTMSet("RootDWork", "(void *) %<addr>%<dw>")>;
+      %endif
+      %if initVars[1]
+	(void)memset((char_T *) %<addr>%<dw>, 0, sizeof(%<dwType>));
+      %endif
+      %if InitFltsAndDblsToZero && initVars[0]
+	%<initVars[2]>\
+      %endif
+    %endif
+    %%
+    %% Dwork with external storage
+    %%
+    %openfile tmpBuf
+    %<SLibInitStatesWithExternalStorage(1)>\
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %<tmpBuf>\
+    %endif
+    %%
+    %if !IsModelReferenceTarget()
+      %%
+      %% U
+      %%
+      %openfile tmpBuf
+      %<SLibInitExternalInputs(1)>\
+      %closefile tmpBuf
+      %if !WHITE_SPACE(tmpBuf)
+
+	/* external inputs */
+	%if GenerateGRTWrapper && !LibExternalInputsStructIsEmpty()
+	  %<RTMSet("U", "((void*) &%<tInput>)")>;
+	%endif
+	%<tmpBuf>\
+      %endif
+      %%
+      %% Y
+      %%
+      %openfile tmpBuf
+      %<SLibInitExternalOutputs(1)>\
+      %closefile tmpBuf
+      %if !WHITE_SPACE(tmpBuf)
+
+	/* external outputs */
+	%if GenerateGRTWrapper && !LibExternalOutputsStructIsEmpty()
+	  %<RTMSet("Y", "&%<tOutput>")>;
+	%endif
+	%<tmpBuf>\
+      %endif
+    %endif  %% !IsModelReferenceTarget()
+  %endif %% ZeroInternalMemoryAtStartup
+
+  %%
+  %% Model mapping info
+  %%
+  %<SLibDumpModelMappingInfo()>\
+  %assign ::BlockFcn = tmpBlockFcn
+%endfunction
+
+
+%% Function: SLibErtWideInit ===================================================
+%% Abstract:
+%%   ertwide.tlc remnant.  Performs error checking an initial setup for
+%%   Embedded-C code format
+%%
+%function SLibErtWideInit() void
+  %if !IsModelReferenceForASimstructBasedTarget()
+    %% =========================================================================
+    %% Error checking
+    %%
+
+    %% Temporarily ERT only supports {ODE1, ODE2, ODE3, ODE4, ODE5, ODE14x, FSDiscrete}
+    %assign notSupported = !(ISEQUAL(Solver,"ode1") || ISEQUAL(Solver,"ode2")  ...
+      || ISEQUAL(Solver,"ode3") || ISEQUAL(Solver,"FixedStepDiscrete")         ...
+      || ISEQUAL(Solver,"ode4") || ISEQUAL(Solver,"ode5") || ISEQUAL(Solver,"ode14x"))
+
+  %if notSupported
+      %%
+      %% No continuous task blocks allowed
+      %% LibIsContinuous(0) may be wrong if all continuous blocks were reduced
+      %if LibIsContinuous(0)
+	%assign blockList = []
+
+	%foreach sysIdx = NumSystems
+	  %assign system = System[sysIdx]
+	  %with system
+	    %foreach blkIdx = NumBlocks+NumVirtualOutportBlocks
+	      %assign block = Block[blkIdx]
+	      %with block
+		%if EXISTS("block.TID")
+		  %if TYPE(TID) == "Number"
+		    %% limit list to 10 blocks
+		    %if LibIsContinuous(TID) && SIZE(blockList, 1) < 10
+		      %assign blockList = ...
+			blockList + SLibGrBlockPath(block.GrSrc)
+		    %endif
+		  %endif
+		%endif
+	      %endwith
+	    %endforeach
+	    %if SIZE(blockList, 1) >= 10
+	      %break
+	    %endif
+	  %endwith
+	%endforeach
+
+	%assign numBlocks = SIZE(blockList, 1)
+	%% LibIsContinuous(0) may be wrong if all continuous blocks were reduced
+	%% Make sure at least one continuous block remained
+	%if IsModelReferenceTarget()
+	  %assign str = "Model reference"
+	%else
+	  %assign str = "Embedded-C code format"
+	%endif
+
+	%if numBlocks > 0
+	  %assign errTxt = "\n\nThe %<str> does not support " ...
+	    "continuous sample time blocks.  "
+	  %if numBlocks == 1
+	    %assign str = "This block either specifies or inherits a " ...
+	      "continuous rate:\n\n%<blockList>"
+	  %else
+	    %assign str = "Here are %<numBlocks> blocks that " ...
+	      "either specify or inherit a continuous rate:\n\n%<blockList>"
+	  %endif
+	  %assign errTxt = errTxt + str
+	  %<LibReportError(errTxt)>
+	%endif
+      %endif
+    %endif %% temporary {ode1, ode2, ode3, ode4, ode5, fixedstepdiscrete}
+
+    %% MAT-file logging and multi-instance ERT do not play well together.
+    %if MultiInstanceERTCode && MatFileLogging
+      %selectfile STDOUT
+
+      Note: The MAT-file logging code is not multi-instanced.  Deselect the
+      MAT-file logging option.
+
+      %selectfile NULL_FILE
+    %endif
+
+  %endif %% !IsModelReferenceForASimstructBasedTarget
+
+  %% Model Reference doesn't support non-inlined s-functions
+  %if FEVAL("feature", "ModelReferenceSfunctions") == 0
+    %if IsModelReferenceTarget() && NumChildSFunctions
+      %assign errTxt = "\n\nModel reference does not support " ...
+      "non-inlined s-functions.  "
+      %<LibReportError(errTxt)>
+    %endif
+  %elseif IsModelReferenceRTWTarget() && NumChildSFunctions
+    %assign errTxt = "\n\nModel reference RTWTarget does not support " ...
+         "non-inlined s-functions.  "
+    %<LibReportError(errTxt)>
+  %endif
+
+  %% Determine step function prototypes
+  %assign rootSystem = System[NumSystems-1]
+  %if LibIsSingleRateSystem(rootSystem)
+    %assign singleRate = 1
+  %else
+    %assign singleRate = 0
+  %endif
+  %<LibAddToCompiledModel("RootSystemIsSingleRate", singleRate)>
+
+%endfunction %% SLibErtWideInit
+
+
+%% Function: SLibErtSfunction ==================================================
+%% Abstract:
+%%   ertwide.tlc remnant.  Performs error checking an initial setup for
+%%   Embedded-C code format
+%%
+%function SLibErtSfunction() void
+  %assert(!IsModelReferenceTarget())
+  %% ===========================================================================
+  %% Optionally create timing_engine.h
+  %%
+  %if AutoBuildProcedure && !SLibGenerateCodeOnly()
+    %include "ertautobuild.tlc"
+  %endif
+
+  %% ===========================================================================
+  %% Optionally create S-Function wrapper for ERT-C-Code
+  %%
+  %if GenerateErtSFunction == 1
+    %include "ertsfcnbody.tlc"
+  %endif
+%endfunction %% SLibErtSfunction
+
+
+%% Function: SLibGenERTPrivateRTMMacros =================================
+%% Abstract:
+%%
+%function SLibGenERTPrivateRTMMacros() void
+  %if GenRTModel
+    %openfile tmpDefBuf
+    /* Private Macros used by the generated code to access rtModel */
+    %<RTMGenMacroDefines("PRIVATE")>
+    %closefile tmpDefBuf
+    %assign ext   = "_private"
+    %assign fName = Name + ext
+    %assign hFile = SLibAddModelFile("SystemHeader","Simulink",fName)
+    %<SLibSetModelFileAttribute(hFile, "Defines", tmpDefBuf)>
+  %endif
+%endfunction
+
+%% Function: SLibGenErtFunctionName =============================
+%%
+%%
+%function SLibGenErtFunctionName(tid, fcnType)
+  %if TYPE(tid) == "Number" && tid < NumSynchronousSampleTimes
+    %assign fcnName = "%<Name>_%<fcnType>%<tid>"
+  %else
+    %assign fcnName = "%<Name>_%<fcnType>"
+  %endif
+
+  %if !GenerateGRTWrapper || ExtMode || NumContStates > 0
+    %assign fcnName = "void "+"%<fcnName>"
+  %else
+    %assign fcnName = "static void "+"%<fcnName>"
+  %endif
+
+  %return fcnName
+%endfunction
+
+%% Function: SLibGenErtOutputFunction ====================================
+%% Description:
+%%    TYPE(tid) ==  number, generate rate grouping code
+%%         tid >=0 and tid < NumSynchronousSampleTimes :
+%%                          generate code for tid, %<mdlName>_output%<tid>
+%%         tid == NumSynchronousSampleTimes :
+%%                          generate main function wrapper %<mdlName>_output calling
+%%                          all rate grouped function  %<mdlName>_output%<tid>
+%%    tid == "", generate non rate grouping code, %<mdlName>_output
+%%
+%function SLibGenErtOutputFunction(tid)
+  %assign rootSystem = System[NumSystems-1]
+  %assign mdlName    = Name
+  %assign buffsRec   = CompiledModel.CachedCodeBuffsForRootSys
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(rootSystem)
+  %assign fcnName    = SLibGenErtFunctionName(tid, "output")
+
+  %if ISEQUAL(tid, NumSynchronousSampleTimes)
+    %assign rootSystem.CurrentTID = ""
+    %openfile tmpBuffer
+    %<fcnName>(%<SLibModelFcnArgs("Output",TLC_FALSE,"")>) {
+
+      %% Profiler declaration code
+      %<SLibGenProfSysDeclare(rootSystem, "Output")>
+
+      %% Profiler start code
+      %<SLibGenProfSysStart(rootSystem, "Output")>
+
+      switch(tid) {
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %if FixedStepOpts.TID01EQ && tidIdx == 1
+	    %continue
+	  %endif
+	  case %<tidIdx> :
+	  %assign rootSystem.CurrentTID = tidIdx
+	  %<mdlName>_output%<tidIdx>(%<SLibModelFcnArgs("Output",2,tidIdx)>);
+	  break;
+	%endforeach
+	default :
+	break;
+      }
+      %% Profiler finish code
+      %<SLibGenProfSysEnd(rootSystem, "Output")>
+     }
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %return(tmpBuffer)
+  %else
+    %with rootSystem
+    %assign rootSystem.CurrentTID = tid
+    %assign needMajorTimeGuard = NumContStates > 0
+    %openfile tmpBuffer
+    %if !isRateGrouping
+      /* Model output function */
+    %else
+      /* Model output function for TID%<tid> */
+    %endif
+    %<fcnName>(%<SLibModelFcnArgs("Output",TLC_FALSE,"")>) ...
+      %<LibTaskComment(tid)>
+    {
+      %if !isRateGrouping
+	%% Profiler declaration code
+	%<SLibGenProfSysDeclare(rootSystem, "Output")>
+      %endif
+
+      %if (!ISEQUAL(tid, 0) || ISEQUAL(tid, "")) && ...
+	LibSystemFcnIsEmptyForTID(rootSystem,"Output")
+	/* (no output code required) */
+	%if !isRateGrouping
+	  %% Profiler start code
+	  %<SLibGenProfSysStart(rootSystem, "Output")>
+	%endif
+      %else
+	%<LibDumpSystemLocalBO(rootSystem,"Output%<tid>")>\
+
+	%if !isRateGrouping
+	  %% Profiler start code
+	  %<SLibGenProfSysStart(rootSystem, "Output")>
+	%endif
+	%<LibDumpSystemUserCode(rootSystem,"Output","Header")>\
+	%assign ::BlockFcn = "Output"
+
+	%<ErtOrModelrefGetTimingForTopOfOutputFcn(rootSystem, tid)>
+
+	%if (ISEQUAL(tid,0) || ISEQUAL(tid, ""))
+	  %if (NumContStates > 0)
+	    %<ERTSetSolverStopTime()>
+          %endif
+	  %if ISFIELD(buffsRec,"ExtModeHeader") && !WHITE_SPACE(buffsRec.ExtModeHeader)
+
+	    /* external mode */
+	    %<buffsRec.ExtModeHeader>\
+	  %endif
+	%endif
+
+	%<LibDumpSystemUserCode(rootSystem,"Output","Body")>\
+	%<LibDumpSystemFcn(rootSystem,"Output%<tid>")>\
+	%<LibDumpSystemUserCode(rootSystem,"Output","Trailer")>\
+      %endif
+      %if ISEQUAL(tid,0) || ISEQUAL(tid, "")
+	%if ISFIELD(buffsRec,"LogBuffer") && !WHITE_SPACE(buffsRec.LogBuffer)
+
+	  /* logging */
+          %if needMajorTimeGuard
+            if (%<RTMIs("MajorTimeStep")>) {
+          %endif
+	  %<buffsRec.LogBuffer>\
+          %if needMajorTimeGuard
+            } /* end MajorTimeStep */
+          %endif
+	%endif
+      %endif
+      %if !isRateGrouping
+	%% Profiler finish code
+	%<SLibGenProfSysEnd(rootSystem, "Output")>
+      %endif
+    }
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %endwith
+    %return(tmpBuffer)
+  %endif
+%endfunction %% SLibGenErtOutputFunction(tid)
+
+%% Function: SLibGenErtUpdateFunction ====================================
+%% Description:
+%%    TYPE(tid) ==  number, generate rate grouping code
+%%         tid >=0 and tid < NumSynchronousSampleTimes :
+%%                          generate code for tid, %<mdlName>_update%<tid>
+%%         tid == NumSynchronousSampleTimes :
+%%                          generate main function wrapper %<mdlName>_update calling
+%%                          all rate grouped function  %<mdlName>_update%<tid>
+%%    tid == "", generate non rate grouping code, %<mdlName>_update
+%%
+%% Function: SLibGenErtUpdateFunction ======================================
+%function SLibGenErtUpdateFunction(tid)
+  %assign rootSystem = System[NumSystems-1]
+  %assign mdlName    = Name
+  %assign buffsRec   = CompiledModel.CachedCodeBuffsForRootSys
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(rootSystem)
+  %assign fcnName    = SLibGenErtFunctionName(tid, "update")
+
+  %if ISEQUAL(tid, NumSynchronousSampleTimes)
+    %assign rootSystem.CurrentTID = ""
+    %openfile tmpBuffer
+    %<fcnName>(%<SLibModelFcnArgs("Update",TLC_FALSE,"")>) {
+
+      %% Profiler declaration code
+      %<SLibGenProfSysDeclare(rootSystem, "Update")>
+
+      %% Profiler start code
+      %<SLibGenProfSysStart(rootSystem, "Update")>
+
+      switch(tid) {
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %if FixedStepOpts.TID01EQ && tidIdx == 1
+	    %continue
+	  %endif
+	  case %<tidIdx> :
+	  %assign rootSystem.CurrentTID = tidIdx
+	  %<mdlName>_update%<tidIdx>(%<SLibModelFcnArgs("Update",2,tidIdx)>);
+	  break;
+	%endforeach
+	default :
+	break;
+      }
+
+      %% Profiler finish code
+      %<SLibGenProfSysEnd(rootSystem, "Update")>
+    }
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %return(tmpBuffer)
+  %else
+    %with rootSystem
+    %assign rootSystem.CurrentTID = tid
+    %assign continuousUpdate = ...
+        (ISEQUAL(tid,0) || ISEQUAL(tid, "")) && (NumContStates > 0)
+    %openfile tmpBuffer
+    %if !isRateGrouping
+      /* Model update function */
+    %else
+      /* Model update function for TID%<tid> */
+    %endif
+    %if continuousUpdate
+      %<fcnName>(%<SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")>)...
+	%<LibTaskComment(tid)>
+    %else
+      %<fcnName>(%<SLibModelFcnArgs("RootUpdate",TLC_FALSE,"")>)...
+	%<LibTaskComment(tid)>
+    %endif
+    {
+      %if !isRateGrouping
+	%% Profiler declaration code
+	%<SLibGenProfSysDeclare(rootSystem, "Update")>
+
+	%% Profiler start code
+	%<SLibGenProfSysStart(rootSystem, "Update")>
+      %endif
+
+      %if LibSystemFcnIsEmptyForTID(rootSystem,"Update") && ...
+	WHITE_SPACE(buffsRec.UpdateAbsoluteTimeBuffer%<tid>)
+	/* (no update code required) */
+      %else
+	%<LibDumpSystemUserCode(rootSystem,"Update","Header")>\
+	%<LibDumpSystemUserCode(rootSystem,"Update","Body")>\
+	%<LibDumpSystemFcn(rootSystem,"Update%<tid>")>\
+	%<LibDumpSystemUserCode(rootSystem,"Update","Trailer")>\
+      %endif
+      %if EXISTS(buffsRec.ExtModeTrailer%<tid>) && ...
+	!WHITE_SPACE(buffsRec.ExtModeTrailer%<tid>)
+
+	/* external mode */
+	%assign tmpBuff = buffsRec.ExtModeTrailer%<tid>
+	%<tmpBuff>\
+      %endif
+      %<ErtOrModelrefGetTimingForBottomOfUpdateFcn(rootSystem, tid, TLC_TRUE)>
+      %if !isRateGrouping
+	%% Profiler finish code
+	%<SLibGenProfSysEnd(rootSystem, "Update")>
+      %endif
+      }
+      %if continuousUpdate
+      %% generate root system Derivative function
+        %<SLibGetBodyDerivativeFcnCache(rootSystem)>
+      %endif
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %endwith
+    %return tmpBuffer
+  %endif
+%endfunction %% SLibGenErtUpdateFunction(tid)
+
+%% Function: SLibGenErtOutputUpdateFunction =====================================
+%% Description:
+%%    TYPE(tid) ==  number, generate rate grouping code
+%%         tid >=0 and tid < NumSynchronousSampleTimes :
+%%                          generate code for tid, %<mdlName>_step%<tid>
+%%         tid == NumSynchronousSampleTimes :
+%%                          generate main function wrapper %<mdlName>_step calling
+%%                          all rate grouped function  %<mdlName>_step%<tid>
+%%    tid == "", generate non rate grouping code, %<mdlName>_step
+%%
+%function SLibGenErtOutputUpdateFunction(tid)
+  %assign rootSystem = System[NumSystems-1]
+  %assign mdlName    = Name
+  %assign buffsRec = CompiledModel.CachedCodeBuffsForRootSys
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(rootSystem)
+  %assign fcnName    = SLibGenErtFunctionName(tid, "step")
+
+  %if ISEQUAL(tid, NumSynchronousSampleTimes)
+    %assign rootSystem.CurrentTID = ""
+    %openfile tmpBuffer
+    %<fcnName>(%<SLibModelFcnArgs("OutputUpdate",TLC_FALSE,"")>) {
+
+      %% Profiler declaration code
+      %<SLibGenProfSysDeclare(rootSystem, "OutputUpdate")>
+
+      %% Profiler start code
+      %<SLibGenProfSysStart(rootSystem, "OutputUpdate")>
+
+      switch(tid) {
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %if FixedStepOpts.TID01EQ && tidIdx == 1
+	    %continue
+	  %endif
+	  case %<tidIdx> :
+	  %assign rootSystem.CurrentTID = tidIdx
+	  %<mdlName>_step%<tidIdx>(%<SLibModelFcnArgs("OutputUpdate",2,tidIdx)>);
+	  break;
+	%endforeach
+	default :
+	break;
+      }
+      %% Profiler finish code
+      %<SLibGenProfSysEnd(rootSystem, "OutputUpdate")>
+    }
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %return(tmpBuffer)
+  %else
+    %with rootSystem
+    %assign rootSystem.CurrentTID = tid
+    %assign needMajorTimeGuard = (NumContStates > 0)
+    %assign continuousUpdate = ...
+          (ISEQUAL(tid,0) || ISEQUAL(tid, "")) && (NumContStates > 0)
+    %openfile tmpBuffer
+    %if !isRateGrouping
+      /* Model step function */
+    %else
+      /* Model step function for TID%<tid> */
+    %endif
+    %if continuousUpdate
+      %<fcnName>(%<SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")>) ...
+	%<LibTaskComment(tid)>
+    %else
+      %<fcnName>(%<SLibModelFcnArgs("OutputUpdate",TLC_FALSE,"")>) ...
+	%<LibTaskComment(tid)>
+    %endif
+    {
+      %if !isRateGrouping
+	%% Profiler declaration code
+	%<SLibGenProfSysDeclare(rootSystem, "OutputUpdate")>
+      %endif
+
+      %if !ISEQUAL(tid, 0) && ...
+	LibSystemFcnIsEmptyForTID(rootSystem,"Output") && ...
+	  WHITE_SPACE(buffsRec.UpdateAbsoluteTimeBuffer%<tid>)
+	/* (no output code required) */
+	%if !isRateGrouping
+	  %% Profiler start code
+	  %<SLibGenProfSysStart(rootSystem, "OutputUpdate")>
+	%endif
+      %else
+	%<LibDumpSystemLocalBO(rootSystem,"Output%<tid>")>\
+	%if !isRateGrouping
+	  %% Profiler start code
+	  %<SLibGenProfSysStart(rootSystem, "OutputUpdate")>
+	%endif
+	%<LibDumpSystemUserCode(rootSystem,"Output","Header")>\
+	%% If absolute time is accessed by this TID,
+	%% maintain absolute timer for this TID, otherwise
+	%% don't need absolute timer
+	%assign ::BlockFcn = "OutputUpdate"
+
+	%<ErtOrModelrefGetTimingForTopOfOutputFcn(rootSystem, tid)>
+
+	%if ISEQUAL(tid, "") || ISEQUAL(tid, 0)
+	   %if (NumContStates > 0)
+	    %<ERTSetSolverStopTime()>
+          %endif
+	  %if ISFIELD(buffsRec,"ExtModeHeader") && !WHITE_SPACE(buffsRec.ExtModeHeader)
+
+	    %<buffsRec.ExtModeHeader>\
+	  %endif
+	%endif
+	%<LibDumpSystemUserCode(rootSystem,"Output","Body")>\
+	%<LibDumpSystemFcn(rootSystem,"Output%<tid>")>\
+	%<LibDumpSystemUserCode(rootSystem,"Output","Trailer")>\
+      %endif
+        %if ISEQUAL(tid, "") || ISEQUAL(tid, 0)
+	%if ISFIELD(buffsRec,"LogBuffer") && !WHITE_SPACE(buffsRec.LogBuffer)
+	  %assign needMajorTimeGuard = NumContStates > 0
+
+	  %if needMajorTimeGuard
+	    if (%<RTMIs("MajorTimeStep")>) {
+	  %endif
+	  %<buffsRec.LogBuffer>\
+	  %if needMajorTimeGuard
+	     } /* end MajorTimeStep */
+	  %endif
+	%endif
+      %endif
+
+      %% Generate Update code for step
+      %if continuousUpdate
+        if (%<RTMIs("MajorTimeStep")>) {
+      %endif
+      %if LibSystemFcnIsEmptyForTID(rootSystem,"Update")
+	/* (no update code required) */
+      %else
+	%if !LibSystemUserCodeIsEmpty(rootSystem, "Update", "Header")
+	  %<"{">
+	  %<LibDumpSystemUserCode(rootSystem,"Update","Header")>\
+	%endif
+	%<LibDumpSystemUserCode(rootSystem,"Update","Body")>\
+	%<LibDumpSystemFcn(rootSystem,"Update%<tid>")>\
+	%<LibDumpSystemUserCode(rootSystem,"Update","Trailer")>\
+	%if !LibSystemUserCodeIsEmpty(rootSystem, "Update", "Header")
+	  %<"}">
+	%endif
+      %endif
+      %if ISFIELD(buffsRec,"ExtModeTrailer%<tid>") && ...
+	!WHITE_SPACE(buffsRec.ExtModeTrailer%<tid>)
+	%assign tmpBuff = buffsRec.ExtModeTrailer%<tid>
+	%<tmpBuff>\
+      %endif
+      %if continuousUpdate
+        } /* end MajorTimeStep */
+      %endif
+      %if !GenerateGRTWrapper
+	%% Update timer here only if we don't generate grt interface.
+	%% For grt interface, time must be updated in
+	%% mdlUpdatefcn.
+	%<ErtOrModelrefGetTimingForBottomOfUpdateFcn(rootSystem, tid, TLC_FALSE)>
+      %endif
+      %if !isRateGrouping
+	%% Profiler finish code
+	%<SLibGenProfSysEnd(rootSystem, "OutputUpdate")>
+      %endif
+
+    }   %% end of combined output/update fcn
+      %if continuousUpdate
+        %% generate root system Derivative function
+        %<SLibGetBodyDerivativeFcnCache(rootSystem)>
+      %endif
+      %%
+    %closefile tmpBuffer
+    %assign rootSystem.CurrentTID = -1
+    %endwith
+    %return(tmpBuffer)
+  %endif
+%endfunction %% SLibGenErtOutputUpdateFunction
+
+
+%% Fucntion: SLibErtGenLoggingUpdateCode =========================
+%%
+%%
+%function SLibErtGenLoggingUpdateCode(buffsRec, isRateGrouping) void
+  %assign ::BlockFcn = "Output"
+  %openfile logBuffer
+  %if MatFileLogging == 1 && !GenerateGRTWrapper
+
+    /* Matfile logging */
+    %if RootSystemIsSingleRate || SLibSingleTasking() || ...
+      isRateGrouping
+      %<SLibGenTXYLogVarUpdate()>
+      %if isRateGrouping
+	%% The logging code is added to the tid01eq output code when
+	%% rate grouping. Make sure the necessary arguments are passed.
+	%% Add to output or outputupdate
+	%assign arg = CompiledModel.System[NumSystems-1].Interface.RTMArgDef
+	%if CombineOutputUpdateFcns == 1
+	  %assign ::BlockFcn = "OutputUpdate"
+	%endif
+	%<SLibAddTIDtoAccessTIDList(arg, ::BlockFcn, "", FixedStepOpts.TID01EQ)>
+	%assign ::BlockFcn = "Output"
+      %endif
+    %else
+      %<FcnGenerateTidGuardOpenCode(0)>
+      %<SLibGenTXYLogVarUpdate()>
+      %<FcnGenerateTidGuardCloseCode(0)>
+    %endif
+  %endif
+  %closefile logBuffer
+  %addtorecord buffsRec LogBuffer logBuffer
+
+%endfunction %% SLibErtGenLoggingUpdateCode
+
+%% Function: SLibErtGenStopSimCode(buffsRec) ======================
+%%
+%%
+%function SLibErtGenStopSimCode(buffsRec, isRateGrouping) void
+  %assign ::BlockFcn = "RootUpdate"
+  %openfile stopSimBuffer
+  %if !IsModelReferenceTarget() && !GenerateGRTWrapper
+    %if MatFileLogging || ForceAbsoluteTime || (ExtMode && !PurelyIntegerCode)
+
+      /* signal main to stop simulation */
+      %<FcnGenerateTidGuardOpenCode(0)>
+      %% Since you can't have PurelyIntegerCode while MatFileLogging,
+      %% only need to handle real_T time.
+      %% If continuous time, use taskTime(TID01EQ), otherwise taskTime(0)
+      %assign taskTime = (NumContStates > 0) ? ...
+          LibGetTaskTime(FixedStepOpts.TID01EQ) : LibGetTaskTime(0)
+      if ( (%<RTMGet("TFinal")>!=-1) &&
+      !((%<RTMGet("TFinal")>-%<taskTime>) > %<taskTime>*DBL_EPSILON)) {
+        %<RTMSetErrStat("\"Simulation finished\"")>;
+      }
+      %if ExtMode || NumChildSFunctions
+	if (%<RTMGetStopRequested()>) {
+	  %<RTMSetErrStat("\"Simulation finished\"")>;
+	}
+      %endif
+      %<FcnGenerateTidGuardCloseCode(0)>
+    %elseif ExtMode && PurelyIntegerCode
+
+      if ( (rteiGetTFinalTicks(%<RTMGet("RTWExtModeInfo")>)!=-1) &&
+      !((uint32_T)rteiGetTFinalTicks(%<RTMGet("RTWExtModeInfo")>) >
+      %<LibGetTaskTime(0)>)) {
+	%<RTMSetErrStat("\"Simulation finished\"")>;
+      }
+      %if ExtMode
+	if (%<RTMGetStopRequested()>) {
+	  %<RTMSetErrStat("\"Simulation finished\"")>;
+	}
+      %endif
+    %endif
+  %endif
+  %closefile stopSimBuffer
+
+  %addtorecord buffsRec StopSimBuffer stopSimBuffer
+%endfunction %% SLibErtGenStopSimCode(buffsRec)
+
+
+%function SLibErtGenFirstInitConditionCode(buffsRec) void
+  %assign ::BlockFcn = "RootUpdate"
+  %openfile firstInitCondition
+  %if RTMFirstInitCondFlagIsReqFcn()
+    %% Need to turn off firstInitCond flag
+    /* set "at time zero" to false */
+    if (%<RTMIs("FirstInitCond")>) {
+      %<RTMSet("FirstInitCond", 0)>;
+    }
+  %endif
+  %closefile   firstInitCondition
+  %addtorecord buffsRec FirstInitCondition firstInitCondition
+%endfunction
+
+
+
+%function  ErtGenerateOutputAndUpdateForRoot()
+
+  %assert (!IsModelReferenceTarget())
+
+  %assign rootSystem = System[NumSystems-1]
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(rootSystem)
+
+  %if GenerateSampleERTMain && SLibIsAsyncTaskOnlyModel()
+    %return ""
+  %endif
+
+  %openfile buff
+  %if isRateGrouping
+    %% -------------------------------------------------------
+    %%   Generate rate grouping  code for ert auto functions.
+    %foreach TIDIdx = (GenerateSampleERTMain || RateBasedStepFcn) ? ...
+      NumSynchronousSampleTimes : NumSynchronousSampleTimes + 1
+      %% if generateSampleERTMain, not step main fcn generated in model.c,
+      %% it is generated in SampleERTMain fucntion.
+      %if ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ && (TIDIdx==1)
+        %continue
+      %endif
+      %if CombineOutputUpdateFcns == 1
+
+	%<SLibGenErtOutputUpdateFunction(TIDIdx)>
+      %else
+
+	%<SLibGenErtOutputFunction(TIDIdx)>
+
+	%<SLibGenErtUpdateFunction(TIDIdx)>
+	%% end of seperate output/update fcn
+      %endif
+    %endforeach
+    %%   end of Generate rate grouping  code for ert auto functions.
+    %% -----------------------------------------------------------
+  %else
+    %%   Generate non-rate-grouping  code for ert auto functions.
+    %assign rootSystem.CurrentTID = ""
+    %if CombineOutputUpdateFcns == 1
+
+      %<SLibGenErtOutputUpdateFunction("")>
+    %else
+
+      %<SLibGenErtOutputFunction("")>
+
+      %<SLibGenErtUpdateFunction("")>
+    %endif
+    %%   end of Generate non-rate grouping  code for ert auto functions.  .
+    %%----------------------------------------------------------------
+  %endif
+  %if GenerateGRTWrapper
+    %assign grtOutputUpdateWrapper = FcnGenerateGRTOutputUpdateWrapper()
+    %addtorecord CompiledModel GRTWrapper grtOutputUpdateWrapper
+  %endif
+
+  %closefile buff
+  %return buff
+%endfunction
+
+
+%% Function: FcnGenerateGRTOutputUpdateWrapper ====================================
+%%   This function is called when GenerateGRTWrapper is true.
+%%
+%%
+%function FcnGenerateGRTOutputUpdateWrapper()
+  %assign mdlName = Name
+  %assign rootSystem = System[NumSystems-1]
+  %assign rootSystem.CurrentTID = ""
+
+  %assert CombineOutputUpdateFcns == 0
+  %openfile tmpBuf
+  %% MdlOutput MdlUpdate
+  %assign needAdjustTID = !SLibSingleTasking() && ...
+    !LibIsSingleRateSystem(rootSystem) && ...
+    ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+
+  %if needAdjustTID
+    %openfile adjustTID
+    if (%<LibTID()> == 1) %<LibTID()> = 0;
+    %closefile adjustTID
+  %else
+    %assign adjustTID = ""
+  %endif
+
+  void MdlOutputs(%<SLibModelFcnArgs("Output",TLC_FALSE,"")>) {
+    %<adjustTID>
+    %if CombineOutputUpdateFcns == 1
+      %<mdlName>_step(%<SLibModelFcnArgs("OutputUpdate",TLC_TRUE,"%<LibTID()>")>);
+    %else
+      %<mdlName>_output(%<SLibModelFcnArgs("Output",TLC_TRUE,"%<LibTID()>")>);
+    %endif
+  }
+
+  void MdlUpdate(%<SLibModelFcnArgs("Update",TLC_FALSE,"")>) {
+    %% GRT interface requires updating timer in MdlUpdate function.
+    %<adjustTID>
+    %if CombineOutputUpdateFcns == 1
+      %<ErtOrModelrefGetTimingForBottomOfUpdateFcn(rootSystem, "", TLC_FALSE)>
+    %else
+      %<mdlName>_update(%<SLibModelFcnArgs("Update",TLC_TRUE,"%<LibTID()>")>);
+    %endif
+  }
+
+  %% Others Mdl function called from grt_main.
+  void MdlInitializeSizes(void) {
+    %<LibDumpModelInitializeSizes()>\
+  }
+
+  void MdlInitializeSampleTimes(void) {
+  }
+
+  %closefile tmpBuf
+  %assign rootSystem.CurrentTID = -1
+
+  %return tmpBuf
+%endfunction
+
+%% Function: SLibErtAutoFunctions ==============================================
+%% Abstract:
+%%   Return a buffer with the Embedded-C auto functions.  The auto functions
+%%   include the generated run-time code main routine and model algorithm.
+%%
+%function SLibErtAutoFunctions() void
+
+  %assign rootSystem = System[NumSystems-1]
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(rootSystem)
+  %addtorecord CompiledModel CachedCodeBuffsForRootSys {}
+  %assign buffsRec = CompiledModel.CachedCodeBuffsForRootSys
+
+  %<SLibGenERTPrivateRTMMacros()>
+
+  %% Buffer stop simulation
+  %<SLibErtGenStopSimCode(buffsRec, isRateGrouping)>
+  %<SLibErtGenFirstInitConditionCode(buffsRec)>
+
+  %% Buffer update absolute time
+  %<SLibErtGenUpdateAbsoluteTimeCode(NumSystems-1, buffsRec, isRateGrouping)>
+
+  %if !::ModelReferenceTargetWithGlobalTiming
+    %<FcnDumpMultiRateScheduler()>
+  %endif
+
+  %if !IsModelReferenceTarget()
+    %% Cach external mode code
+    %<SLibErtGenExtModeCode(buffsRec, isRateGrouping)>
+
+    %% Buffer logging update code
+    %<SLibErtGenLoggingUpdateCode(buffsRec, isRateGrouping)>
+
+    %if (NumContStates > 0)
+      %<SLibDumpSolverCode()>\
+    %endif
+  %endif
+
+  %openfile autoFunctions
+  %foreach sysIdx = NumSystems - 1
+    %% Write them to "Functions" cache
+    %<SLibGetSystemBodyCache(System[sysIdx])>
+  %endforeach
+
+  %% Dump stateflow cache for root system
+  %<SLibGetSystemStateflowFcnCache(rootSystem)>
+
+  %if !IsModelReferenceTarget()
+    %% Generate output and update function for root system
+    %<ErtGenerateOutputAndUpdateForRoot()>
+  %endif
+
+  %closefile autoFunctions
+
+  %assert (!IsModelReferenceTarget() || WHITE_SPACE(autoFunctions))
+  %return autoFunctions
+
+%endfunction %% SLibErtAutoFunctions
+
+%endif %% _ERTLIB_
+
+%% [EOF] ertlib.tlc

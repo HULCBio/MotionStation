@@ -1,0 +1,684 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Fixed-Point C Development</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-09">
+      <meta name="m-file" content="fi_c_developmentdemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Fixed-Point C Development</h1>
+      <introduction>
+         <p>This demo shows how to use the parameters from a fixed-point MATLAB program in a fixed-point C program.</p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Getting the right parameters.</a></li>
+            <li><a href="#2">M algorithm</a></li>
+            <li><a href="#3">C algorithm</a></li>
+            <li><a href="#4">Today is your lucky day.</a></li>
+            <li><a href="#5">First, try the algorithm in floating-point M</a></li>
+            <li><a href="#6">Run the M-file with floating-point parameters.</a></li>
+            <li><a href="#7">Define the word lengths</a></li>
+            <li><a href="#8">Configure the fixed-point math parameters</a></li>
+            <li><a href="#9">Define the fixed-point variables</a></li>
+            <li><a href="#10">Compute the fraction length of the output</a></li>
+            <li><a href="#11">Run the same M-file. This time it's fixed-point because the inputs are.</a></li>
+            <li><a href="#12">Plot the floating-point and fixed-point side by side</a></li>
+            <li><a href="#13">Plot the error</a></li>
+            <li><a href="#14">Define integer parameters to pass to C.</a></li>
+            <li><a href="#15">Let fi tell us the numeric type of the inner-product</a></li>
+            <li><a href="#16">Run the fixed-point C filter</a></li>
+            <li><a href="#17">Compare fi to fixed-point C. It is bit faithful!</a></li>
+            <li><a href="#18">Something useful</a></li>
+            <li><a href="#19">Plot the sound over time</a></li>
+            <li><a href="#20">Spectrogram of the sound</a></li>
+            <li><a href="#21">Quantize and listen.</a></li>
+            <li><a href="#22">Frequency response of the moving-average algorithm</a></li>
+            <li><a href="#23">Add noise</a></li>
+            <li><a href="#24">Quantize the noisy sound and listen</a></li>
+            <li><a href="#25">Plot the sound over time</a></li>
+            <li><a href="#26">Spectrogram of the sound.  Notice the dark line at 2140 Hz.</a></li>
+            <li><a href="#27">Set up the fixed-point parameters as before</a></li>
+            <li><a href="#28">Filter in C with the same parameters as before and listen</a></li>
+            <li><a href="#29">Plot the original and the filtered signals together</a></li>
+            <li><a href="#30">Spectrogram of the sound.   Notice the dark line at 2140 Hz is gone.</a></li>
+            <li><a href="#31">Take it for a spin!</a></li>
+            <li><a href="#32">Examine the C file</a></li>
+            <li><a href="#33">Modify a copy of the C algorithm</a></li>
+         </ul>
+      </div>
+      <h2>Getting the right parameters.<a name="1"></a></h2>
+      <p>Finding the right parameters in a fixed-point C program can be difficult.  But not today.</p>
+      <h2>M algorithm<a name="2"></a></h2>
+      <p>Suppose we have the following simple algorithm in M.  It computes the running average of its input x using a weighting vector
+         b, which has been given to us.
+      </p>
+      <p>Note that the output y, is also used as an input parameter so that y can be aware of its data type.</p><pre>function [y,z] = fi_m_fir(b, x, z, y)
+for k=1:length(x);
+  z = [x(k);z(1:end-1)];
+  y(k) = b*z;
+end</pre><h2>C algorithm<a name="3"></a></h2>
+      <p>We have translated the M function into this C function, and we need to figure out a number of things.  How do we scale the
+         integer inputs b, x, and z so they retain maximum precision?  Will there be overflow when we run data through it?  We are
+         using native integer data types, but what if I have, say, 12-bit data?  Which bits of the 16 are the 12-bits of data stored
+         in?  How do I compute the values of accOneHalfLSB and accShift that are used to round the 32-bit accumulator and shift into
+         the 16-bit output?
+      </p><pre>void fi_c_fir(int16_T *b, int16_T *x, int16_T *z, int16_T *y,
+                       int    nb, int    nx, int    nz,
+            int32_T accOneHalfLSB, int accShift)
+{
+    int32_T acc;
+    int k;
+    int i;
+    for (k=0; k&lt;nx; k++) {
+        memmove(z+1,z,sizeof(int16_T)*nz);
+        z[0] = x[k];
+        acc = 0;
+        for (i=0; i&lt;nb; i++) {
+            acc += (int32_T)b[i] * (int32_T)z[i];
+        }
+        y[k] = (acc  + accOneHalfLSB) &gt;&gt; accShift;
+    }
+}</pre><h2>Today is your lucky day.<a name="4"></a></h2>
+      <p>The answer to all of the above questions is:  Define the word lengths of the variables and let fi worry about everything else.</p>
+      <h2>First, try the algorithm in floating-point M<a name="5"></a></h2><pre class="codeinput">b = fi_fir_coefficients; <span class="comment">% Vector b is given to us.</span>
+rand(<span class="string">'state'</span>,0);
+N = 20;
+x = 2*rand(N,1)-1;
+z = zeros(length(b),1);
+y = zeros(size(x));
+</pre><h2>Run the M-file with floating-point parameters.<a name="6"></a></h2><pre class="codeinput">yfl = fi_m_fir(b, x, z, y);
+</pre><h2>Define the word lengths<a name="7"></a></h2>
+      <p>The attributes of our fixed-point parameters have been set up in this example so that we can set the word lengths and let
+         fi figure out the best scaling for the fraction lengths (binary points) in the data, in the product register, in the sum register
+         (accumulator), and there is even a convenient function to compute the numeric type of the output of this algorithm that will
+         retain best precision in the output and at the same time guarantee that no overflows occur.
+      </p>
+      <p>Of course, we can always go in and fully specify all these scaling parameters ourselves, but then every time we changed any
+         word length, we would have to go through and adjust all the other parameters too.
+      </p>
+      <p>It is hard to overstate how much work this saves us.  If we want to change the simulation to use 12-bit coefficients and 8-bit
+         data, we just need to change those word lengths.  If the data is given to us as integers, or as floating-point values, the
+         best scaling is used to store the data, and then the scaling of all related computations are changed automatically.
+      </p>
+      <p>In the following, we are saying "effective word length" because when we get to the C program, the data are stored in 16-bit
+         integers, and the product and sum are stored in 32-bit integers.  However, the M-file fixed-point algorithm will use the effective
+         word lengths as specified for any value from 2 to 65535 bits.  The C algorithm will act as though those are the actual word
+         lengths from 2 to 16- and 32-bits, respectively. This is very convenient for simulating fixed-point algorithms on your desk
+         top computer that will run on an embedded device with word lengths different than the standard 8, 16, and 32 bits.
+      </p><pre class="codeinput">Wb    = 16; <span class="comment">% Effective word length of the coefficients, b</span>
+Wx    = 12; <span class="comment">% Effective word length of the data, x</span>
+Wy    = 16; <span class="comment">% Effective word length of the output, y</span>
+Wprod = 32; <span class="comment">% Effective word length of the product (int32_T)b[i] * (int32_T)z[i]</span>
+Wacc  = 32; <span class="comment">% Effective word length of the sum stored in int32_T acc</span>
+</pre><h2>Configure the fixed-point math parameters<a name="8"></a></h2>
+      <p>We configure so that the products and sums are aligned in the least-significant bits, and the overflow mode is wrap, as it
+         would is in C.
+      </p><pre class="codeinput">F = fimath(<span class="string">'ProductMode'</span>,<span class="string">'KeepLSB'</span>, <span class="string">'ProductWordLength'</span>,Wprod,<span class="keyword">...</span>
+           <span class="string">'SumMode'</span>,<span class="string">'KeepLSB'</span>, <span class="string">'SumWordLength'</span>,Wacc,<span class="keyword">...</span>
+           <span class="string">'OverFlowMode'</span>,<span class="string">'wrap'</span>);
+</pre><h2>Define the fixed-point variables<a name="9"></a></h2><pre class="codeinput">bfi = fi(b, 1, Wb, <span class="string">'fimath'</span>, F);
+xfi = fi(x, 1, Wx, <span class="string">'fimath'</span>, F);
+zfi = fi(z, numerictype(xfi), <span class="string">'fimath'</span>,F);
+</pre><h2>Compute the fraction length of the output<a name="10"></a></h2>
+      <p>Compute the number of integer bits necessary for no overflow in the inner product b*z. Then leave that much head room in y.</p><pre class="codeinput">y_fractionlength = Wy - innerprodintbits(bfi,zfi);
+yfi = fi(y, 1, Wy, y_fractionlength, <span class="string">'fimath'</span>, F);
+</pre><h2>Run the same M-file. This time it's fixed-point because the inputs are.<a name="11"></a></h2><pre class="codeinput">yfi = fi_m_fir(bfi, xfi, zfi, yfi);
+</pre><h2>Plot the floating-point and fixed-point side by side<a name="12"></a></h2>
+      <p>Note that the lines in the plot overlay each other.  If you are running this program, and have stopped at this point, you
+         can zoom in on the graph and see that the values are slightly different.
+      </p><pre class="codeinput">t = 0:length(y)-1;
+plot(t,yfl,t,yfi);set(gcf,<span class="string">'color'</span>,[1 1 1]);
+legend(<span class="string">'Floating-point'</span>,<span class="string">'Fixed-point'</span>)
+xlabel(<span class="string">'t (samples)'</span>)
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_01.png"> <h2>Plot the error<a name="13"></a></h2>
+      <p>Plot the error and compare with the scaling of the least-significant bit of the fixed-point value centered around the mean
+         of the error.
+      </p><pre class="codeinput">err = double(yfi) - yfl;
+m   = mean(err);
+delta = double(lsb(yfi));
+tlim  = [0 t(end)];
+plot(t,err,tlim,[m m],tlim,m-delta*[1 1],<span class="string">'r'</span>,tlim,m+delta*[1 1],<span class="string">'r'</span>)
+set(gcf,<span class="string">'color'</span>,[1 1 1]);
+legend(<span class="string">'Error'</span>,<span class="string">'Mean of the error'</span>,<span class="string">'1 LSB about the mean'</span>)
+xlabel(<span class="string">'t (samples)'</span>)
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_02.png"> <h2>Define integer parameters to pass to C.<a name="14"></a></h2>
+      <p>Our C program is expecting 16-bit signed integers, so we cast to that specific type.</p><pre class="codeinput">bint = int16(bfi);
+xint = int16(xfi);
+zint = int16(zfi);
+</pre><h2>Let fi tell us the numeric type of the inner-product<a name="15"></a></h2>
+      <p>In particular, we need to know where the binary point is so that we will know what part of the accumulator to pluck the output
+         data from.
+      </p><pre class="codeinput">acc = bfi*zfi
+</pre><pre class="codeoutput"> 
+acc =
+ 
+     0
+
+
+              DataType: Fixed
+               Scaling: BinaryPoint
+                Signed: true
+            WordLength: 32
+        FractionLength: 27
+
+             RoundMode: round
+          OverflowMode: wrap
+           ProductMode: KeepLSB
+     ProductWordLength: 32
+               SumMode: KeepLSB
+         SumWordLength: 32
+         CastBeforeSum: true
+</pre><h2>Run the fixed-point C filter<a name="16"></a></h2><pre class="codeinput">yint = fi_c_fir(bint, xint, zint, acc.fractionlength, y_fractionlength);
+</pre><h2>Compare fi to fixed-point C. It is bit faithful!<a name="17"></a></h2><pre class="codeinput">[int16(yfi) yint int16(yfi)-yint]
+</pre><pre class="codeoutput">
+ans =
+
+   -151   -151      0
+    154    154      0
+    714    714      0
+  -2064  -2064      0
+   1556   1556      0
+   1564   1564      0
+   2956   2956      0
+     25     25      0
+   -831   -831      0
+    224    224      0
+   8333   8333      0
+   1082   1082      0
+   -263   -263      0
+  -3229  -3229      0
+   -696   -696      0
+   1175   1175      0
+   2968   2968      0
+   4048   4048      0
+   7600   7600      0
+   1280   1280      0
+
+</pre><h2>Something useful<a name="18"></a></h2>
+      <p>Now that we're fairly confident that our C program is doing the right thing, let's do something useful with it.</p>
+      <p>Load a sound file and listen to it.  Also see if the Signal Processing Toolbox is available so we can analyze these signals
+         later.
+      </p><pre class="codeinput">isSignalToolboxAvailable = license(<span class="string">'test'</span>,<span class="string">'Signal_Toolbox'</span>);
+load <span class="string">mtlb</span>
+x = mtlb;
+n = length(x);
+t = (0:n-1)'/Fs;
+soundsc(x,Fs)
+</pre><pre class="codeoutput">
+</pre><h2>Plot the sound over time<a name="19"></a></h2><pre class="codeinput">plot(t,x)
+set(gcf,<span class="string">'color'</span>,[1 1 1]);
+xlabel(<span class="string">'t (sec)'</span>)
+title(<span class="string">'Original sound'</span>)
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_03.png"> <h2>Spectrogram of the sound<a name="20"></a></h2><pre class="codeinput"><span class="keyword">if</span> isSignalToolboxAvailable
+  specgram(x,512,Fs);
+  set(gcf,<span class="string">'color'</span>,[1 1 1]);
+  title(<span class="string">'Original sound'</span>)
+<span class="keyword">end</span>
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_04.png"> <h2>Quantize and listen.<a name="21"></a></h2><pre class="codeinput">xfi = fi(x,1,Wx);
+soundsc(double(xfi),Fs)
+</pre><pre class="codeoutput">
+</pre><h2>Frequency response of the moving-average algorithm<a name="22"></a></h2>
+      <p>Let's take a look at the frequency response of the moving average filter defined by vector b.  Notice that there is a null
+         in the frequency response at about 2140 Hz.  This means that any sound at 2140 Hz will be averaged out if it is run through
+         the moving-average algorithm.  The 2140 Hz frequency is relative to the sampling frequency, Fs, that was used when the sound
+         was recorded.
+      </p><pre class="codeinput"><span class="keyword">if</span> isSignalToolboxAvailable
+  freqz(b,1,1024,Fs);
+  set(gcf,<span class="string">'color'</span>,[1 1 1]);
+<span class="keyword">end</span>
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_05.png"> <h2>Add noise<a name="23"></a></h2>
+      <p>Since my algorithm will filter out any signal at 2140 Hz, let's add a sinusoid at that frequency to the original signal and
+         see if we can filter it out with our fixed-point moving-average algorithm written in C.
+      </p><pre class="codeinput">N = length(x);
+noise = sin(2*pi*2140*(0:n-1)'./Fs);
+xnoisy = x + noise;
+</pre><h2>Quantize the noisy sound and listen<a name="24"></a></h2><pre class="codeinput">xfi = fi(xnoisy,1,Wx);
+soundsc(double(xfi),Fs);
+</pre><pre class="codeoutput">
+</pre><h2>Plot the sound over time<a name="25"></a></h2><pre class="codeinput">plot(t,xfi)
+set(gcf,<span class="string">'color'</span>,[1 1 1]);
+xlabel(<span class="string">'t (sec)'</span>)
+title(<span class="string">'Quantized, noisy sound'</span>)
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_06.png"> <h2>Spectrogram of the sound.  Notice the dark line at 2140 Hz.<a name="26"></a></h2><pre class="codeinput"><span class="keyword">if</span> isSignalToolboxAvailable
+  specgram(double(xfi),512,Fs);
+  set(gcf,<span class="string">'color'</span>,[1 1 1]);
+  title(<span class="string">'Quantized, noisy sound'</span>)
+<span class="keyword">end</span>
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_07.png"> <h2>Set up the fixed-point parameters as before<a name="27"></a></h2><pre class="codeinput">zfi = fi(z, numerictype(xfi), <span class="string">'fimath'</span>,F);
+acc = bfi*zfi;
+y_fractionlength = Wy - innerprodintbits(bfi,zfi);
+</pre><h2>Filter in C with the same parameters as before and listen<a name="28"></a></h2>
+      <p>Can you still hear the noise signal?  Can you tell any other differences in the sound?</p><pre class="codeinput">xint = int16(xfi);
+yint = fi_c_fir(bint, xint, zint, acc.fractionlength, y_fractionlength);
+
+soundsc(double(yint),Fs)
+</pre><pre class="codeoutput">
+</pre><h2>Plot the original and the filtered signals together<a name="29"></a></h2>
+      <p>If you are running this demo and have paused at this section, zoom in on the plot.  Can you see the high frequency noise in
+         the original signal? Can you see that it has been smoothed out in the filtered signal?
+      </p>
+      <p>Notice that the filtered signal has been delayed in time.  Can you tell by how much?  How is the time delay in samples related
+         to the length of b?
+      </p>
+      <p>The signals are scaled to make them easier to compare.</p><pre class="codeinput">xscaled = double(xint); xscaled = xscaled/max(abs(xscaled));
+yscaled = double(yint); yscaled = yscaled/max(abs(yscaled));
+plot(t,[xscaled yscaled])
+set(gcf,<span class="string">'color'</span>,[1 1 1]);
+legend(<span class="string">'Noisy'</span>,<span class="string">'Filtered'</span>)
+xlabel(<span class="string">'t (sec)'</span>)
+title(<span class="string">'Filtered sound'</span>)
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_08.png"> <h2>Spectrogram of the sound.   Notice the dark line at 2140 Hz is gone.<a name="30"></a></h2><pre class="codeinput"><span class="keyword">if</span> isSignalToolboxAvailable
+  specgram(double(yint),512,Fs);
+  set(gcf,<span class="string">'color'</span>,[1 1 1]);
+  title(<span class="string">'Filtered sound'</span>)
+<span class="keyword">end</span>
+</pre><img vspace="5" hspace="5" src="fi_c_developmentdemo_09.png"> <h2>Take it for a spin!<a name="31"></a></h2>
+      <p>Open this demo in the MATLAB editor by typing</p><pre> edit fi_c_developmentdemo.m</pre><p>from the MATLAB command line.</p>
+      <p>Then, go back up to the top and modify the word length parameters and step through the code using "cell mode" in the editor.</p>
+      <p>Try these values:</p><pre> Wb    =  8; % Effective word length of the coefficients, b
+ Wx    =  8; % Effective word length of the data, x
+ Wy    =  8; % Effective word length of the output, y
+ Wprod = 32; % Effective word length of the product (int32_T)b[i] * (int32_T)z[i]
+ Wacc  = 32; % Effective word length of the sum stored in int32_T acc</pre><p>What was the error like?  What did it sound like?</p>
+      <h2>Examine the C file<a name="32"></a></h2>
+      <p>The C file is located in the same directory as the M-file.  You can open it by typing</p><pre> edit fi_c_fir.c</pre><p>from the MATLAB command line.  If you have MATLAB configured for a C compiler, you can compile this file by typing</p><pre> mex fi_c_fir.c</pre><p>from the MATLAB command line.  For more information on compiling mex files, type</p><pre> help mex
+ doc mex</pre><p>from the MATLAB command line.</p>
+      <h2>Modify a copy of the C algorithm<a name="33"></a></h2>
+      <p>The implementation of the algorithm in C that we are using in this demo was done for clarity: it's structure is very much
+         like the algorithm in M.   Can you modify the C algorithm so that it runs faster?
+      </p>
+      <p class="footer">Copyright 2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Fixed-Point C Development 
+% This demo shows how to use the parameters from a fixed-point MATLAB program in a
+% fixed-point C program.
+
+%% Getting the right parameters.
+%
+% Finding the right parameters in a fixed-point C program can be
+% difficult.  But not today.
+
+%% M algorithm
+%
+% Suppose we have the following simple algorithm in M.  It computes the
+% running average of its input x using a weighting vector b, which has
+% been given to us.
+%
+% Note that the output y, is also used as an input parameter so that y
+% can be aware of its data type.
+%
+%  function [y,z] = fi_m_fir(b, x, z, y)
+%  for k=1:length(x);
+%    z = [x(k);z(1:end-1)];
+%    y(k) = b*z;
+%  end
+
+%% C algorithm
+%
+% We have translated the M function into this C function, and we need to
+% figure out a number of things.  How do we scale the integer inputs b,
+% x, and z so they retain maximum precision?  Will there be overflow
+% when we run data through it?  We are using native integer data types,
+% but what if I have, say, 12-bit data?  Which bits of the 16 are the
+% 12-bits of data stored in?  How do I compute the values of
+% accOneHalfLSB and accShift that are used to round the 32-bit
+% accumulator and shift into the 16-bit output?
+%
+%  void fi_c_fir(int16_T *b, int16_T *x, int16_T *z, int16_T *y, 
+%                         int    nb, int    nx, int    nz,
+%              int32_T accOneHalfLSB, int accShift)
+%  { 
+%      int32_T acc;
+%      int k;
+%      int i;
+%      for (k=0; k<nx; k++) {
+%          memmove(z+1,z,sizeof(int16_T)*nz);
+%          z[0] = x[k];
+%          acc = 0;
+%          for (i=0; i<nb; i++) {
+%              acc += (int32_T)b[i] * (int32_T)z[i];
+%          }
+%          y[k] = (acc  + accOneHalfLSB) >> accShift;
+%      }
+%  }
+
+%% Today is your lucky day.  
+% The answer to all of the above questions is:  Define the word lengths
+% of the variables and let fi worry about everything else.
+
+%% First, try the algorithm in floating-point M
+b = fi_fir_coefficients; % Vector b is given to us.
+rand('state',0);
+N = 20;
+x = 2*rand(N,1)-1;
+z = zeros(length(b),1);
+y = zeros(size(x));
+
+%% Run the M-file with floating-point parameters.
+yfl = fi_m_fir(b, x, z, y);
+
+%% Define the word lengths
+%
+% The attributes of our fixed-point parameters have been set up in this
+% example so that we can set the word lengths and let fi figure out the
+% best scaling for the fraction lengths (binary points) in the data, in the
+% product register, in the sum register (accumulator), and there is even a
+% convenient function to compute the numeric type of the output of this
+% algorithm that will retain best precision in the output and at the same
+% time guarantee that no overflows occur.
+%
+% Of course, we can always go in and fully specify all these scaling
+% parameters ourselves, but then every time we changed any word length, we
+% would have to go through and adjust all the other parameters too.
+%
+% It is hard to overstate how much work this saves us.  If we want to
+% change the simulation to use 12-bit coefficients and 8-bit data, we just
+% need to change those word lengths.  If the data is given to us as
+% integers, or as floating-point values, the best scaling is used to store
+% the data, and then the scaling of all related computations are changed
+% automatically.
+%
+% In the following, we are saying "effective word length" because when we
+% get to the C program, the data are stored in 16-bit integers, and the
+% product and sum are stored in 32-bit integers.  However, the M-file
+% fixed-point algorithm will use the effective word lengths as specified
+% for any value from 2 to 65535 bits.  The C algorithm will act as though
+% those are the actual word lengths from 2 to 16- and 32-bits, respectively.
+% This is very convenient for simulating fixed-point algorithms on your
+% desk top computer that will run on an embedded device with word lengths
+% different than the standard 8, 16, and 32 bits.
+Wb    = 16; % Effective word length of the coefficients, b
+Wx    = 12; % Effective word length of the data, x
+Wy    = 16; % Effective word length of the output, y
+Wprod = 32; % Effective word length of the product (int32_T)b[i] * (int32_T)z[i]
+Wacc  = 32; % Effective word length of the sum stored in int32_T acc
+
+%% Configure the fixed-point math parameters
+% We configure so that the products and sums are aligned
+% in the least-significant bits, and the overflow mode is wrap, as it
+% would is in C.
+F = fimath('ProductMode','KeepLSB', 'ProductWordLength',Wprod,...
+           'SumMode','KeepLSB', 'SumWordLength',Wacc,...
+           'OverFlowMode','wrap');
+
+%% Define the fixed-point variables
+bfi = fi(b, 1, Wb, 'fimath', F);
+xfi = fi(x, 1, Wx, 'fimath', F);
+zfi = fi(z, numerictype(xfi), 'fimath',F);
+
+%% Compute the fraction length of the output
+%
+% Compute the number of integer bits necessary for no overflow in the
+% inner product b*z. Then leave that much head room in y.  
+y_fractionlength = Wy - innerprodintbits(bfi,zfi);
+yfi = fi(y, 1, Wy, y_fractionlength, 'fimath', F);
+
+%% Run the same M-file. This time it's fixed-point because the inputs are.
+yfi = fi_m_fir(bfi, xfi, zfi, yfi);
+
+%% Plot the floating-point and fixed-point side by side
+% Note that the lines in the plot overlay each other.  If you are running
+% this program, and have stopped at this point, you can zoom in on the
+% graph and see that the values are slightly different.
+t = 0:length(y)-1;
+plot(t,yfl,t,yfi);set(gcf,'color',[1 1 1]);
+legend('Floating-point','Fixed-point')
+xlabel('t (samples)')
+
+%% Plot the error
+%
+% Plot the error and compare with the scaling of the least-significant
+% bit of the fixed-point value centered around the mean of the error.
+err = double(yfi) - yfl;
+m   = mean(err);
+delta = double(lsb(yfi));
+tlim  = [0 t(end)];
+plot(t,err,tlim,[m m],tlim,m-delta*[1 1],'r',tlim,m+delta*[1 1],'r')
+set(gcf,'color',[1 1 1]);
+legend('Error','Mean of the error','1 LSB about the mean')
+xlabel('t (samples)')
+
+
+%% Define integer parameters to pass to C.
+% Our C program is expecting 16-bit signed integers, so we cast to that specific type. 
+bint = int16(bfi);
+xint = int16(xfi);
+zint = int16(zfi);
+
+%% Let fi tell us the numeric type of the inner-product
+%
+% In particular, we need to know where the binary point is so that we
+% will know what part of the accumulator to pluck the output data from.
+acc = bfi*zfi
+
+%% Run the fixed-point C filter
+yint = fi_c_fir(bint, xint, zint, acc.fractionlength, y_fractionlength);
+
+%% Compare fi to fixed-point C. It is bit faithful!
+[int16(yfi) yint int16(yfi)-yint]
+
+%% Something useful
+% 
+% Now that we're fairly confident that our C program is doing the right
+% thing, let's do something useful with it.
+%
+% Load a sound file and listen to it.  Also see if the Signal Processing
+% Toolbox is available so we can analyze these signals later.
+isSignalToolboxAvailable = license('test','Signal_Toolbox');
+load mtlb
+x = mtlb;
+n = length(x);
+t = (0:n-1)'/Fs;
+soundsc(x,Fs)
+
+%% Plot the sound over time
+plot(t,x)
+set(gcf,'color',[1 1 1]);
+xlabel('t (sec)')
+title('Original sound')
+%% Spectrogram of the sound
+if isSignalToolboxAvailable
+  specgram(x,512,Fs);
+  set(gcf,'color',[1 1 1]);
+  title('Original sound')
+end
+
+%% Quantize and listen.
+xfi = fi(x,1,Wx);
+soundsc(double(xfi),Fs)
+
+%% Frequency response of the moving-average algorithm
+% Let's take a look at the frequency response of the moving average filter
+% defined by vector b.  Notice that there is a null in the frequency
+% response at about 2140 Hz.  This means that any sound at 2140 Hz will be
+% averaged out if it is run through the moving-average algorithm.  The 2140
+% Hz frequency is relative to the sampling frequency, Fs, that was used
+% when the sound was recorded.
+if isSignalToolboxAvailable
+  freqz(b,1,1024,Fs);
+  set(gcf,'color',[1 1 1]);
+end
+%% Add noise
+% Since my algorithm will filter out any signal at 2140 Hz, let's add
+% a sinusoid at that frequency to the original signal and see if we can
+% filter it out with our fixed-point moving-average algorithm written in C.
+N = length(x);
+noise = sin(2*pi*2140*(0:n-1)'./Fs);
+xnoisy = x + noise;
+
+%% Quantize the noisy sound and listen
+xfi = fi(xnoisy,1,Wx);
+soundsc(double(xfi),Fs);
+
+%% Plot the sound over time
+plot(t,xfi)
+set(gcf,'color',[1 1 1]);
+xlabel('t (sec)')
+title('Quantized, noisy sound')
+%% Spectrogram of the sound.  Notice the dark line at 2140 Hz.
+if isSignalToolboxAvailable
+  specgram(double(xfi),512,Fs);
+  set(gcf,'color',[1 1 1]);
+  title('Quantized, noisy sound')
+end
+
+%% Set up the fixed-point parameters as before
+zfi = fi(z, numerictype(xfi), 'fimath',F);
+acc = bfi*zfi;
+y_fractionlength = Wy - innerprodintbits(bfi,zfi);
+
+%% Filter in C with the same parameters as before and listen
+% Can you still hear the noise signal?  Can you tell any other differences
+% in the sound?
+xint = int16(xfi);
+yint = fi_c_fir(bint, xint, zint, acc.fractionlength, y_fractionlength);
+
+soundsc(double(yint),Fs)
+
+%% Plot the original and the filtered signals together
+% If you are running this demo and have paused at this section, zoom in on
+% the plot.  Can you see the high frequency noise in the original signal?
+% Can you see that it has been smoothed out in the filtered signal?  
+%
+% Notice that the filtered signal has been delayed in
+% time.  Can you tell by how much?  How is the time delay in samples
+% related to the length of b?
+%
+% The signals are scaled to make them easier to compare.  
+xscaled = double(xint); xscaled = xscaled/max(abs(xscaled));
+yscaled = double(yint); yscaled = yscaled/max(abs(yscaled));
+plot(t,[xscaled yscaled])
+set(gcf,'color',[1 1 1]);
+legend('Noisy','Filtered')
+xlabel('t (sec)')
+title('Filtered sound')
+%% Spectrogram of the sound.   Notice the dark line at 2140 Hz is gone.
+if isSignalToolboxAvailable
+  specgram(double(yint),512,Fs);
+  set(gcf,'color',[1 1 1]);
+  title('Filtered sound')
+end
+
+
+%% Take it for a spin!
+% Open this demo in the MATLAB editor by typing
+%  
+%   edit fi_c_developmentdemo.m
+%
+% from the MATLAB command line.
+%
+% Then, go back up to the top and modify the word length parameters and
+% step through the code using "cell mode" in the editor.
+%
+% Try these values:
+%
+%   Wb    =  8; % Effective word length of the coefficients, b
+%   Wx    =  8; % Effective word length of the data, x
+%   Wy    =  8; % Effective word length of the output, y
+%   Wprod = 32; % Effective word length of the product (int32_T)b[i] * (int32_T)z[i]
+%   Wacc  = 32; % Effective word length of the sum stored in int32_T acc
+%
+% What was the error like?  What did it sound like?
+
+%% Examine the C file
+%
+% The C file is located in the same directory as the M-file.  You can
+% open it by typing
+%
+%   edit fi_c_fir.c
+%
+% from the MATLAB command line.  If you have MATLAB configured for a C
+% compiler, you can compile this file by typing
+%
+%   mex fi_c_fir.c
+%
+% from the MATLAB command line.  For more information on compiling mex
+% files, type
+%
+%   help mex
+%   doc mex
+%
+% from the MATLAB command line.
+
+%% Modify a copy of the C algorithm
+%
+% The implementation of the algorithm in C that we are using in this
+% demo was done for clarity: it's structure is very much like the
+% algorithm in M.   Can you modify the C algorithm so that it runs faster?  
+
+%%
+% Copyright 2004 The MathWorks, Inc.
+
+%%
+% $Revision: 1.1.6.1 $
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

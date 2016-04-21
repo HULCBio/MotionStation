@@ -1,0 +1,440 @@
+%% ============================================================================
+%% 
+%% Abstract:
+%%    TLC file for model reference blocks.
+%% 
+%%    Copyright 1994-2003 The MathWorks, Inc.
+%% ============================================================================
+%% $Revision: 1.1.6.10 $
+
+%implements "ModelReference" "C"
+
+%% Function: LibMarkNonFiniteAccessed =========================================
+%% Abstract:
+%%   This function calls none finite libarary functions to notify the model
+%%   that none finite values have been accessed and must be declared and
+%%   initialized.
+%function LibMarkNonFiniteAccessed(block) void
+  %assign blockInterface = GetModelrefInterface(block)
+  %assign nonFinite= blockInterface.NonFiniteInfo
+  
+  %assign infIdx      = 0
+  %assign minusInfIdx = 1
+  %assign nanIdx      = 2
+  
+  %if nonFinite[infIdx]
+    %assign dummyInf = LibRealNonFinite("inf")
+  %endif
+  %if nonFinite[minusInfIdx]
+    %assign dummyMInf = LibRealNonFinite("-inf")
+  %endif
+  %if nonFinite[nanIdx]
+    %assign dummyNan = LibRealNonFinite("nan")
+  %endif
+%endfunction
+
+%% Function: ModelRefTidGuard =================================================
+%% Abstract:
+%%   Generates TID guard code for model reference blocks.  This is used
+%% by both the update and output functions.
+%function ModelRefTidGuard(mrBlock)
+  %assign tidGuard = ""
+  %assign orOperator = ""
+  %assign alwaysTrue = 0
+  
+  %if LibTriggeredTID(TID) || ISEQUAL(TID, "constant")
+    %assign alwaysTrue = 1
+  %else 
+    %assert(TYPE(TID) == "Number" || TYPE(TID) == "Vector")
+    %foreach tidIdx = SIZE(mrBlock.TID, 1)
+      %if mrBlock.TID[tidIdx] == -2 %% ContantTid
+	%continue
+      %endif
+      %assign tidString = LibIsSampleHit(mrBlock.TID[tidIdx])
+      %if tidString == "1"
+	%assign alwaysTrue = 1
+      %endif
+      %assign tidGuard = tidGuard + "%<orOperator>%<tidString>"
+      %assign orOperator = " || "
+    %endforeach
+  %endif
+  %return (alwaysTrue) ? "" : tidGuard
+%endfunction %% ModelRefTidGuard
+
+
+%% Function: GenerateModelRefTIDInfo ==========================================
+%% Abstract:
+%%   Generates TID guard code and TID map for model reference blocks.  
+%function GenerateModelRefTIDInfo(block, sysFcn)
+  %assign res = ["","",""]
+  
+  %% Generate the TID guard if necessary
+  %% xxx - we shouldn't generate a guard if this is running at the
+  %% base rate.
+  %assign tidGuard = ...
+    SLibIsRateGrouping() ? "" : ModelRefTidGuard(block)
+  
+  %assign needsTID = GetModelRefFcnNeedsTID(block, sysFcn) && !Accelerator
+  %assign tidOpen = ""
+  %if (tidGuard != "")
+    %assign tidOpen = "if (%<tidGuard>) {"
+  %elseif needsTID
+    %assign tidOpen = "{"
+  %endif
+
+  %% If the model reference block has TID as an argument, then we
+  %% need to map the parent blocks TID to the child TID.  For example,
+  %%
+  %% If the parent has 3 sample times [0, 1, 2] and the referenced model
+  %% has 2 sample times, [1 2].  Then we need to map the parent's TID
+  %% [1 2] to [0 1] for the referenced model.
+  %%
+  %% We store the original TID in tmpTID because other blocks may need it.
+  %% xxx - in rate grouping, we know which TID to call the mr block with.
+  %assign tidMap = ""
+  %if needsTID
+    %openfile TIDBuffer
+    %assign tid = LibTID()
+    %assign else = ""
+    int tmpTID = %<tid>;
+    %foreach tidIdx = SIZE(TID,1)
+      %<else> if (%<TID[tidIdx]> == tmpTID) {
+        %<tid> = %<tidIdx>;
+      }
+      %assign else = "else"
+    %endforeach
+    %closefile TIDBuffer
+    %assign tidMap = TIDBuffer
+  %endif
+  
+  %% Reset the TID variable to tmpTID if necessary
+  %assign tidClose = ""
+  %if needsTID
+    %openfile tidCloseBuffer
+    %<tid> = tmpTID;
+    }
+    %closefile tidCloseBuffer
+    %assign tidClose = tidCloseBuffer
+  %elseif (tidGuard != "")
+    %assign tidClose = "}"
+  %endif
+
+  %assign res[0] = tidOpen
+  %assign res[1] = tidMap
+  %assign res[2] = tidClose
+  
+  %return res
+%endfunction  %%GenerateModelRefTIDInfo
+  
+%% Function: Start ============================================================
+%%
+%function Start(block, system) Output
+  %if Accelerator
+    %% Start function is executed in Simulink
+    %assert(0)
+  %else
+    %<LibMarkNonFiniteAccessed(block)>
+    %assign sysFcn = "Start"
+    %assign blockInterface = GetModelrefInterface(block)
+    %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0,"")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %assign sysFcn = "Initialize"
+  %assign blockInterface = GetModelrefInterface(block)
+	
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if Accelerator
+      /* Call into Simulink */
+      %<SLibCallBlockInSimulink(system, block, ...
+	"SS_CALL_MDL_INITIALIZE_CONDITIONS")>
+    %else
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0, "")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: Enable ============================================================
+%%
+%function Enable(block, system) Output
+  %assign sysFcn = "Enable"
+  %assign blockInterface = GetModelrefInterface(block)
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if !Accelerator
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0, "")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: ModelRefBlockHasFcn ===========================================
+%% Description:
+%%    For model reference block that is SingleTasking, 
+%% return true if the block has %<fcnType>Fcn field.
+%%    For model reference block that is Multitasking, 
+%% and if 
+%%     tid is a number, return true if the block has 
+%%                      %<fcnType> for the tid.
+%%     tid is not a number, return true if the block
+%%                      has %<fcnType> for any of its
+%%                      tids
+%%       
+%function ModelRefBlockHasFcn(block, fcnType, tid)
+  %assign blockInterface = GetModelrefInterface(block)
+  %assign retVal = TLC_FALSE
+  %with block
+    %if !blockInterface.RateGrouped
+      %assign retVal = ISFIELD(blockInterface, "%<fcnType>Fcn")
+    %else
+      %if TYPE(tid) == "Number"
+	%assign retVal = ISFIELD(blockInterface, "%<fcnType>TID%<tid>Fcn")
+      %else
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %assign localTid = MapParentTID2ChildTID(block, tidIdx)  
+	  %if localTid >= 0
+	    %if ISFIELD(blockInterface, "%<fcnType>TID%<localTid>Fcn")
+	      %assign retVal = TLC_TRUE
+	      %break
+	    %endif
+	  %endif
+	%endforeach
+      %endif
+    %endif
+  %endwith
+  %return retVal
+%endfunction
+      
+
+%% Function: Outputs ==========================================================
+%%   This function will be called if single tasking. Otherwise, OutputsForTID
+%%  will be called. 
+%% 
+%function Outputs(block, system) Output
+  %assign blockInterface = GetModelrefInterface(block)
+  
+  %with block
+    %if !blockInterface.RateGrouped || Accelerator
+      %if ModelRefBlockHasFcn(block,"Output","") 
+	%assign sysFcn = "Output"
+      %elseif ModelRefBlockHasFcn(block,"OutputUpdate","")
+	%assign sysFcn = "OutputUpdate"
+      %else
+	%return
+      %endif
+      %assign res = GenerateModelRefTIDInfo(block, "%<sysFcn>Fcn")
+      %assign tidOpen = res[0]
+      %assign tidMap = res[1]
+      %assign tidClose = res[2]
+      %<tidOpen>
+      %<tidMap>
+      %if Accelerator
+	/* Call into Simulink */
+	%<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+      %else
+	/* %<sysFcn> for %<Type> block %<Name> */
+	%<GetFunctionStr(block, sysFcn, 0, "")>
+      %endif
+      %<tidClose>
+    %else
+      %% parent is single tasking, but unit is multitasking,
+      %% Parent calls output fcn for each TID one by one. 
+      %foreach tidIdx = NumSynchronousSampleTimes
+	%assign tidString = LibIsSampleHit(tidIdx)
+	%if tidString == "1"
+	  %<OutputsForTID(block,system,tidIdx)>
+	%else
+	  %openfile tmpBuf
+	  %<OutputsForTID(block,system,tidIdx)>
+	  %closefile tmpBuf
+	  %if !WHITE_SPACE(tmpBuf)
+	    if (%<tidString>) {
+	      %<tmpBuf>
+	    }
+	  %endif
+	%endif
+      %endforeach
+    %endif
+  %endwith
+%endfunction
+
+%% Function: OutputsForTID ===========================================================
+%%   This function is called if multitasking tasking. Otherwise, Outputs
+%%  will be called. 
+%% 
+%function OutputsForTID(block, system, tid) Output
+  %assign blockInterface = GetModelrefInterface(block)
+  %% In post prop of model reference block this condition is checked
+  %% and an error is reported.
+  %assert (!blockInterface.SingleTasking)
+  
+  %assign localTid = MapParentTID2ChildTID(block, tid)  
+  
+  %if localTid >= 0 
+    %if ModelRefBlockHasFcn(block,"Output",localTid) 
+      %assign sysFcn = "Output"
+    %elseif ModelRefBlockHasFcn(block,"OutputUpdate",localTid)
+      %assign sysFcn = "OutputUpdate"
+    %else
+      %return
+    %endif
+  %else
+    %return
+  %endif
+  
+  %if Accelerator
+    /* Call into Simulink */
+    %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+  %else
+    /* %<sysFcn> for %<Type> block %<Name> */
+    %<GetFunctionStr(block, sysFcn, 0, localTid)>
+  %endif
+  
+%endfunction
+
+
+%% Function: Update ===========================================================
+%%   This function is called if single tasking. Otherwise, UpdateForTID
+%%  will be called. 
+%% 
+%function Update(block, system) Output
+  %assign blockInterface = GetModelrefInterface(block)
+  %with block
+    %if !blockInterface.RateGrouped || Accelerator
+      %% Parents and units are single tasking
+      %% generate none rate grouping code
+      %if ModelRefBlockHasFcn(block,"Update","")
+	%assign res = GenerateModelRefTIDInfo(block, "UpdateFcn")
+	%assign tidOpen = res[0]
+	%assign tidMap = res[1]
+	%assign tidClose = res[2]
+	%<tidOpen>
+	%<tidMap>
+	%if Accelerator
+	  /* Call into Simulink */
+	  %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_UPDATE")>
+	%else
+	  /* Update function for %<Type> block %<Name> */
+	  %<GetFunctionStr(block, "Update", 0, "")>
+	%endif
+	%<tidClose>
+      %endif
+    %else
+      %% Parent single tasking, but unit is multitasking,
+      %% code of unit is rate grouped. 
+      %% Parent calls update fcn for each TID one by one
+      %foreach tidIdx = NumSynchronousSampleTimes
+	%assign tidString = LibIsSampleHit(tidIdx)
+	%if tidString == "1"
+	  %<UpdateForTID(block,system,tidIdx)>
+	%else
+	  %openfile tmpBuf
+	  %<UpdateForTID(block,system,tidIdx)>
+	  %closefile tmpBuf
+	  %if !WHITE_SPACE(tmpBuf)
+	    if (%<tidString>) {
+	      %<tmpBuf>
+	    }
+	  %endif
+	%endif
+      %endforeach
+    %endif
+  %endwith 
+%endfunction
+
+%% Function: UpdateForTID ===========================================================
+%%   This function is called if multitasking tasking. Otherwise, Update
+%%  will be called. 
+%% 
+%function UpdateForTID(block, system, tid) Output
+  %assign blockInterface = GetModelrefInterface(block)
+  %% In post prop of model reference block this condition is checked
+  %% and an error is reported.
+  %assert (!blockInterface.SingleTasking)
+
+  %assign localTid = MapParentTID2ChildTID(block, tid)
+  %if localTid < 0 || !ModelRefBlockHasFcn(block,"Update",localTid)
+    %return
+  %endif
+  
+  %if Accelerator
+    /* Call into Simulink */
+    %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_UPDATE")>
+  %else
+    /* Update function for %<Type> block %<Name> */
+    %<GetFunctionStr(block, "Update", 0, localTid)>
+  %endif
+%endfunction
+
+
+%% Function: ZeroCrossings ====================================================
+%%
+%function ZeroCrossings(block, system) Output
+  %assign sysFcn = "ZeroCrossing"
+  %assign blockInterface = GetModelrefInterface(block)
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if Accelerator
+      /* Call into Simulink */
+      %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_ZERO_CROSSINGS")>
+    %else
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0, "")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: Projection ====================================================
+%%
+%function Projection(block, system) Output
+  %assign sysFcn = "Projection"
+  %assign blockInterface = GetModelrefInterface(block)
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if Accelerator
+      /* Call into Simulink */
+      %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_PROJECTION")>
+    %else
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0, "")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: Derivatives ======================================================
+%%
+%function Derivatives(block, system) Output
+  %assign sysFcn = "Derivative"
+  %assign blockInterface = GetModelrefInterface(block)
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if Accelerator
+      /* Call into Simulink */
+      %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_DERIVATIVES")>
+    %else
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0, "")>
+    %endif
+  %endif
+%endfunction
+
+%% Function: Terminate ========================================================
+%%
+%function Terminate(block, system) Output
+  %assign sysFcn = "Terminate"
+  %assign blockInterface = GetModelrefInterface(block)
+  %if ISFIELD(blockInterface, "%<sysFcn>Fcn")
+    %if Accelerator
+      /* Call into Simulink */
+      %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_TERMINATE")>
+    %else
+      /* %<sysFcn> for %<Type> block %<Name> */
+      %<GetFunctionStr(block, sysFcn, 0,"")>
+    %endif
+  %endif
+%endfunction 
+
+%% [EOF] modelref.tlc

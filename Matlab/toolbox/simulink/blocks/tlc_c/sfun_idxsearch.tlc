@@ -1,0 +1,173 @@
+%% $RCSFile:$
+%% File : sfun_idxsearch.tlc generated from sfun_idxsearch.ttlc revsion 1.8.2.1.2.1
+%% $Date: 2004/04/13 03:09:16 $
+%%
+%% Rob Aberg, 14-Aug-1999
+%% Copyright 1990-2004 The MathWorks, Inc.
+%%
+%% Abstract: Index search and fraction calculation for breakpoint set.
+
+%implements sfun_idxsearch "C"
+
+%%Function: BlockInstanceSetup ================================================
+%%Abstract:
+%%   Include RTW look-up table run-time library definitions.
+%%
+%function BlockInstanceSetup(block, system) void
+  %% xxx(enh) add function generics to mathlib
+  %%          in order to remove this method.
+  %<LibAddToCommonIncludes("rtlooksrc.h")>  
+%endfunction
+
+
+%%Function: FcnGetIdxSearchFcnName ============================================
+%%Abstract:
+%%   Build the function name for the index search function that performs
+%%   the exact operation specified by the block options.
+%%
+%function FcnGetIdxSearchFcnName(block)
+  %assign OUTPUT_KFBOTH = 0
+  %assign OUTPUT_KONLY  = 1
+  %%
+  %%
+  %if SFcnParamSettings.outputMode == OUTPUT_KFBOTH
+    %assign xOutputMode = ""
+  %else
+    %assign xOutputMode = "K"
+  %endif
+  %%
+  %%
+  %switch SFcnParamSettings.searchMode
+    %case 1
+      %assign xSearchMode = "Evn"
+      %break
+    %case 2
+      %assign xSearchMode = "Lin"
+      %break
+    %case 3
+      %assign xSearchMode = "Bin"
+      %break
+  %endswitch
+  %%
+  %%
+  %if SFcnParamSettings.extrapMethod == 1
+    %assign xCacheBpFlag = "C"
+  %else
+    %assign xCacheBpFlag = "X"
+  %endif
+  %%
+  %%
+  %assign iTypeId = LibBlockInputSignalDataTypeId(0)
+  %if iTypeId == tSS_DOUBLE
+    %assign dSuff = "d"
+  %else
+    %assign dSuff = "f"
+  %endif
+  %%
+  %%
+  %return "rt_PLook%<xSearchMode>%<xOutputMode>%<xCacheBpFlag>%<dSuff>"
+%endfunction
+
+
+%%Function: Outputs ===========================================================
+%%Abstract:
+%%   Set up to perform linear, binary search or direct calculation.
+%%   Determines index of lower side of interval plus distance fraction
+%%   into the interval [0,1)
+%%
+%function Outputs(block, system) Output
+  /* PreLook-Up Index Search Block: '%<Name>' */
+  %assign OUTPUT_KFBOTH = 0
+  %assign OUTPUT_KONLY  = 1
+  %assign SEARCH_EVN 	= 1
+  %assign SEARCH_LIN 	= 2
+  %assign SEARCH_BIN 	= 3
+  %assign otype   = LibBlockOutputSignalDataTypeName(0,"")
+  %assign idxType = LibGetDataTypeNameFromId(tSS_INTEGER)
+  %%
+  %% Set up indexing for wide signals (or not)
+  %%
+  %assign numEl = DataInputPort[0].Width
+  %%
+  %assign useIdxVar2 = TLC_FALSE
+  %%
+  %if numEl > 1
+    %assign idxVar = "i1"
+    %assign idxVar2 = "i2"
+    {
+      %<idxType> %<idxVar>;
+      %if SFcnParamSettings.outputMode == OUTPUT_KFBOTH
+	%%
+	%assign useIdxVar2 = TLC_TRUE
+	%%
+	%<idxType> %<idxVar2> = 0;
+	%%
+      %endif
+      
+      for (%<idxVar>=0; %<idxVar> < %<numEl>; %<idxVar>++) {
+    %assign istr   = idxVar 
+    %assign istr2  = idxVar2
+    %assign istr21 = "%<idxVar2>+1"
+  %else
+    %assign istr   = "0"
+    %assign istr2  = "0"
+    %assign istr21 = "1"
+  %endif
+  %%
+  %% Even search doesn't use previous index
+  %%
+  %assign maxIndex = LibBlockParameterSize(bpData)
+  %assign maxIndex = CAST("Number",maxIndex[0]*maxIndex[1] - 1)
+  %if SFcnParamSettings.searchMode != SEARCH_EVN
+    %if SFcnParamSettings.cacheBpFlag == 1
+      %assign prevIdx = LibBlockMode(istr, "", "")
+    %else
+      %assign prevIdx = maxIndex/2
+    %endif
+    %assign prevIdxExpr = ", %<prevIdx>"
+  %else
+    %assign prevIdxExpr = ""
+  %endif
+  %%
+  %%  Handle k-only case
+  %%
+  %if SFcnParamSettings.outputMode == OUTPUT_KFBOTH
+    %assign u       = LibBlockInputSignal(0, istr, "", "")
+    %assign py1     = LibBlockOutputSignalAddr(0, istr21, "", "")
+    %assign py1Expr = ", %<py1>"
+    %assign Xistr   = istr2
+  %else
+    %assign u       = LibBlockInputSignal(0, istr, "", "")
+    %assign py1Expr = ""
+    %assign Xistr   = istr
+  %endif
+  %%
+  %% Generate the search expression
+  %%
+  %assign pbp           = LibBlockParameterBaseAddr(bpData)
+  %assign interpFcnName = FcnGetIdxSearchFcnName(block)
+  %assign searchExpr    = "%<interpFcnName>(%<u>%<py1Expr>, " + ...
+                          "%<pbp>, %<maxIndex>%<prevIdxExpr>)"
+  %%
+  %% Save the index result if the option is selected and it makes sense
+  %%
+  %assign y0  = LibBlockOutputSignal(0, Xistr, "", "")
+  %if SFcnParamSettings.searchMode != SEARCH_EVN && ...
+    SFcnParamSettings.cacheBpFlag == 1
+    %<LibBlockMode(istr, "", "")> = %<searchExpr>;
+    %<y0> = (%<otype>)%<LibBlockMode(istr, "", "")>;
+  %else
+    %<y0> = (%<otype>)%<searchExpr>;
+  %endif
+  %%
+  %if numEl > 1
+    %if useIdxVar2
+      %<idxVar2> += 2;
+    %endif
+     }
+   }
+  %endif
+  %% One line of whitespace
+
+%endfunction
+%% [EOF] sfun_idxsearch.tlc

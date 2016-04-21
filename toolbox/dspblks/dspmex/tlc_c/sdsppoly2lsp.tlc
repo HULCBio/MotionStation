@@ -1,0 +1,210 @@
+%% sdsppoly2lsp.tlc
+%% Abstract: TLC for Signal Processing Blockset Polynomial to LSP/LSF conversion block. (sdsppoly2lsp)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.7.4.2 $ $Date: 2004/04/12 23:09:23 $
+
+
+%implements "sdsppoly2lsp" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %assign STATUS_PORT = 1
+  %assign dtype    = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign inSingle = (dtype == "real32_T") ? 1 : 0
+  %assign Order    = %<SFcnParamSettings.orderLPC>
+  %assign Steps    = %<SFcnParamSettings.numSteps>
+  %assign Bisects  = %<SFcnParamSettings.numBisects>
+  %assign M1       = %<SFcnParamSettings.orderM1>
+  %assign M2       = %<SFcnParamSettings.orderM2>
+  %assign normalize = %<SFcnParamSettings.DoNormalization>
+  
+  %assign block = block + INPORT + OUTPORT + STATUS_PORT + dtype + inSingle + Order ...
+                        + Steps + Bisects + M1 + M2 + normalize 
+
+%endfunction %% BlockInstanceSetup
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsppoly2lsp_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+    %%
+    {
+    int_T i;
+    %if inSingle
+        %assign prefix = "(float)"
+        %assign upcast = "(double)"
+    %else
+        %assign prefix = ""
+        %assign upcast = ""
+    %endif
+
+	%if (%<SFcnParamSettings.NeedLSPVector> == 1)
+        /* Fill in lasLSP vector with user-defined LSP/LSF values */
+		%<dtype> *lastLSP = %<LibBlockDWorkAddr(Old_LSP, "", "", "")>;
+		for (i = 0; i < (%<LibDataInputPortWidth(INPORT) - 1>); i++) {
+			lastLSP[i] = %<LibBlockParameter(PrevLSP,"i","",0)>;
+		}
+	%else
+		%<dtype> *lastLSP = %<LibBlockDWorkAddr(Old_LSP, "", "", "")>;
+        /* Calculate a stable LSP/LSF vector to be used in case when output is invalid.*/
+		for (i = 0; i < (%<LibDataInputPortWidth(INPORT) - 1>); i++) {
+			%if (%<SFcnParamSettings.OutputType> == 1)
+				%% Filling up lastLSP vector for the case when output is LSP
+				lastLSP[i] = %<prefix>cos(%<upcast>((i+1) * DSP_PI/%<LibDataInputPortWidth(INPORT)>));
+			%elseif (%<SFcnParamSettings.OutputType> == 2)
+				%% Filling up lastLSP vector for the case when output is LSF in radians.
+				lastLSP[i] = %<prefix>((i+1) * DSP_PI/%<LibDataInputPortWidth(INPORT)>);
+			%else
+				%% Filling up lastLSP vector when output is LSF is normalized between 0 and 0.5.
+				lastLSP[i] = %<prefix>(((i+1) * DSP_PI/%<LibDataInputPortWidth(INPORT)>)/DSP_TWO_PI);
+			%endif
+			}
+	%endif
+    }
+%endfunction  %% InitializeConditions
+
+
+
+%function getRunTimeFcnName(block) void
+    %%
+   %if inSingle
+    %if (%<SFcnParamSettings.OutputType> == 1)
+        %assign suffix = "Lsp_R"
+    %elseif (%<SFcnParamSettings.OutputType> == 2)
+        %assign suffix = "Lsfn_R"
+    %else
+        %assign suffix = "Lsfr_R"
+    %endif
+   %else
+    %if (%<SFcnParamSettings.OutputType> == 1)
+        %assign suffix = "Lsp_D"
+    %elseif (%<SFcnParamSettings.OutputType> == 2)
+        %assign suffix = "Lsfn_D"
+    %else
+        %assign suffix = "Lsfr_D"
+    %endif
+   %endif   
+    %% 
+%return "MWDSP_Poly2" + suffix
+%endfunction %% getRunTimeFcnName
+
+
+%function computeLSPvector(block,G1,G2) Output
+    %%
+    %assign str = (inSingle) ? "F" : ""
+   %if (%<SFcnParamSettings.OutputType> == 1)
+      %assign extraArg = ""
+   %else
+      %assign extraArg = " , %<Order>"
+   %endif
+    %%
+        {
+      %if (%<SFcnParamSettings.NeedStatusPort> == 1)         
+          boolean_T *status  = %<LibBlockOutputSignalAddr(STATUS_PORT,"","",0)>;/* Pointer to status output port  */        
+      %else
+          boolean_T *status  = %<LibBlockDWorkAddr(Status_LSP, "", "", "")>;	  /* Pointer to DWork which holds the Status of LSP (whether stable or not) */        
+      %endif
+        %<dtype> *lsp      = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;  /* Pointer to output */
+        %<dtype> *b        = %<LibBlockDWorkAddr(Cheby, "", "", "")>;       /* pointer to D_work Cheby */
+        int_T   nf       = %<getRunTimeFcnName(block)>(lsp,G1,G2,%<Steps>,%<Bisects>,%<M1>,%<M2>, b %<extraArg>);
+            %if (%<SFcnParamSettings.NeedCorrect> == 1)
+            %<dtype> *lastLSP  = %<LibBlockDWorkAddr(Old_LSP, "", "", "")>;  /* pointer to D-Work which holds Previous LSP values */
+                if (nf < %<Order>) {
+                    /* This means that we didn't find enough LSP/LSFs, thus the given set of LSFs is not correct */
+                    *status = false;
+                    memcpy(lsp, lastLSP, sizeof(%<dtype>) * %<Order>);
+                } else {
+                    /* Now update the lastLSP/LSF vector only if the currect LSP/LSFs are proper, otherwise
+                     * leave in the same LSP/LSF data which existed 
+                     */
+                    *status = true;
+                    memcpy(lastLSP, lsp, sizeof(%<dtype>) * %<Order>);
+                }
+                %%
+            %else  
+               %% don't need correction NOC
+                /* Output is LSP */
+                *status = true;
+                for (i = nf; i < %<Order>; i++) {
+               %if (%<SFcnParamSettings.OutputType> == 1)
+                    lsp[nf++] = -1.0%<str>;
+               %elseif (%<SFcnParamSettings.OutputType> == 2)
+                    lsp[nf++] = (%<dtype>)DSP_PI;
+               %else
+                    lsp[nf++] = 0.5%<str>;
+               %endif    
+                    *status = false; /* this statement is needed for the case when status port o/p is boolean */
+                }
+            %endif        
+       }
+
+%endfunction %% computeLSPvector
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset Poly2Lsp (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %% inline code for G1 and G2 evaluation
+    %assign str = (inSingle) ? "F" : ""
+    %assign u_ptr = LibBlockInputSignalAddr(INPORT, "", "", 0)
+    {
+      const %<dtype> *A = %<u_ptr>; 
+      %<dtype> *G1 = %<LibBlockDWorkAddr(G1, "", "", "")>;       /* pointer to D_work G1 */
+      %<dtype> *G2 = %<LibBlockDWorkAddr(G2, "", "", "")>;       /* pointer to D_work G2 */
+      int_T i;
+      %if normalize  
+      %<dtype> *NormA   = %<LibBlockDWorkAddr(NormalizedLPC, "", "", "")>;
+        if (A[0] != 1.0%<str>) {
+          /* we need to read in the first value and divide the entire input vector by that value.*/
+          for (i = 1; i <= %<Order>; i++) {
+            NormA[i] = A[i] / A[0];
+          }
+          NormA[0] = 1.0%<str>;
+          A = NormA;
+      } 
+      %endif
+       %%
+        /* Formulate G1 and G2 polynomials, and deconvolve known roots: */
+        G1[0] = G2[0] = 1.0%<str>; /* A[0] */
+        %%
+       %if (%<LibDataInputPortWidth(INPORT) - 1>)%2 == 0
+        /* Even Order case */
+        for(i=0; ++i <= %<M1>; ) {  
+            G1[i] = - G1[i-1] + A[i] + A[%<Order>+1-i];
+            G2[i] =   G2[i-1] + A[i] - A[%<Order>+1-i];
+        }
+       %else
+        /* Odd Order case */
+        /* length(G1) = M1+1 = (Order+1)/2+1 */
+        for(i=0; ++i <= %<M1>; ) G1[i] = A[i] + A[%<Order>+1-i];
+
+        /* length(G2) = P, partial result in G2 is length P+1 */
+        G2[1] = A[1] - A[%<Order>];
+        for(i=1; ++i <= %<M2>; ) G2[i] = G2[i-2] + A[i] - A[%<Order>+1-i];
+       %endif
+        %%
+        %<computeLSPvector(block, G1, G2)>
+        %%
+    }
+%endfunction %% Outputs
+
+
+%% EOF: sdsppoly2lsf.tlc

@@ -1,0 +1,122 @@
+/% File: xpcinterruptfunctions.tlc
+ %    Defines some common functions needed by the various interrupt-handling
+ %    code (async event blocks, external event driving the model, etc.
+ %
+ %    Copyright 1996-2003 The MathWorks, Inc.
+ %    $Revision: 1.3.6.1 $ $Date: 2004/04/08 21:01:27 $
+ %/
+
+/% Function: xPCIRQDoOnce ====================================================
+ %    Generate code for IRQ handling (whether from the model or from specific
+ %    blocks) that only needs to be done once, such as getting the function
+ %    pointers or including header files. It can be called multiple times but
+ %    will generate code only once.
+ %/
+%function xPCIRQDoOnce() void
+  %if EXISTS("::xPCIRQSetupDone") && ::xPCIRQSetupDone == 1
+    %return
+  %endif
+  %assign ::xPCIRQSetupDone = 1
+  %openfile buffer
+    /* include the global function pointers imported from kernel */
+    #define WIN32_LEAN_AND_MEAN
+    #include "windows.h"
+    #include "pci_xpcimport.h"
+    #include "async_xpcimport.h"
+
+    %closefile buffer
+    %<LibCacheDefine(buffer)>
+
+    %openfile buffer
+    /* Load the function pointers */
+    #include "async_xpcimport.c"
+
+    %closefile buffer
+    %with CompiledModel
+    %<LibMdlStartCustomCode(buffer, "trailer")>
+    %endwith
+%endfunction /% xPCIRQDoOnce() %/
+
+/% Utility function to print out a TLC structure %/
+%function printOutStruct(structure) void
+  %selectfile STDOUT
+  %<TYPE(structure)>
+  %assign fl  = FIELDNAMES(structure)
+  %<FIELDNAMES(structure)>
+  %foreach idx = SIZE(fl, 1)
+    (%<TYPE(GETFIELD(structure, fl[idx]))>) %<fl[idx]>: %<GETFIELD(structure, fl[idx])>
+  %endforeach
+%endfunction /% printOutStruct() %/
+
+/% Function: xPCGenerateIRQCode ==============================================
+ %    Generates code for each IRQ, such as registration and deregistration of
+ %    that IRQ. Also detects whether attempts are being made to handle one
+ %    IRQ more than once; errors out in that case. Accepts a TLC struct
+ %    with the requisite data (see code for details) and the name of the
+ %    isr.
+ %/
+%function xPCGenerateIRQCode(irqData, isr) void
+  %if !EXISTS("::xPCIRQList")
+    %assign ::xPCIRQList = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  %endif
+  %assign IRQ     = CAST("Number", irqData.IRQ)
+  %assign VendId  = CAST("Number", irqData.VendorId)
+  %assign DevId   = CAST("Number", irqData.DeviceId)
+  %assign Slot    = CAST("Number", irqData.PCISlot)
+  %assign Preempt = CAST("Number", irqData.Preemptable)
+
+  %if ::xPCIRQList[IRQ] == 1
+    %exit xPC Target: Multiple Handlers for IRQ %<IRQ> have been defined.
+  %endif
+  %assign ::xPCIRQList[IRQ] = 1
+  %% Make sure include files are protected by #ifdef's, since they may
+  %% get included multiple times.
+  %if !ISEMPTY(irqData.HookIncludeFile)
+    %<LibAddToModelSources(irqData.HookIncludeFile)>
+    %openfile buffer
+    %if (irqData.StartFunction    != "NULL")
+      void __cdecl %<irqData.StartFunction>(int, int, int);
+    %endif
+    %if (irqData.StopFunction     != "NULL")
+      void __cdecl %<irqData.StopFunction>(int, int, int);
+    %endif
+    %if (irqData.PreHookFunction  != "NULL")
+      void __cdecl %<irqData.PreHookFunction>(PCIDeviceInfo *);
+    %endif
+    %if (irqData.PostHookFunction != "NULL")
+      void __cdecl %<irqData.PostHookFunction>(PCIDeviceInfo *);
+    %endif
+    %closefile buffer
+    %<LibCacheDefine(buffer)>
+  %endif
+  %openfile buffer
+  /* connect ISR system: IRQ %<IRQ> */
+  if (xpceRegisterISR(%<IRQ>, %<isr>, %<irqData.PreHookFunction>, %<irqData.PostHookFunction>, %<Preempt>,
+    %<VendId>, %<DevId>, %<Slot>) == -1) {
+      printf("ISR registration failed for Interrupt %<IRQ>.\n");
+    }
+  %if (irqData.StartFunction != "NULL")
+
+    %<irqData.StartFunction>(%<VendId>, %<DevId>, %<Slot>);
+  %endif
+  %closefile buffer
+  %with CompiledModel
+    %<LibMdlStartCustomCode(buffer, "trailer")>
+  %endwith
+
+  %% Disable the ISR in the model's terminate function
+  %openfile buffer
+  /* disable interrupt for IRQ %<IRQ> */
+  xpceDeRegisterISR(%<IRQ>);
+
+  %if (irqData.StopFunction != "NULL")
+
+    %<irqData.StopFunction>(%<VendId>, %<DevId>, %<Slot>);
+  %endif
+  %closefile buffer
+  %with CompiledModel
+    %<LibMdlTerminateCustomCode(buffer, "header")>
+  %endwith
+%endfunction /% xPCGenerateIRQCode() %/
+
+/% EOF xpcinterruptfunctions.tlc %/

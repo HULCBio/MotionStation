@@ -1,0 +1,370 @@
+%% $RCSfile: sdspdiff2.tlc,v $
+%% $Revision: 1.12.4.3 $ $Date: 2003/12/06 15:26:43 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Element-to-element difference along a vector
+
+%implements sdspdiff2 "C"
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+  %%
+  %%
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %%
+  %assign inDims  = LibBlockInputSignalDimensions(INPORT)
+  %assign inRows  = inDims[0]
+  %%
+  %assign numDims = LibBlockOutputSignalNumDimensions(OUTPORT)
+  %assign outDims = LibBlockOutputSignalDimensions(OUTPORT)
+  %assign outCols = (numDims == 2) ? outDims[1] : 1
+  %assign outRows = outDims[0]
+  %%
+  %assign cplx    = LibBlockOutputSignalIsComplex(OUTPORT)
+  %assign DType   = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign inSingle = (DType == "real32_T") || (DType == "creal32_T") ?  1 : 0
+  %%
+  %assign direction           = SFcnParamSettings.Direction
+  %assign ColumnDiff          = (direction == 2) && (numDims==2)
+  %assign framebased          = LibBlockInputSignalIsFrameData(INPORT)
+  %assign frameColRunningMode = (framebased && ColumnDiff)
+  %% I/O port data types
+  %assign inDT       = FixPt_GetInputDataType(0)
+  %assign outDT      = FixPt_GetOutputDataType(0)
+  %assign inDTypeId  = LibBlockInputSignalDataTypeId(INPORT)
+  %assign outDTypeId = LibBlockOutputSignalDataTypeId(OUTPORT)
+  %%
+  %assign block = block   + INPORT  + OUTPORT   + numDims + ...
+                  outCols + outRows + inRows    + cplx    + ...
+                  DType   + frameColRunningMode + ColumnDiff + inSingle + ...
+                  inDT    + outDT   + inDTypeId + outDTypeId
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%
+%function Start(block, system) Output
+  %if !LibIsEqual(TID, "constant")
+    %if frameColRunningMode
+      {
+        /* For the first step the previous input equals ZERO */
+        %assign inputZeroVal  = SLibGetGroundValueFromId(inDTypeId)
+        %if FixPt_DataTypeIsFloat(inDT)
+          %<DType> *prev = %<LibBlockDWorkAddr(PreviousValue,"","",0)>;
+        %else
+          %<inDT.NativeType> *prev = %<LibBlockDWorkAddr(PreviousValue, "", "", 0)>;
+        %endif
+        %if (%<outCols> > 1)
+          int_T c;
+          for(c=0; c++<%<outCols>; ) {
+            %if !cplx 
+              *prev++ = %<inputZeroVal>;
+            %else
+              prev->re   = %<inputZeroVal>;
+              prev++->im = %<inputZeroVal>;
+            %endif
+          }
+        %else
+          %if !cplx 
+            *prev = %<inputZeroVal>;
+          %else
+            prev->re = %<inputZeroVal>;
+            prev->im = %<inputZeroVal>;
+          %endif
+        %endif
+      }
+    %endif
+  %endif
+%endfunction  %% Start
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Difference (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if FixPt_DataTypeIsFloat(inDT)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION             %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FltPtInlineCode(block)>
+  %else
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION                %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FixPtInlineCode(block)>
+  %endif
+%endfunction %% Outputs
+  
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtInlineCode
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtInlineCode(block) Output
+  {
+    %if numDims == 1
+      /* Difference along vector */
+      %<DiffVector(outRows)> \
+    %elseif frameColRunningMode
+      /* Framebased running difference */
+      %<DiffFrame()> \
+    %elseif ColumnDiff
+      /* Difference along columns */
+      %<DiffCol()> \
+    %else
+      /* Difference along rows */
+      %<DiffRow()> \
+    %endif
+  }
+
+%endfunction %% FltPtInlineCode
+
+
+%% Function: DiffFrame =========================================
+%%
+%function DiffFrame() Output 
+    const %<DType> *u   = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    const %<DType> *v   = u+1;  /* next */
+    %<DType>   *prev    = %<LibBlockDWorkAddr(PreviousValue,"","",0)>;
+    %<DType>   *y       = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    const int_T outRows = %<outRows>;
+    const int_T outCols = %<outCols>;
+    int_T       c;
+    for(c=0; c++<outCols; ) {
+      int_T r;
+      %%
+      %if !cplx 
+        *y++ = *u - *prev;
+      %else
+        y->re   = u->re - prev->re;
+        y++->im = u->im - prev->im;
+      %endif
+      %%
+      for(r=1; r++<outRows; ) {
+        %if !cplx 
+          *y++ = *v++ - *u++;
+        %else
+          y->re   = v->re   - u->re;
+          y++->im = v++->im - u++->im;
+        %endif
+      }
+      *prev++ = *u++; /* Save last sample in frame */
+      v++;            /* Skip first sample of next frame */
+    }
+%endfunction
+
+
+%% Function: DiffCol ==========================================================
+%%
+%function DiffCol() Output 
+    %if outCols > 1
+        const %<DType> *u = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+        const %<DType> *v = u+1;
+        %<DType> *y       = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T     outRows = %<outRows>;
+        int_T     outCols = %<outCols>;
+        int_T     c;
+        for(c=0; c++<outCols; ) {
+            int_T r;
+            for(r=0; r++<outRows; ) {
+              %if cplx 
+                 y->re     = v->re - u->re;
+                 (y++)->im = (v++)->im - (u++)->im;
+              %else
+                  *y++ = *v++ - *u++;
+              %endif
+            }
+            u++; v++; /* top of next input column */
+        }
+    %else
+        %<DiffVector(outRows)> \
+    %endif
+%endfunction  %% DiffCol
+
+
+%% Function: DiffRow ==========================================================
+%%
+%function DiffRow() Output 
+    %if outRows > 1
+        const %<DType> *u = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+        %<DType> *y       = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T     inRows  = %<inRows>;
+        int_T     outCols = %<outCols>;
+        int_T     outRows = %<outRows>;
+        int_T     r;
+        for(r=0; r<outRows; r++) {
+            int_T c;
+            for(c=0; c<outCols; c++) {
+                %if cplx 
+                    int_T idx_out = c * outRows;
+                    int_T idx1_in = c * inRows;
+                    int_T idx2_in = idx1_in + inRows;
+
+                    y[idx_out].re = u[idx2_in].re - u[idx1_in].re;
+                    y[idx_out].im = u[idx2_in].im - u[idx1_in].im;
+                %else
+                    int_T idx    = c * inRows;
+                    y[c*outRows] = u[idx+inRows] - u[idx];
+                %endif
+            }
+            u++; /* start of next input row */
+            y++; /* start of next output row */
+        }
+    %else
+        %<DiffVector(outCols)> \
+    %endif
+%endfunction  %% DiffRow
+
+
+%% Function: DiffVector ==========================================================
+%%
+%function DiffVector(outWidth) Output 
+    const %<DType> *u = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    const %<DType> *v = u+1;
+    %<DType> *y = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T outWidth = %<outWidth>;
+
+    while(outWidth-- > 0) {
+      %if cplx 
+         y->re     = v->re - u->re;
+         (y++)->im = (v++)->im - (u++)->im;
+      %else
+          *y++ = *v++ - *u++;
+      %endif
+    }
+%endfunction  %% DiffVector
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+  %% 
+  %assign accDT    = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+  %assign accLabel = "acc"
+  %assign outWidth = CAST("Number", outCols * outRows)
+  %createrecord Acc { label    accLabel; ...
+                      dTypeRec accDT; ...
+                      isComplex cplx }
+  %createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                         overflowMode FixPtSaturationMode}
+  %%
+  {
+    %if cplx
+      %<accDT.ComplexName> %<accLabel>;
+    %else
+      %<accDT.Name> %<accLabel>;
+    %endif
+    %if (numDims == 1) || ...
+      (ColumnDiff && !frameColRunningMode && (outCols == 1)) || ...
+      (!ColumnDiff && (outRows == 1))
+      /* Difference along vector */
+      %createrecord Inp_1 { label     LibBlockInputSignal(INPORT,"index+1","","0"); ...
+                            dTypeRec  inDT; ...
+                            isComplex cplx }
+      %createrecord Inp   { label     LibBlockInputSignal(INPORT,"index","","0"); ...
+                            dTypeRec  inDT; ...
+                            isComplex cplx }
+      %createrecord Out   { label     LibBlockOutputSignal(OUTPORT,"index","",0); ...
+                            dTypeRec  outDT; ...
+                            isComplex cplx }
+      int_T index;
+      for (index = 0; index < %<outWidth>; index++) {
+        %<DSPFixptLibEquals(Acc, Inp_1, RndSat)>
+        %<DSPFixptLibMinusEquals(Acc,Inp,RndSat)>
+        %<DSPFixptLibEquals(Out, Acc, RndSat)>
+      }
+    %elseif frameColRunningMode
+      /* Framebased running difference */
+      %createrecord Inp_sr  { label     LibBlockInputSignal(INPORT,"start+r","","0"); ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+      %createrecord Inp_srm1 {label     LibBlockInputSignal(INPORT,"start+r-1","","0"); ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+      %createrecord Inp_end { label    LibBlockInputSignal(INPORT,"start+%<outRows-1>","","0"); ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+      %createrecord Inp_s   { label     LibBlockInputSignal(INPORT,"start","","0"); ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+      %createrecord Prev    { label     (LibBlockDWork(PreviousValue, "c", "", 0)); ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+      %createrecord Out_r   { label     LibBlockOutputSignal(OUTPORT,"start+r","",0); ...
+                              dTypeRec  outDT; ...
+                              isComplex cplx }
+      %createrecord Out     { label     LibBlockOutputSignal(OUTPORT,"start","",0); ...
+                              dTypeRec  outDT; ...
+                              isComplex cplx }
+      int_T c,r;
+      for (c = 0; c < %<outCols>; c++) {
+        int_T start = c*%<outRows>;
+        %<DSPFixptLibEquals(Acc, Inp_s, RndSat)>
+        %<DSPFixptLibMinusEquals(Acc,Prev,RndSat)>
+        %<DSPFixptLibEquals(Out, Acc, RndSat)>
+        for (r = 1; r < %<outRows>; r++) {
+          %<DSPFixptLibEquals(Acc, Inp_sr, RndSat)>
+          %<DSPFixptLibMinusEquals(Acc,Inp_srm1,RndSat)>
+          %<DSPFixptLibEquals(Out_r, Acc, RndSat)>
+        }
+        %<DSPFixptLibEquals(Prev, Inp_end, RndSat)>
+      }
+    %elseif ColumnDiff
+      /* Difference along columns */
+      %createrecord Inp_r1 { label     LibBlockInputSignal(INPORT,"inpIndex+r+1","","0"); ...
+                             dTypeRec  inDT; ...
+                             isComplex cplx }
+      %createrecord Inp_r  { label     LibBlockInputSignal(INPORT,"inpIndex+r","","0"); ...
+                             dTypeRec  inDT; ...
+                             isComplex cplx }
+      %createrecord Out    { label     LibBlockOutputSignal(OUTPORT,"outIndex+r","",0); ...
+                             dTypeRec  outDT; ...
+                             isComplex cplx }
+      int_T c,r;
+      for (c = 0; c < %<outCols>; c++) {
+        int_T outIndex = c*%<outRows>;
+        int_T inpIndex = outIndex + c;
+        for (r = 0; r < %<outRows>; r++) {
+          %<DSPFixptLibEquals(Acc, Inp_r1, RndSat)>
+          %<DSPFixptLibMinusEquals(Acc,Inp_r,RndSat)>
+          %<DSPFixptLibEquals(Out, Acc, RndSat)>
+        }
+      }
+    %else 
+      /* Difference along rows */
+      %createrecord Inp_r { label     LibBlockInputSignal(INPORT,"index+%<inRows>","","0"); ...
+                            dTypeRec  inDT; ...
+                            isComplex cplx }
+      %createrecord Inp   { label     LibBlockInputSignal(INPORT,"index","","0"); ...
+                            dTypeRec  inDT; ...
+                            isComplex cplx }
+      %createrecord Out   { label     LibBlockOutputSignal(OUTPORT,"index","",0); ...
+                            dTypeRec  outDT; ...
+                            isComplex cplx }
+      int_T index;
+      for (index = 0; index < %<outWidth>; index++) {
+        %<DSPFixptLibEquals(Acc, Inp_r, RndSat)>
+        %<DSPFixptLibMinusEquals(Acc,Inp,RndSat)>
+        %<DSPFixptLibEquals(Out, Acc, RndSat)>
+      }
+    %endif
+  }
+
+%endfunction %% FixPtInlineCode
+
+%% [EOF] $RCSfile: sdspdiff2.tlc,v $

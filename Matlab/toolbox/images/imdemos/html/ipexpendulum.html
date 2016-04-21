@@ -1,0 +1,336 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+-->
+      <meta name="generator" content="MATLAB">
+      <meta name="title" content="Finding the Length of a Pendulum in Motion">
+      <meta name="description" content="You can capture images in a time series with the Image Acquisition Toolbox and analyze them with the Image Processing Toolbox. This demo shows you how to calculate the length of a pendulum in motion."><style>
+body {
+  background-color: white;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+  .keyword {color: blue}
+  .comment {color: green}
+  .string {color: #B20000}
+  .untermstring {color: purple}
+  .syscmd {color: orange}
+}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+    </style></head>
+   <body>
+      <h1>Finding the Length of a Pendulum in Motion</h1>
+      <p>You can capture images in a time series with the Image Acquisition Toolbox and analyze them with the Image Processing Toolbox.
+         This demo shows you how to calculate the length of a pendulum in motion.
+      </p>
+      <h2>Contents</h2>
+      <ul>
+         <li><a href="#1">Step 1: Acquire images</a></li>
+         <li><a href="#2">Step 2: Select region where pendulum is swinging</a></li>
+         <li><a href="#3">Step 3: Segment the pendulum in each frame</a></li>
+         <li><a href="#4">Step 4: Find the center of the segmented pendulum in each frame</a></li>
+         <li><a href="#7">Step 5: Calculate radius by fitting a circle through pendulum centers</a></li>
+      </ul>
+      <h2>Step 1: Acquire images<a name="1"></a></h2>
+      <p>Load the image frames of a pendulum in motion. The frames in the MAT-file <tt>pendulum.mat</tt> were acquired using the following functions in the Image Acquisition Toolbox.
+      </p><pre class="codeinput"><span class="comment">% Access an image acquisition device (video object).</span>
+<span class="comment">% vidobj=videoinput('winvideo',1,'RGB24_352x288');</span>
+
+<span class="comment">% Configure object to capture every fifth frame.</span>
+<span class="comment">% set(vidobj,'FrameGrabInterval',5);</span>
+
+<span class="comment">% Configure the number of frames to be logged.</span>
+<span class="comment">% nFrames=50;</span>
+<span class="comment">% set(vidobj,'FramesPerTrigger',nFrames);</span>
+
+<span class="comment">% Access the device's video source.</span>
+<span class="comment">% src=getselectedsource(vidobj);</span>
+
+<span class="comment">% Configure device to provide thirty frames per second.</span>
+<span class="comment">% set(src,'FrameRate','30');</span>
+
+<span class="comment">% Open a live preview window. Focus camera onto a moving pendulum.</span>
+<span class="comment">% preview(vidobj);</span>
+
+<span class="comment">% Initiate the acquisition.</span>
+<span class="comment">% start(vidobj);</span>
+
+<span class="comment">% Wait for data logging to finish before retrieving the data.</span>
+<span class="comment">% wait(vidobj, 10);</span>
+
+<span class="comment">% Extract frames from memory.</span>
+<span class="comment">% frames = getdata(vidobj);</span>
+
+<span class="comment">% Clean up. Delete and clear associated variables.</span>
+<span class="comment">% delete(vidobj)</span>
+<span class="comment">% clear vidobj</span>
+
+<span class="comment">%load MAT-file</span>
+load pendulum;
+immovie(frames);</pre><img vspace="5" hspace="5" src="ipexpendulum_img_02_01.png"><h2>Step 2: Select region where pendulum is swinging<a name="2"></a></h2>
+      <p>You can see that the pendulum is swinging in the upper half of each frame in the image series.  Create a new series of frames
+         that contains only the region where the pendulum is swinging.
+      </p>
+      <p>To crop a series of frames using <tt>imcrop</tt>, first perform <tt>imcrop</tt> on one frame and store its output image. Then use the previous output's size to create a series of frame regions.  For convenience,
+         use the <tt>rect</tt> that was loaded by <tt>pendulum.mat</tt> in <tt>imcrop</tt>.
+      </p><pre class="codeinput">nFrames = size(frames,4);
+first_frame = frames(:,:,:,1);
+first_region = imcrop(first_frame,rect);
+frame_regions = repmat(uint8(0), [size(first_region) nFrames]);
+<span class="keyword">for</span> count = 1:nFrames
+  frame_regions(:,:,:,count) = imcrop(frames(:,:,:,count),rect);
+<span class="keyword">end</span>
+immovie(frame_regions);</pre><img vspace="5" hspace="5" src="ipexpendulum_img_03_01.png"><h2>Step 3: Segment the pendulum in each frame<a name="3"></a></h2>
+      <p>Notice that the pendulum is much darker than the background.  You can segment the pendulum in each frame by converting the
+         frame to grayscale, thresholding it using <tt>im2bw</tt>, and removing background structures using <tt>imopen</tt> and <tt>imclearborder</tt>.
+      </p><pre class="codeinput"><span class="comment">% initialize array to contain the segmented pendulum frames.</span>
+seg_pend = false([size(first_region,1) size(first_region,2) nFrames]);
+centroids = zeros(nFrames,2);
+se_disk = strel(<span class="string">'disk'</span>,3);
+
+<span class="keyword">for</span> count = 1:nFrames
+    fr = frame_regions(:,:,:,count);
+    imshow(fr)
+    pause(0.2)
+    
+    gfr = rgb2gray(fr);
+    gfr = imcomplement(gfr);
+    imshow(gfr)
+    pause(0.2)
+    
+    bw = im2bw(gfr,.7);  <span class="comment">% threshold is determined experimentally </span>
+    bw = imopen(bw,se_disk);
+    bw = imclearborder(bw);
+    seg_pend(:,:,count) = bw;
+    imshow(bw)
+    pause(0.2)
+<span class="keyword">end</span></pre><img vspace="5" hspace="5" src="ipexpendulum_img_04_01.png"><h2>Step 4: Find the center of the segmented pendulum in each frame<a name="4"></a></h2>
+      <p>You can see that the shape of the pendulum varied in different frames.  This is not a serious issue because you just need
+         its center. You will use the pendulum centers to find the length of the pendulum.
+      </p>
+      <p>Use <tt>bwlabel</tt> and <tt>regionprops</tt> to calculate the center of the pendulum.
+      </p><pre class="codeinput"><span class="keyword">for</span> count = 1:nFrames
+    lab = bwlabel(seg_pend(:,:,count));
+    property = regionprops(lab,<span class="string">'Centroid'</span>);
+    pend_centers(count,:) = property.Centroid; 
+<span class="keyword">end</span></pre><p>Display pendulum centers using <tt>plot</tt>.
+      </p><pre class="codeinput">x = pend_centers(:,1);
+y = pend_centers(:,2);
+figure
+plot(x,y,<span class="string">'m.'</span>), axis ij, axis equal, hold on;
+xlabel(<span class="string">'x'</span>);
+ylabel(<span class="string">'y'</span>);
+title(<span class="string">'pendulum centers'</span>);</pre><img vspace="5" hspace="5" src="ipexpendulum_img_07_01.png"><h2>Step 5: Calculate radius by fitting a circle through pendulum centers<a name="7"></a></h2>
+      <p>Rewrite the basic equation of a circle: <tt>(x-xc)^2 + (y-yc)^2 = radius^2</tt>, where <tt>(xc,yc)</tt> is the center, in terms of parameters <tt>a</tt>, <tt>b</tt>, <tt>c</tt> as <tt>x^2 + y^2 + a*x + b*y + c = 0</tt>, where <tt>a = -2*xc</tt>, <tt>b = -2*yc</tt>, and <tt>c = xc^2 + yc^2 - radius^2</tt>.
+      </p>
+      <p>You can solve for parameters <tt>a</tt>, <tt>b</tt>, and <tt>c</tt> using the least squares method. Rewrite the above equation as <tt>a*x + b*y + c = -(x^2 + y^2)</tt>, which can also be rewritten as <tt>[a;b;c] * [x y 1] = -x^2 - y^2</tt>.  Solve this equation using the backslash(<tt>\</tt>) operator.
+      </p>
+      <p>The circle radius is the length of the pendulum in pixels.</p><pre class="codeinput">abc = [x y ones(length(x),1)] \ [-(x.^2 + y.^2)];
+a = abc(1); b = abc(2); c = abc(3);
+xc = -a/2;
+yc = -b/2;
+circle_radius = sqrt((xc^2 + yc^2) - c); 
+pendulum_length = round(circle_radius)</pre><pre class="codeoutput">
+pendulum_length =
+
+   253
+
+</pre><p>Superimpose circle and circle center on the plot of pendulum centers.</p><pre class="codeinput">circle_theta = pi/3:0.01:pi*2/3;
+x_fit = circle_radius*cos(circle_theta)+xc;
+y_fit = circle_radius*sin(circle_theta)+yc;
+
+plot(x_fit,y_fit,<span class="string">'b-'</span>);
+plot(xc,yc,<span class="string">'bx'</span>,<span class="string">'LineWidth'</span>,2);
+plot([xc x(1)],[yc y(1)],<span class="string">'b-'</span>);
+text(xc-110,yc+100,sprintf(<span class="string">'pendulum length = %d pixels'</span>, pendulum_length));</pre><img vspace="5" hspace="5" src="ipexpendulum_img_09_01.png"><p class="footer">Copyright 1993-2003 The MathWorks, Inc.<br><br></p>
+      <!--
+##### BEGIN SOURCE BEGIN #####
+%% Finding the Length of a Pendulum in Motion
+% You can capture images in a time series with the Image Acquisition Toolbox and
+% analyze them with the Image Processing Toolbox. This demo shows you how to
+% calculate the length of a pendulum in motion.
+
+% Copyright 1993-2003 The MathWorks, Inc.
+
+
+%% Step 1: Acquire images
+% Load the image frames of a pendulum in motion. The frames in the MAT-file
+% |pendulum.mat| were acquired using the following functions in the Image
+% Acquisition Toolbox.
+
+% Access an image acquisition device (video object).
+% vidobj=videoinput('winvideo',1,'RGB24_352x288');
+
+% Configure object to capture every fifth frame.
+% set(vidobj,'FrameGrabInterval',5);
+
+% Configure the number of frames to be logged.
+% nFrames=50;
+% set(vidobj,'FramesPerTrigger',nFrames);
+
+% Access the device's video source.
+% src=getselectedsource(vidobj);
+
+% Configure device to provide thirty frames per second.
+% set(src,'FrameRate','30');
+
+% Open a live preview window. Focus camera onto a moving pendulum.
+% preview(vidobj);
+
+% Initiate the acquisition.
+% start(vidobj);
+
+% Wait for data logging to finish before retrieving the data.
+% wait(vidobj, 10);
+
+% Extract frames from memory.
+% frames = getdata(vidobj);
+
+% Clean up. Delete and clear associated variables.
+% delete(vidobj)
+% clear vidobj
+
+%load MAT-file
+load pendulum;
+immovie(frames);
+
+%% Step 2: Select region where pendulum is swinging
+% You can see that the pendulum is swinging in the upper half of each frame in
+% the image series.  Create a new series of frames that contains only the region
+% where the pendulum is swinging.
+%
+% To crop a series of frames using |imcrop|, first perform |imcrop| on one frame
+% and store its output image. Then use the previous output's size to create a
+% series of frame regions.  For convenience, use the |rect| that was loaded by
+% |pendulum.mat| in |imcrop|.
+
+nFrames = size(frames,4);
+first_frame = frames(:,:,:,1);
+first_region = imcrop(first_frame,rect);
+frame_regions = repmat(uint8(0), [size(first_region) nFrames]);
+for count = 1:nFrames
+  frame_regions(:,:,:,count) = imcrop(frames(:,:,:,count),rect);
+end
+immovie(frame_regions);
+
+%% Step 3: Segment the pendulum in each frame
+% Notice that the pendulum is much darker than the background.  You can segment
+% the pendulum in each frame by converting the frame to grayscale, thresholding
+% it using |im2bw|, and removing background structures using |imopen| and
+% |imclearborder|.
+
+% initialize array to contain the segmented pendulum frames.
+seg_pend = false([size(first_region,1) size(first_region,2) nFrames]);
+centroids = zeros(nFrames,2);
+se_disk = strel('disk',3);
+
+for count = 1:nFrames
+    fr = frame_regions(:,:,:,count);
+    imshow(fr)
+    pause(0.2)
+    
+    gfr = rgb2gray(fr);
+    gfr = imcomplement(gfr);
+    imshow(gfr)
+    pause(0.2)
+    
+    bw = im2bw(gfr,.7);  % threshold is determined experimentally 
+    bw = imopen(bw,se_disk);
+    bw = imclearborder(bw);
+    seg_pend(:,:,count) = bw;
+    imshow(bw)
+    pause(0.2)
+end
+
+%% Step 4: Find the center of the segmented pendulum in each frame
+% You can see that the shape of the pendulum varied in different frames.  This
+% is not a serious issue because you just need its center. You will use the
+% pendulum centers to find the length of the pendulum.
+
+%%
+% Use |bwlabel| and |regionprops| to calculate the center of the pendulum.
+
+for count = 1:nFrames
+    lab = bwlabel(seg_pend(:,:,count));
+    property = regionprops(lab,'Centroid');
+    pend_centers(count,:) = property.Centroid; 
+end
+
+%%
+% Display pendulum centers using |plot|.
+
+x = pend_centers(:,1);
+y = pend_centers(:,2);
+figure
+plot(x,y,'m.'), axis ij, axis equal, hold on;
+xlabel('x');
+ylabel('y');
+title('pendulum centers');
+
+%% Step 5: Calculate radius by fitting a circle through pendulum centers
+% Rewrite the basic equation of a circle: |(x-xc)^2 + (y-yc)^2 = radius^2|,
+% where |(xc,yc)| is the center, in terms of parameters |a|, |b|, |c| as |x^2 +
+% y^2 + a*x + b*y + c = 0|, where |a = -2*xc|, |b = -2*yc|, and |c = xc^2 + yc^2
+% - radius^2|.
+%
+% You can solve for parameters |a|, |b|, and |c| using the least squares method.
+% Rewrite the above equation as |a*x + b*y + c = -(x^2 + y^2)|, which can also
+% be rewritten as |[a;b;c] * [x y 1] = -x^2 - y^2|.  Solve this equation using
+% the backslash(|\|) operator.
+%
+% The circle radius is the length of the pendulum in pixels.
+
+abc = [x y ones(length(x),1)] \ [-(x.^2 + y.^2)];
+a = abc(1); b = abc(2); c = abc(3);
+xc = -a/2;
+yc = -b/2;
+circle_radius = sqrt((xc^2 + yc^2) - c); 
+pendulum_length = round(circle_radius)
+
+%%
+% Superimpose circle and circle center on the plot of pendulum centers.
+
+circle_theta = pi/3:0.01:pi*2/3;
+x_fit = circle_radius*cos(circle_theta)+xc;
+y_fit = circle_radius*sin(circle_theta)+yc;
+
+plot(x_fit,y_fit,'b-');
+plot(xc,yc,'bx','LineWidth',2);
+plot([xc x(1)],[yc y(1)],'b-');
+text(xc-110,yc+100,sprintf('pendulum length = %d pixels', pendulum_length));
+
+##### BEGIN SOURCE END #####
+-->
+   </body>
+</html>

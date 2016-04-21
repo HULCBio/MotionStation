@@ -1,0 +1,529 @@
+%% $RCSfile: sfix_udelay.tlc,v $
+%% $Revision: 1.31.2.2 $
+%% $Date: 2004/04/15 00:35:43 $
+%%
+%% Pete Szpak
+%% January 11, 1997
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Fixed-point unit delay.
+
+%implements sfix_udelay "C"
+
+
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+%endfunction
+
+
+
+%% Function: parameterAllZeros ===============================================
+%% Abstract:
+%%
+%function paramAllZeros(param) void
+    %%
+    %% if Output is complex then two cases to handle
+    %% otherwise only one
+    %%
+    %assign casesToHandle = 1 + LibBlockOutputSignalIsComplex(0)
+    %%
+    %assign nRows = SIZE(param.Value, 0)
+    %%
+    %foreach idx = nRows
+        %foreach iCase = casesToHandle
+            %%
+            %if iCase == 0
+                %%
+                %assign riidx = (tRealPart + STRING(idx))
+                %%
+            %else
+                %%
+                %assign riidx = (tImagPart + STRING(idx))
+                %%
+            %endif
+            %%
+            %assign icValue = LibBlockParameterValue(param, riidx)
+            %%
+            %if !LibIsEqual(icValue, 0.0)
+                %%
+                %% NOT all zeros
+                %%
+                %return 0
+                %%
+            %endif
+            %%
+        %endforeach
+    %endforeach
+    %%
+    %% all zeros
+    %%
+    %return 1
+    %%
+%endfunction  %% paramAllZeros
+
+
+%% Function: InitiizeConditions ===============================================
+%% Abstract:
+%%      X[i] = IC[i]
+%%
+%%  Initialize the states.
+%%     If this is only needed once (in Start), and
+%%  the initial conditions are all zero then there is nothing to do.
+%%     If this is needed more than once (enabled subsystem with reset) then
+%%
+%function InitializeConditions(block, system) Output
+    %%
+    %% only do init if needed
+    %%
+    %assign initNeeded = SLibXBInitRequired(system, block, InitialCondition,  "", "", 0)
+    %%
+    %if initNeeded || !paramAllZeros(InitialCondition)
+      %openfile tmpBuffer
+	%%
+	%% For initialization, the roll region is a function of the state
+	%%
+	%assign numStates = LibBlockDWorkWidth(block.DWork)
+	%%
+	%assign xRollRegion = [0:%<numStates-1>]
+	%%
+	%% Initialize the states
+	%%
+	%assign dwName = LibBlockDWorkName(block.DWork)
+	%assign rollVars = ["<dwork>/%<dwName>", "P"]
+	%%
+	%roll xIdx = xRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+	  %%
+	  %% for efficiency in embedded real time format
+	  %% check to see if initialization is necessary
+	  %%
+	  %assign initNeeded = SLibXBInitRequired(system, block, InitialCondition,  "", xlcv, xIdx)
+	  %%
+	  %if initNeeded
+	    %<LibBlockDWork(block.DWork,"", xlcv, xIdx)> = ...
+	      %<LibBlockParameter(InitialCondition,  "", xlcv, xIdx)>;	
+	      %assign tmpBufferisempty=0
+	  %else 
+	    %assign tmpBufferisempty=1
+	  %endif
+	%endroll
+      %closefile tmpBuffer
+      %if !tmpBufferisempty
+	 %% only read inintialization code if it is not empty
+         %%
+	 %% create header comment
+	 %%
+	 /* Fixed-Point Delay Block: %<MaskBlockName>
+	  * Initialize State
+	 %%
+	 %% add comments about fixed point parameters
+	 %%
+	  * Initial Condition parameter uses the same data type and scaling as Output0
+	  */
+	 %<tmpBuffer>
+      %endif
+    %endif
+    %%
+%endfunction
+
+
+
+%function FixPt_GetUcvReverse(lcv, idx, length) void
+    %%
+    %% vector case
+    %%
+    %if lcv != ""
+        %%
+        %return STRING(length-1-idx)+"-"+lcv
+        %%
+    %else
+        %return STRING(length-1-idx)
+    %endif
+%endfunction  %% FixPt_IndexStruct
+
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      X[i] = U[i]
+%%
+%function Update(block, system) Output
+  %%
+  %% create header comment
+  %%
+  /* Fixed-Point Delay Block: %<MaskBlockName>
+  */
+  %%
+  %%
+  %assign numInputs = LibDataInputPortWidth(0)
+  %%
+  %assign expandedWidthU = CAST("Number",LibBlockDWorkWidth(block.DWork)/NumDelays)
+  %if LibBlockInputSignalIsFrameData(0)
+    %% Write frame update code here
+    %assign InputPortDims = LibBlockInputSignalDimensions(0)
+    %assign ChanSize = InputPortDims[0]
+    %assign nChans   = InputPortDims[1]
+    %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+    %assign inAddr = LibBlockInputSignalAddr(0,"","",0)
+    %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+    %assign statePtr = "pDWork"
+    %assign DWorkdt = LibBlockDWorkDataTypeName(DWork,"")
+    %assign inPtr = "pIn"
+    %assign Indt = LibBlockInputSignalDataTypeName(0,"")
+    %if nChans == 1
+      memcpy(%<stateAddr>, %<inAddr> + %<ChanSize-NumDelays>, %<NumDelays> * %<bytesPerSignal>);
+    %else
+      {
+	int iChan;
+	%<DWorkdt> *%<statePtr> = %<stateAddr>;
+	%<Indt> *%<inPtr> = %<inAddr> + %<ChanSize-NumDelays>;
+	
+	for(iChan=0; iChan < %<nChans>; iChan++)
+	{
+	  memcpy(%<statePtr>, %<inPtr>, %<NumDelays> * %<bytesPerSignal>);
+	  %<statePtr> += %<NumDelays>;
+	  %<inPtr> += %<ChanSize>;
+	}
+      }
+    %endif
+  %else
+    %%
+    %assign totalStateAgingMoves = expandedWidthU * (NumDelays-1)
+    %%
+    %if totalStateAgingMoves > 0
+      %assign xRollRegions = [0:%<totalStateAgingMoves-1>]
+      %%
+      %assign rollVars = []
+      %%
+      %roll xIdx = xRollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% scalar expansion of X is never an issue so
+	%% manual creation of ucv is simple
+	%%
+	%if DELAY_ORDER == "Oldest"
+	  %%
+	  %% handle case when of oldest first
+	  %%
+	  %assign destXucv   = FixPt_GetUcv(xlcv, xIdx)
+	  %assign sourceXucv = FixPt_GetUcv(xlcv, xIdx+expandedWidthU)
+	%else
+	  %%
+	  %% handle case when of newest first
+	  %%
+	  %assign destXucv   = FixPt_GetUcvReverse(xlcv, xIdx,                totalStateAgingMoves+1)
+	  %assign sourceXucv = FixPt_GetUcvReverse(xlcv, xIdx+expandedWidthU, totalStateAgingMoves+1)
+	%endif
+	%%
+	%<LibBlockDWork(block.DWork,destXucv,   "", 0)> = ...
+	  %<LibBlockDWork(block.DWork,sourceXucv, "", 0)>;
+	%%
+      %endroll
+    %endif
+    %%
+    %% ordering newest first is only supported for tapped delay lines
+    %% tapped delay lines only support scalar inputs and do not support
+    %% scalar expansion of input
+    %%
+    %if DELAY_ORDER != "Oldest" && ( (numInputs != 1) || (expandedWidthU != 1) )
+      %exit Block: %<MaskBlockName> has been misused.  Ordering newest first is only supported for scalar inputs.
+    %endif
+    %%
+    %% the following condition gives special treatment to a small number
+    %% inputs and especially to scalar expanded inputs
+    %% the latter case, absolutely must be given special treatment
+    %%
+    %if (numInputs <= 1) %% || (numInputs != expandedWidthU)
+      %%
+      %assign uRollRegions = [0:%<expandedWidthU-1>]
+      %%
+      %assign rollVars = ["U"]
+      %%
+      %roll xIdx = uRollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% scalar expansion of X is never an issue so
+	%% manual creation of ucv is simple
+	%%
+	%% scalar expansion of U is indeed an issue
+	%% 
+	%if DELAY_ORDER == "Oldest"
+	  %%
+	  %% handle case when of oldest first
+	  %%
+	  %assign destXucv   = FixPt_GetUcv(      xlcv, xIdx+expandedWidthU*(NumDelays-1))
+	%else
+	  %%
+	  %% handle case when of newest first
+	  %%
+	  %assign destXucv   = FixPt_GetUcvReverse(xlcv, xIdx+expandedWidthU*(NumDelays-1), totalStateAgingMoves+1)
+	%endif
+	%%
+	%<LibBlockDWork(block.DWork,destXucv, "", 0)> = ...
+	  %<LibBlockInputSignal(0, "", xlcv, xIdx)>;
+	%%
+      %endroll
+    %elseif (ParamSettings.InputContiguous[0] == "no") || ...
+      FixedPointComputer == "ALPHA"
+      %%
+      %assign uRollRegions = DataInputPort[0].RollRegions
+      %%
+      %assign rollVars = ["U"]
+      %%
+      %roll xIdx = uRollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% scalar expansion of X is never an issue so
+	%% manual creation of ucv is simple
+	%%
+	%% scalar expansion of U is indeed an issue
+	%% 
+	%assign destXucv   = FixPt_GetUcv(xlcv, xIdx+expandedWidthU*(NumDelays-1))
+	%%
+	%<LibBlockDWork(block.DWork,destXucv, "", 0)> = ...
+	  %<LibBlockInputSignal(0, "", xlcv, xIdx)>;
+	%%
+      %endroll
+    %else
+      %%
+      %% the advantage of using memcpy is code size, speed may or may
+      %% not increase
+      %%
+      %assign inAddr = LibBlockInputSignalAddr(0,"","",0)
+      %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", expandedWidthU*(NumDelays-1))
+      %%
+      %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+      %%
+      %% memcpy is OK because input was required to be contiguous
+      %%
+      memcpy(%<stateAddr>,%<inAddr>,%<expandedWidthU>*%<bytesPerSignal>);
+    %endif
+    %%
+  %endif %% Corresponds to LibBlockInputIsFrameData
+  %% blank line for formating
+  
+%endfunction
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %%
+      %return "(" + LibBlockDWork(block.DWork,ucv,lcv,idx) + ")"
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y[i] = X[i]
+%%
+%function Outputs(block, system) void
+  %if LibBlockInputSignalIsFrameData(0)
+    %openfile outBuffer
+    %assign InputPortDims = LibBlockInputSignalDimensions(0)
+    %assign ChanSize = InputPortDims[0]
+    %assign nChans   = InputPortDims[1]
+    %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+    %assign outAddr = LibBlockOutputSignalAddr(0,"","",0)
+    %assign inAddr = LibBlockInputSignalAddr(0,"","",0)
+    %assign outName = LibBlockOutputSignal(0,"","",0)
+    %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+    %assign DWorkdt = LibBlockDWorkDataTypeName(DWork,"")
+    %assign indt = LibBlockInputSignalDataTypeName(0,"")
+    %assign outdt = LibBlockOutputSignalDataTypeName(0,"")
+    %assign statePtr = "pDWork"
+    %assign inPtr = "pIn"
+    %assign outPtr = "pOut"
+    {
+      %if nChans == 1
+	%<outdt> *pOut = %<outAddr>;
+	memcpy(%<outPtr>, %<stateAddr>, %<NumDelays> * %<bytesPerSignal>);
+	%<outPtr> += %<NumDelays>;
+	memcpy(%<outPtr> , %<inAddr> , %<ChanSize-NumDelays> * %<bytesPerSignal>);
+      %else
+	int iChan;
+	%<DWorkdt> *pDWork = %<stateAddr>;
+	%<indt> *pIn = %<inAddr>;
+	%<outdt> *pOut = %<outAddr>;
+	
+	for(iChan = 0; iChan < %<nChans>; iChan++)
+	{
+	  memcpy(%<outPtr>, %<statePtr>, %<NumDelays> * %<bytesPerSignal>);
+	  %<statePtr> += %<NumDelays>;
+	  %<outPtr> += %<NumDelays>;
+	  
+	  memcpy(%<outPtr> , %<inPtr> , %<ChanSize-NumDelays> * %<bytesPerSignal>);
+	  %<outPtr> += %<ChanSize-NumDelays>;
+	  
+	  %<inPtr> += %<ChanSize>;
+	}
+      %endif
+    }
+    %closefile outBuffer
+    %return outBuffer
+  %else
+    %%
+    %% create header comment
+    %%
+    %openfile commentBuffer
+    * Fixed-Point Delay Block: %<MaskBlockName>
+    %closefile commentBuffer
+    %<LibCacheBlockComment(block,commentBuffer)>\
+    %%
+    %openfile outBuffer
+    %%
+    %% begin SpecialSampleHit stuff
+    %%
+    %assign isRateTransitionBlock = LibIsRateTransitionBlock(system, block)
+    %if isRateTransitionBlock
+      if (%<LibIsSFcnSpecialSampleHit("","")>) %<"{">
+    %endif
+    %%
+    %assign numOutputs = LibDataOutputPortWidth(0)
+    %%
+    %if includeCurrentInputInOutput
+      %%
+      %if DELAY_ORDER == "Oldest"
+        %%
+        %% handle case when of oldest first
+        %%
+        %if numOutputs <= 3  || FixedPointComputer == "ALPHA"
+          %assign rollVars = []
+          %%
+          %assign yRollRegion = [0:%<numOutputs-2>]
+          %%
+          %roll xIdx = yRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+            %%
+            %% scalar expansion of X and Y is never an issue so
+            %% manual creation of ucv is simple
+            %%
+            %assign ucv   = FixPt_GetUcv(xlcv, xIdx)
+            %%
+            %<LibBlockOutputSignal(0,   ucv, "", 0)> = ...
+              %<LibBlockDWork(block.DWork,ucv, "", 0)>;
+          %endroll
+        %else
+          %%
+          %% the advantage of using memcpy is code size, speed may or may
+          %% not increase
+          %%
+          %assign outAddr = LibBlockOutputSignalAddr(0,"","",0)
+          %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+          %%
+          %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+          %%
+          %% memcpy is OK because input was required to be contiguous
+          %%
+          memcpy(%<outAddr>,%<stateAddr>,%<numOutputs-1>*%<bytesPerSignal>);
+        %endif
+        %%
+        %<LibBlockOutputSignal(0, "", "", numOutputs-1)> = ...
+          %<LibBlockInputSignal(0, "", "", 0)>;
+        %%
+      %else
+        %%
+        %% handle case when of newest first
+        %%
+        %<LibBlockOutputSignal(0, "", "", 0)> = ...
+          %<LibBlockInputSignal(0, "", "", 0)>;
+        %%
+        %if numOutputs <= 3  || FixedPointComputer == "ALPHA"
+          %assign rollVars = []
+          %%
+          %assign yRollRegion = [0:%<numOutputs-2>]
+          %%
+          %roll xIdx = yRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+            %%
+            %% scalar expansion of X and Y is never an issue so
+            %% manual creation of ucv is simple
+            %%
+            %assign ucv   = FixPt_GetUcv(xlcv, xIdx)
+            %assign ucvY  = FixPt_GetUcv(xlcv, xIdx+1)
+            %%
+            %<LibBlockOutputSignal(0,     ucvY, "", 0)> = ...
+              %<LibBlockDWork(block.DWork,ucv,  "", 0)>;
+          %endroll
+        %else
+          %%
+          %% the advantage of using memcpy is code size, speed may or may
+          %% not increase
+          %%
+          %assign outAddr = LibBlockOutputSignalAddr(0,"","",1)
+          %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+          %%
+          %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+          %%
+          %% memcpy is OK because input was required to be contiguous
+          %%
+          memcpy(%<outAddr>,%<stateAddr>,%<numOutputs-1>*%<bytesPerSignal>);
+        %endif
+      %endif
+    %else
+      %%
+      %if numOutputs <= 2  || FixedPointComputer == "ALPHA"
+        %assign rollVars = []
+        %%
+        %assign yRollRegion = [0:%<numOutputs-1>]
+        %%
+        %roll xIdx = yRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+          %%
+          %% scalar expansion of X and Y is never an issue so
+          %% manual creation of ucv is simple
+          %%
+          %assign ucv   = FixPt_GetUcv(xlcv, xIdx)
+          %%
+          %<LibBlockOutputSignal(0,   ucv, "", 0)> = ...
+            %<LibBlockDWork(block.DWork,ucv, "", 0)>;
+        %endroll
+        %%
+      %else
+        %%
+        %% the advantage of using memcpy is code size, speed may or may
+        %% not increase
+        %%
+        %assign outAddr = LibBlockOutputSignalAddr(0,"","",0)
+        %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+        %%
+        %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+        %%
+        %% memcpy is OK because input was required to be contiguous
+        %%
+        memcpy(%<outAddr>,%<stateAddr>,%<numOutputs>*%<bytesPerSignal>);
+      %endif
+    %endif
+    %%
+    %% end SpecialSampleHit stuff
+    %%
+    %if isRateTransitionBlock
+      %<"}">
+    %endif
+    %%
+    %% blank line for formating
+    
+    %closefile outBuffer
+    %return outBuffer
+  %endif %% Corresponds to LibBlockInputSignalIsFrameData
+%endfunction
+
+%% [EOF] sfix_udelay.tlc
+
+
+
+

@@ -1,0 +1,162 @@
+%% rtdx_src.tlc
+%%
+%% $Revision: 1.1.6.1 $ $Date: 2004/01/22 18:37:54 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+
+%implements rtdx_src "C"
+
+
+%% Include external functions ==================================================
+%%
+%include "rtdx_util.tlc"
+
+
+%% Function: AddParamsToBlock ==================================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+
+    %assign OUTPORT 		 = 0
+    %assign ChannelName 	 = SFcnParamSettings.ChannelName
+    %assign outportDTypeName   = LibBlockOutputSignalDataTypeName(OUTPORT, "%<tRealPart>")
+    %assign isOutputFrame      = LibBlockOutputSignalIsFrameData(OUTPORT) 
+    %assign outputWidth        = CAST("Number",LibDataOutputPortWidth(OUTPORT))
+    %assign outputDims         = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign numChannels        = (isOutputFrame) ? outputDims[1] : outputWidth   
+    %assign outSampsPerChannel = (isOutputFrame) ? outputDims[0] : 1
+    %assign outportNumElems    = numChannels * outSampsPerChannel
+    %assign IsEnabled          = SFcnParamSettings.IsChannelEnabled    
+
+    %assign block = block + OUTPORT + ChannelName  + IsEnabled + outportDTypeName ...
+                          + outportNumElems + outSampsPerChannel + numChannels ...
+                          + outputDims + outputWidth + isOutputFrame
+
+%endfunction  %% AddParamsToBlock
+
+
+%% Function:  AddChannelDeclarationsToModelPrm ============================================
+%%
+%% Adds global variables to model.prm
+%%
+%function AddChannelDeclarationsToModelPrm(block) void
+
+    %% Render channel name declaration
+
+    %openfile buffer
+        RTDX_CreateInputChannel(%<ChannelName>);  /* Channel %<ChannelName> for block %<Name> */
+    %closefile buffer
+    %<LibCacheGlobalPrmData(buffer)>
+    %openfile buffer
+        extern RTDX_inputChannel %<ChannelName>;  /* Channel %<ChannelName> for block %<Name> */
+    %closefile buffer
+    %<LibCacheExtern(buffer)>
+
+%endfunction  %% AddLocalGlobalsToModelPrm
+
+
+%% Function: BlockTypeSetup ================================================
+%%
+%function BlockTypeSetup(block,system) void
+
+    %assign ::RTDXSrcSize = 64
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%%
+%%  Enable Output channel
+%%
+%function Start(block,system) Output
+    %assign outportIsComplex   = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+    %assign bytesPerElementStr = (outportIsComplex) \
+                               ? "(2 * sizeof(%<outportDTypeName>))" \
+                               : "sizeof(%<outportDTypeName>)"
+    %if outportNumElems > 1
+      %assign totalOutputBytesStr = "%<outportNumElems> * " + bytesPerElementStr
+    %else 
+      %assign totalOutputBytesStr = bytesPerElementStr
+    %endif
+    %%
+    %% Render #includes, #defines, and global declarations
+    %%
+    %<AddRtdxIncludesToModelH(block)>          \
+    %<AddChannelDeclarationsToModelPrm(block)> \
+    %%
+    %if IsEnabled == 1
+    RTDX_enableInput(&%<ChannelName>);  \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %else
+    RTDX_disableInput(&%<ChannelName>);  \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */        
+    %endif
+    
+    %if (!SFcnParamSettings.isBlocking)
+        %assign IC_dims        = IC.Dimensions
+        %assign IC_rows        = IC_dims[0]
+        %assign IC_cols        = IC_dims[1]
+        %assign numICs         = IC_rows * IC_cols
+        %assign outBuf_Pointer = "(byte_T *)" + LibBlockOutputSignalAddr(0,"","",0)
+        %assign IC_Pointer     = "(const byte_T *)" + LibBlockParameterAddr(IC, "", "", 0)
+        %if (numICs == 1)
+            MWDSP_CopyScalarICs(%<outBuf_Pointer>, %<IC_Pointer>, %<outportNumElems>, %<bytesPerElementStr>); /* Scalar IC */
+        %elseif (numICs == outSampsPerChannel)
+            MWDSP_CopyVectorICs(%<outBuf_Pointer>, %<IC_Pointer>, %<numChannels>, (%<outSampsPerChannel> * %<bytesPerElementStr>)); /* Vector ICs */
+        %elseif (numICs == outportNumElems)
+            MWDSP_CopyMatrixICs(%<outBuf_Pointer>, %<IC_Pointer>, %<outportNumElems>, %<bytesPerElementStr>); /* Matrix ICs */
+        %else
+            %error "Number of ICs is not valid."
+        %endif
+    %endif
+    %%
+%endfunction %% Start
+
+
+%% Function: Outputs ===========================================================
+%%
+%%  Read RTDX buffer and send out in proper format and dimension
+%%
+%function Outputs(block,system) Output
+
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %if (TargetName=="C2000")
+        %if (SFcnParamSettings.isBlocking)
+            RTDX_read( &%<ChannelName>, (void*) %<LibBlockOutputSignalAddr(0,"","",0)>, %<outportNumElems>*sizeof(%<outportDTypeName>));
+        %else
+            RTDX_readNB( &%<ChannelName>, (void*) %<LibBlockOutputSignalAddr(0,"","",0)>, %<outportNumElems>*sizeof(%<outportDTypeName>));
+        %endif
+    %else
+        %if (SFcnParamSettings.isBlocking)
+            RTDX_read( &%<ChannelName>, (void*) %<LibBlockOutputSignalAddr(0,"","",0)>, %<outportNumElems>*sizeof(%<outportDTypeName>));
+        %else
+            if (!RTDX_channelBusy(&%<ChannelName>)) {
+                RTDX_readNB( &%<ChannelName>, (void*) %<LibBlockOutputSignalAddr(0,"","",0)>, %<outportNumElems>*sizeof(%<outportDTypeName>));
+            }
+        %endif
+    %endif
+
+%endfunction %% Outputs
+
+
+%% Function: Terminate ==========================================================
+%%
+%%  Disable Output channel
+%%
+%function Terminate(block,system) Output
+
+    RTDX_disableInput(&%<ChannelName>); \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+%endfunction %% Terminate
+
+%% [EOF] rtdx_src.tlc

@@ -1,0 +1,628 @@
+<html lang="en">
+<head>
+<title>Sparse Linear Algebra - GNU Octave</title>
+<meta http-equiv="Content-Type" content="text/html">
+<meta name="description" content="GNU Octave">
+<meta name="generator" content="makeinfo 4.13">
+<link title="Top" rel="start" href="index.html#Top">
+<link rel="up" href="Sparse-Matrices.html#Sparse-Matrices" title="Sparse Matrices">
+<link rel="prev" href="Basics.html#Basics" title="Basics">
+<link rel="next" href="Iterative-Techniques.html#Iterative-Techniques" title="Iterative Techniques">
+<link href="http://www.gnu.org/software/texinfo/" rel="generator-home" title="Texinfo Homepage">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<style type="text/css"><!--
+  pre.display { font-family:inherit }
+  pre.format  { font-family:inherit }
+  pre.smalldisplay { font-family:inherit; font-size:smaller }
+  pre.smallformat  { font-family:inherit; font-size:smaller }
+  pre.smallexample { font-size:smaller }
+  pre.smalllisp    { font-size:smaller }
+  span.sc    { font-variant:small-caps }
+  span.roman { font-family:serif; font-weight:normal; } 
+  span.sansserif { font-family:sans-serif; font-weight:normal; } 
+--></style>
+</head>
+<body>
+<div class="node">
+<a name="Sparse-Linear-Algebra"></a>
+<p>
+Next:&nbsp;<a rel="next" accesskey="n" href="Iterative-Techniques.html#Iterative-Techniques">Iterative Techniques</a>,
+Previous:&nbsp;<a rel="previous" accesskey="p" href="Basics.html#Basics">Basics</a>,
+Up:&nbsp;<a rel="up" accesskey="u" href="Sparse-Matrices.html#Sparse-Matrices">Sparse Matrices</a>
+<hr>
+</div>
+
+<h3 class="section">22.2 Linear Algebra on Sparse Matrices</h3>
+
+<p>Octave includes a polymorphic solver for sparse matrices, where
+the exact solver used to factorize the matrix, depends on the properties
+of the sparse matrix itself.  Generally, the cost of determining the matrix type
+is small relative to the cost of factorizing the matrix itself, but in any
+case the matrix type is cached once it is calculated, so that it is not
+re-determined each time it is used in a linear equation.
+
+   <p>The selection tree for how the linear equation is solve is
+
+     <ol type=1 start=1>
+<li>If the matrix is diagonal, solve directly and goto 8
+
+     <li>If the matrix is a permuted diagonal, solve directly taking into
+account the permutations.  Goto 8
+
+     <li>If the matrix is square, banded and if the band density is less
+than that given by <code>spparms ("bandden")</code> continue, else goto 4.
+
+          <ol type=a start=1>
+<li>If the matrix is tridiagonal and the right-hand side is not sparse
+continue, else goto 3b.
+
+               <ol type=1 start=1>
+<li>If the matrix is Hermitian, with a positive real diagonal, attempt
+      Cholesky&nbsp;factorization using <span class="sc">lapack</span> xPTSV.
+
+               <li>If the above failed or the matrix is not Hermitian with a positive
+      real diagonal use Gaussian elimination with pivoting using
+      <span class="sc">lapack</span> xGTSV, and goto 8.
+               </ol>
+
+          <li>If the matrix is Hermitian with a positive real diagonal, attempt
+      Cholesky&nbsp;factorization using <span class="sc">lapack</span> xPBTRF.
+
+          <li>if the above failed or the matrix is not Hermitian with a positive
+      real diagonal use Gaussian elimination with pivoting using
+      <span class="sc">lapack</span> xGBTRF, and goto 8.
+          </ol>
+
+     <li>If the matrix is upper or lower triangular perform a sparse forward
+or backward substitution, and goto 8
+
+     <li>If the matrix is an upper triangular matrix with column permutations
+or lower triangular matrix with row permutations, perform a sparse forward
+or backward substitution, and goto 8
+
+     <li>If the matrix is square, Hermitian with a real positive diagonal, attempt
+sparse Cholesky&nbsp;factorization using <span class="sc">cholmod</span>.
+
+     <li>If the sparse Cholesky&nbsp;factorization failed or the matrix is not
+Hermitian with a real positive diagonal, and the matrix is square, factorize
+using <span class="sc">umfpack</span>.
+
+     <li>If the matrix is not square, or any of the previous solvers flags
+a singular or near singular matrix, find a minimum norm solution using
+<span class="sc">cxsparse</span><a rel="footnote" href="#fn-1" name="fnd-1"><sup>1</sup></a>.
+        </ol>
+
+   <p>The band density is defined as the number of non-zero values in the matrix
+divided by the number of non-zero values in the matrix.  The banded matrix
+solvers can be entirely disabled by using <dfn>spparms</dfn> to set <code>bandden</code>
+to 1 (i.e., <code>spparms ("bandden", 1)</code>).
+
+   <p>The QR&nbsp;solver factorizes the problem with a Dulmage-Mendelsohn, to
+separate the problem into blocks that can be treated as over-determined,
+multiple well determined blocks, and a final over-determined block.  For
+matrices with blocks of strongly connected nodes this is a big win as
+LU&nbsp;decomposition can be used for many blocks.  It also significantly
+improves the chance of finding a solution to over-determined problems
+rather than just returning a vector of <dfn>NaN</dfn>'s.
+
+   <p>All of the solvers above, can calculate an estimate of the condition
+number.  This can be used to detect numerical stability problems in the
+solution and force a minimum norm solution to be used.  However, for
+narrow banded, triangular or diagonal matrices, the cost of
+calculating the condition number is significant, and can in fact
+exceed the cost of factoring the matrix.  Therefore the condition
+number is not calculated in these cases, and Octave relies on simpler
+techniques to detect singular matrices or the underlying <span class="sc">lapack</span> code in
+the case of banded matrices.
+
+   <p>The user can force the type of the matrix with the <code>matrix_type</code>
+function.  This overcomes the cost of discovering the type of the matrix. 
+However, it should be noted that identifying the type of the matrix incorrectly
+will lead to unpredictable results, and so <code>matrix_type</code> should be
+used with care.
+
+<!-- normest scripts/linear-algebra/normest.m -->
+   <p><a name="doc_002dnormest"></a>
+
+<div class="defun">
+&mdash; Function File: <var>n</var> = <b>normest</b> (<var>A</var>)<var><a name="index-normest-2245"></a></var><br>
+&mdash; Function File: <var>n</var> = <b>normest</b> (<var>A, tol</var>)<var><a name="index-normest-2246"></a></var><br>
+&mdash; Function File: [<var>n</var>, <var>c</var>] = <b>normest</b> (<var><small class="dots">...</small></var>)<var><a name="index-normest-2247"></a></var><br>
+<blockquote><p>Estimate the 2-norm of the matrix <var>A</var> using a power series
+analysis.  This is typically used for large matrices, where the cost
+of calculating <code>norm (</code><var>A</var><code>)</code> is prohibitive and an approximation
+to the 2-norm is acceptable.
+
+        <p><var>tol</var> is the tolerance to which the 2-norm is calculated.  By default
+<var>tol</var> is 1e-6.  <var>c</var> returns the number of iterations needed for
+<code>normest</code> to converge. 
+</p></blockquote></div>
+
+<!-- onenormest scripts/linear-algebra/onenormest.m -->
+   <p><a name="doc_002donenormest"></a>
+
+<div class="defun">
+&mdash; Function File: [<var>est</var>, <var>v</var>, <var>w</var>, <var>iter</var>] = <b>onenormest</b> (<var>A, t</var>)<var><a name="index-onenormest-2248"></a></var><br>
+&mdash; Function File: [<var>est</var>, <var>v</var>, <var>w</var>, <var>iter</var>] = <b>onenormest</b> (<var>apply, apply_t, n, t</var>)<var><a name="index-onenormest-2249"></a></var><br>
+<blockquote>
+        <p>Apply Higham and Tisseur's randomized block 1-norm estimator to
+matrix <var>A</var> using <var>t</var> test vectors.  If <var>t</var> exceeds 5, then
+only 5 test vectors are used.
+
+        <p>If the matrix is not explicit, e.g., when estimating the norm of
+<code>inv (</code><var>A</var><code>)</code> given an LU&nbsp;factorization, <code>onenormest</code>
+applies <var>A</var> and its conjugate transpose through a pair of functions
+<var>apply</var> and <var>apply_t</var>, respectively, to a dense matrix of size
+<var>n</var> by <var>t</var>.  The implicit version requires an explicit dimension
+<var>n</var>.
+
+        <p>Returns the norm estimate <var>est</var>, two vectors <var>v</var> and
+<var>w</var> related by norm
+<code>(</code><var>w</var><code>, 1) = </code><var>est</var><code> * norm (</code><var>v</var><code>, 1)</code>,
+and the number of iterations <var>iter</var>.  The number of
+iterations is limited to 10 and is at least 2.
+
+        <p>References:
+          <ul>
+<li>N.J. Higham and F. Tisseur, <cite>A Block Algorithm
+for Matrix 1-Norm Estimation, with an Application to 1-Norm
+Pseudospectra</cite>. SIMAX vol 21, no 4, pp 1185-1201. 
+<a href="http://dx.doi.org/10.1137/S0895479899356080">http://dx.doi.org/10.1137/S0895479899356080</a>
+
+          <li>N.J. Higham and F. Tisseur, <cite>A Block Algorithm
+for Matrix 1-Norm Estimation, with an Application to 1-Norm
+Pseudospectra</cite>. <a href="http://citeseer.ist.psu.edu/223007.html">http://citeseer.ist.psu.edu/223007.html</a>
+</ul>
+
+     <!-- Texinfo @sp should work but in practice produces ugly results for HTML. -->
+     <!-- A simple blank line produces the correct behavior. -->
+     <!-- @sp 1 -->
+     <p class="noindent"><strong>See also:</strong> <a href="doc_002dcondest.html#doc_002dcondest">condest</a>, <a href="doc_002dnorm.html#doc_002dnorm">norm</a>, <a href="doc_002dcond.html#doc_002dcond">cond</a>. 
+</p></blockquote></div>
+
+<!-- condest scripts/linear-algebra/condest.m -->
+   <p><a name="doc_002dcondest"></a>
+
+<div class="defun">
+&mdash; Function File:  <b>condest</b> (<var>A</var>)<var><a name="index-condest-2250"></a></var><br>
+&mdash; Function File:  <b>condest</b> (<var>A, t</var>)<var><a name="index-condest-2251"></a></var><br>
+&mdash; Function File: [<var>est</var>, <var>v</var>] = <b>condest</b> (<var><small class="dots">...</small></var>)<var><a name="index-condest-2252"></a></var><br>
+&mdash; Function File: [<var>est</var>, <var>v</var>] = <b>condest</b> (<var>A, solve, solve_t, t</var>)<var><a name="index-condest-2253"></a></var><br>
+&mdash; Function File: [<var>est</var>, <var>v</var>] = <b>condest</b> (<var>apply, apply_t, solve, solve_t, n, t</var>)<var><a name="index-condest-2254"></a></var><br>
+<blockquote>
+        <p>Estimate the 1-norm condition number of a matrix <var>A</var>
+using <var>t</var> test vectors using a randomized 1-norm estimator. 
+If <var>t</var> exceeds 5, then only 5 test vectors are used.
+
+        <p>If the matrix is not explicit, e.g., when estimating the condition
+number of <var>A</var> given an LU&nbsp;factorization, <code>condest</code> uses the
+following functions:
+
+          <dl>
+<dt><var>apply</var><dd><code>A*x</code> for a matrix <code>x</code> of size <var>n</var> by <var>t</var>.
+
+          <br><dt><var>apply_t</var><dd><code>A'*x</code> for a matrix <code>x</code> of size <var>n</var> by <var>t</var>.
+
+          <br><dt><var>solve</var><dd><code>A \ b</code> for a matrix <code>b</code> of size <var>n</var> by <var>t</var>.
+
+          <br><dt><var>solve_t</var><dd><code>A' \ b</code> for a matrix <code>b</code> of size <var>n</var> by <var>t</var>. 
+</dl>
+
+        <p>The implicit version requires an explicit dimension <var>n</var>.
+
+        <p><code>condest</code> uses a randomized algorithm to approximate
+the 1-norms.
+
+        <p><code>condest</code> returns the 1-norm condition estimate <var>est</var> and
+a vector <var>v</var> satisfying <code>norm (A*v, 1) == norm (A, 1) * norm
+(</code><var>v</var><code>, 1) / </code><var>est</var>.  When <var>est</var> is large, <var>v</var> is an
+approximate null vector.
+
+        <p>References:
+          <ul>
+<li>N.J. Higham and F. Tisseur, <cite>A Block Algorithm
+for Matrix 1-Norm Estimation, with an Application to 1-Norm
+Pseudospectra</cite>. SIMAX vol 21, no 4, pp 1185-1201. 
+<a href="http://dx.doi.org/10.1137/S0895479899356080">http://dx.doi.org/10.1137/S0895479899356080</a>
+
+          <li>N.J. Higham and F. Tisseur, <cite>A Block Algorithm
+for Matrix 1-Norm Estimation, with an Application to 1-Norm
+Pseudospectra</cite>. <a href="http://citeseer.ist.psu.edu/223007.html">http://citeseer.ist.psu.edu/223007.html</a>
+</ul>
+
+     <!-- Texinfo @sp should work but in practice produces ugly results for HTML. -->
+     <!-- A simple blank line produces the correct behavior. -->
+     <!-- @sp 1 -->
+     <p class="noindent"><strong>See also:</strong> <a href="doc_002dcond.html#doc_002dcond">cond</a>, <a href="doc_002dnorm.html#doc_002dnorm">norm</a>, <a href="doc_002donenormest.html#doc_002donenormest">onenormest</a>. 
+</p></blockquote></div>
+
+<!-- spparms src/DLD-FUNCTIONS/spparms.cc -->
+   <p><a name="doc_002dspparms"></a>
+
+<div class="defun">
+&mdash; Loadable Function:  <b>spparms</b> ()<var><a name="index-spparms-2255"></a></var><br>
+&mdash; Loadable Function: <var>vals</var> = <b>spparms</b> ()<var><a name="index-spparms-2256"></a></var><br>
+&mdash; Loadable Function: [<var>keys</var>, <var>vals</var>] = <b>spparms</b> ()<var><a name="index-spparms-2257"></a></var><br>
+&mdash; Loadable Function: <var>val</var> = <b>spparms</b> (<var>key</var>)<var><a name="index-spparms-2258"></a></var><br>
+&mdash; Loadable Function:  <b>spparms</b> (<var>vals</var>)<var><a name="index-spparms-2259"></a></var><br>
+&mdash; Loadable Function:  <b>spparms</b> (<var>'defaults'</var>)<var><a name="index-spparms-2260"></a></var><br>
+&mdash; Loadable Function:  <b>spparms</b> (<var>'tight'</var>)<var><a name="index-spparms-2261"></a></var><br>
+&mdash; Loadable Function:  <b>spparms</b> (<var>key, val</var>)<var><a name="index-spparms-2262"></a></var><br>
+<blockquote><p>Query or set the parameters used by the sparse solvers and factorization
+functions.  The first four calls above get information about the current
+settings, while the others change the current settings.  The parameters are
+stored as pairs of keys and values, where the values are all floats and the
+keys are one of the following strings:
+
+          <dl>
+<dt>&lsquo;<samp><span class="samp">spumoni</span></samp>&rsquo;<dd>Printing level of debugging information of the solvers (default 0)
+
+          <br><dt>&lsquo;<samp><span class="samp">ths_rel</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 1)
+
+          <br><dt>&lsquo;<samp><span class="samp">ths_abs</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 1)
+
+          <br><dt>&lsquo;<samp><span class="samp">exact_d</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 0)
+
+          <br><dt>&lsquo;<samp><span class="samp">supernd</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 3)
+
+          <br><dt>&lsquo;<samp><span class="samp">rreduce</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 3)
+
+          <br><dt>&lsquo;<samp><span class="samp">wh_frac</span></samp>&rsquo;<dd>Included for compatibility.  Not used.  (default 0.5)
+
+          <br><dt>&lsquo;<samp><span class="samp">autommd</span></samp>&rsquo;<dd>Flag whether the LU/QR and the '\' and '/' operators will automatically
+use the sparsity preserving mmd functions (default 1)
+
+          <br><dt>&lsquo;<samp><span class="samp">autoamd</span></samp>&rsquo;<dd>Flag whether the LU and the '\' and '/' operators will automatically
+use the sparsity preserving amd functions (default 1)
+
+          <br><dt>&lsquo;<samp><span class="samp">piv_tol</span></samp>&rsquo;<dd>The pivot tolerance of the <span class="sc">umfpack</span> solvers (default 0.1)
+
+          <br><dt>&lsquo;<samp><span class="samp">sym_tol</span></samp>&rsquo;<dd>The pivot tolerance of the <span class="sc">umfpack</span> symmetric solvers (default 0.001)
+
+          <br><dt>&lsquo;<samp><span class="samp">bandden</span></samp>&rsquo;<dd>The density of non-zero elements in a banded matrix before it is treated
+by the <span class="sc">lapack</span> banded solvers (default 0.5)
+
+          <br><dt>&lsquo;<samp><span class="samp">umfpack</span></samp>&rsquo;<dd>Flag whether the <span class="sc">umfpack</span> or mmd solvers are used for the LU, '\' and
+'/' operations (default 1)
+</dl>
+
+        <p>The value of individual keys can be set with
+<code>spparms (</code><var>key</var><code>, </code><var>val</var><code>)</code>. 
+The default values can be restored with the special keyword
+'defaults'.  The special keyword 'tight' can be used to set the mmd solvers
+to attempt a sparser solution at the potential cost of longer running
+time. 
+</p></blockquote></div>
+
+<!-- sprank src/DLD-FUNCTIONS/dmperm.cc -->
+   <p><a name="doc_002dsprank"></a>
+
+<div class="defun">
+&mdash; Loadable Function: <var>p</var> = <b>sprank</b> (<var>S</var>)<var><a name="index-sprank-2263"></a></var><br>
+<blockquote><p><a name="index-structural-rank-2264"></a>
+Calculate the structural rank of the sparse matrix <var>S</var>.  Note that
+only the structure of the matrix is used in this calculation based on
+a Dulmage-Mendelsohn permutation to block triangular form.  As such the
+numerical rank of the matrix <var>S</var> is bounded by
+<code>sprank (</code><var>S</var><code>) &gt;= rank (</code><var>S</var><code>)</code>.  Ignoring floating point errors
+<code>sprank (</code><var>S</var><code>) == rank (</code><var>S</var><code>)</code>. 
+<!-- Texinfo @sp should work but in practice produces ugly results for HTML. -->
+<!-- A simple blank line produces the correct behavior. -->
+<!-- @sp 1 -->
+
+     <p class="noindent"><strong>See also:</strong> <a href="doc_002ddmperm.html#doc_002ddmperm">dmperm</a>. 
+</p></blockquote></div>
+
+<!-- symbfact src/DLD-FUNCTIONS/symbfact.cc -->
+   <p><a name="doc_002dsymbfact"></a>
+
+<div class="defun">
+&mdash; Loadable Function: [<var>count</var>, <var>h</var>, <var>parent</var>, <var>post</var>, <var>r</var>] = <b>symbfact</b> (<var>S</var>)<var><a name="index-symbfact-2265"></a></var><br>
+&mdash; Loadable Function: [<small class="dots">...</small>] = <b>symbfact</b> (<var>S, typ</var>)<var><a name="index-symbfact-2266"></a></var><br>
+&mdash; Loadable Function: [<small class="dots">...</small>] = <b>symbfact</b> (<var>S, typ, mode</var>)<var><a name="index-symbfact-2267"></a></var><br>
+<blockquote>
+        <p>Perform a symbolic factorization analysis on the sparse matrix <var>S</var>. 
+Where
+
+          <dl>
+<dt><var>S</var><dd><var>S</var> is a complex or real sparse matrix.
+
+          <br><dt><var>typ</var><dd>Is the type of the factorization and can be one of
+
+               <dl>
+<dt>&lsquo;<samp><span class="samp">sym</span></samp>&rsquo;<dd>Factorize <var>S</var>.  This is the default.
+
+               <br><dt>&lsquo;<samp><span class="samp">col</span></samp>&rsquo;<dd>Factorize <var>S</var><code>' * </code><var>S</var>.
+
+               <br><dt>&lsquo;<samp><span class="samp">row</span></samp>&rsquo;<dd>Factorize <var>S</var><code> * </code><var>S</var><code>'</code>.
+
+               <br><dt>&lsquo;<samp><span class="samp">lo</span></samp>&rsquo;<dd>Factorize <var>S</var><code>'</code>
+</dl>
+
+          <br><dt><var>mode</var><dd>The default is to return the Cholesky&nbsp;factorization for <var>r</var>, and if
+<var>mode</var> is 'L', the conjugate transpose of the Cholesky&nbsp;factorization
+is returned.  The conjugate transpose version is faster and uses less
+memory, but returns the same values for <var>count</var>, <var>h</var>, <var>parent</var>
+and <var>post</var> outputs. 
+</dl>
+
+        <p>The output variables are
+
+          <dl>
+<dt><var>count</var><dd>The row counts of the Cholesky&nbsp;factorization as determined by <var>typ</var>.
+
+          <br><dt><var>h</var><dd>The height of the elimination tree.
+
+          <br><dt><var>parent</var><dd>The elimination tree itself.
+
+          <br><dt><var>post</var><dd>A sparse boolean matrix whose structure is that of the Cholesky
+factorization as determined by <var>typ</var>. 
+</dl>
+        </p></blockquote></div>
+
+   <p>For non square matrices, the user can also utilize the <code>spaugment</code>
+function to find a least squares solution to a linear equation.
+
+<!-- spaugment scripts/sparse/spaugment.m -->
+   <p><a name="doc_002dspaugment"></a>
+
+<div class="defun">
+&mdash; Function File: <var>s</var> = <b>spaugment</b> (<var>A, c</var>)<var><a name="index-spaugment-2268"></a></var><br>
+<blockquote><p>Create the augmented matrix of <var>A</var>.  This is given by
+
+     <pre class="example">          [<var>c</var> * eye(<var>m</var>, <var>m</var>), <var>A</var>;
+                      <var>A</var>', zeros(<var>n</var>, <var>n</var>)]
+</pre>
+        <p class="noindent">This is related to the least squares solution of
+<var>A</var><code> \ </code><var>b</var>, by
+
+     <pre class="example">          <var>s</var> * [ <var>r</var> / <var>c</var>; x] = [ <var>b</var>, zeros(<var>n</var>, columns(<var>b</var>)) ]
+</pre>
+        <p class="noindent">where <var>r</var> is the residual error
+
+     <pre class="example">          <var>r</var> = <var>b</var> - <var>A</var> * <var>x</var>
+</pre>
+        <p>As the matrix <var>s</var> is symmetric indefinite it can be factorized
+with <code>lu</code>, and the minimum norm solution can therefore be found
+without the need for a <code>qr</code> factorization.  As the residual
+error will be <code>zeros (</code><var>m</var><code>, </code><var>m</var><code>)</code> for under determined
+problems, and example can be
+
+     <pre class="example">          m = 11; n = 10; mn = max (m, n);
+          A = spdiags ([ones(mn,1), 10*ones(mn,1), -ones(mn,1)],
+                       [-1, 0, 1], m, n);
+          x0 = A \ ones (m,1);
+          s = spaugment (A);
+          [L, U, P, Q] = lu (s);
+          x1 = Q * (U \ (L \ (P  * [ones(m,1); zeros(n,1)])));
+          x1 = x1(end - n + 1 : end);
+</pre>
+        <p>To find the solution of an overdetermined problem needs an estimate
+of the residual error <var>r</var> and so it is more complex to formulate
+a minimum norm solution using the <code>spaugment</code> function.
+
+        <p>In general the left division operator is more stable and faster than
+using the <code>spaugment</code> function. 
+</p></blockquote></div>
+
+   <p>Finally, the function <code>eigs</code> can be used to calculate a limited
+number of eigenvalues and eigenvectors based on a selection criteria
+and likewise for <code>svds</code> which calculates a limited number of
+singular values and vectors.
+
+<!-- eigs src/DLD-FUNCTIONS/eigs.cc -->
+   <p><a name="doc_002deigs"></a>
+
+<div class="defun">
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A</var>)<var><a name="index-eigs-2269"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, k</var>)<var><a name="index-eigs-2270"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, k, sigma</var>)<var><a name="index-eigs-2271"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, k, sigma, opts</var>)<var><a name="index-eigs-2272"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, B</var>)<var><a name="index-eigs-2273"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, B, k</var>)<var><a name="index-eigs-2274"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, B, k, sigma</var>)<var><a name="index-eigs-2275"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>A, B, k, sigma, opts</var>)<var><a name="index-eigs-2276"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n</var>)<var><a name="index-eigs-2277"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, B</var>)<var><a name="index-eigs-2278"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, k</var>)<var><a name="index-eigs-2279"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, B, k</var>)<var><a name="index-eigs-2280"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, k, sigma</var>)<var><a name="index-eigs-2281"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, B, k, sigma</var>)<var><a name="index-eigs-2282"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, k, sigma, opts</var>)<var><a name="index-eigs-2283"></a></var><br>
+&mdash; Loadable Function: <var>d</var> = <b>eigs</b> (<var>af, n, B, k, sigma, opts</var>)<var><a name="index-eigs-2284"></a></var><br>
+&mdash; Loadable Function: [<var>V</var>, <var>d</var>] = <b>eigs</b> (<var>A, <small class="dots">...</small></var>)<var><a name="index-eigs-2285"></a></var><br>
+&mdash; Loadable Function: [<var>V</var>, <var>d</var>] = <b>eigs</b> (<var>af, n, <small class="dots">...</small></var>)<var><a name="index-eigs-2286"></a></var><br>
+&mdash; Loadable Function: [<var>V</var>, <var>d</var>, <var>flag</var>] = <b>eigs</b> (<var>A, <small class="dots">...</small></var>)<var><a name="index-eigs-2287"></a></var><br>
+&mdash; Loadable Function: [<var>V</var>, <var>d</var>, <var>flag</var>] = <b>eigs</b> (<var>af, n, <small class="dots">...</small></var>)<var><a name="index-eigs-2288"></a></var><br>
+<blockquote><p>Calculate a limited number of eigenvalues and eigenvectors of <var>A</var>,
+based on a selection criteria.  The number of eigenvalues and eigenvectors to
+calculate is given by <var>k</var> and defaults to 6.
+
+        <p>By default, <code>eigs</code> solve the equation
+where
+is the corresponding eigenvector.  If given the positive definite matrix
+<var>B</var> then <code>eigs</code> solves the general eigenvalue equation
+
+        <p>The argument <var>sigma</var> determines which eigenvalues are returned. 
+<var>sigma</var> can be either a scalar or a string.  When <var>sigma</var> is a
+scalar, the <var>k</var> eigenvalues closest to <var>sigma</var> are returned.  If
+<var>sigma</var> is a string, it must have one of the following values.
+
+          <dl>
+<dt>'lm'<dd>Largest Magnitude (default).
+
+          <br><dt>'sm'<dd>Smallest Magnitude.
+
+          <br><dt>'la'<dd>Largest Algebraic (valid only for real symmetric problems).
+
+          <br><dt>'sa'<dd>Smallest Algebraic (valid only for real symmetric problems).
+
+          <br><dt>'be'<dd>Both Ends, with one more from the high-end if <var>k</var> is odd (valid only for
+real symmetric problems).
+
+          <br><dt>'lr'<dd>Largest Real part (valid only for complex or unsymmetric problems).
+
+          <br><dt>'sr'<dd>Smallest Real part (valid only for complex or unsymmetric problems).
+
+          <br><dt>'li'<dd>Largest Imaginary part (valid only for complex or unsymmetric problems).
+
+          <br><dt>'si'<dd>Smallest Imaginary part (valid only for complex or unsymmetric problems). 
+</dl>
+
+        <p>If <var>opts</var> is given, it is a structure defining possible options that
+<code>eigs</code> should use.  The fields of the <var>opts</var> structure are:
+
+          <dl>
+<dt><code>issym</code><dd>If <var>af</var> is given, then flags whether the function <var>af</var> defines a
+symmetric problem.  It is ignored if <var>A</var> is given.  The default is false.
+
+          <br><dt><code>isreal</code><dd>If <var>af</var> is given, then flags whether the function <var>af</var> defines a
+real problem.  It is ignored if <var>A</var> is given.  The default is true.
+
+          <br><dt><code>tol</code><dd>Defines the required convergence tolerance, calculated as
+<code>tol * norm (A)</code>.  The default is <code>eps</code>.
+
+          <br><dt><code>maxit</code><dd>The maximum number of iterations.  The default is 300.
+
+          <br><dt><code>p</code><dd>The number of Lanzcos basis vectors to use.  More vectors will result in
+faster convergence, but a greater use of memory.  The optimal value of
+<code>p</code> is problem dependent and should be in the range <var>k</var> to <var>n</var>. 
+The default value is <code>2 * </code><var>k</var>.
+
+          <br><dt><code>v0</code><dd>The starting vector for the algorithm.  An initial vector close to the
+final vector will speed up convergence.  The default is for <span class="sc">arpack</span>
+to randomly generate a starting vector.  If specified, <code>v0</code> must be
+an <var>n</var>-by-1 vector where <var>n</var><code> = rows (</code><var>A</var><code>)</code>
+
+          <br><dt><code>disp</code><dd>The level of diagnostic printout (0|1|2).  If <code>disp</code> is 0 then
+diagnostics are disabled.  The default value is 0.
+
+          <br><dt><code>cholB</code><dd>Flag if <code>chol (</code><var>B</var><code>)</code> is passed rather than <var>B</var>.  The default is
+false.
+
+          <br><dt><code>permB</code><dd>The permutation vector of the Cholesky&nbsp;factorization of <var>B</var> if
+<code>cholB</code> is true.  That is <code>chol (</code><var>B</var><code>(permB, permB))</code>.  The
+default is <code>1:</code><var>n</var>.
+
+        </dl>
+        It is also possible to represent <var>A</var> by a function denoted <var>af</var>. 
+<var>af</var> must be followed by a scalar argument <var>n</var> defining the length
+of the vector argument accepted by <var>af</var>.  <var>af</var> can be
+a function handle, an inline function, or a string.  When <var>af</var> is a
+string it holds the name of the function to use.
+
+        <p><var>af</var> is a function of the form <code>y = af (x)</code>
+where the required return value of <var>af</var> is determined by
+the value of <var>sigma</var>.  The four possible forms are
+
+          <dl>
+<dt><code>A * x</code><dd>if <var>sigma</var> is not given or is a string other than 'sm'.
+
+          <br><dt><code>A \ x</code><dd>if <var>sigma</var> is 0 or 'sm'.
+
+          <br><dt><code>(A - sigma * I) \ x</code><dd>for the standard eigenvalue problem, where <code>I</code> is the identity matrix of
+the same size as <var>A</var>.
+
+          <br><dt><code>(A - sigma * B) \ x</code><dd>for the general eigenvalue problem. 
+</dl>
+
+        <p>The return arguments of <code>eigs</code> depend on the number of return arguments
+requested.  With a single return argument, a vector <var>d</var> of length <var>k</var>
+is returned containing the <var>k</var> eigenvalues that have been found.  With
+two return arguments, <var>V</var> is a <var>n</var>-by-<var>k</var> matrix whose columns
+are the <var>k</var> eigenvectors corresponding to the returned eigenvalues.  The
+eigenvalues themselves are returned in <var>d</var> in the form of a
+<var>n</var>-by-<var>k</var> matrix, where the elements on the diagonal are the
+eigenvalues.
+
+        <p>Given a third return argument <var>flag</var>, <code>eigs</code> returns the status
+of the convergence.  If <var>flag</var> is 0 then all eigenvalues have converged. 
+Any other value indicates a failure to converge.
+
+        <p>This function is based on the <span class="sc">arpack</span> package, written by R. Lehoucq,
+K. Maschhoff, D. Sorensen, and C. Yang.  For more information see
+<a href="http://www.caam.rice.edu/software/ARPACK/">http://www.caam.rice.edu/software/ARPACK/</a>.
+
+     <!-- Texinfo @sp should work but in practice produces ugly results for HTML. -->
+     <!-- A simple blank line produces the correct behavior. -->
+     <!-- @sp 1 -->
+     <p class="noindent"><strong>See also:</strong> <a href="doc_002deig.html#doc_002deig">eig</a>, <a href="doc_002dsvds.html#doc_002dsvds">svds</a>. 
+</p></blockquote></div>
+
+<!-- svds scripts/sparse/svds.m -->
+   <p><a name="doc_002dsvds"></a>
+
+<div class="defun">
+&mdash; Function File: <var>s</var> = <b>svds</b> (<var>A</var>)<var><a name="index-svds-2289"></a></var><br>
+&mdash; Function File: <var>s</var> = <b>svds</b> (<var>A, k</var>)<var><a name="index-svds-2290"></a></var><br>
+&mdash; Function File: <var>s</var> = <b>svds</b> (<var>A, k, sigma</var>)<var><a name="index-svds-2291"></a></var><br>
+&mdash; Function File: <var>s</var> = <b>svds</b> (<var>A, k, sigma, opts</var>)<var><a name="index-svds-2292"></a></var><br>
+&mdash; Function File: [<var>u</var>, <var>s</var>, <var>v</var>] = <b>svds</b> (<var><small class="dots">...</small></var>)<var><a name="index-svds-2293"></a></var><br>
+&mdash; Function File: [<var>u</var>, <var>s</var>, <var>v</var>, <var>flag</var>] = <b>svds</b> (<var><small class="dots">...</small></var>)<var><a name="index-svds-2294"></a></var><br>
+<blockquote>
+        <p>Find a few singular values of the matrix <var>A</var>.  The singular values
+are calculated using
+
+     <pre class="example">          [<var>m</var>, <var>n</var>] = size (<var>A</var>);
+          <var>s</var> = eigs ([sparse(<var>m</var>, <var>m</var>), <var>A</var>;
+                               <var>A</var>', sparse(<var>n</var>, <var>n</var>)])
+</pre>
+        <p>The eigenvalues returned by <code>eigs</code> correspond to the singular values
+of <var>A</var>.  The number of singular values to calculate is given by <var>k</var>
+and defaults to 6.
+
+        <p>The argument <var>sigma</var> specifies which singular values to find.  When
+<var>sigma</var> is the string 'L', the default, the largest singular values of
+<var>A</var> are found.  Otherwise, <var>sigma</var> must be a real scalar and the
+singular values closest to <var>sigma</var> are found.  As a corollary,
+<var>sigma</var><code> = 0</code> finds the smallest singular values.  Note that for
+relatively small values of <var>sigma</var>, there is a chance that the requested
+number of singular values will not be found.  In that case <var>sigma</var>
+should be increased.
+
+        <p><var>opts</var> is a structure defining options that <code>svds</code> will pass
+to <code>eigs</code>.  The possible fields of this structure are documented in
+<code>eigs</code>.  By default, <code>svds</code> sets the following three fields:
+
+          <dl>
+<dt><code>tol</code><dd>The required convergence tolerance for the singular values.  The default
+value is 1e-10.  <code>eigs</code> is passed <var>tol</var><code> / sqrt(2)</code>.
+
+          <br><dt><code>maxit</code><dd>The maximum number of iterations.  The default is 300.
+
+          <br><dt><code>disp</code><dd>The level of diagnostic printout (0|1|2).  If <code>disp</code> is 0 then
+diagnostics are disabled.  The default value is 0. 
+</dl>
+
+        <p>If more than one output is requested then <code>svds</code> will return an
+approximation of the singular value decomposition of <var>A</var>
+
+     <pre class="example">          <var>A</var>_approx = <var>u</var>*<var>s</var>*<var>v</var>'
+</pre>
+        <p class="noindent">where <var>A</var>_approx is a matrix of size <var>A</var> but only rank <var>k</var>.
+
+        <p><var>flag</var> returns 0 if the algorithm has succesfully converged, and 1
+otherwise.  The test for convergence is
+
+     <pre class="example">          norm (<var>A</var>*<var>v</var> - <var>u</var>*<var>s</var>, 1) &lt;= <var>tol</var> * norm (<var>A</var>, 1)
+</pre>
+        <p><code>svds</code> is best for finding only a few singular values from a large
+sparse matrix.  Otherwise, <code>svd (full(</code><var>A</var><code>))</code> will likely be more
+efficient. 
+</p></blockquote></div>
+   <!-- Texinfo @sp should work but in practice produces ugly results for HTML. -->
+<!-- A simple blank line produces the correct behavior. -->
+<!-- @sp 1 -->
+
+<p class="noindent"><strong>See also:</strong> <a href="doc_002dsvd.html#doc_002dsvd">svd</a>, <a href="doc_002deigs.html#doc_002deigs">eigs</a>.
+
+   <div class="footnote">
+<hr>
+<h4>Footnotes</h4><p class="footnote"><small>[<a name="fn-1" href="#fnd-1">1</a>]</small> The <span class="sc">cholmod</span>, <span class="sc">umfpack</span> and <span class="sc">cxsparse</span> packages were
+written by Tim Davis and are available at
+http://www.cise.ufl.edu/research/sparse/</p>
+
+   <hr></div>
+
+   </body></html>
+

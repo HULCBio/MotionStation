@@ -1,0 +1,222 @@
+%% $RCSfile: sdf2t.tlc,v $
+%% $Revision: 1.10 $ 
+%% $Date: 2002/04/14 21:01:51 $
+%%
+%% Don Orofino and Pete Szpak
+%% December 5, 1997
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Dot product block target file.
+
+%implements sdf2t "C"
+
+
+%function MAX(a,b) void
+%return ((a)>(b)?(a):(b))
+%endfunction
+
+%function MIN(a,b) void
+%return ((a)<(b)?(a):(b))
+%endfunction
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "NUM")>
+  %<LibRenameParameter(block, P2, "DEN")>
+  %<LibRenameParameter(block, P3, "IC")>
+  %%
+  %if RWork[0] > 0
+    %<LibDefineRWork(block, "DlyBuf", RWork[0])>
+  %endif
+  %%
+  %assign LenNUM    = SIZE(NUM.Value,0) * SIZE(NUM.Value,1)
+  %assign LenDEN    = SIZE(DEN.Value,0) * SIZE(DEN.Value,1)
+  %assign LenMIN    = MIN(LenNUM, LenDEN)
+  %assign NumCHANS  = LibDataInputPortWidth(0)
+  %assign NumDELAYS = MAX(LenNUM, LenDEN) - 1
+  %assign NumELE    = NumCHANS * NumDELAYS
+  %assign block = block + LenNUM
+  %assign block = block + LenDEN
+  %assign block = block + LenMIN
+  %assign block = block + NumCHANS
+  %assign block = block + NumDELAYS
+  %assign block = block + NumELE
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the RWork vector (Buffer) to the initial values specified.
+%%      Note that the IWork is memset to zero in the registration function,
+%%      however we need to initialize it to zero again here, because this block
+%%      might be used inside an enabled subsystem that resets on disable.
+%%
+%function InitializeConditions(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+    %%
+	%assign numIC = SIZE(IC.Value,0)  * SIZE(IC.Value,1)
+    %%
+    %if numIC == 0
+       %% No IC's given -- set them all to zero
+       %assign rollVars = ["<rwork>/DlyBuf"]
+	   %assign rollRegions = [0:%<NumELE-1>]
+	   %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", \
+	                  rollVars
+	      %<LibBlockRWork(DlyBuf,"",lcv,sigIdx)> = 0.0;
+	   %endroll
+    %%
+	%elseif numIC == 1
+       %% Scalar expansion of single IC
+       %assign rollVars = ["<rwork>/DlyBuf"]
+	   %assign rollRegions = [0:%<NumELE-1>]
+	   %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", \
+	                  rollVars
+	      %<LibBlockRWork(DlyBuf,"",lcv,sigIdx)> = %<LibBlockParameter(IC,"",lcv,sigIdx)>;
+	   %endroll
+    %%
+    %elseif numIC == NumDELAYS
+	   %% Repeat single column of IC's for each channel
+	   real_T *pIC = %<LibBlockMatrixParameterAddr(IC,"","",0,"","",0)>;
+	   real_T *pDlyBuf = &%<LibBlockRWork(DlyBuf,"","",0)>;
+	   %assign rollVars = ["<rwork>/DlyBuf"]
+	   %assign rollRegions = [0:%<NumCHANS-1>]
+	   %assign rollThreshold = 3
+	   %roll sigIdx = rollRegions, lcv = rollThreshold, block, "Roller", \
+	                  rollVars
+			memcpy((void *)pDlyBuf, (void *)pIC, %<NumDELAYS>*sizeof(real_T));
+            pDlyBuf += %<NumDELAYS>;
+	   %endroll
+    %%
+	%else
+       %% Matrix of IC's
+	   %% Copy each columns of IC's into each channel
+	   real_T *pDlyBuf = &%<LibBlockRWork(DlyBuf,"","",0)>;
+	   memcpy(pDlyBuf, %<LibBlockMatrixParameterAddr(IC,"","",0,"","",0)>,%<NumELE>*sizeof(real_T));
+	%endif
+}
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* %<Type> Block: '%<Name>' */
+  {
+	%if Connections.InputPortContiguous[0] == "no"
+	    %% Setup pointer indices to discontiguous inputs
+		static real_T *uPtrs[] = {
+		%foreach sigIdx=NumCHANS
+		   %<LibBlockInputSignalAddr(0, "", "", sigIdx)> \
+		     %if sigIdx != NumCHANS-1
+			   ,  %% <-- That's a comma!
+			 %endif
+		%endforeach
+		};
+
+	%endif
+	%%
+    real_T    *tmpDL    = &%<LibBlockRWork(DlyBuf,"","",0)>; /* Start of buffer */
+    real_T    *tmpDR    = tmpDL;
+
+    %%
+	%% Define output vector:
+	%%
+    real_T *y = %<LibBlockOutputSignalAddr(0, "", "", 0)>;
+
+    %%
+	/* Loop over each input channel: */
+	%%
+	%if NumCHANS>1
+		int_T iChans;
+		for(iChans=0; iChans<%<NumCHANS>; iChans++) {
+	%endif
+    %%
+      real_T *tmpNUM = %<LibBlockMatrixParameterAddr(NUM,"","",0,"","",0)>;
+      real_T *tmpDEN = %<LibBlockMatrixParameterAddr(DEN,"","",0,"","",0)>;
+	  %if Connections.InputPortContiguous[0] == "no"
+	    real_T in = *uPtrs[iChans];
+	  %else
+        real_T in = %<LibBlockInputSignal(0,"iChans","",0)>;
+	  %endif
+      real_T  out;
+      int_T   iCoef;
+		
+      /* Compute filter output value: */
+      out = in * *tmpNUM++;
+      %if NumDELAYS > 0
+		out += *tmpDR++;  /* No delays present if LenMIN=1 */
+	  %endif
+	  %%
+	  %% Only scale output if first denominator term is non-unity:
+	  %%
+      out /= *tmpDEN++;  /* Scale filter output accordingly */
+
+	  /* Record filter output */
+	  %%
+	  %% Could have done this:
+	  %%
+	  %%    %<LibBlockOutputSignal(0,"iChans","",0)> = out;
+	  %%
+	  %% Instead, we'll do this:
+	  %%
+	  *y++ = out;
+	  %%
+      out = -out;        /* We can use addition uniformly below */
+
+ 		%if LenNUM != LenDEN
+			/* Unequal length coefficient vectors */
+			%if LenMIN>1
+				iCoef = %<LenMIN>;
+				while(--iCoef > 0) {
+					*tmpDL++ = *tmpDR++ + in * *tmpNUM++ + out * *tmpDEN++;
+				}
+			%endif
+			%%
+			%if LenNUM > LenDEN
+				%if LenNUM - LenMIN > 1
+					iCoef = %<LenNUM - LenMIN>;   /* More numerator coeffs */
+					while(--iCoef > 0) {
+						*tmpDL++ = *tmpDR++ + in * *tmpNUM++;
+					}
+				%endif
+				*tmpDL++ = in * *tmpNUM++;
+
+			%else
+				%if LenDEN - LenMIN > 1
+					iCoef = %<LenDEN - LenMIN>;   /* More denominator coeffs */
+					while(--iCoef > 0) {
+						*tmpDL++ = *tmpDR++ + out * *tmpDEN++;
+					}
+				%endif
+				*tmpDL++ = out * *tmpDEN++;
+			%endif
+		%else
+			/* Equal length coefficient vectors */
+			%% Make sure there's at least one polynomial entry
+			%if LenNUM > 1  %% or LenDEN > 1
+				iCoef = %<LenNUM-1>;
+				while(--iCoef > 0) {
+					*tmpDL++ = *tmpDR++ + in * *tmpNUM++ + out * *tmpDEN++;
+				}
+				*tmpDL++ = in * *tmpNUM++ + out * *tmpDEN++;
+			%endif
+		%endif
+
+		/* At this point, tmpDL and tmpDR correctly point */
+		/* to the start of the next delay buffer segment  */
+	%if NumCHANS>1
+	}
+	%endif
+  }
+
+%endfunction
+
+%% [EOF] sdf2t.tlc

@@ -1,0 +1,164 @@
+ %% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: RandomNumber block target file.
+
+%implements RandomNumber "C"
+
+%% Function: BlockTypeSetup ====================================================
+%% Abstract:
+%%      Have mdlhdr.tlc include rtlibsrc.h
+%%
+%function BlockTypeSetup(block, system) void
+ 
+  %assign ::CompiledModel.IncludeLibsrc = 1
+
+%endfunction
+
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%      During startup initialize the seed
+%%
+%function Start(block, system) Output
+  %%
+  %% Assert that there should exist a 32 bit data type container available
+  %%
+  %if !ISEQUAL(IntegerSizes.IntNumBits,32)
+    %assign errTxt = "32 bit integer container does not exist on target"
+    %<LibBlockReportError(block, errTxt)>
+  %endif
+  %%
+  %%
+  /* %<Type> Block: %<Name> */
+  {
+    uint32_T *RandSeed = (uint32_T *) &%<LibBlockIWork(RandSeed, "", "", 0)>;
+    int32_T r, t;
+    %%
+    %assign seedSize = SIZE(ParamSettings.Seed)
+    %if seedSize[1] > 1
+      %assign buffer = "const uint32_T initSeed[] = { \n"
+      %assign entryCount = 0
+      %foreach idx = seedSize[1]
+        %assign value = CAST("Unsigned", ParamSettings.Seed[idx])
+        %if entryCount > 5
+          %assign buffer = buffer + "\n"
+          %assign entryCount = 1
+        %else
+          %assign entryCount = entryCount + 1
+        %endif
+        %if idx == seedSize[1]-1
+          %assign buffer = buffer + "%<value>"
+        %else
+          %assign buffer = buffer + "%<value>, "
+        %endif
+      %endforeach
+      %assign buffer = buffer + "\n};"
+      %<buffer>
+    %endif
+    %%
+    %assign rollVars = ["P", "RWork"]
+    %roll sigIdx = RollRegions, lcv = 1, block, "Roller", rollVars
+      %%
+      %if seedSize[1] == 1
+        *RandSeed = %<CAST("Unsigned", ParamSettings.Seed[0])>;
+      %else
+        *RandSeed = initSeed[%<lcv>];
+      %endif
+      %%
+      r = *RandSeed >> 16;
+      t = *RandSeed & RT_BIT16;
+      *RandSeed = ((*RandSeed - (r << 16) - t) << 16) + t + r;
+      if (*RandSeed < 1) {
+        *RandSeed = SEED0;
+      }
+      if (*RandSeed > MAXSEED) {
+        *RandSeed = MAXSEED;
+      }
+
+      %if Parameter[1].Name == "StdDev"
+        %%
+        %% Variance was not specified as a tunable parameter.  It was
+        %% transformed to stdDev by Simulink before being written to the
+        %% .rtw file.  This prevents the transformation to stdDev from having
+        %% to be done "in the loop".
+        %%
+        %assign stdDev = LibBlockParameter(StdDev, "", lcv, sigIdx)
+        %assign mean   = LibBlockParameter(Mean, "", lcv, sigIdx)
+        %<LibBlockRWork(NextOutput, "", lcv, sigIdx)> =
+          rt_NormalRand(RandSeed++) * %<stdDev> + %<mean>;
+      %else
+        %%
+        %% Variance was specified as a tunable var.  Since we are interfacing
+        %% with this parameter, the transformation to stdDev is done "in the
+        %% loop"
+        %%
+        %assign variance = LibBlockParameter(Variance, "", lcv, sigIdx)
+        %assign mean     = LibBlockParameter(Mean, "", lcv, sigIdx)
+        %<LibBlockRWork(NextOutput, "", lcv, sigIdx)> =
+          rt_NormalRand(RandSeed++) * sqrt(%<variance>) + %<mean>;
+      %endif
+    %endroll
+    }
+
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%   Y = NormalRand(seed)*StandardDeviation + Mean
+%%
+%function Outputs(block, system) Output
+  %assign rollVars = ["Y", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign nextOutput = LibBlockRWork(NextOutput, "", lcv, sigIdx)
+    %<LibBlockOutputSignal(0, "", lcv, sigIdx)> = %<nextOutput>;
+  %endroll
+
+%endfunction
+
+%% Function: Update ============================================================
+%% Abstract:
+%%   Y = NormalRand(seed)*StandardDeviation + Mean
+%%
+%function Update(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %assign rollVars = ["P", "IWork", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign nextOutput = LibBlockRWork(NextOutput, "", lcv, sigIdx)
+    %assign seed       = LibBlockIWork(RandSeed, "", lcv, sigIdx)
+    %assign mean       = LibBlockParameter(Mean, "", lcv, sigIdx)
+    %if Parameter[1].Name == "StdDev"
+      %%
+      %% Variance was not specified as a tunable parameter.  It was
+      %% transformed to stdDev by Simulink before being written to the
+      %% .rtw file.  This prevents the transformation to stdDev from having
+      %% to be done "in the loop".
+      %%
+      %assign stdDev = LibBlockParameter(StdDev, "", lcv, sigIdx)
+        %<nextOutput> = rt_NormalRand((uint32_T *)&%<seed>)*%<stdDev>+%<mean>;
+    %else
+      %%
+      %% Variance was specified as a tunable var.  Since we are interfacing
+      %% with this parameter, the transformation to stdDev is done "in the
+      %% loop"
+      %%
+      %assign variance = LibBlockParameter(Variance, "", lcv, sigIdx)
+        %<nextOutput> = ...
+          rt_NormalRand((uint32_T *)&%<seed>)*sqrt(%<variance>)+%<mean>;
+    %endif
+  %endroll
+
+%endfunction

@@ -1,0 +1,489 @@
+%% $RCSfile: sdspdly.tlc,v $
+%% $Revision: 1.15.4.3 $ 
+%% $Date: 2004/04/12 23:08:26 $
+%%
+%% Dale Shpak
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Integer delay
+%% The case of unit delay is handled with utmost efficiency
+
+%implements sdspdly "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%		Name the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the delay buffer and counters to their initial values.
+%%
+%function InitializeConditions(block, system) Output
+    %% We do not support discontiguous inputs
+    %assign INPORT          = 0
+    %if (!IsInputPortContiguous(block,INPORT))
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign DELAY_ELEMS     = block.DWork[0]
+    %assign BUFF_LENS	    = block.DWork[1]
+    %assign BUFF_OFFSETS    = block.DWork[2]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_DELAYS	    = SIZE(SFcnParamSettings.Delays, 1)
+    %assign DELAYS          = SFcnParamSettings.Delays
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.nChans)
+    %assign IC              = SFcnParamSettings.IC
+    %assign IC_COMPLEX      = TYPE(IC[0]) == "Complex"
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign NUM_IC          = SIZE(IC, 1)
+    %assign NIC1            = SFcnParamSettings.nIC1
+    %assign NIC2            = SFcnParamSettings.nIC2
+    %assign LENGTH          = NIC1 * NIC2
+    %%
+    %if (NUM_DELAYS == 1)
+        %if (DELAYS[0] == 1)
+            %assign ZN      =   CAST("Boolean", 0)
+        %else
+            %assign ZN      =   CAST("Boolean", 1)
+        %endif
+    %else
+        %assign ZN          =   CAST("Boolean", 1)
+    %endif
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %if ParamSettings.DirectFeedthrough[INPORT] == "no"
+        %assign EXTRA       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign EXTRA       = 1
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (IC_COMPLEX)
+        %assign IC_T        = "creal_T"
+    %else
+        %assign IC_T        = "real_T"
+    %endif
+    %%
+{
+    /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - %<Name> */
+    %if (ZN || (NIC1*NIC2 > 1))
+        int_T delays[%<NUM_DELAYS>] = {
+        %if NUM_DELAYS > 1
+            %foreach Idx = NUM_DELAYS-1
+                %<DELAYS[Idx]>,
+            %endforeach
+        %endif
+        %<DELAYS[NUM_DELAYS-1]>};
+    %endif
+    %%
+    %if (ZN)
+        int32_T   *bufLen     = %<LibBlockDWorkAddr(BUFF_LENS, "", "", 0)>;
+        int32_T   *bufOffset  = %<LibBlockDWorkAddr(BUFF_OFFSETS, "", "", 0)>;
+
+        %roll sigIdx1 = [ 0:%<NUM_DELAYS - 1> ], lc1 = 3, block,  "InlineRoller"
+            bufLen[%<lc1 == "" ? sigIdx1 : lc1>] = delays[%<lc1 == "" ? sigIdx1 : lc1>] + %<EXTRA>;
+            bufOffset[%<lc1 == "" ? sigIdx1 : lc1>] = delays[%<lc1 == "" ? sigIdx1 : lc1>] - 1;
+        %endroll
+    %endif
+
+    {
+    %if (NIC1 * NIC2 > 1)
+        %assign astr    = ""
+        %assign count   = 0
+        %if (DATA_COMPLEX)
+            creal_T ic[%<NIC1 * NIC2>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %if (IC_COMPLEX)
+                        %assign astr = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+                    %else
+                        %assign astr = astr + "{%<REAL(IC[count])>,0.0}"
+                    %endif
+                    %assign count   = count + 1
+                    %if (count < LENGTH)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %else
+            real_T ic[%<LENGTH>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %assign astr = astr + "%<IC[count]>"
+                    %assign count   = count + 1
+                    %if (count < LENGTH)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %endif
+    %endif
+    %if (ZN)
+	%assign numElements = LibBlockDWorkWidth(DELAY_ELEMS)
+    %else
+	%assign numElements = LibBlockDWorkWidth(DELAY_ELEMS) / 2
+    %endif
+    %<DAT_T> *buff = %<LibBlockDWorkAddr(DELAY_ELEMS, "", "", 0)>;
+    %if (NIC1 * NIC2 == 0)
+        int_T  j;
+        for (j=0; j < %<numElements>; j++) *buff++ = %<ZERO>;
+    %elseif (NIC1 * NIC2 == 1)
+        /* Use a single IC for all states */
+        int_T   j;
+	%if (DATA_COMPLEX)
+            %if (IC_COMPLEX)
+                const creal_T ic  = {%<REAL(IC[0])>,%<IMAG(IC[0])>};
+            %else
+                const creal_T ic  = {%<REAL(IC[0])>,0.0};
+            %endif
+            for (j=0; j < %<numElements>; j++) *buff++ = ic;
+        %else
+            for (j=0; j < %<numElements>; j++) *buff++ = %<IC[0]>;
+        %endif
+    %elseif(NIC2 == 1)
+	/* For each channel, use a single IC for every delay element */
+        int_T   i, j;
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            %if (NUM_DELAYS > 1)
+                for (j=0; j++ < delays[i];    ) *buff++ = ic[i];
+            %else
+                for (j=0; j++ < delays[0];    ) *buff++ = ic[i];
+            %endif
+            %if ZN
+		buff += %<EXTRA>;
+            %endif
+	}
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume maxDELAY rows and numCHANS columns (MATLAB)
+         */
+        int_T i, j;
+
+	for (i=0; i < %<NUM_CHANS>; i++) {
+            %<DAT_T> *icp = ic + i;
+            %if (NUM_DELAYS > 1)
+                for (j=0; j++ < delays[i];    ) {
+            %else
+                for (j=0; j++ < delays[0];    ) {
+            %endif
+		    *buff++ = *icp;
+                    icp += %<NUM_CHANS>;
+	        }
+            %if ZN
+		buff += %<EXTRA>;
+            %endif
+        }
+    %endif
+    }
+}
+%endfunction
+
+%% Function: Update ===========================================================
+%%
+%function Update(block, system) Output
+    %%
+    %assign INPORT              = 0
+    %if ParamSettings.DirectFeedthrough[INPORT] == "no"
+        %assign DELAY_ELEMS     = block.DWork[0]
+        %assign BUFF_LENS       = block.DWork[1]
+        %assign BUFF_OFFSETS    = block.DWork[2]	
+        %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+        %assign COMPLEX         = LibBlockInputSignalIsComplex(INPORT)
+        %assign NUM_DELAYS	= SIZE(SFcnParamSettings.Delays, 1)
+        %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.nChans)
+        %%
+        %if (COMPLEX)
+            %assign DAT_T       = "creal_T"
+        %else
+            %assign DAT_T       = "real_T"
+        %endif
+        %if (NUM_CHANS == -1)
+	    %assign NUM_CHANS   = PORT_WIDTH
+        %endif
+        %assign FRAME           = PORT_WIDTH / NUM_CHANS
+        %%
+        %if ParamSettings.DirectFeedthrough[INPORT] == "no"
+            %assign EXTRA       = PORT_WIDTH / NUM_CHANS
+        %else
+            %assign EXTRA       = 1
+        %endif
+        %%
+        %if (NUM_DELAYS == 1)
+            %assign DELAY       = SFcnParamSettings.Delays[0]
+            %assign MAX_DELAY   = DELAY
+            %assign BUFLEN      = DELAY + EXTRA
+            %if (DELAY == 1)
+                %assign Z1      = CAST("Boolean", 1)
+            %else
+                %assign Z1      = CAST("Boolean", 0)
+            %endif
+        %else
+            %assign Z1          = CAST("Boolean", 0)
+            %assign MAX_DELAY   = 0
+            %foreach Idx = NUM_DELAYS
+                %if (SFcnParamSettings.Delays[Idx] > MAX_DELAY)
+                    %assign MAX_DELAY   =  %<SFcnParamSettings.Delays[Idx]>
+                %endif
+            %endforeach
+        %endif
+        %if (Z1)
+            %assign CHAN_ROLL   = 3
+        %else
+            %assign CHAN_ROLL   = 2
+        %endif
+        %%
+        %%
+{
+        /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - %<Name> */
+        %if (NUM_DELAYS > 1)
+	    int32_T   *buflen	= %<LibBlockDWorkAddr(BUFF_LENS, "", "", 0)>;
+            int32_T   *bufoff	= %<LibBlockDWorkAddr(BUFF_OFFSETS, "", "", 0)>;
+            int_T   buffstart;
+        %elseif (!Z1)
+            int32_T   *bufoff	= %<LibBlockDWorkAddr(BUFF_OFFSETS, "", "", 0)>;
+            int_T   buffstart;
+        %endif
+        %<DAT_T>  *x	        = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        %<DAT_T>  *buff         = %<LibBlockDWorkAddr(DELAY_ELEMS, "", "", 0)>;
+
+        %roll sigIdx1 = [ 1:%<NUM_CHANS> ], lc1 = CHAN_ROLL, block,  "InlineRoller"
+            %if (!Z1)
+	        buffstart = *bufoff;
+            %endif
+            %roll sigIdx2 = [ 1:%<FRAME> ], lc2 = CHAN_ROLL, block,  "InlineRoller"
+                %if (Z1)
+                    *buff++ = *x++;
+                %else
+	            /* Rotate the circular buffer */
+                    %if (NUM_DELAYS > 1)
+	                if (++buffstart == *buflen) buffstart = 0;
+                    %else
+	                if (++buffstart == %<BUFLEN>) buffstart = 0;
+                    %endif
+	            *(buff + buffstart) = *x++;
+                %endif
+            %endroll %% Frame
+            %if (NUM_CHANS > 1)
+                %if (NUM_DELAYS > 1)
+	            buff += *buflen;
+                %elseif (!Z1)
+	            buff += %<BUFLEN>;
+                %endif
+            %endif
+            %if (NUM_DELAYS > 1)
+		/* Update the per-channel buffer offsets */
+                *bufoff += %<FRAME>;
+                %if (FRAME > MAX_DELAY)
+	            /* The "while" is needed since the frame length exceeds the delay */
+	            while (*bufoff >= *buflen) *bufoff -= *buflen;
+                %else
+	            if (*bufoff >= *buflen) *bufoff -= *buflen;
+                %endif
+                ++bufoff; ++buflen;
+            %endif
+        %endroll  %% Channels
+        
+        %if (NUM_DELAYS == 1)
+            %if (DELAY != 1)
+                *bufoff += %<FRAME>;
+	        /* Update the "global" buffer offset */
+                %if (FRAME > MAX_DELAY)
+	            /* The "while" is needed since the frame length exceeds the delay */
+	            while (*bufoff >= %<BUFLEN>) *bufoff -= %<BUFLEN>;
+                %else
+	            if (*bufoff >= %<BUFLEN>) *bufoff -= %<BUFLEN>;
+                %endif
+            %endif
+        %endif
+}
+    %endif
+%endfunction %% Update
+        
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign INPORT          = 0
+    %assign OUTPORT         = 0
+    %assign DELAY_ELEMS     = block.DWork[0]
+    %assign BUFF_LENS       = block.DWork[1]
+    %assign BUFF_OFFSETS    = block.DWork[2]	
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign COMPLEX         = LibBlockInputSignalIsComplex(INPORT)
+    %assign NUM_DELAYS	    = SIZE(SFcnParamSettings.Delays, 1)
+    %assign DIRECT          = (ParamSettings.DirectFeedthrough[INPORT] == "yes")
+    %%
+    %if (COMPLEX)
+        %assign DAT_T       = CAST("String", "creal_T")
+    %else
+        %assign DAT_T       = CAST("String", "real_T")
+    %endif
+    %if (NUM_DELAYS == 1)
+        %assign DELAY       = SFcnParamSettings.Delays[0]
+        %if (DELAY == 1)
+            %assign Z1      = CAST("Boolean", 1)
+        %else
+            %assign Z1      = CAST("Boolean", 0)
+        %endif
+    %else
+        %assign DELAYS      = SFcnParamSettings.Delays
+        %assign Z1          = CAST("Boolean", 0)
+    %endif
+    %if (Z1)
+        %assign CHAN_ROLL   = 3
+    %else
+        %assign CHAN_ROLL   = 2
+    %endif
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.nChans)
+    %%
+    %if (NUM_CHANS == -1)
+	    %assign NUM_CHANS = PORT_WIDTH
+    %endif
+    %assign FRAME = PORT_WIDTH / NUM_CHANS
+    %if ParamSettings.DirectFeedthrough[INPORT] == "no"
+        %assign EXTRA       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign EXTRA       = 1
+    %endif
+    %%
+{
+    /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - %<Name> */
+    %if NUM_DELAYS > 1
+        %assign MAX_DELAY   = 0
+        int delays[%<NUM_DELAYS>] = {
+        %foreach Idx = NUM_DELAYS-1
+            %if (DELAYS[Idx] > MAX_DELAY)
+                %assign MAX_DELAY   = DELAYS[Idx]
+            %endif
+            %<DELAYS[Idx]>,
+        %endforeach
+        %<DELAYS[NUM_DELAYS-1]>};
+    %else
+        %assign MAX_DELAY = DELAY
+    %endif
+    %%
+    %<DAT_T>    *y      = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    %<DAT_T>    *buff   = %<LibBlockDWorkAddr(DELAY_ELEMS, "", "", 0)>;
+    %if (NUM_DELAYS > 1)
+	int32_T   *buflen	= %<LibBlockDWorkAddr(BUFF_LENS, "", "", 0)>;
+    %else
+        %assign BUFLEN  = DELAY + EXTRA
+    %endif
+    %if (NUM_DELAYS > 1)
+	int32_T   *bufoff	= %<LibBlockDWorkAddr(BUFF_OFFSETS, "", "", 0)>;
+        int32_T   *delay  = delays;
+        int_T   ti;
+    %elseif (!Z1)
+	int32_T   *bufoff	= %<LibBlockDWorkAddr(BUFF_OFFSETS, "", "", 0)>;
+        int_T   ti;
+    %endif
+    %if (DIRECT)
+        %<DAT_T>    *x	    = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %endif
+
+    %if (NUM_CHANS > 1)
+    /* Process each channel */
+    %endif
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lc1 = CHAN_ROLL, block,  "InlineRoller"
+        %if (!Z1)
+            int_T   buffstart   = *bufoff;
+        %endif
+        %roll sigIdx2 = [ 1:%<FRAME> ], lc2 = CHAN_ROLL, block,  "InlineRoller"
+            %if (Z1)
+                %if (DIRECT)
+                    *y++ = *buff;
+                    %if (FRAME > 1)
+                        *buff = *x++;
+                    %else
+                        *buff++ = *x++;
+                    %endif
+                %else
+                    *y++ = *buff++;
+                %endif
+	    %else
+                %if (DIRECT)
+		    /* Rotate the circular buffer */
+                    %if (NUM_DELAYS > 1)
+		        if (++buffstart == *buflen) buffstart = 0;
+		        *(buff + buffstart)  = *x++;
+                        ti = buffstart - *delay;
+	                if (ti < 0) ti += *buflen;
+                    %else
+		        if (++buffstart == %<BUFLEN>) buffstart = 0;
+		        *(buff + buffstart)  = *x++;
+                        ti = buffstart - %<DELAY>;
+	                if (ti < 0) ti += %<BUFLEN>;
+                    %endif
+                %else
+                    %if (NUM_DELAYS > 1)
+		        ti = buffstart - *delay + %<lc2 == "" ? sigIdx2 : lc2>;
+	                if (ti < 0) ti += *buflen;
+                    %else
+		        ti = buffstart - %<DELAY> + %<(lc2 == "" ? sigIdx2 : lc2)>;
+	                if (ti < 0) ti += %<BUFLEN>;
+                    %endif
+                %endif  %% if DIRECT
+	        *y++ = *(buff+ti);
+            %endif  %% if Z1
+        %endroll  %% FRAME
+        %if (NUM_CHANS > 1)
+            %if (Z1)
+                %if (FRAME > 1)
+                    ++buff;
+                %endif
+            %elseif (NUM_DELAYS > 1)
+                buff += *buflen;
+            %else
+                buff += %<BUFLEN>;
+            %endif
+        %endif
+        %if (Z1)
+            %% Nothing
+        %elseif (NUM_DELAYS > 1)
+            %if (DIRECT)
+		/* Update the per-channel buffer offset */
+                *bufoff += %<FRAME>;
+                %if (FRAME > MAX_DELAY)
+		    while (*bufoff >= *buflen) *bufoff -= *buflen;
+                %else
+		    if (*bufoff >= *buflen) *bufoff -= *buflen;
+                %endif
+            %endif
+	    ++buflen; ++bufoff; ++delay;
+	%endif
+    %endroll  %%Channel
+    %if (NUM_DELAYS == 1 && DIRECT && !Z1)
+	/* Update the "global" buffer offset */
+	*bufoff += %<FRAME>;
+        %if (FRAME > MAX_DELAY)
+	/* The "while" is needed in case the frame length exceeds the delay */
+	    while (*bufoff >= %<BUFLEN>) *bufoff -= %<BUFLEN>;
+        %else
+	    if (*bufoff >= %<BUFLEN>) *bufoff -= %<BUFLEN>;
+        %endif
+    %endif
+}	
+%endfunction  %% Outputs
+
+%% [EOF] sdspdly.tlc
+

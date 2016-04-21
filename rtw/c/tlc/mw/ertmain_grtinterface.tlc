@@ -1,0 +1,668 @@
+%% $RCSfile: ertmain_grtinterface.tlc,v $
+%% $Revision: 1.1.6.4 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Library file to create a sample main for ERT code format
+%%   calling grt wrapper for a given model.
+%%
+%selectfile NULL_FILE
+
+%% Function: FcnGenSTOneStepFcnForGRTWrapper ==========================
+%% Generate SingleTasking OneStep function for GRTWrapper
+%%
+%function FcnGenSTOneStepFcnForGRTWrapper()
+  %openfile tmpBuf
+  /* Function: rtOneStep ========================================================
+   *
+   * Abstract:      
+   *    Perform one step of the model. This function is modeled such that
+   *    it could be called from an interrupt service routine (ISR) with minor
+   *    modifications.
+   *
+   *    This routine is modeled for use in a multitasking environment and
+   *	therefore needs to be fully re-entrant when it is called from an
+   *	interrupt service routine.
+   *
+   * Note:
+   *     Error checking is provided which will only be used if this routine
+   *     is attached to an interrupt.
+   *
+   */
+   static void rt_OneStep(%<Name>_rtModel *S)
+   {
+     real_T tnext;
+
+    /***********************************************
+     * Check and see if base step time is too fast *
+     ***********************************************/
+
+    if (GBLbuf.isrOverrun++) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    /***********************************************
+     * Check and see if error status has been set  *
+     ***********************************************/
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    /* enable interrupts here */
+
+    MdlOutputs(0);
+    %% ext mode 
+    %if ExtMode == 1
+      /* external mode */
+      {
+	boolean_T rtmStopReq = false;
+	rtExtModeOneStep(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+      }
+      rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+      rtExtModeUpload(0,%<RTMGetTaskTimeForTID(0)>);
+    %endif
+
+    %if MatFileLogging
+      GBLbuf.errmsg = rt_UpdateTXYLogVars(rtmGetRTWLogInfo(S),
+                                          rtmGetTPtr(S));
+      if (GBLbuf.errmsg != NULL) {
+	GBLbuf.stopExecutionFlag = 1;
+	return;
+      }
+    %endif
+    
+    MdlUpdate(0);
+
+    GBLbuf.isrOverrun--;
+    
+    %if ExtMode == 1
+      rtExtModeCheckEndTrigger();
+    %endif
+
+  } /* end rtOneStep */
+  %closefile tmpBuf
+  
+  %return tmpBuf
+%endfunction
+
+%% Function: FcnGenMTOneStepFcnForGRTWrapper ===========================
+%% Generate multitasking OntStep fcn call grt wrapper
+%%
+%function FcnGenMTOneStepFcnForGRTWrapper() 
+  %openfile tmpBuf
+  %assign firstTid = FixedStepOpts.TID01EQ? 1:0
+
+  /* Function: rtOneStep ========================================================
+   *
+   * Abstract:
+   *      Perform one step of the model. This function is modeled such that
+   *      it could be called from an interrupt service routine (ISR) with minor
+   *      modifications.
+   *
+   *      This routine is modeled for use in a multitasking environment and
+   *	therefore needs to be fully re-entrant when it is called from an
+   *	interrupt service routine.
+   *
+   * Note:
+   *      Error checking is provided which will only be used if this routine
+   *      is attached to an interrupt.
+   *
+   */
+   static void rt_OneStep(%<Name>_rtModel *S)
+   {
+     int_T  eventFlags[NUMST];
+     int_T  i;
+     real_T tnext;
+     int_T  *sampleHit = rtmGetSampleHitPtr(S);
+
+    /***********************************************
+     * Check and see if base step time is too fast *
+     ***********************************************/
+
+    if (GBLbuf.isrOverrun++) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    /***********************************************
+     * Check and see if error status has been set  *
+     ***********************************************/
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+    /* enable interrupts here */
+    
+    tnext = rt_SimUpdateDiscreteEvents(rtmGetNumSampleTimes(S),
+                                       rtmGetTimingData(S),
+                                       rtmGetSampleHitPtr(S),
+                                       rtmGetPerTaskSampleHitsPtr(S));
+    rtsiSetSolverStopTime(rtmGetRTWSolverInfo(S),tnext);
+    %if firstTid == 0 
+    for (i=1; i < NUMST; i++) {
+    %else
+    for (i=2; i < NUMST; i++) {
+    %endif
+        eventFlags[i] = sampleHit[i];
+    }
+    
+    /*******************************************
+     * Step the model for the base sample time *
+     *******************************************/
+
+    MdlOutputs(%<firstTid>);
+
+    %if ExtMode == 1
+      /* external mode */
+      {
+	boolean_T rtmStopReq = false;
+	rtExtModeOneStep(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+	rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+	rtExtModeUpload(0, %<RTMGetTaskTimeForTID(0)>);
+      }
+    %endif
+	
+    %if MatFileLogging
+      GBLbuf.errmsg = rt_UpdateTXYLogVars(rtmGetRTWLogInfo(S),
+                                          rtmGetTPtr(S));
+      if (GBLbuf.errmsg != NULL) {
+	GBLbuf.stopExecutionFlag = 1;
+	return;
+      }
+    %endif
+    MdlUpdate(%<firstTid>);
+
+    
+    /************************************************************************
+     * Model step complete for base sample time, now it is okay to          *
+     * re-interrupt this ISR.                                               *
+     ************************************************************************/
+
+     GBLbuf.isrOverrun--;
+
+
+    /*********************************************
+     * Step the model for any other sample times *
+     *********************************************/
+     %if firstTid == 0 
+     for (i=1; i < NUMST; i++) {
+     %else
+     for (i=2; i<NUMST; i++) {
+     %endif
+       if (eventFlags[i]) {
+	 if (GBLbuf.overrunFlags[i]++) {  /* Are we sampling too fast for */
+	   GBLbuf.stopExecutionFlag=1;  /*   sample time "i"?           */
+	   return;
+	 }
+
+	 MdlOutputs(i);
+
+	 %if ExtMode == 1
+	   rtExtModeUpload(i, %<RTMGetTaskTimeForTID("i")>);
+	 %endif
+	 
+	 MdlUpdate(i);
+	 
+	 /* Indicate task complete for sample time "i" */
+	 GBLbuf.overrunFlags[i]--;
+       }
+     }
+     %if ExtMode == 1
+       rtExtModeCheckEndTrigger();
+     %endif
+     
+   } /* end rtOneStep */
+   
+   %closefile tmpBuf
+   %return tmpBuf
+%endfunction   
+
+%% Function: FcnGenMainFcnForGRTWrapper ==============================
+%%
+%%
+%function FcnGenMainFcnForGRTWrapper()
+  %openfile tmpBuf
+  static void displayUsage (void)
+  {
+    (void) printf("usage: %s -tf <finaltime> -w -port <TCPport>\n",QUOTE(MODEL));
+    (void) printf("arguments:\n");
+    (void) printf("  -tf <finaltime> - overrides final time specified in "
+                  "Simulink (inf for no limit).\n");
+    (void) printf("  -w              - waits for Simulink to start model "
+                  "in External Mode.\n");
+    (void) printf("  -port <TCPport> - overrides 17725 default port in "
+                  "External Mode, valid range 256 to 65535.\n");
+  }
+  
+  /* Function: main =============================================================
+  *
+  * Abstract:
+  *      Execute model on a generic target such as a workstation.
+  */
+  int_T main(int_T argc, const char_T *argv[])
+  {
+    %<Name>_rtModel  *S;
+    real_T     finaltime = -2.0;
+
+    int_T  oldStyle_argc;
+    const char_T *oldStyle_argv[5];
+
+    /******************************
+     * MathError Handling for BC++ *
+     ******************************/
+     #ifdef BORLAND
+        signal(SIGFPE, (fptr)divideByZero);
+     #endif
+
+    /*******************
+     * Parse arguments *
+     *******************/
+
+    if ((argc > 1) && (argv[1][0] != '-')) {
+        /* old style */
+        if ( argc > 3 ) {
+            displayUsage();
+	    
+            return(EXIT_FAILURE);
+        }
+
+        oldStyle_argc    = 1;
+        oldStyle_argv[0] = argv[0];
+    
+        if (argc >= 2) {
+            oldStyle_argc = 3;
+
+            oldStyle_argv[1] = "-tf";
+            oldStyle_argv[2] = argv[1];
+        }
+
+        if (argc == 3) {
+            oldStyle_argc = 5;
+
+            oldStyle_argv[3] = "-port";
+            oldStyle_argv[4] = argv[2];
+
+        }
+
+        argc = oldStyle_argc;
+        argv = oldStyle_argv;
+
+    }
+
+    {
+        /* new style: */
+        double    tmpDouble;
+        char_T tmpStr2[200];
+        int_T  count      = 1;
+        int_T  parseError = false;
+
+        /*
+         * Parse the standard RTW parameters.  Let all unrecognized parameters
+         * pass through to external mode for parsing.  NULL out all args handled
+         * so that the external mode parsing can ignore them.
+         */
+        while(count < argc) {
+            const char_T *option = argv[count++];
+            
+            /* final time */
+            if ((strcmp(option, "-tf") == 0) && (count != argc)) {
+                const char_T *tfStr = argv[count++];
+                
+                sscanf(tfStr, "%200s", tmpStr2);
+                if (strcmp(tmpStr2, "inf") == 0) {
+                    tmpDouble = RUN_FOREVER;
+                } else {
+                    char_T tmpstr[2];
+
+                    if ( (sscanf(tmpStr2,"%lf%1s", &tmpDouble, tmpstr) != 1) ||
+                         (tmpDouble < 0.0) ) {
+                        (void)printf("finaltime must be a positive, real value or inf\n");
+                        parseError = true;
+                        break;
+                    }
+                }
+                finaltime = (real_T) tmpDouble;
+
+                argv[count-2] = NULL;
+                argv[count-1] = NULL;
+            }
+        }
+
+        if (parseError) {
+            (void)printf("\nUsage: %s -option1 val1 -option2 val2 -option3 "
+                         "...\n\n", QUOTE(%<Name>));
+            (void)printf("\t-tf 20 - sets final time to 20 seconds\n");
+
+            return(EXIT_FAILURE);
+        }
+
+	%if ExtMode == 1
+	  rtExtModeParseArgs(argc, argv, NULL); 
+	%endif
+
+        /*
+         * Check for unprocessed ("unhandled") args.
+         */
+        {
+            int i;
+            for (i=1; i<argc; i++) {
+                if (argv[i] != NULL) {
+                    printf("Unexpected command line argument: %s\n",argv[i]);
+                    return(EXIT_FAILURE);
+                }
+            }
+        }
+    }
+
+    /****************************
+     * Initialize global memory *
+     ****************************/
+    (void)memset(&GBLbuf, 0, sizeof(GBLbuf));
+
+    /************************
+     * Initialize the model *
+     ************************/
+
+     S = %<Name>();
+     if (rtmGetErrorStatus(S) != NULL) {
+       (void)fprintf(stderr,"Error during model registration: %s\n",
+       rtmGetErrorStatus(S));
+       return(EXIT_FAILURE);
+     }
+
+     MdlInitializeSizes();
+     MdlInitializeSampleTimes();
+    
+     %if MatFileLogging
+       GBLbuf.errmsg = rt_StartDataLogging(rtmGetRTWLogInfo(S),
+                                           rtmGetTFinal(S),
+					   rtmGetStepSize(S),
+					   &rtmGetErrorStatus(S));
+       if (GBLbuf.errmsg != NULL) {
+	 (void)fprintf(stderr,"Error starting data logging: %s\n",GBLbuf.errmsg);
+	 return(EXIT_FAILURE);
+       }
+     %endif
+    
+    %if ExtMode == 1
+      /* External mode */
+      %if !PurelyIntegerCode
+	rtERTExtModeSetTFinal(&%<RTMGet("TFinal")>);
+      %else
+	rtERTExtModeSetTFinal(rteiGetPtrTFinalTicks(%<RTMGet("RTWExtModeInfo")>));
+      %endif
+      rtExtModeCheckInit(%<NumSynchronousSampleTimes>);
+      {
+	boolean_T rtmStopReq = false;
+	rtExtModeWaitForStartPkt(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+      }
+    %endif
+
+    (void)printf("\n** starting the model **\n");
+
+    MdlStart();
+    if (rtmGetErrorStatus(S) != NULL) {
+      GBLbuf.stopExecutionFlag = 1;
+    }
+
+    /*************************************************************************
+     * Execute the model.  You may attach rtOneStep to an ISR, if so replace *
+     * the call to rtOneStep (below) with a call to a background task        *
+     * application.                                                          *
+     *************************************************************************/
+
+    if (rtmGetTFinal(S) == RUN_FOREVER) {
+        printf ("\n**May run forever. Model stop time set to infinity.**\n");
+    }
+    
+    while (!GBLbuf.stopExecutionFlag &&
+           (rtmGetTFinal(S) == RUN_FOREVER ||
+            rtmGetTFinal(S)-rtmGetT(S) > rtmGetT(S)*DBL_EPSILON)) {
+
+	%if ExtMode == 1
+	   {
+	     boolean_T rtmStopReq = false;
+	     rtExtModePauseIfNeeded(%<RTMGet("RTWExtModeInfo")>, ...
+	       %<NumSynchronousSampleTimes>, ...
+	       &rtmStopReq);
+	     if (rtmStopReq) {
+	       %<RTMSetStopRequested("true")>;
+	     }
+	   }
+	 %endif
+	 if (rtmGetStopRequested(S)) break;
+	   rt_OneStep(S);
+    }
+    
+    if (!GBLbuf.stopExecutionFlag && !rtmGetStopRequested(S)) {
+      /* Execute model last time step */
+      rt_OneStep(S);
+    }
+
+    /********************
+     * Cleanup and exit *
+     ********************/
+    %if MatFileLogging
+      rt_StopDataLogging(MATFILE,rtmGetRTWLogInfo(S));
+    %endif
+
+    %if ExtMode
+      rtExtModeShutdown(%<NumSynchronousSampleTimes>);
+    %endif
+
+    if (GBLbuf.errmsg) {
+        (void)fprintf(stderr,"%s\n",GBLbuf.errmsg);
+        return(EXIT_FAILURE);
+    }
+
+    if (GBLbuf.isrOverrun) {
+        (void)fprintf(stderr,
+                      "%s: ISR overrun - base sampling rate is too fast\n",
+                      QUOTE(%<Name>));
+        return(EXIT_FAILURE);
+    }
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        (void)fprintf(stderr,"%s\n", rtmGetErrorStatus(S));
+        return(EXIT_FAILURE);
+    }
+    %if !SLibSingleTasking() 
+      %% multitasking
+    else {
+      int_T i;
+      for (i=1; i<NUMST; i++) {
+	if (GBLbuf.overrunFlags[i]) {
+	  (void)fprintf(stderr,
+	  "%s ISR overrun - sampling rate is too fast for "
+	  "sample time index %d\n", QUOTE(%<Name>), i);
+	  return(EXIT_FAILURE);
+	}
+      }
+    }
+    %endif
+    MdlTerminate();
+    return(EXIT_SUCCESS);
+
+  } /* end main */
+  %closefile tmpBuf
+  
+  %return tmpBuf
+%endfunction
+
+
+%% Function FcnGenerateCommonCodeForGRTWrapper ========================
+%%
+%function FcnGenerateCommonCodeForGRTWrapper() 
+  %openfile tmpBuf
+    #ifndef EXIT_FAILURE
+    #define EXIT_FAILURE  1
+    #endif
+    #ifndef EXIT_SUCCESS
+    #define EXIT_SUCCESS  0
+    #endif
+    
+    #define RUN_FOREVER -1.0
+
+    %<LibDeclareERTDefines(0)>
+        
+    /*====================*
+    * External functions *
+    *====================*/
+    extern %<Name>_rtModel *%<Name>(void);
+    extern void MdlInitializeSizes(void);
+    extern void MdlInitializeSampleTimes(void);
+    extern void MdlStart(void);
+    extern void MdlOutputs(int_T tid);
+    extern void MdlUpdate(int_T tid);
+    extern void MdlTerminate(void);
+    
+    %if !SLibSingleTasking()
+      extern time_T rt_SimUpdateDiscreteEvents(int_T  rtmNumSampTimes,
+      void   *rtmTimingData,
+      int_T  *rtmSampleHitPtr,
+      int_T  *rtmPerTaskSampleHits);
+    %endif
+				  
+    /*==================================*
+    * Global data local to this module *
+    *==================================*/
+
+    static struct {
+      int_T    stopExecutionFlag;
+      int_T    isrOverrun;
+      int_T    overrunFlags[NUMST];
+      const char_T *errmsg;
+    } GBLbuf;
+    
+
+    %if ExtMode == 1
+      #  define rtExtModeSingleTaskUpload(S)                     \
+      {                                                          \
+        int stIdx;                                              \
+	rtExtModeUploadCheckTrigger(rtmGetNumSampleTimes(S));   \
+	for (stIdx=0; stIdx<NUMST; stIdx++) {                   \
+	  if (rtmIsSampleHit(S, stIdx, 0 /*unused*/)) {         \
+	    rtExtModeUpload(stIdx,rtmGetTaskTime(S,stIdx));    \
+	  }                                                     \
+	}                                                       \
+      }
+    %endif
+
+    /*=================*
+    * Local functions *
+    *=================*/
+
+    #ifdef BORLAND
+    /* Implemented for BC++ only*/
+    
+    typedef void (*fptr)(int, int);
+    
+    /* Function: divideByZero =====================================================
+    *
+    * Abstract: Traps the error Division by zero and prints a warning
+    *           Also catches other FP errors, but does not identify them
+    *           specifically.
+    */
+    void divideByZero(int sigName, int sigType)
+    {
+      signal(SIGFPE, (fptr)divideByZero);
+      if ((sigType == FPE_ZERODIVIDE)||(sigType == FPE_INTDIV0)){
+	printf("*** Warning: Division by zero\n\n");
+	return;
+      }
+      else{
+	printf("*** Warning: Floating Point error\n\n");
+	return;
+      }
+    } /* end divideByZero */
+
+    #endif /* BORLAND */
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction 
+
+%% FcnGenerateMainFunctionForGRTWrapper =========================
+%%
+%%
+%function FcnGenerateMainFunctionsForGRTWrapper(retDesc,cFile) void
+  %assign singleTasking = SLibSingleTasking()
+  %assign delim = "*   "
+
+  %openfile codeBuf
+  %if retDesc
+    %if !singleTasking
+      %% Multitasking
+      %<delim>Real-Time Workshop Embedded Coder example \n
+      %<delim>multitasking main Calling Generic 'Real Time' 
+      %<delim>code format interface.\n"
+    %else
+      %% Singletasking
+      %<delim>Real-Time Workshop Embedded Coder example 
+      %<delim>multi-rate singletasking main calling 
+      %<delim>main calling Generic 'Real Time' code 
+      %<delim>format interface.\n"
+    %endif
+  %else
+    %<FcnGenerateCommonCodeForGRTWrapper()>
+
+    %if singleTasking
+      %<FcnGenSTOneStepFcnForGRTWrapper()>
+    %else %% multitasking
+      %<FcnGenMTOneStepFcnForGRTWrapper()>
+    %endif
+    %<FcnGenMainFcnForGRTWrapper()>
+  %endif
+  %closefile codeBuf
+  %return codeBuf
+%endfunction
+
+
+%% SLibCreateMainCallGRTWrapper ===============================
+%%
+%%
+%%
+%function SLibCreateMainForGRTWrapper(fName) void
+
+  %assign cFile = SLibAddModelFile("SystemBody","Simulink",fName)
+  
+  %openfile tmpFcnBuf
+  %<SLibDeclareModelFcnArgs(TLC_TRUE)>\
+  %closefile tmpFcnBuf
+  %<SLibSetModelFileAttribute(cFile, "Definitions", tmpFcnBuf)>
+  %<SLibSetModelFileAttribute(cFile, "Functions", ...
+    FcnGenerateMainFunctionsForGRTWrapper(0,cFile))>
+  
+  %openfile tmpFcnBuf
+
+  #include <stdio.h>
+  #include "%<FcnGetPublicModelHeaderFile()>" /* Model's header file */
+  #include "rtwtypes.h" /* MathWorks types */
+  %if ExtMode
+    #include "ext_work.h" /* External mode header file */
+  %endif
+  %closefile tmpFcnBuf
+  
+  %<SLibSetModelFileAttribute(cFile, "Includes", tmpFcnBuf)>
+
+%endfunction
+  

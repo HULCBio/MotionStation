@@ -1,0 +1,386 @@
+%% $RCSfile: sdspcount2.tlc,v $
+%% $Revision: 1.10.4.2 $ $Date: 2004/04/12 23:08:19 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspcount2.c
+%%           Used for the Counter block
+
+%implements "sdspcount2" "C"
+
+%include "dsplib.tlc"
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %%
+  %% Mandatory I/O port indices
+  %%
+  %assign INPORT_CLK      = 0
+  %assign OUTPORT_CNT     = 0
+  %assign OutputFrameSize = CAST("Number",SFcnParamSettings.OutputFrameSize)
+
+  %%
+  %% Optional reset input port and trigger event options
+  %%
+  %assign RstPort    = (SFcnParamSettings.RstPort == "yes")
+  %assign EventType  = SFcnParamSettings.CountEvent
+  %%
+  %assign RISING     = 1 
+  %assign FALLING    = 2
+  %assign EITHER     = 3
+  %assign NONZERO    = 4
+  %assign FREE_RUN   = 5
+  %%
+  %if (EventType==FREE_RUN) 
+    %assign InputFrameSize = 1
+    %assign FreeRun        = 1
+    %assign INPORT_RST     = 0
+  %else
+    %assign InputFrameSize = LibDataInputPortWidth(INPORT_CLK)
+    %assign FreeRun        = 0
+    %assign INPORT_RST     = 1
+  %endif
+
+  %%
+  %% Optional output ports
+  %%
+  %assign CntPort       = (SFcnParamSettings.CntPort == "yes")
+  %assign HitPort       = (SFcnParamSettings.HitPort == "yes")
+  %assign MaxOutPortIdx = (CntPort && HitPort) ? 2 : 1
+  %assign OUTPORT_HIT   = MaxOutPortIdx - 1
+  %%
+  %if HitPort
+    %assign HitValParam = LibBlockParameter(HitValue, "", "", 0)
+  %else
+    %assign HitValParam = ""
+  %endif
+
+  %%
+  %% Count direction
+  %%
+  %assign CntDirectionIsUp = ((SFcnParamSettings.Direction) == 1)
+
+  %%
+  %% Count data type (size)
+  %% Note: There is no real32_T since uint32 is better than real32_T
+  %%       See comment in sdspcount2.cpp in getCountDataTypeRequired()
+  %%
+  %switch (SFcnParamSettings.CountSize)
+    %case "SS_UINT8"
+      %assign TypeCast = "(uint8_T)"
+      %break
+    %case "SS_UINT16"
+      %assign TypeCast = "(uint16_T)"
+      %break
+    %case "SS_UINT32"
+      %assign TypeCast = "(uint32_T)"
+      %break
+    %case "SS_DOUBLE"
+      %assign TypeCast = "(real_T)"
+      %break
+    %default    %%This case shd not occur
+      %assign TypeCast = ""
+  %endswitch
+
+  %assign portnum = 0
+  %if CntPort
+    %assign CntOutTypeCast = LibBlockOutputSignalDataTypeName(portnum, "")
+    %assign portnum = portnum + 1
+  %else
+    %assign CntOutTypeCast = ""
+  %endif
+  %%Hitvalue output can be of boolean(uchar) type
+  %if HitPort
+    %assign HitOutTypeCast = LibBlockOutputSignalDataTypeName(portnum, "")
+  %else
+    %assign HitOutTypeCast = ""
+  %endif
+
+  %%
+  %% User-defined maximum count
+  %%
+  %assign UserDefinedMaxCount = SFcnParamSettings.MaxCount
+
+  %%loop variable if frame based
+  %%will be used in event port handler tlc
+  %assign i_str = (InputFrameSize > 1) ? "i" : ""
+
+  %assign block = block + RISING + FALLING + EITHER + NONZERO + FREE_RUN + \
+                  OUTPORT_CNT + CntPort + HitPort + RstPort + EventType +  \
+                  HitValParam + CntDirectionIsUp +                         \
+                  TypeCast + UserDefinedMaxCount +                         \
+                  CntOutTypeCast + HitOutTypeCast +                        \
+                  OutputFrameSize + InputFrameSize +                       \
+                  FreeRun + INPORT_CLK + INPORT_RST + OUTPORT_HIT +        \
+                  i_str
+
+    %%Event port handler initializations
+    %if RstPort || !FreeRun
+        %<EventPortHandlerInstanceSetup(block)>
+    %endif
+    %if !FreeRun && EventPortRequiresState(block)
+        %assign clockephstate = ClkEphState
+    %else
+        %assign clockephstate = 0
+    %endif
+    %if RstPort && EventPortRequiresState(block)
+        %assign resetephstate = RstEphState
+    %else
+        %assign resetephstate = 0
+    %endif
+    %assign block = block + clockephstate + resetephstate
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions ==================================================
+%% Abstract:
+%%      During initialize set the clock count DWork vector with
+%%      the value specified by the start count ParamSetting.
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Counter (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %assign portnum = 0
+  %if !FreeRun
+    %<InitializeEventPortPrevStateCache(block, clockephstate)> \
+    %assign portnum = portnum + 1
+  %endif
+  %if RstPort
+    %<InitializeEventPortPrevStateCache(block, resetephstate)> \
+  %endif
+  %<LibBlockDWork(Count, "", "", 0)> = %<TypeCast>%<LibBlockParameter(InitialCount, "", "", 0)>;
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Counter (%<ParamSettings.FunctionName>) - '%<Name>' */
+  /* %<CounterComment(block)> */
+  %%
+  %assign cnt = LibBlockDWork(Count, "", "", 0)
+  %<RESET_CNT_IF_RST_TRUE(block, cnt)>\
+  %%
+  %% LOOP over InputFrameSize
+  %if InputFrameSize > 1
+    %if HitPort
+      %% If InputFrameSize > 1, we need to clear hitout before inputframe loop.
+      %% Otherwise the hitout can be calculated everytime in the outframe loop.
+      %<LibBlockOutputSignal(OUTPORT_HIT, "", "", 0)> = 0; /* Clear hit output */
+    %endif
+    {
+        const int_T InputFrameSize = %<InputFrameSize>;
+        int_T i;
+        for(i=0; i < InputFrameSize; i++){
+  %endif
+    %%
+    %% Loop over OutputFrameSize
+    %assign j_str = (OutputFrameSize > 1) ? "j" : ""
+    %%
+    %if FreeRun && (OutputFrameSize > 1)
+      {
+        const int_T OutputFrameSize = %<OutputFrameSize>;
+        int_T j;
+        for(j=0; j < OutputFrameSize; j++){
+    %endif
+    %%
+    %if !FreeRun
+	    %% PRE_UPDATE_STATE
+	    %<UPDATE_CNT_IF_EVENT(block, cnt)>\
+    %endif
+    %%
+    %% OUTPUT_COUNT
+    %if CntPort
+      %<LibBlockOutputSignal(OUTPORT_CNT, j_str, "", 0)> = (%<CntOutTypeCast>)%<cnt>; /* Output count */
+    %endif
+    %%
+    %% OUTPUT_HIT
+    %if HitPort
+	    %if InputFrameSize > 1
+	      if(%<cnt>==%<HitValParam>) {
+		    %<LibBlockOutputSignal(OUTPORT_HIT,j_str, "", 0)> = 1; /* Set hit output */
+	      }
+	     %else    
+    	  %% Note while in FreeRun, the InputFrameSize is always 1.
+          %<LibBlockOutputSignal(OUTPORT_HIT, j_str, "", 0)> = (%<HitOutTypeCast>)(%<cnt>==%<HitValParam>);  /* Output hit */
+        %endif
+    %endif
+    %%
+	%if FreeRun
+	    %% POST_UPDATE_STATE
+	    %<UPDATE_CNT_IF_EVENT(block, cnt)>\
+	%endif
+	%%
+    %if FreeRun && (OutputFrameSize > 1)
+        } %% close for OutputFrameSize
+      }
+    %endif
+    %if InputFrameSize > 1
+    } %% close for InputFrameSize
+  }
+  %endif
+%endfunction %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: UPDATE_CNT_IF_EVENT
+%function  UPDATE_CNT_IF_EVENT(block, cnt) Output
+  %%
+  %%Generate conditional code based on the count event type:
+  %if EventType != FREE_RUN
+    if (%<CheckEventPort(block, 0, clockephstate)>)
+    {
+  %endif %% EventType
+  %%
+  %<Gen_Count_Code(cnt)>\
+  %%
+  %if EventType != FREE_RUN
+    }
+  %endif
+  %%
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: isTrivialUserDefMax
+%function isTrivialUserDefMax(MaxCount) void
+%% If the user selects a user defined max count
+%% that equals the max range of a built-in, then
+%% use the built-in datatype.  This removes one
+%% piece of conditional code in the usdef case.
+%%
+ %switch (SFcnParamSettings.CountSize)
+    %case "SS_UINT8"
+      %assign isTriv = (MaxCount == 255)        %% 2^8 -1
+      %break
+    %case "SS_UINT16"
+      %assign isTriv = (MaxCount == 65535)      %% 2^16 -1
+      %break
+    %case "SS_UINT32"
+      %assign isTriv = (MaxCount == 4294967295) %% 2^32 -1
+      %break
+    %default
+      %assign isTriv = 0
+      %break
+  %endswitch
+
+  %return isTriv
+
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Gen_Count_Code
+%function Gen_Count_Code(cnt) Output
+  %%
+  %assign isNotUserDefMax   = (SFcnParamSettings.UserDefMax != "yes")
+  %assign trivialUserDefMax = isTrivialUserDefMax(UserDefinedMaxCount)
+  %%
+  %if (isNotUserDefMax || trivialUserDefMax)
+    %%
+    %% Maximum range of built-in data type happens to match the maximum count value.
+    %% No need to do a range comparison - just increment or decrement count appropriately
+    %% (and let it wrap around to zero on its own...)
+    %%
+    %if trivialUserDefMax
+      /* User defined maximum is equal to upper limit of built-in data type %<TypeCast> */
+    %endif
+    %%
+    %if CntDirectionIsUp
+      %<cnt>++;
+    %else
+      %<cnt>--;
+    %endif
+  %else
+    %if CntDirectionIsUp
+      if (%<cnt> < %<TypeCast>%<UserDefinedMaxCount>) %<cnt>++;
+      else                                            %<cnt> = 0;
+    %else
+      if (%<cnt> > 0) %<cnt>--;
+      else            %<cnt> = %<TypeCast>%<UserDefinedMaxCount>; /* Wrap to max count */
+    %endif
+  %endif
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: RESET_CNT_IF_RST_TRUE
+%function RESET_CNT_IF_RST_TRUE(block, cnt) Output
+  %if RstPort
+    if (%<CheckEventPort(block, !FreeRun, resetephstate)>)
+        %<ResetCountToInitialValue(block, cnt)>
+  %endif
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: ResetCountToInitialValue
+%function ResetCountToInitialValue(block, cnt) Output
+    /* Reset count to initial value */
+    %<cnt> = %<TypeCast>%<LibBlockParameter(InitialCount, "", "", 0)>;
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: CounterComment   ===============================================
+%%
+%function CounterComment(block) void
+
+    %switch EventType
+    %case RISING
+      %assign Event_str = "Rising edge trigger mode, "
+      %break
+    %case FALLING
+      %assign Event_str = "Falling edge trigger mode, "
+      %break
+    %case EITHER
+      %assign Event_str = "Either edge trigger mode, "
+      %break
+    %case NONZERO
+      %assign Event_str = "Non-zero sample trigger mode, "
+      %break
+    %case FREE_RUN
+      %assign Event_str = "Free running mode, "
+      %break
+  %endswitch
+
+  %switch (SFcnParamSettings.CountSize)
+    %case "SS_UINT8"
+      %assign CntSize_str = "8 bit, "
+      %break
+    %case "SS_UINT16"
+      %assign CntSize_str = "16 bit, "
+      %break
+    %case "SS_UINT32"
+      %assign CntSize_str = "32 bit, "
+      %break
+    %case "SS_SINGLE"
+      %assign CntSize_str = "single precision floating point, "
+      %break
+    %case "SS_DOUBLE"
+      %assign CntSize_str = "double precision floating point, "
+      %break
+  %endswitch  
+  
+  %if CntDirectionIsUp
+    %assign Dir_str = "Up counter"
+  %else
+    %assign Dir_str = "Down counter"
+  %endif
+  
+  %return (Event_str + CntSize_str + Dir_str)
+  
+%endfunction  %% CounterComment  
+
+%% [EOF] sdspcount2.tlc
+

@@ -1,0 +1,104 @@
+%% Abstract:
+%%      TLC file for xPC Target Bit Packing block
+%%
+%% Copyright 1996-2004 The MathWorks, Inc.
+%% $Revision: 1.1.4.1 $ $Date: 2004/03/04 20:09:40 $
+
+%implements xpcbit2double "C"
+
+
+%function Start(block, system) Output
+  %% Initialize outputs so that if a chunk is not used, it still has
+  %% the proper value (0).
+  /* Bit Packing: %<block.Name> */
+  %<LibBlockOutputSignal(0, "", "", 0)> = 0.0;
+%endfunction
+
+
+%function Outputs(block, system) Output
+  %assign map = block.SFcnParamSettings.Map
+  /* Bit Packing: %<block.Name> */
+  {
+    uint32_T *y = (uint32_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>;
+    %assign specMap = FEVAL("getmap", map, 0)
+    %if SIZE(specMap, 0)
+
+      y[0] =
+      %<genBitPack(specMap)>
+    %endif
+    %assign specMap = FEVAL("getmap", map, 1)
+    %if SIZE(specMap, 0)
+
+      y[1] =
+      %<genBitPack(specMap)>
+    %endif
+  }
+%endfunction
+
+%% Return the code for one mask/shift operation.
+%function oneLine(map)
+  %assign masks = ...
+    [       "0x1",        "0x3",        "0x7",        "0xf", ...
+           "0x1f",       "0x3f",       "0x7f",       "0xff", ...
+          "0x1ff",      "0x3ff",      "0x7ff",      "0xfff", ...
+         "0x1fff",     "0x3fff",     "0x7fff",     "0xffff", ...
+        "0x1ffff",    "0x3ffff",    "0x7ffff",    "0xfffff", ...
+       "0x1fffff",   "0x3fffff",   "0x7fffff",   "0xffffff", ...
+      "0x1ffffff",  "0x3ffffff",  "0x7ffffff",  "0xfffffff", ...
+     "0x1fffffff", "0x3fffffff", "0x7fffffff", "0xffffffff"]
+  %assign oOff = map[0]
+  %assign len  = map[1]
+  %assign inp  = map[2]
+  %assign iOff = map[3]
+  %assign expr = shiftWithParams(masks[len - 1], iOff, 0)
+  %assign iSig = LibBlockInputSignal(inp, "", "", 0)
+
+  %return shiftWithParams("(uint32_T)(%<iSig> & %<expr>)", oOff, iOff)
+%endfunction
+
+%% Return the code for one output based on map.
+%function genBitPack(map)
+  %assign maskExpr = oneLine(getRow(map, 0))
+  %assign addParen = 0
+  %foreach row = SIZE(map, 0) - 1
+    %assign maskExpr = maskExpr + " |\n%<oneLine(getRow(map,row + 1))>"
+    %assign addParen = 1
+  %endforeach
+  %if addParen == 1
+    %assign maskExpr = "(%<maskExpr>)"
+  %endif
+  %return maskExpr + ";"
+%endfunction
+
+%% Return the expr with an appropriate shift expression. If the shift
+%% expression is non-empty, surround the whole thing with params.
+%function shiftWithParams(expr, o, i)
+  %assign s = shift(o, i)
+  %if s == ""
+    %return expr
+  %else
+    %return "(%<expr>%<s>)"
+  %endif
+%endfunction
+
+%% Return the appropriate (left or right) shift from offset i to o. Thus
+%% if o > i, it is a left shift, and vice versa.
+%function shift(o, i)
+  %if o == i
+    %return ""
+  %endif
+  %assign result = (o > i) ? " << " : " >> "
+  %return (result + "%<(o \> i) ? (o - i) : (i - o)>")
+%endfunction
+
+%% Return the row of the matrix or vector. If map is a vector to start with,
+%% it is returned in its entirety. This ensures that the caller always gets
+%% a row vector.
+%function getRow(map, row)
+  %if SIZE(map, 0) > 1
+    %return map[row]
+  %else
+    %assert row == 0
+    %return map
+  %endif
+%endfunction

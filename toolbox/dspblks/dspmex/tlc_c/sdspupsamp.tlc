@@ -1,0 +1,374 @@
+%% $RCSfile: sdspupsamp.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:10:07 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Increases the sampling rate of a signal by 
+%%           inserting zeros into the signal.
+
+%implements sdspupsamp "C"
+
+%include "dsplib.tlc"
+%include "dsp_intbounds.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %if !IsInputPortContiguous(block, 0) 
+    %<LibDiscontiguousInputError(block)>
+  %endif
+  
+  %assign OUTPORT  = 0
+  %assign INPORT   = 0
+
+  %assign inCplx   = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign inDtype  = inCplx ? "creal_T" : "real_T"
+  %assign inWidth  = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign outWidth = CAST("Number",LibDataOutputPortWidth(OUTPORT))
+  
+  %assign frame    = (SFcnParamSettings.FRAME[0] != 0)
+  %assign nChans   = (frame) ? CAST("Number",SFcnParamSettings.NCHANS[0]) : inWidth
+  %assign chanLen  = CAST("Number", inWidth / nChans)
+  
+  %assign SamplesPerInputFrame  = CAST("Number", inWidth  / nChans)
+  %assign SamplesPerOutputFrame = CAST("Number", outWidth / nChans)
+
+  %assign outmode  = CAST("Number",SFcnParamSettings.OUTMODE[0])
+  %assign convfactor = CAST("Number",SFcnParamSettings.CONVFACTOR[0])
+  %assign phase      = CAST("Number",SFcnParamSettings.PHASE[0])
+  
+  %assign isSingleRate = LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+  
+  %assign block = block + OUTPORT + INPORT + \
+                  inCplx + inDtype + inWidth + outWidth + \ 
+		  frame + nChans + chanLen + \
+                  SamplesPerInputFrame + SamplesPerOutputFrame + \
+                  outmode + convfactor + phase + \
+		  isSingleRate + isMultiTasking
+		  
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Upsample (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign IC       = SFcnParamSettings.IC
+  %assign ic_cplx  = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+  %assign ic_rows  = SFcnParamSettings.IC_ROWS
+  %assign ic_cols  = SFcnParamSettings.IC_COLS
+  %assign numIC    = SIZE(SFcnParamSettings.IC,1)
+  %assign dtype_ic = ic_cplx ? "creal_T" : "real_T"
+  %%
+  %% Note regarding DWorks:  
+  %% ----------------------
+  %% Counter is needed in any mode
+  %% Input index is needed in all multirate modes
+  %% ICs are needed only in multirate, multi-tasking mode
+  {
+    %<LibBlockDWork(Count,"", "", 0)> = %<(phase == 0) ? 0 : (convfactor-phase)>; /* Reset counter */
+    %%
+    %if !isSingleRate
+        %%
+        %<LibBlockDWork(InputIdx,"", "", 0)> = 0;  /* Reset index into input */
+        %%
+        %if isMultiTasking 
+        {
+            %<inDtype> *inBuf;
+            int n;
+
+            %if numIC > 1
+              %%
+              %% Number of ICs is greater than one, so we have to build up a variable.
+              %%    
+              %assign astr    = ""
+              %assign count   = 0
+              %if (ic_cplx)
+	        creal_T ic[%<numIC>] = {
+	          %foreach Col = ic_cols
+	            %foreach Row = ic_rows
+	              %assign astr  = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+	              %assign count = count + 1
+	              %if (count < numIC)
+		        %assign astr = astr + ","
+	              %else
+		        %assign astr = astr + "};"
+	              %endif
+	            %endforeach
+	            %<astr>
+	            %assign astr    = ""
+	          %endforeach
+              %else
+	        real_T ic[%<numIC>] = {
+	          %foreach Col = ic_cols
+	            %foreach Row = ic_rows
+	              %assign astr = astr + "%<IC[count]>"
+	              %assign count   = count + 1
+	              %if (count < numIC)
+		        %assign astr = astr + ","
+	              %else
+		        %assign astr = astr + "};"
+	              %endif
+	            %endforeach
+	            %<astr>
+	            %assign astr    = ""
+	          %endforeach
+              %endif
+            %endif
+
+            inBuf = %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+            for (n=0; n<%<inWidth>; n++) {      
+              %%
+              %if (numIC <= 1) 
+	        %%
+	        %if numIC == 0
+	          %assign IC_re = 0.0
+	          %assign IC_im = 0.0
+	        %else
+	          %assign IC_re = REAL(IC[0])
+	          %if !ic_cplx
+	            %assign IC_im = 0.0
+	          %else
+	            %assign IC_im = IMAG(IC[0])
+	          %endif
+	        %endif
+	        /* Scalar IC */
+	        %if !inCplx
+	          *inBuf++ = %<IC_re>;
+	        %else
+	          inBuf->re     = %<IC_re>;
+	          (inBuf++)->im = %<IC_im>;
+	        %endif
+              %else
+	        %%
+	        %% We are not using memcopy here because if the input
+	        %% is complex and the ic is real, we fill in the imaginary
+	        %% part with zeros.
+	        %%
+	        /* Vector IC */
+	        %if !inCplx
+	          *inBuf++ = ic[n];
+	        %else
+	          inBuf->re     = %<(ic_cplx) ? "ic[n].re" : "ic[n]">; 
+	          (inBuf++)->im = %<(ic_cplx) ? "ic[n].im"  : 0.0>;
+	        %endif
+              %endif
+            } %% end for inWidth
+            %%
+            %% Save input/output pointers to buffer
+            %% 
+            %assign buffer =  LibBlockDWorkAddr(Buffer,"","", 0)
+            %<LibBlockPWork(pOutBuf,"","",0)> = %<buffer>;
+            %<LibBlockPWork(pInBuf,"","",0)> = %<buffer> + %<inWidth>;
+        }
+        %endif
+    %endif
+  }  
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Upsample (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %if (isSingleRate)
+    %<SingleRateCode(block)>
+  %else
+    %if (isMultiTasking)
+      %<MultiRate_MultiTasking_Code(block)>
+    %else
+      %<MultiRate_SingleTasking_Code(block)>
+    %endif
+  %endif
+  
+%endfunction
+  
+
+%% Function: SingleRateCode ==========================================================
+%%
+%function SingleRateCode(block) Output
+  %%
+  {
+    %<inDtype>  *y    = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+    %<inDtype>  *uptr = (%<inDtype> *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    int_T n;  
+    int_T c;
+    
+    for (n=0; n<%<nChans>; n++) {
+      int_T i;
+      
+      c = %<LibBlockDWork(Count,"", "", 0)>; /* Reset counter for each channel */
+      
+      for (i=0; i<%<SamplesPerOutputFrame>; i++) {
+	if (c++ == 0)   *y++ = *uptr++;
+	%if inCplx
+	  else {            
+	    y->re = 0.0;
+	    (y++)->im = 0.0;
+	  }
+        %else
+	  else  *y++ = 0.0;
+	%endif
+	if (c == %<convfactor>) c = 0;
+      }
+    }
+    %<LibBlockDWork(Count,"", "", 0)> = c; /* Update counter for next sample hit */
+  }
+  
+%endfunction %% SingleRateCode
+
+
+%% Function: MultiRate_MultiTasking_Code ==========================================================
+%%
+%function MultiRate_MultiTasking_Code(block) Output
+  %%
+  if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+    %<inDtype>  *y        = (%<inDtype> *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>);
+    %<inDtype>  *outBuf   = (%<inDtype> *)(%<LibBlockPWork(pOutBuf,"","",0)>);
+    int32_T inCnt;
+    int_T   n;  
+    int32_T c;
+    %%
+    for (n=0; n<%<nChans>; n++) {
+      %<inDtype> *Buf = outBuf + n*%<SamplesPerOutputFrame>;
+      int_T i;
+      
+      c = %<LibBlockDWork(Count,"", "", 0)>; /* Reset counter for each channel */
+      inCnt = %<LibBlockDWork(InputIdx,"", "", 0)>; /* Reset input indexfor each channel */
+      
+      for (i=0; i<%<SamplesPerOutputFrame>; i++) {
+	if (c++ == 0) *y++ = Buf[inCnt++];
+	%if inCplx
+	  else {            
+	    y->re = 0.0;
+	    (y++)->im = 0.0;
+	  }
+        %else
+	  else *y++ = 0.0;
+        %endif
+        %%
+        if (c == %<convfactor>) c = 0;
+      }
+    }
+    %<LibBlockDWork(Count,"", "", 0)> = c; /* Update counter for next sample hit */
+    %%             
+    
+    /* Update input index for next sample hit */       
+    if (inCnt == %<SamplesPerOutputFrame>) {
+      inCnt = 0;
+      outBuf += %<inWidth>;
+    }
+    %<LibBlockDWork(InputIdx,"", "", 0)> = inCnt;
+    
+    /* Update Output pointer buffer */
+    {
+      %<inDtype> *aBuf =  %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+      if (outBuf == aBuf + %<2*inWidth>) {
+	outBuf = aBuf;
+      }
+      %<LibBlockPWork(pOutBuf,"","",0)> = outBuf;
+    }
+    %%
+  }  %% end output sample hit
+  %%
+  %%        
+  if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+    %if convfactor > 1 
+      %%
+      %<inDtype> *inBuf = %<LibBlockPWork(pInBuf,"","", 0)>;
+      %%
+      %if inWidth > 1
+	%% Use loop roller in order to support dicontig inputs
+	%assign rollVars = ["U"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, \
+	  block, "Roller", rollVars
+	  *inBuf++ = %<LibBlockInputSignal(INPORT, "", lcv, sigIdx)>;
+	%endroll
+	%%
+      %else
+        *inBuf++ = %<LibBlockInputSignal(INPORT,"","", 0)>;
+      %endif
+      %%
+      /* Update Input pointer buffer */
+      {
+	%<inDtype> *aBuf = %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+	if (inBuf == aBuf + %<2*inWidth>) {
+	  inBuf = aBuf; 
+	}
+      }
+      %<LibBlockPWork(pInBuf,"","",0)>  = inBuf;
+      %%
+    %else  %% convfactor == 1
+      %%
+      %% Upampling by  one is just copying inputs to outputs
+      %%
+      %assign rollVars = ["U", "DWork"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, \
+	block, "Roller", rollVars
+	%<LibBlockDWork(Buffer,"", lcv, sigIdx)> = \
+	%<LibBlockInputSignal(INPORT,"",lcv, sigIdx)>;
+      %endroll
+    %endif
+  } %% end input sample hit
+  %%
+%endfunction  %% MultiRate_MultiTasking_Code
+
+
+%% Function: MultiRate_SingleTasking_Code ==========================================================
+%%
+%function MultiRate_SingleTasking_Code(block) Output
+  %%
+  if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+    %<inDtype>  *y    = (%<inDtype> *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>);
+    %<inDtype>  *uptr = (%<inDtype> *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    int_T      inCnt  = %<LibBlockDWork(InputIdx,"", "", 0)>;
+    int_T      n;  
+    int32_T    c;
+    
+    for (n=0; n<%<nChans>; n++) {
+      int_T i;
+      int_T currentChannel = n*%<SamplesPerOutputFrame>;
+      
+      c = %<LibBlockDWork(Count,"", "", 0)>; /* Reset counter for each channel */
+      inCnt = %<LibBlockDWork(InputIdx,"", "", 0)>;
+      
+      for (i=0; i<%<SamplesPerOutputFrame>; i++) {
+	if (c++ == 0) *y++ = uptr[currentChannel + inCnt++];
+	%if inCplx
+	  else {            
+	    y->re = 0.0;
+	    (y++)->im = 0.0;
+	  }
+        %else
+	  else *y++ = 0.0;
+        %endif
+        if (c == %<convfactor>) c = 0;
+      }
+    }
+    /* Update counter for next sample hit */
+    %<LibBlockDWork(Count,"", "", 0)> = c;
+    
+    /* Update input index */
+    if (inCnt >= %<SamplesPerOutputFrame>) inCnt = 0;
+    %<LibBlockDWork(InputIdx,"", "", 0)> = inCnt;
+    %%
+  } %% end if(LibIsSFcnSampleHit(Output))
+
+%endfunction  %% MultiRate_SingleTasking_Code
+
+  
+%% [EOF] sdspupsamp.tlc
+
+
+
+
+
+
+
+
+

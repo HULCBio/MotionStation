@@ -1,0 +1,1371 @@
+%% $Revision: 1.1.6.15 $
+%%
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: Generic S-Function block target file
+%%
+%% Check if a specific TLC file for this s-function exists.
+%% If so, execute its OOP function, otherwise, make an
+%% s-function call.
+%%
+
+%implements "S-Function" "C"
+
+%% Function: FcnChildSFunctionIndex ===========================================
+%% Abstract:
+%%      This function manages the global child s-function list,
+%%      and returns the block's S-Function index.  The index
+%%      is determined by the global variable NumChildSFunctions
+%%
+%%      In addition, the function sets all the S-Function's parameters
+%%      to "required".
+%%
+%%      block = reference to the block
+%%
+%function FcnChildSFunctionIndex(block) void
+  %if EXISTS("block.SFunctionIdx") == 0
+    %% register the s-function in the global s-function list
+
+    %assign SFunctionIdx = NumChildSFunctions
+    %assign block = block + SFunctionIdx
+    %assign ::CompiledModel.ChildSFunctionList = ...
+      ::CompiledModel.ChildSFunctionList + block
+    %assign ::CompiledModel.NumChildSFunctions = ...
+      ::CompiledModel.NumChildSFunctions + 1
+
+  %endif
+  %return block.SFunctionIdx
+%endfunction
+
+
+%% Function: FcnCopyStatesFromWorkVector ======================================
+%% Abstract:
+%%      Function to copy the s-functions contiguous state vector to the
+%%      "non-contiguous" model state vector.
+%%
+%%      s  = child simstruct
+%%      xc = continuous states
+%%      xd = discrete states
+%%
+%function FcnCopyStatesFromWorkVector(s, xc, xd) Output
+  (void)memcpy(%<xc>, sfcnX, ssGetNumContStates(%<s>)*sizeof(real_T));
+  (void)memcpy(%<xd>, sfcnX+ssGetNumContStates(%<s>),
+               ssGetNumDiscStates(%<s>)*sizeof(real_T));
+%endfunction
+
+%% Function: FcnGetAndCheckSFunctionType =======================================
+%% Abstract:
+%%      Function to determine SFunctionType from S-function's ParamSettings and
+%%      does some checking based on the type.
+%%
+%function FcnGetAndCheckSFunctionType(block)
+  %with block
+    %assign funcName  = ParamSettings.FunctionName
+    %%
+    %% Determine S-function type (e.g. was it remapped, is it inlined, etc.)
+    %%
+    %% The result of this will be to set
+    %%    SFunctionType  == "C-MEX", "TLC", or "OTHER"
+    %%
+    %if ParamSettings.Inlined == "yes"
+      %assign fileExists = LibBlockSFunctionFileExists(funcName)
+      %%
+      %if !fileExists
+	%assign errTxt = "Unable to locate inlined TLC file: %<funcName>.tlc"
+	%<LibBlockReportFatalError(block, errTxt)>
+      %endif
+      %if Accelerator && (funcName == "stateflow")
+	%% R12 Beta1: until BlockInstanceData and Terminate functions are
+	%% supported, only run MEX-version of stateflow blocks.
+	%assign SFunctionType = "OTHER"
+      %else
+	%%
+	%% The S-function has a corresponding TLC file
+	%%
+	%assign SFunctionType = "TLC"
+      %endif
+    %elseif ParamSettings.Inlined == "skip"
+      %assign SFunctionType = "OTHER"
+    %elseif ParamSettings.FunctionType == "C-MEX"
+      %assign SFunctionType = "C-MEX"
+      %% ERT does not support multi-rate non-inlined sfunctions
+      %% in single-tasking mode
+      %if CodeFormat == "Embedded-C" && TYPE(TID) == "Vector" && ...
+	CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+	%if IsModelReferenceTarget()
+	  %assign target = "Model reference "
+	%else
+	  %assign target = "Embedded-C code format "
+	%endif
+      %endif
+    %else
+      %%
+      %% The S-function is either an M-File or a Fortran-MEX file.
+      %%
+      %if Accelerator
+	%assign SFunctionType = "OTHER"
+      %else
+	%assign funcType = ParamSettings.FunctionType
+	%assign blockName = LibGetFormattedBlockPath(block)
+	%assign errTxt = "%<funcType> S-functions "  ...
+	  "without a corresponding TLC file are not supported. " ...
+	  "You can inline your S-function (%<funcName>) by creating " ...
+	  "a TLC file for it. You can also remap your S-function to C by " ...
+	  "creating a corresponding C Mex source file "...
+	  "and a %<funcName>.tlc file in the same " ...
+	  "directory as the %<funcType> S-function which contains (on the " ...
+	  "first line):\n" ...
+	  "  \%\% CallAsCMexLevel1\n"  ...
+	  "or\n" ...
+	  "  \%\% CallAsCMexLevel2\n"
+	%<LibBlockReportFatalError(block, errTxt)>
+      %endif
+    %endif  %% Paramsettings
+  %endwith  %% block
+
+  %return SFunctionType
+
+%endfunction %% FcnGetAndCheckSFunctionType
+
+
+%% Function: FcnCacheRTWGeneratedChildSfcnInfo =================================
+%% Abstract:
+%%  If a model contains RTW Generated s-function, the model export file must
+%%  include the child s-function export file in the case if it has custom
+%%  data type
+%function FcnCacheRTWGeneratedChildSfcnInfo(block, system) void
+    %% Cache inlcude export files
+    %if !ISFIELD(CompiledModel, "RTWGeneratedChildSfcnExportFiles")
+      %addtorecord  CompiledModel RTWGeneratedChildSfcnExportFiles ""
+      %addtorecord CompiledModel RTWGeneratedChildSfcn {}
+    %endif
+
+    %assign sfcnName = ParamSettings.FunctionName
+    %if !ISFIELD(CompiledModel.RTWGeneratedChildSfcn, sfcnName)
+      %% If there are several instances of the same s-function,
+      %% cache one export file
+      %addtorecord CompiledModel.RTWGeneratedChildSfcn %<sfcnName> 1
+
+      %assign currExpFiles = CompiledModel.RTWGeneratedChildSfcnExportFiles
+      %openfile buffer
+      #undef S_FUNCTION_NAME
+      #if !defined(RTW_GENERATED_SFCN_TUNABLE_PRMS_%<sfcnName>)
+      #define RTW_GENERATED_SFCN_TUNABLE_PRMS_%<sfcnName>
+      #endif
+      #include "%<sfcnName>.h"
+
+      %<currExpFiles>
+      %closefile buffer
+      %assign CompiledModel.RTWGeneratedChildSfcnExportFiles = buffer
+    %endif
+%endfunction %% FcnCacheRTWGeneratedChildSfcnInfo
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      0) Add Type/Level combo variable for comment
+%%      1) Add a free buffer if using malloc
+%%      2) If it's a Stateflow (not in Accelerator) / Inlined S-function, then
+%%         call the BlockInstanceSetup function.
+%%      3) If it's a C-Mex S-function, then register the s-function in the
+%%         global child index table
+%%      4) Otherwise, it's an M-file or Fortran-Mex file.  If the number of
+%%         outputs is greater than zero, exit.
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign funcName  = ParamSettings.FunctionName
+  %assign str = ""
+
+  %if LibSFunctionLevel() == "RTWLevel2"
+    %% Cache #include child s-function export files
+    %<FcnCacheRTWGeneratedChildSfcnInfo(block, system)>
+  %endif
+  %if LibSFunctionLevel() == "RTWLevel2"
+    %assign str = "RTW Generated "
+  %endif
+  %assign TypeLevel = "%<str>Level%<ParamSettings.FunctionLevel> %<Type>"
+  %assign block     = block + TypeLevel
+
+  %assign SFunctionType = FcnGetAndCheckSFunctionType(block)
+  %assign block         = block + SFunctionType
+
+  %if SFunctionType == "TLC"
+
+    %<GENERATE_TYPE(block, "BlockInstanceSetup", funcName, system)>
+
+  %elseif SFunctionType == "C-MEX" || (SFunctionType == "OTHER" && ...
+    Accelerator)
+    %%
+    %% The S-function is a C-MEX file (without a TLC file)
+    %%
+
+    %assign ps = ParamSettings
+    %if ps.FunctionLevel == 1
+      %%
+      %% By default, all level 1 S-functions are called.
+      %%
+      %assign InitializeSizesEmpty       = 0
+      %assign InitializeSampleTimesEmpty = 0
+      %assign InitializeConditionsEmpty  = 0
+      %assign StartEmpty                 = 0
+      %assign OutputsEmpty               = 0
+      %assign UpdateEmpty                = 0
+      %assign DerivativesEmpty           = 0
+      %assign ProjectionEmpty            = 0
+      %assign ZeroCrossingsEmpty         = 1
+      %assign EnableEmpty                = 0
+      %assign DisableEmpty               = 0
+      %assign TerminateEmpty             = 0
+    %else
+      %%
+      %% By default, all level 2 S-functions are not called.
+      %%
+      %assign InitializeSizesEmpty       = 1
+      %assign InitializeSampleTimesEmpty = 1
+      %assign InitializeConditionsEmpty  = 1
+      %assign StartEmpty                 = 1
+      %assign OutputsEmpty               = 1
+      %assign UpdateEmpty                = 1
+      %assign DerivativesEmpty           = 1
+      %assign ProjectionEmpty            = 1
+      %assign ZeroCrossingsEmpty         = 1
+      %assign EnableEmpty                = 1
+      %assign DisableEmpty               = 1
+      %assign TerminateEmpty             = 1
+    %endif
+    %assign ps = ps + InitializeSizesEmpty
+    %assign ps = ps + InitializeSampleTimesEmpty
+    %assign ps = ps + InitializeConditionsEmpty
+    %assign ps = ps + StartEmpty
+    %assign ps = ps + OutputsEmpty
+    %assign ps = ps + UpdateEmpty
+    %assign ps = ps + DerivativesEmpty
+    %assign ps = ps + ProjectionEmpty
+    %assign ps = ps + ZeroCrossingsEmpty
+    %assign ps = ps + EnableEmpty
+    %assign ps = ps + DisableEmpty
+    %assign ps = ps + TerminateEmpty
+    %%
+    %% Determine if states are discontiguous and attach it to the block.
+    %% This knowledge is required later in code generation, so just
+    %% compute it once.  Note that this is only relevant for level 2
+    %% S-functions
+    %%
+    %if ps.FunctionLevel == 1
+      %assign numDiscStates = DiscStates[0]
+      %assign numContStates = ContStates[0]
+      %assign nStates = numDiscStates + numContStates
+      %assign StatesDiscontiguous = (numDiscStates > 0) && (numContStates > 0)
+    %else
+      %%
+      %% Pinpoint exactly which functions are to be called.  (Note that
+      %% an mdlRTW function is illegal since it is expected that the
+      %% S-function has a corresponding TLC file).
+      %%
+      %foreach idx = SIZE(ps.SFcnmdlRoutines, 1)
+        %switch ps.SFcnmdlRoutines[idx]
+          %case "mdlInitializeSizes"
+            %assign ps.InitializeSizesEmpty = 0
+            %break
+          %case "mdlInitializeSampleTimes"
+            %assign ps.InitializeSampleTimesEmpty = 0
+            %break
+          %case "mdlInitializeConditions"
+            %assign ps.InitializeConditionsEmpty = 0
+            %break
+          %case "mdlStart"
+            %assign ps.StartEmpty = 0
+            %break
+          %case "mdlOutputs"
+            %assign ps.OutputsEmpty = 0
+            %break
+          %case "mdlUpdate"
+            %assign ps.UpdateEmpty = 0
+            %break
+          %case "mdlDerivatives"
+            %assign ps.DerivativesEmpty = 0
+            %break
+          %case "mdlProjection"
+            %assign ps.ProjectionEmpty = 0
+            %break
+          %case "mdlZeroCrossings"
+            %assign ps.ZeroCrossingsEmpty = 0
+            %break
+          %case "mdlTerminate"
+            %assign ps.TerminateEmpty = 0
+            %break
+          %case "mdlEnable"
+            %assign ps.EnableEmpty = 0
+            %break
+          %case "mdlDisable"
+            %assign ps.DisableEmpty = 0
+            %break
+          %case "mdlRTW"
+	    %if (LibSFunctionLevel() == "RTWLevel2") || Accelerator || IsModelReferenceSimTarget()
+	      %break
+	    %endif
+            %assign errTxt = "This S-function block must have a " ...
+              "corresponding TLC file since it has an mdlRTW() function."
+            %<LibBlockReportError(block, errTxt)>
+        %endswitch
+      %endforeach
+      %%
+      %% States are contiguous by design
+      %%
+      %assign StatesDiscontiguous = 0
+    %endif
+    %assign block = block + StatesDiscontiguous
+    %%
+    %% register S-function in global index table
+    %%
+    %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+
+    %% Loop over the Parameter Records and look for matrix parameters.
+    %foreach paramIdx = Parameters[0]
+      %assign param = Parameter[paramIdx]
+      %% Go through each parameter in the AST and mark it as a MatlabMatrix if
+      %% it is a matrix.  Note that we mark it in the Parameter record in the
+      %% ModelParameters table, NOT in the block Parameter record.
+      %assign param_array = SLibGetAllASTParamsForBlockParam(param)
+      %foreach mdlParamIdx = SIZE(param_array, 1)
+        %assign mdlParam = ModelParameters.Parameter[param_array[mdlParamIdx]]
+        %if  (LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx) != tSS_DOUBLE || ...
+	      mdlParam.ComplexSignal) && !Accelerator && !IsModelReferenceTarget()
+          %assign errTxt = "This non-inlined C-MEX Block " ...
+            "has non-double and(or) complex parameters. The Real-Time " ...
+            "Workshop does not support C-MEX S-Functions " ...
+            "with non-double or complex parameters without a "...
+            "corresponding TLC file."
+          %<LibBlockReportFatalError(block, errTxt)>
+        %endif
+        %if SIZE(mdlParam.Value,0) > 1
+          %% This is a Matrix Parameter of a non-inlined C-MEX S-Function.
+          %% It needs to be declared in column-major form  (Matlab style).
+          %<LibAddIdentifier(mdlParam, "MatlabMatrix", 1)>
+        %endif
+        %assign mdlParam.WasAccessedAsVariable = 1
+      %endforeach
+    %endforeach
+
+  %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup ===================================================
+%% Abstract:
+%%      Perform S-function BlockTypeSetup function
+%%
+%function BlockTypeSetup(block, system) void
+  %assign funcName      = ParamSettings.FunctionName
+  %% NOTE: sFunctionType is not from the Block record.
+  %assign sFunctionType = FcnGetAndCheckSFunctionType(block)
+
+  %switch sFunctionType
+
+  %case "TLC"
+
+    %<GENERATE_TYPE(block, "BlockTypeSetup", funcName, system)>
+    %break
+
+  %case "C-MEX"
+
+    %% Model interface requires that all S-Functions are inlined
+
+    %if LibSFunctionLevel() == "RTWLevel2"
+      %assign sfcnInc1 = "./%<funcName>cn_rtw/%<funcName>.h"
+      %assign sfcnInc2 = "./%<funcName>cn_rtw/%<funcName>_private.h"
+      %assign sfcnCommonInc = ""
+      %if EXISTS("CompiledModel.RTWGenSettings")
+        %if EXISTS("CompiledModel.RTWGenSettings.BuildDirSuffix")
+	  %assign sfcnInc1 = "." + sfcnInc1
+          %assign sfcnInc2 = "." + sfcnInc2
+        %endif
+      %endif
+
+      %openfile tmpBuf
+      #if !defined(RTW_GNERATED_SFCN_NOT_PRIVATE_%<funcName>)
+        #define RTW_GNERATED_SFCN_NOT_PRIVATE_%<funcName>
+      #endif
+      #if !defined(MATLAB_MEX_FILE)
+      #undef S_FUNCTION_NAME
+      #include "%<sfcnInc1>"
+      #include "%<sfcnInc2>"
+      %if (sfcnCommonInc != "")
+	#include "%<sfcnCommonInc>"
+      %endif
+      #endif
+      %closefile tmpBuf
+      %<LibCacheIncludes(tmpBuf)>\
+    %endif
+
+  %endswitch
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInitialValues ================================================
+%% Abstract:
+%%      Return appropriate initializer "strings" for the various vector types.
+%%
+%function BlockInitialValues(block, system, vectType) void
+
+  %assign ans = ""
+
+  %assign funcName = ParamSettings.FunctionName
+  %if SFunctionType == "TLC"
+
+    %assign ans = GENERATE_TYPE(block, "BlockInitialValues", ...
+      funcName, system, vectType)
+
+  %endif
+  %return ans
+
+%endfunction %% BlockInitialValues
+
+
+%% Function: BlockInstanceData ================================================
+%% Abstract:
+%%      Perform S-function BlockInstanceData function
+%%
+%function BlockInstanceData(block, system) Output
+  %switch SFunctionType
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "BlockInstanceData", funcName, system)>\
+
+      %break
+  %endswitch
+%endfunction
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Perform S-function BlockOutputSignal function
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,sigIdx,retType) void
+  %switch SFunctionType
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %return GENERATE_TYPE(block, "BlockOutputSignal", funcName, ...
+	system,portIdx,ucv,lcv,sigIdx,retType)
+
+      %break
+  %endswitch
+%endfunction
+
+
+%% Function: Start ============================================================
+%% Abstract:
+%%      Perform S-function Start function
+%%        o Only Level 2 C-MEX S-Functions have mdlStart
+%%
+%function Start(block, system) Output
+  %%
+  %foreach idx = NumSFcnSysOutputCalls
+    %if STRING(SFcnSystemOutputCall[idx].BlockToCall) != "unconnected"
+      %assign   sysIdx = SFcnSystemOutputCall[idx].BlockToCall[0]
+      %assign   blkIdx = SFcnSystemOutputCall[idx].BlockToCall[1]
+      %assign  ssBlock = System[sysIdx].Block[blkIdx]
+      %assign    csIdx = ssBlock.CallSiteIdx
+      %assign fcSysIdx = ssBlock.ParamSettings.SystemIdx
+      %<LibGenCachedSystemFcnCall(System[fcSysIdx], "Start", csIdx)>
+    %endif
+  %endforeach
+
+  %switch SFunctionType
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "Start", funcName, system)>
+
+      %break
+    %case "C-MEX"
+      %if ParamSettings.FunctionLevel == 2 && !ParamSettings.StartEmpty
+        %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+        %assign s = tChildSimStruct
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        {
+          SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+          sfcnStart(%<s>);
+	  if(ssGetErrorStatus(%<s>) != NULL) return;
+	}
+
+      %endif
+  %endswitch
+%endfunction
+
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%      1) Perform S-function InitializeConditions function
+%%      2) Register the S-function in the registration table.
+%%
+%function InitializeConditions(block, system) Output
+  %switch SFunctionType
+    %case "OTHER"
+      %% This is a MEX-version s-function, run it for the Accelerator
+      %if Accelerator
+        %if !ParamSettings.InitializeConditionsEmpty
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, ...
+            "SS_CALL_MDL_INITIALIZE_CONDITIONS")>
+
+        %endif
+      %endif
+      %break
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "InitializeConditions", funcName, system)>
+
+      %break
+    %case "C-MEX"
+      %if !ParamSettings.InitializeConditionsEmpty
+        %if Accelerator
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, ...
+            "SS_CALL_MDL_INITIALIZE_CONDITIONS")>
+
+        %else
+          %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+          %assign s = tChildSimStruct
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          {
+            SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+            %switch ParamSettings.FunctionLevel
+              %case 1
+                %%
+                %% Level 1
+                %%
+                real_T *sfcnX  = ssGetContStates(%<s>);
+                sfcnInitializeConditionsLevel1(sfcnX, %<s>);
+		if(ssGetErrorStatus(%<s>) != NULL) return;
+		%%
+                %% need to check if the s-function has mixed continuous/discrete states.
+                %% if so, and, they are not the only states in the system, then we must
+                %% account for the fact that the continuous and discrete states are not
+                %% contiguous in the model's state vector, and copy them back into the
+                %% global state vector.
+                %%
+                %assign numContStates = ContStates[0]
+                %assign numDiscStates = DiscStates[0]
+                %assign numBlkStates = numContStates + numDiscStates
+                %if numContStates > 0 && numDiscStates > 0
+                  %assign Xc = "&%<LibBlockContinuousState("", "", 0)>"
+                  %assign Xd = "&%<LibBlockDiscreteState("", "", 0)>"
+                  %<FcnCopyStatesFromWorkVector(s, Xc, Xd)>\
+                %endif
+                %break
+
+              %case 2
+                %%
+                %% Level 2
+                %%
+                sfcnInitializeConditions(%<s>);
+		if(ssGetErrorStatus(%<s>) != NULL) return;
+		%break
+            %endswitch
+          }
+        %endif
+      %endif
+      %break
+  %endswitch
+  %foreach idx = NumSFcnSysOutputCalls
+    %if STRING(SFcnSystemOutputCall[idx].BlockToCall) != "unconnected"
+      %assign   sysIdx = SFcnSystemOutputCall[idx].BlockToCall[0]
+      %assign   blkIdx = SFcnSystemOutputCall[idx].BlockToCall[1]
+      %assign  ssBlock = System[sysIdx].Block[blkIdx]
+      %assign    csIdx = ssBlock.CallSiteIdx
+      %assign fcSysIdx = ssBlock.ParamSettings.SystemIdx
+      %if !LibSystemFcnIsEmpty(System[fcSysIdx], "Initialize")
+	%if System[fcSysIdx].TriggerBlkReset && ...
+	  ParamSettings.ExplicitFCSSCtrl == "no"
+	  %<LibGenSystemFcnCall(System[fcSysIdx], "Initialize", csIdx)>
+	%else
+	  if (%<LibIsFirstInitCond()>) {
+	    %<LibGenSystemFcnCall(System[fcSysIdx], "Initialize", csIdx)>
+	  }
+	%endif
+      %endif
+    %endif
+  %endforeach
+%endfunction %% InitializeConditions
+
+
+%% Function FcnGetTIDForSfcnERT =====================
+%% Abstract:
+%%    Hard-code the TID for single-rate s-functions
+%% This is necessary because ERT may not pass the TID to
+%% the output function for single-rate systems
+%%
+%% Note: if TID = [0 1] and TID01EQ, need hard-code the TID
+%% too. System that has tid [0 1] is treated as singl rate
+%% subsystem. ERT may not pass the tid to output function.
+%%
+%function FcnGetTIDForSfcnERT(block)
+  %assign tid = block.TID
+  %if TYPE(tid) == "Vector"
+    %assign isZeroTid = TLC_FALSE
+    %if ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+      %assign isZeroTid = TLC_TRUE
+      %foreach idx = SIZE(tid,1)
+	%if !ISEQUAL(tid[idx], 0) && ...
+	  !ISEQUAL(tid[idx], 1)
+	  %assign isZeroTid = TLC_FALSE
+	  %break
+	%endif
+      %endforeach
+    %endif
+    %assign tid = isZeroTid ? 0 : LibTID()
+  %else
+    %assign tid = SLibGetNumericTID(block)
+  %endif
+
+  %return tid
+%endfunction
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      Perform S-function Update function
+%%
+%function Update(block, system) Output
+  %switch SFunctionType
+    %case "OTHER"
+      %% This is a MEX-version s-function, run it for the Accelerator
+      %if Accelerator
+        %if !ParamSettings.UpdateEmpty
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_UPDATE")>
+
+        %endif
+      %endif
+      %break
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "Update", funcName, system)>
+
+      %break
+    %case "C-MEX"
+      %if Accelerator
+        %if !ParamSettings.UpdateEmpty
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_UPDATE")>
+
+        %endif
+      %else
+        %%
+        %% A call to sfcnUpdate(...) is only generated when the number of
+        %% discrete states in the s-function is greater than zero or the
+        %% S-function is not direct feedthrough.
+        %%
+        %assign numDiscStates = DiscStates[0]
+        %if ParamSettings.FunctionLevel == 1
+          %assign directFeedthrough = ParamSettings.DirectFeedthrough
+        %else
+          %assign directFeedthrough = "no"
+          %foreach ipIdx = NumDataInputPorts
+            %if ParamSettings.DirectFeedthrough[ipIdx] == "yes"
+              %assign directFeedthrough = "yes"
+              %break
+            %endif
+          %endforeach
+        %endif
+        %%
+        %% The rules for calling the S-function's update function
+        %%
+        %% Level 1: NumDiscStates > 0 || DirectFeedThrough
+        %% Level 2: UpdateNotEmpty
+        %%
+        %% Note that UpdateNotEmpty means MDL_UPDATE was defined
+        %%
+        %assign callUpdate = 0
+        %assign ps = ParamSettings
+        %if ps.FunctionLevel == 1
+          %% level 1
+          %if numDiscStates > 0 || directFeedthrough == "no"
+            %assign callUpdate = 1
+          %endif
+        %elseif ps.FunctionLevel == 2
+          %% level 2
+          %if !ps.UpdateEmpty
+            %assign callUpdate = 1
+          %endif
+        %endif
+        %if callUpdate
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          {
+            %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+            %assign s = tChildSimStruct
+            %if ISEQUAL(TID, "constant")
+              %assign tid = 0
+            %else
+              %if CodeFormat == "Embedded-C"
+		%assign tid = FcnGetTIDForSfcnERT(block)
+              %else
+                %assign tid = LibTID()
+              %endif
+            %endif
+            SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+
+            %switch ps.FunctionLevel
+              %case 1
+                %%
+                %% Level 1
+                %%
+                %if CodeFormat == "S-Function"
+                  real_T *sfcnU = _ssGetU(%<s>);
+                %else
+                  real_T *sfcnU = ssGetU(%<s>);
+                %endif
+                real_T *sfcnX = ssGetContStates(%<s>);
+                sfcnUpdateLevel1(sfcnX, sfcnU, %<s>, %<tid>);
+		if(ssGetErrorStatus(%<s>) != NULL) return;
+
+		%%
+                %% Need to check if the s-function has mixed continuous/
+                %% discrete states. If so, and, they are not the only states
+                %% in the system, then we must account for the fact that the
+                %% continuous and discrete states are not contiguous in the
+                %% model's state vector.
+                %%
+                %assign numContStates = ContStates[0]
+                %assign numBlkStates  = numContStates + numDiscStates
+                %if numContStates > 0 && numDiscStates > 0
+                  %assign Xc = "&%<LibBlockContinuousState("", "", 0)>"
+                  %assign Xd = "&%<LibBlockDiscreteState("", "", 0)>"
+                  %<FcnCopyStatesFromWorkVector(s, Xc, Xd)>\
+                %endif
+                %break
+
+              %case 2
+                %%
+                %% Level 2
+                %%
+		sfcnUpdate(%<s>, %<tid>);
+		if(ssGetErrorStatus(%<s>) != NULL) return;
+		%break
+            %endswitch
+          }
+
+        %endif
+      %endif
+      %break
+  %endswitch
+%endfunction %% Update
+
+
+%% Function: Derivatives ======================================================
+%% Abstract:
+%%      Perform S-function Derivatives function
+%%
+%function Derivatives(block, system) Output
+  %if CodeFormat == "S-Function" || IsModelReferenceTarget()
+    %assign underScore = "_"
+  %else
+    %assign underScore = ""
+  %endif
+  %%
+  %% a call to sfcnDerivatives(...) is only generated when the number of
+  %% continuous states in the s-function is greater than zero.
+  %%
+  %assign numContStates = ContStates[0]
+  %%
+  %switch SFunctionType
+  %case "OTHER"
+    %% This is a MEX-version s-function, run it for the Accelerator
+    %if Accelerator
+      %if numContStates > 0  && !ParamSettings.DerivativesEmpty
+	/* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	/* Call into Simulink for MEX-version of S-function */
+	%<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_DERIVATIVES")>
+      %endif
+    %endif
+    %break
+  %case "TLC"
+    %assign funcName = ParamSettings.FunctionName
+
+    %<GENERATE_TYPE(block, "Derivatives", funcName, system)>
+
+    %break
+  %case "C-MEX"
+    %if numContStates > 0  &&  !ParamSettings.DerivativesEmpty
+      %if Accelerator
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        /* Call into Simulink for MEX-version of S-function */
+        %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_DERIVATIVES")>
+
+      %else
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        {
+          %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+          %assign s = tChildSimStruct
+          %assign optStartIndex = SLibGet1DArrayIndexer(numContStates,"","",0)
+          SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	  %if IsModelReferenceTarget()
+            real_T *sfcndX_fx = (real_T *) ...
+              &%<LibBlockContinuousStateDerivative("", "", 0)>;
+          %else
+            real_T *sfcndX_fx = (real_T *) &((%<tXdotType> *) ...
+              %<RTMGet("dX")>)->%<Identifier>_CSTATE%<optStartIndex>;
+          %endif
+          %switch ParamSettings.FunctionLevel
+            %case 1
+              %%
+              %% Level 1
+              %%
+              real_T *sfcnU = %<underScore>ssGetU(%<s>);
+              real_T *sfcnX = ssGetContStates(%<s>);
+              %%
+              %% Note that Simulink 1.3 copies the non-contiguous states into
+              %% the work vector, however this is not required (for description,
+              %% see RTW 2.0 functional spec.)
+              %%
+              %<underScore>ssSetdX(%<s>, sfcndX_fx);
+              sfcnDerivativesLevel1(sfcndX_fx, sfcnX, sfcnU, %<s>, 0);
+              if(ssGetErrorStatus(%<s>) != NULL) return;
+	      %break
+
+            %case 2
+              %%
+              %% Level 2
+              %%
+              %<underScore>ssSetdX(%<s>, sfcndX_fx);
+              sfcnDerivatives(%<s>);
+	      if(ssGetErrorStatus(%<s>) != NULL) return;
+	      %break
+          %endswitch
+        }
+
+      %endif
+    %endif
+    %break
+  %endswitch
+%endfunction %% Derivatives
+
+
+%% Function: Projection ======================================================
+%% Abstract:
+%%      Perform S-function Projection function
+%%
+%function Projection(block, system) Output
+  %if CodeFormat == "S-Function"
+    %assign underScore = "_"
+  %else
+    %assign underScore = ""
+  %endif
+  %%
+  %% a call to sfcnProjection(...) is only generated when the number of
+  %% continuous states in the s-function is greater than zero.
+  %%
+  %assign numContStates = ContStates[0]
+  %%
+  %switch SFunctionType
+  %case "OTHER"
+    %% This is a MEX-version s-function, run it for the Accelerator
+    %if Accelerator
+      %if numContStates > 0  && !ParamSettings.ProjectionEmpty
+	/* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	/* Call into Simulink for MEX-version of S-function */
+	%<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_PROJECTION")>
+      %endif
+    %endif
+    %break
+  %case "TLC"
+    %assign funcName = ParamSettings.FunctionName
+
+    %<GENERATE_TYPE(block, "Projection", funcName, system)>
+
+    %break
+  %case "C-MEX"
+    %if numContStates > 0  &&  !ParamSettings.ProjectionEmpty
+      %if Accelerator
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        /* Call into Simulink for MEX-version of S-function */
+        %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_PROJECTION")>
+
+      %else
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        {
+          %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+          %assign s = tChildSimStruct
+          %assign optStartIndex = SLibGet1DArrayIndexer(numContStates,"","",0)
+          %switch ParamSettings.FunctionLevel
+            %case 2
+              %%
+              %% Level 2
+              %%
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+              sfcnProjection(%<s>);
+	      if(ssGetErrorStatus(%<s>) != NULL) return;
+	      %break
+          %endswitch
+        }
+
+      %endif
+    %endif
+    %break
+  %endswitch
+%endfunction %% Projection
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Perform S-function Outputs function
+%%
+%function Outputs(block, system) void
+  %openfile tmpBuf
+
+  %switch SFunctionType
+    %case "OTHER"
+      %% This is a MEX-version s-function, run it for the Accelerator
+      %if Accelerator
+        %if !ParamSettings.OutputsEmpty
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+
+        %endif
+      %endif
+      %break
+    %case "TLC"
+      %% If block is not marked as IsAsyncTopCaller,
+      %% Check the block to find out if it is a SFcn block
+      %% calling an inlined Async Top Subsystem. Marked the block
+      %% if it is.  Don't generate code this time.
+      %% IsAsyncTopCaller Block will generate code after root
+      %% system code generation.
+      %% See FcnGenAsyncTopSSCode for more information
+      %if !ISFIELD(block, "IsAsyncTopCaller") && ...
+	ISFIELD(block, "NumSFcnSysOutputCalls")
+	%foreach callIdx = NumSFcnSysOutputCalls
+	  %% Get downstream block if there is one
+	  %if "%<SFcnSystemOutputCall[callIdx].BlockToCall>" == "unconnected"
+	    %continue
+	  %endif
+	  %assign ssSysIdx = SFcnSystemOutputCall[callIdx].BlockToCall[0]
+	  %assign ssBlkIdx = SFcnSystemOutputCall[callIdx].BlockToCall[1]
+	  %assign ssBlock = CompiledModel.System[ssSysIdx].Block[ssBlkIdx]
+	  %if FcnBlkIsAsycnInlinedTopSSBlk(ssBlock)
+	    %if !ISFIELD(block, "IsAsyncTopCaller")
+	      %addtorecord block IsAsyncTopCaller TLC_TRUE
+	    %endif
+	  %else
+	    %if ISFIELD(block, "IsAsyncTopCaller")
+	      %<LibReportFatalError(...
+		"All block %<name> downstream blocks must be Asynchronous Top Subsystems")>
+	    %endif
+	  %endif
+	%endforeach
+	%if ISFIELD(block, "IsAsyncTopCaller")
+	  %break
+	%endif
+      %endif
+      %%
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "Outputs", funcName, system)>
+
+      %break
+    %case "C-MEX"
+
+      %with block
+	%if CodeFormat == "Embedded-C" && !IsModelReferenceTarget()
+	  %assert TYPE(TID) == "Vector" || ...
+	          TYPE(TID) == "Number" || ...
+		  ISEQUAL(TID, "triggered") || ...
+		  ISEQUAL(TID, "constant")
+	  %if TYPE(TID) == "Vector"
+	    %assign numTids = SIZE(TID,1)
+	    %assign CompiledModel.RequireMultiRateSampleHits = (numTids > 1)
+	    %foreach i = numTids
+	      %foreach j = numTids - i - 1
+		%% If is multirate sfunction no-inline sfunction,
+		%% assume RequireMultirRateSampleHit between all
+		%% of it tids.
+		%assign tid = TID[i]
+		%assign sti = TID[j+i+1]
+		%assign CompiledModel.ActualMultiRateSampleHits[tid][sti] = 1
+	      %endforeach
+	      %% assume each tid of the sfunc need absolute time
+	      %% and needFloatTime
+	      %%
+	      %assign SampleTime[i].NeedAbsoluteTime = "yes"
+	      %if !ISFIELD(SampleTime[i], "needFloatTime")
+		%addtorecord SampleTime[i] needFloatTime TLC_TRUE
+	      %endif
+	    %endforeach
+	  %elseif TYPE(TID) == "Number"
+	    %assign SampleTime[TID].NeedAbsoluteTime = "yes"
+	    %if !ISFIELD(SampleTime[TID], "needFloatTime")
+	      %addtorecord SampleTime[TID] needFloatTime TLC_TRUE
+	    %endif
+	  %elseif ISEQUAL(TID, "triggered")
+	    %assert TYPE(TriggerTID) == "Number" && TriggerTID >= 0
+	    %assign SampleTime[TriggerTID].NeedAbsoluteTime = "yes"
+	    %if !ISFIELD(SampleTime[TriggerTID], "needFloatTime")
+	      %addtorecord SampleTime[TriggerTID] needFloatTime TLC_TRUE
+	    %endif
+	  %endif
+	%endif
+      %endwith
+      %if !ParamSettings.OutputsEmpty
+        %if Accelerator
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+          /* Call into Simulink for MEX-version of S-function */
+          %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+
+        %else
+          /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	  %if ISFIELD(block, "SampleTimeIdx") && ...
+	    !ISEQUAL(SampleTimeIdx, TID)
+	    %% this is a Rate-Transition non-inlined sfunction
+	    %% it output code must guarded by IsSpecialSampleHit
+	    %assert TYPE(TID) == "Number" &&  TYPE(SampleTimeIdx) == "Number"
+	    if( %<LibIsSpecialSampleHit(SampleTimeIdx, TID)> ) {
+	  %else
+	    {
+	  %endif
+            %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+            %assign s = tChildSimStruct
+            %if ISEQUAL(TID, "constant")
+              %assign tid = 0
+            %else
+              %if CodeFormat == "Embedded-C"
+		%assign tid = FcnGetTIDForSfcnERT(block)
+	      %else
+                %assign tid = LibTID()
+              %endif
+            %endif
+	    SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	    %switch ParamSettings.FunctionLevel
+              %case 1
+                %%
+                %% Level 1
+                %%
+                %if CodeFormat == "S-Function"
+                  real_T *sfcnU = _ssGetU(%<s>);
+                %else
+                  real_T *sfcnU = ssGetU(%<s>);
+                %endif
+                real_T *sfcnX = ssGetContStates(%<s>);
+                %%
+                %assign sfcnY = "NULL"
+                %if NumDataOutputPorts > 0
+		  %assign idnum = IDNUM(DataOutputPort[0].SignalSrc[0])
+                  %if idnum[0] != "F" %%FcnCall
+                    %assign sfcnY = "sfcnY"
+                    real_T *sfcnY = &(%<LibBlockOutputSignal(0,"","",0)>);
+                  %endif
+                %endif
+                %%
+                %% need to check if the s-function has mixed continuous/
+		%% discrete states. if so, and, they are not the only states in
+		%% the system, then we must account for the fact that the
+		%% continuous and discrete states are not contiguous in the
+		%% model's state vector.
+                %%
+                %assign numContStates = ContStates[0]
+                %assign numDiscStates = DiscStates[0]
+                %assign numBlkStates = numContStates + numDiscStates
+                %if numContStates > 0 && numDiscStates > 0
+                  %assign Xc = "&%<LibBlockContinuousState("", "", 0)>"
+                  %assign Xd = "&%<LibBlockDiscreteState("", "", 0)>"
+                  (void)memcpy(sfcnX, %<Xc>, ...
+		    ssGetNumContStates(%<s>)*sizeof(real_T));
+		  if (ssIsMajorTimeStep(%<s>) ) {
+		    (void)memcpy(sfcnX+ssGetNumContStates(%<s>), %<Xd>,
+                    ssGetNumDiscStates(%<s>)*sizeof(real_T));
+                  }
+                  sfcnOutputsLevel1(%<sfcnY>, sfcnX, sfcnU, %<s>, %<tid>);
+		  %if CodeFormat == "S-Function" || IsModelReferenceTarget()
+		    if(ssGetErrorStatus(%<s>) != NULL) return;
+		  %endif
+		  if( ssIsMajorTimeStep(%<s>) ) {
+		    %<FcnCopyStatesFromWorkVector(s, Xc, Xd)>\
+		  }
+		%else
+		  sfcnOutputsLevel1(%<sfcnY>, sfcnX, sfcnU, %<s>, %<tid>);
+		  %if CodeFormat == "S-Function" || IsModelReferenceTarget()
+		    if(ssGetErrorStatus(%<s>) != NULL) return;
+		  %endif
+		%endif
+                %break
+
+              %case 2
+                %%
+                %% Level 2
+                %%
+		
+		%if (TYPE(TID) == "Number")
+		  %% Note cannot use LibBlockSampleTime becasue that 
+		  %% returns -2 for constant as well
+		  %assign sampleTime = ...
+		    CompiledModel.SampleTime[TID].PeriodAndOffset[0]
+		  %if sampleTime == -2 %% VARIABLE_SAMPLE_TIME
+		    {
+		      real_T tNext;
+		      sfcnGetTimeOfNextVarHit(%<s>);
+		      tNext = ssGetTNext(%<s>);
+		      %<LibSetVarNextHitTime(block,"tNext")>;
+		    }
+		  %endif
+		%endif
+		
+                %foreach opIdx = NumDataOutputPorts
+                  %if !LibBlockOutputSignalIsInBlockIO(opIdx)
+		    %assign idnum = IDNUM(DataOutputPort[0].SignalSrc[0])
+		    %if idnum[0] != "F" %%FcnCall
+		      %assign yAddr = LibBlockOutputSignalAddr(opIdx, "", "", 0)
+                      %if CodeFormat == "S-Function" || IsModelReferenceTarget() 
+                        _ssSetOutputPortSignal(%<s>, %<opIdx>, %<yAddr>);
+                      %else
+                        ssSetOutputPortSignal(%<s>, %<opIdx>, %<yAddr>);
+                      %endif
+                    %endif
+                  %endif
+		%endforeach
+		sfcnOutputs(%<s>, %<tid>);
+		%if CodeFormat == "S-Function" || IsModelReferenceTarget()
+		  if(ssGetErrorStatus(%<s>) != NULL) return;
+		%endif
+		%break
+            %endswitch
+          }
+        %endif
+      %endif
+      %break
+  %endswitch
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+
+%% Function: Enable ============================================================
+%% Abstract:
+%%      Perform S-function Enable for RTW generated S-Functions
+%%
+%function Enable(block, system) Output
+  %switch SFunctionType
+    %case "TLC"
+      %if LibSFunctionLevel() == "RTWLevel2"
+        %if ParamSettings.FunctionLevel == 2 && !ParamSettings.EnableEmpty
+          %<LibBlockReportError(block, "Inlined Enable function not supported.")>
+        %endif
+      %else
+	%assign funcName = ParamSettings.FunctionName
+	%<GENERATE_TYPE(block, "Enable", funcName, system)>
+      %endif
+      %break
+    %case "C-MEX"
+      %if Accelerator
+	/* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	/* Call into Simulink for MEX-version of S-function */
+	%<SLibCallBlockInSimulink(system, block, "SS_CALL_RTW_GENERATED_ENABLE")>
+
+      %else
+	%if LibSFunctionLevel() == "RTWLevel2"
+	  %if ParamSettings.FunctionLevel == 2 && !ParamSettings.EnableEmpty
+	    %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+	    %assign s = tChildSimStruct
+	    /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	    {
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	      sfcnRTWGeneratedEnable(%<s>);
+	    }
+
+	  %endif
+	%else
+	  %if ParamSettings.FunctionLevel == 2 && !ParamSettings.EnableEmpty
+	    %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+	    %assign s = tChildSimStruct
+	    /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	    {
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	      sfcnEnable(%<s>);
+	      if(ssGetErrorStatus(%<s>) != NULL) return;
+	    }
+
+	  %endif
+	%endif
+      %endif
+  %endswitch
+  %if ParamSettings.ExplicitFCSSCtrl == "no"
+    %foreach idx = NumSFcnSysOutputCalls
+      %if STRING(SFcnSystemOutputCall[idx].BlockToCall) != "unconnected"
+	%assign   sysIdx = SFcnSystemOutputCall[idx].BlockToCall[0]
+	%assign   blkIdx = SFcnSystemOutputCall[idx].BlockToCall[1]
+	%assign   portEl = SFcnSystemOutputCall[idx].FcnPortElement
+	%assign  ssBlock = System[sysIdx].Block[blkIdx]
+	%assign    csIdx = ssBlock.CallSiteIdx
+	%assign fcSysIdx = ssBlock.ParamSettings.SystemIdx
+	%% if numModes of fcss > 0 open and close with a guard
+	%% xxxmje THIS IS WHERE WE ARE GENERATING THE CODE
+	%if !LibSystemFcnIsEmpty(System[fcSysIdx], "Enable") || ...
+	  !LibSystemFcnIsEmpty(System[fcSysIdx], "Disable")
+	  %with System[fcSysIdx]
+	    %<FcnGenerateOpenFCSSEnable(ssBlock, "", portEl, TLC_TRUE)>
+	  %endwith
+	  %if (!LibSystemFcnIsEmpty(System[fcSysIdx], "Enable"))
+	    %<LibGenSystemFcnCall(System[fcSysIdx], "Enable", csIdx)>
+	  %endif
+	  %% if numModes of fcss > 0 open and close with a guard
+	  %with System[fcSysIdx]
+	    %<FcnGenerateCloseFCSSEnable(ssBlock)>
+	  %endwith
+	%endif
+      %endif
+    %endforeach
+  %endif
+%endfunction  %% Enable
+
+
+%% Function: Disable ===========================================================
+%% Abstract:
+%%      Perform S-function Disable for RTW generated S-Functions
+%%
+%function Disable(block, system) Output
+  %switch SFunctionType
+    %case "TLC"
+      %if LibSFunctionLevel() == "RTWLevel2"
+        %if ParamSettings.FunctionLevel == 2 && !ParamSettings.DisableEmpty
+          %<LibBlockReportError(block, "Inlined Disable function not supported.")>
+        %endif
+      %else
+	%assign funcName = ParamSettings.FunctionName
+	%<GENERATE_TYPE(block, "Disable", funcName, system)>
+      %endif
+      %break
+    %case "C-MEX"
+      %if Accelerator
+	/* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	/* Call into Simulink for MEX-version of S-function */
+	%<SLibCallBlockInSimulink(system, block, "SS_CALL_RTW_GENERATED_DISABLE")>
+
+      %else
+	%if LibSFunctionLevel() == "RTWLevel2"
+	  %if ParamSettings.FunctionLevel == 2 && !ParamSettings.DisableEmpty
+	    %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+	    %assign s = tChildSimStruct
+	    /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	    {
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	      sfcnRTWGeneratedDisable(%<s>);
+	    }
+
+	  %endif
+	%else
+	  %if ParamSettings.FunctionLevel == 2 && !ParamSettings.DisableEmpty
+	    %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+	    %assign s = tChildSimStruct
+	    /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	    {
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	      sfcnDisable(%<s>);
+	      if(ssGetErrorStatus(%<s>) != NULL) return;
+	    }
+	  %endif
+	%endif
+      %endif
+  %endswitch
+  %if ParamSettings.ExplicitFCSSCtrl == "no"
+    %foreach idx = NumSFcnSysOutputCalls
+      %if STRING(SFcnSystemOutputCall[idx].BlockToCall) != "unconnected"
+	%assign   sysIdx = SFcnSystemOutputCall[idx].BlockToCall[0]
+	%assign   blkIdx = SFcnSystemOutputCall[idx].BlockToCall[1]
+	%assign   portEl = SFcnSystemOutputCall[idx].FcnPortElement
+	%assign  ssBlock = System[sysIdx].Block[blkIdx]
+	%assign    csIdx = ssBlock.CallSiteIdx
+	%assign fcSysIdx = ssBlock.ParamSettings.SystemIdx
+	%if !LibSystemFcnIsEmpty(System[fcSysIdx], "Enable") || ...
+	  !LibSystemFcnIsEmpty(System[fcSysIdx], "Disable")
+	  %% if numModes of fcss > 0 open and close with a guard
+	  %with System[fcSysIdx]
+	    %<FcnGenerateOpenFCSSDisable(ssBlock, "", portEl)>
+	  %endwith
+	  %if (!LibSystemFcnIsEmpty(System[fcSysIdx], "Disable"))
+	    %<LibGenSystemFcnCall(System[fcSysIdx], "Disable", csIdx)>
+	  %endif
+	  %% if numModes of fcss > 0 open and close with a guard
+	  %with System[fcSysIdx]
+	    %<FcnGenerateCloseFCSSDisable(ssBlock)>
+	  %endwith
+	%endif
+      %endif
+    %endforeach
+  %endif
+%endfunction %% Disable
+
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%
+%function ZeroCrossings(block, system) Output
+  %if ParamSettings.FunctionLevel == 2
+    %switch SFunctionType
+      %case "TLC"
+        %assign funcName = ParamSettings.FunctionName
+
+	%<GENERATE_TYPE(block, "ZeroCrossings", funcName, system)>
+
+	%break
+      %case "C-MEX"
+	%if Accelerator
+	  /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	  /* Call into Simulink for MEX-version of S-function */
+	  %<SLibCallBlockInSimulink(system,block,"SS_CALL_MDL_ZERO_CROSSINGS")>
+	%else
+	  %if !ParamSettings.ZeroCrossingsEmpty
+	    /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	    {
+	      %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+	      %assign s = tChildSimStruct
+              SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+	      ssSetNonsampledZCs(%<s>, &(%<LibBlockNonSampledZC("", "", 0)>));
+	      sfcnZeroCrossings(%<s>);
+	      if(ssGetErrorStatus(%<s>) != NULL) return;
+	    }
+	  %endif
+	%endif
+
+        %break
+    %endswitch
+  %endif
+%endfunction
+
+
+%% Function: Terminate ========================================================
+%% Abstract:
+%%      Perform S-function Terminate function
+%%
+%function Terminate(block, system) Output
+  %switch SFunctionType
+    %case "TLC"
+      %assign funcName = ParamSettings.FunctionName
+
+      %<GENERATE_TYPE(block, "Terminate", funcName, system)>
+
+      %break
+    %case "C-MEX"
+      %if !ParamSettings.TerminateEmpty
+        /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+        {
+          %assign childSFunctionIdx = FcnChildSFunctionIndex(block)
+          %assign s = tChildSimStruct
+          SimStruct *%<s> = %<RTMGetIdxed("SFunction", childSFunctionIdx)>;
+          sfcnTerminate(%<s>);
+        }
+
+      %endif
+      %break
+  %endswitch
+%endfunction
+
+%% [EOF] gensfun.tlc

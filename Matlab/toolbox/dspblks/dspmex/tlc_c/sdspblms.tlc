@@ -1,0 +1,174 @@
+%% $RCSfile: sdspblms.tlc,v $
+%% $Revision: 1.1.6.1 $ 
+%% $Date: 2003/12/06 15:26:25 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Block LMS adaptive filter S-function block for sdspblms.cpp
+%%
+
+%implements sdspblms "C"
+%include "dsplib.tlc"
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspblms_rt")>
+    %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %% 
+  %assign INPORT_INSIG = 0
+  %assign INPORT_DESIG = 1
+  %assign INPORT_MU    = 2
+  %assign tmpINPORT_ADAPT = 3
+  %assign tmpINPORT_RESET = 4
+  %%
+  %assign OUTPORT_SIG  = 0
+  %assign OUTPORT_ERR  = 1
+  %assign OUTPORT_WGT  = 2
+  %%
+  %assign IsMuSrcInport        = SFcnParamSettings.IsMuSrcInport
+  %assign BlkHasAdaptInPort    = SFcnParamSettings.BlkHasAdaptInPort
+  %assign BlkHasResetInPort    = SFcnParamSettings.BlkHasResetInPort
+  %assign BlkHasWgtOutPort     = SFcnParamSettings.BlkHasWgtOutPort  
+  %%
+  %assign inport_adapt = tmpINPORT_ADAPT- !IsMuSrcInport
+  %assign inport_reset = tmpINPORT_RESET - !IsMuSrcInport - !BlkHasAdaptInPort
+  %%
+  %%Get data type,size and complexity profiles
+  %assign DTYPE_ID_INSIG   = LibBlockInputSignalDataTypeId(INPORT_INSIG)
+  %assign INSIG_COMPLEX    = LibBlockInputSignalIsComplex(INPORT_INSIG)  
+  %assign DESIG_COMPLEX    = LibBlockInputSignalIsComplex(INPORT_DESIG) 
+  %assign InSigDTName      = LibBlockInputSignalDataTypeName(INPORT_INSIG, "%<tRealPart>")
+  %assign bytesPerInpElmt  = INSIG_COMPLEX?"2*sizeof(%<InSigDTName>)" : "sizeof(%<InSigDTName>)"
+
+  %%Get other info
+  %assign FilterLength        = SFcnParamSettings.FilterLength
+  %assign BlockLength        = SFcnParamSettings.BlockLength
+  %assign FrameLength         = LibBlockInputSignalWidth(INPORT_INSIG)
+  %assign WGTIC_MASK_ROW_COL  = LibBlockParameterSize(WGT_IC_RTP)
+  %assign IsWgtICinMaskVector = (WGTIC_MASK_ROW_COL[0]>1 || WGTIC_MASK_ROW_COL[1]>1)
+  %%
+  %if BlkHasResetInPort
+      %<EventPortHandlerInstanceSetup(block)>
+      %if EventPortRequiresState(block)
+        %assign ephdwork = EPHState
+      %else
+        %assign ephdwork = 0
+      %endif
+      %assign block = block + ephdwork
+  %endif
+
+  %assign block = block + INPORT_INSIG + INPORT_DESIG + INPORT_MU + OUTPORT_SIG + OUTPORT_ERR + OUTPORT_WGT
+  %assign block = block + IsMuSrcInport + BlkHasAdaptInPort + BlkHasResetInPort + BlkHasWgtOutPort
+  %assign block = block + inport_adapt + inport_reset + DTYPE_ID_INSIG + INSIG_COMPLEX + DESIG_COMPLEX
+  %assign block = block + InSigDTName + bytesPerInpElmt + FilterLength + BlockLength + FrameLength + WGTIC_MASK_ROW_COL
+  %assign block = block + IsWgtICinMaskVector
+  %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: ResetWeightBuffer =============================================
+%%
+%% Abstract:
+%%      Reset the weight IC buffer.
+%%
+%function ResetWeightBuffer(block) Output
+    /* copy Weight IC from RTP to Weight IC buffer (DWork) */
+       %assign wgtDWorkPtr = "(byte_T*)%<LibBlockDWorkAddr(WGT_IC_DWORK, "", "", 0)>"
+       %assign wgtICRTPPtr = "(byte_T*)%<LibBlockParameterAddr(WGT_IC_RTP,"","",0)>" 
+       %if (IsWgtICinMaskVector)
+          %% copy the entire vector
+          memcpy(%<wgtDWorkPtr>, %<wgtICRTPPtr>, %<bytesPerInpElmt>*%<FilterLength>);
+       %else
+       {  %% expand scalar IC to vector 
+          int_T i;
+	  for (i = 0; i < %<FilterLength>; i++)           
+             memcpy(%<wgtDWorkPtr>+i*%<bytesPerInpElmt>, %<wgtICRTPPtr>, %<bytesPerInpElmt>);
+       }
+       %endif
+%endfunction %%ResetWeightBuffer
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the filter weights buffer to the initial values.
+%%
+%function InitializeConditions(block, system) Output
+  /* Initialization: Signal Processing Blockset Block LMS adaptive filter (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+        %if BlkHasResetInPort
+        %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+        %endif
+        %<ResetWeightBuffer(block)>
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset Block LMS adaptive filter (%<ParamSettings.FunctionName>) - '%<Name>' - Output */
+{
+
+%%Call run-time function based on data type and ftype
+    %assign AllDTnames  = ["real32_T", "creal32_T", "real_T", "creal_T"]%% Data type name
+    %assign DTsymbol   = ["R", "C", "D", "Z"]                           %% Data type symbol
+    %assign INSIG_SINGLE = (DTYPE_ID_INSIG == tSS_SINGLE)? 0 : 2        %% Double or single
+    %assign InSig_DTname    = AllDTnames[INSIG_SINGLE+INSIG_COMPLEX]	    %% Find the right DTYPE name
+    %assign DeSig_DTname    = AllDTnames[INSIG_SINGLE+DESIG_COMPLEX]	    %% Find the right DTYPE name
+    %assign nocplx_DTname    = AllDTnames[INSIG_SINGLE]	                    %% Find the right DTYPE name
+    %assign TwoLetters       = DTsymbol[INSIG_SINGLE+INSIG_COMPLEX] + DTsymbol[INSIG_SINGLE+DESIG_COMPLEX]
+    %%
+    %assign AdaptIP_YN   = BlkHasAdaptInPort?"ay":"an"
+    %assign WgtOP_YN     = BlkHasWgtOutPort?"wy":"wn"
+    %%
+    %assign AddressOfInportMuOrRTP = IsMuSrcInport ? LibBlockInputSignalAddr(INPORT_MU, "", "", 0) \
+                                                   : LibBlockParameterAddr(MU_RTP,"","",0)
+%%%%%%%%%%%%%%%%%%%%%%% Adapt port %%%%%%%%%%%%%%%%%
+    %if BlkHasAdaptInPort
+       %assign adaptDTName    = LibBlockInputSignalDataTypeName(inport_adapt,"")
+       %assign adaptDTID = LibBlockInputSignalDataTypeId(inport_adapt)
+       %if adaptDTID == tSS_BOOLEAN
+          const boolean_T NeedAdapt =  *(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)>;
+       %else
+          const boolean_T NeedAdapt =  ((boolean_T)(*(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)> > 0));
+       %endif
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%% Reset port %%%%%%%%%%%%%%%%%
+    %if BlkHasResetInPort
+      /* check for reset */
+      if(%<CheckEventPort(block, inport_reset, ephdwork)>) 
+      {
+          %<ResetWeightBuffer(block)>
+      }
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%% main function %%%%%%%%%%%%%%%%%    
+%%Create function name based on above identified types
+         MWDSP_blms_%<AdaptIP_YN>_%<WgtOP_YN>_%<TwoLetters>( 
+                (const %<InSig_DTname>*)%<LibBlockInputSignalAddr(INPORT_INSIG, "", "", 0)>, 
+		(const %<DeSig_DTname>*)%<LibBlockInputSignalAddr(INPORT_DESIG, "", "", 0)>, 
+		(const %<nocplx_DTname>)(*(%<nocplx_DTname> *)%<AddressOfInportMuOrRTP>), 
+                (%<InSig_DTname>*)%<LibBlockDWorkAddr(IN_BUFFER_DWORK, "", "", 0)>, 
+		(%<InSig_DTname>*)%<LibBlockDWorkAddr(WGT_IC_DWORK, "", "", 0)>, 
+                (int_T)%<FilterLength>, 
+		(int_T)%<BlockLength>, 
+		(const %<nocplx_DTname>)(*(%<nocplx_DTname> *)%<LibBlockParameterAddr(LEAKAGE_RTP,"","",0)>), 
+                (int_T)%<FrameLength>, 
+		(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_SIG, "", "", 0)>, 
+		(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_ERR, "", "", 0)> 
+            %if BlkHasWgtOutPort
+		,(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_WGT, "", "", 0)> 
+            %endif
+	    %if BlkHasAdaptInPort   
+	        ,(const boolean_T)NeedAdapt 
+            %endif
+	         );
+}
+%endfunction  %% Outputs    
+    
+%% [EOF] sdspblms.tlc

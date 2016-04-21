@@ -1,0 +1,205 @@
+%% $RCSfile: stic6x_fir_real.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:35 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%% Abstract: Implement real FIR filter using optimized TI C62/64 DSPLIB fcn call.
+%%
+%%
+
+%implements stic6x_fir_real "C"
+
+%include "tiblksutil.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+  
+  %assign FIR_GEN   = 0
+  %assign FIR_R4    = 1
+  %assign FIR_R8    = 2
+  %%
+  %switch SFcnParamSettings.FILTER_MODE
+    %case FIR_GEN
+      %% General Real FIR Filter
+      %<Include_ti_header(block, "dsp_fir_gen")>
+      %break
+    %case FIR_R4
+      %% Radix-4 Real FIR Filter
+      %<Include_ti_header(block, "dsp_fir_r4")>
+      %break
+    %case FIR_R8
+      %% Radix-8 Real FIR Filter
+      %<Include_ti_header(block, "dsp_fir_r8")>
+      %break
+  %endswitch
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ==================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign INPORT    = 0
+  %assign COEFFPORT = 1
+  %%
+  %assign OUTPORT   = 0
+  %%
+  %assign FIR_GEN   = 0
+  %assign FIR_R4    = 1
+  %assign FIR_R8    = 2
+  %%
+  %assign inDims    = LibBlockInputSignalDimensions(INPORT)
+  %assign inFrame   = LibBlockInputSignalIsFrameData(INPORT)
+  %assign numChans  = (inFrame) ? inDims[1] : LibBlockInputSignalWidth(INPORT)
+  %assign nr        = (inFrame) ? inDims[0] : 1
+  %switch SFcnParamSettings.FILTER_MODE
+    %case FIR_GEN
+      %% General Real FIR Filter
+      %assign FcnNameStr = "DSP_fir_gen"
+      %break
+    %case FIR_R4
+      %% Radix-4 Real FIR Filter
+      %assign FcnNameStr = "DSP_fir_r4"
+      %break
+    %case FIR_R8
+      %% Radix-8 Real FIR Filter
+      %assign FcnNameStr = "DSP_fir_r8"
+      %break
+  %endswitch
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign hSize   = LibBlockParameterSize(COEFFRTP)
+    %assign nh      = (hSize[0] * hSize[1])
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign nh      = getInportSamps(COEFFPORT)
+  %endif
+  %assign delaysPerChan = nh - 1
+  %% Add extra element if needed
+  %if ( (chipID.Value[0] == 62) && (SFcnParamSettings.FILTER_MODE == FIR_R8) && (numChans > 1) )
+    %assign statesPerChan = nr + nh
+  %else
+    %assign statesPerChan = nr + nh - 1
+  %endif
+
+  %assign block = block + INPORT + COEFFPORT + OUTPORT + numChans + nr + nh + \
+                  FcnNameStr + delaysPerChan + statesPerChan
+                  
+%endfunction %%BlockInstanceSetup
+
+  
+%% Function: InitializeConditions ==============================================
+%%
+%function InitializeConditions(block, system) Output
+/* C%<chipID.Value[0]>x DSP Library %<FcnNameStr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %assign statePtr = LibBlockDWorkAddr(FILTBUFF, "", "", 0)
+  %assign ICSize   = LibBlockParameterSize(ICRTP)
+  %assign numICs   = (ICSize[0] * ICSize[1])
+  short *statePtr = %<statePtr>;
+  %if (numICs > 1)
+  %% Only assign ICPtr tlc variable if IC is not a scalar.
+  %% If it is a scalar, we need to prevent TLC from seeing this
+  %% line so that it will not force the parameter to be in rtCP
+  %% depending on user settings.
+  %assign ICPtr    = LibBlockParameterAddr(ICRTP, "", "", 0)
+  const short *ICPtr = %<ICPtr>;
+  %endif
+  %if (numChans > 1)
+    int chanCount = %<numChans>;
+    while (chanCount--) { %% Begin channel loop if needed
+  %endif
+  %if (numICs == 1)
+    %% Scalar IC
+      int delayCount = %<delaysPerChan>;
+      while (delayCount--) {
+        *statePtr++ = %<LibBlockParameter(ICRTP, "", "", 0)>;
+      }
+    %if (numChans > 1)
+      %assign nonDelays = statesPerChan - delaysPerChan
+      statePtr += %<nonDelays>;
+    }  %% End channel loop if needed
+    %endif
+  %else
+      memcpy(statePtr, ICPtr, %<2 * delaysPerChan>);
+    %if (numICs > delaysPerChan)
+      %% multi-channel case, different vector of ICs per channel, 
+      %% so bump IC pointer in channel loop
+      ICPtr += %<delaysPerChan>;
+    %endif
+    %if (numChans > 1)
+      statePtr += %<statesPerChan>;
+    }  %% End channel loop if needed
+    %endif
+  %endif
+}
+
+%endfunction %% InitializeConditions
+  
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign hPtr    = LibBlockParameterAddr(COEFFRTP, "", "", 0)
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign hPtr    = LibBlockInputSignalAddr(COEFFPORT, "", "", 0)
+  %endif
+  %assign uPtr      = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign rPtr      = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign fPtr      = LibBlockDWorkAddr(FILTBUFF, "", "", 0)
+  /* C%<chipID.Value[0]>x DSP Library %<FcnNameStr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (numChans == 1)
+    %assign x1Ptr = LibBlockDWorkAddr(FILTBUFF, "", "", delaysPerChan)
+    %assign x2Ptr = LibBlockDWorkAddr(FILTBUFF, "", "", nr)
+    /* Copy current inputs to filter buffer position x = f[nf] */
+    memcpy(%<x1Ptr>, %<uPtr>, %<2*nr>);
+    
+    /* Run %<FcnNameStr> filter algorithm on filter buffer f[] */
+    %<FcnNameStr>((short *) %<fPtr>, (short *) %<hPtr>, (short *) %<rPtr>, %<nh>, %<nr>);
+    %if (FcnNameStr=="DSP_fir_gen")
+    /* Re-enable interrupts (GIE bit in CSR) to fix bug in DSP_fir_gen       xxx */
+    IRQ_globalEnable();
+    %endif
+    
+    /* Update filter states: move previous (nh-1) inputs from f[nr] to f[0] */
+    memmove(%<fPtr>, %<x2Ptr>, %<2*delaysPerChan>);
+  %else
+    {
+      const short *u = %<uPtr>;
+      const short *h = %<hPtr>;
+      short *r       = (short *) %<rPtr>;
+      short *f       = (short *) %<fPtr>;
+      short *x;
+      int    chanCount = %<numChans>;
+      
+      while (chanCount--) {
+        /* Copy current inputs to filter buffer position x = f[(nh-1)] */
+        x = f + %<delaysPerChan>;
+        memcpy(x, u, %<2*nr>);
+        u += %<nr>;
+        
+        /* Run %<FcnNameStr> filter algorithm on filter buffer f[] */
+        %% h should be const but fir_<blah>() argument list does not conform to const rules
+        %<FcnNameStr>(f, (short *)h, r, %<nh>, %<nr>);
+        %if (FcnNameStr=="DSP_fir_gen")
+        /* Re-enable interrupts (GIE bit in CSR) to fix bug in DSP_fir_gen       xxx */
+        IRQ_globalEnable();
+        %endif
+        r += %<nr>;
+        
+        /* Update filter states: move previous (nh-1) inputs from f[nr] to f[0] */
+        x = f + %<nr>;
+        memmove(f, x, %<2*delaysPerChan>);
+        f += %<statesPerChan>;
+      }
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] stic6x_fir_real.tlc

@@ -1,0 +1,210 @@
+%% $RCSfile: sdspvidly2.tlc,v $
+%% $Revision: 1.16.4.4 $ 
+%% $Date: 2004/04/12 23:10:11 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Variable integer delay
+%% 
+
+%implements sdspvidly2 "C"
+
+%include "dsplib.tlc"
+%include "dsp_ic.tlc"
+
+
+%% Function: BlockTypeSetup ================================================
+%% Abstract:
+%%
+%function BlockTypeSetup(block, system) void
+
+%% Include dsp_ic_rt.h in the source.
+%<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction  %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%		Name the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %assign INPORT      = 0
+    %assign DELAY_PORT  = 1
+    %assign OUTPORT     = 0
+    %assign BUFF_OFFSET = block.DWork[0]
+    %assign BUFF        = block.DWork[1]
+    %assign portWidth   = LibDataInputPortWidth(INPORT)
+    %%
+    %assign sig_datatype    = LibBlockInputSignalDataTypeName(INPORT,"%<tRealPart>")
+    %assign bytesPerElemStr = (LibBlockInputSignalIsComplex(INPORT)) \
+                            ? "(2 * sizeof(%<sig_datatype>))"        \
+                            : "sizeof(%<sig_datatype>)"
+    %assign dly_datatype    = LibBlockInputSignalDataTypeName(DELAY_PORT,"%<tRealPart>")
+    %%
+    %assign dmax        = SFcnParamSettings.maxDelay
+    %assign buffLen     = dmax + 1
+    %assign isFrame     = LibBlockInputSignalIsFrameData(INPORT) 
+    %assign nChans      = SFcnParamSettings.ICs_nChans
+    %assign nSamps      = portWidth / nChans
+    %assign incrementDelayPerChannel = SFcnParamSettings.incrementDelayPerChannel
+    %assign incrementDelayPerSample  = SFcnParamSettings.incrementDelayPerSample
+
+    %assign block = block + INPORT + OUTPORT + DELAY_PORT + BUFF_OFFSET + BUFF \
+                          + dmax   + buffLen + nChans     + nSamps             \
+                          + incrementDelayPerChannel + incrementDelayPerSample \
+                          + bytesPerElemStr + dly_datatype
+
+    %% Setup the initial condition handler:
+    %%
+    %<CopyICsInstanceSetup(block)>
+
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the delay buffer and counters to their initial values.
+%%
+%function InitializeConditions(block, system) Output
+    /* Signal Processing Blockset Variable Integer Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+  %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> = %<dmax - 1>;
+%%
+  %<getCopyICsFcnName(block)>(\
+                            (byte_T *)%<LibBlockDWorkAddr(ICs_dworkRef, "", "", 0)>,\
+                            (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)>,\
+   %if ICs_CopyFcnIndex == 0
+                             %<ICs_nChans>*%<ICs_dWorkRows>,\
+   %else
+                             %<ICs_nChans>,\
+                             %<ICs_dWorkRows>,\
+   %endif
+                             %<ICs_bytesPerElementStr>\
+   %if  ICs_CopyFcnIndex == 2
+                             , %<ICs_dataPortWidth>\
+   %endif
+                             );
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign delayLen = LibDataInputPortWidth(DELAY_PORT)
+    %assign dlyDtypeid = LibBlockInputSignalDataTypeId(DELAY_PORT)
+    %%
+{
+  /* Signal Processing Blockset Variable Integer Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+    const byte_T *u            = (const byte_T *) %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    const %<dly_datatype> *delayPort    = (const %<dly_datatype> *) %<LibBlockInputSignalAddr(DELAY_PORT, "", "", 0)>;
+    byte_T       *buff         = (byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int32_T        *bufoff       = (int32_T *)  %<LibBlockDWorkAddr(BUFF_OFFSET, "", "", 0)>;
+    %%%int_T dlyDtypeid = LibBlockInputSignalDataTypeId(DELAY_PORT)
+    
+    int_T         i,j;
+    byte_T       *y            = (byte_T *) %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    const int_T   bytesPerElem = %<bytesPerElemStr>;
+    const int_T   buffLenBytes = %<buffLen> * bytesPerElem;
+    %%
+    %if (!incrementDelayPerSample && !incrementDelayPerChannel) 
+        int_T dly;
+    {    
+      %if (%<dlyDtypeid> == 0 || %<dlyDtypeid> ==1)
+          %% datatype: Double,Single 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)delayPort + 0.5 ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	
+      %elseif (%<dlyDtypeid> >= 2 || %<dlyDtypeid> <=7)
+            %% datatype: int8_T,uint8_T,int16_T,uint16_T,int32_T,uint32_T 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)delayPort ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	 
+      %else     
+	    dly = 0; 
+	    
+      %endif  
+    } 
+    %endif
+    %%
+	{
+        int_T ti;
+
+    for (i=0; i++ < %<nChans>; ) {   /* Record input samples */
+            int_T buffstart = *bufoff;
+            %if (incrementDelayPerChannel) 
+               int_T dly;
+               { 
+      %if (%<dlyDtypeid> == 0 || %<dlyDtypeid> ==1)
+          %% datatype: Double,Single 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)(delayPort++) + 0.5 ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	
+      %elseif (%<dlyDtypeid> >= 2 || %<dlyDtypeid> <=7)
+            %% datatype: int8_T,uint8_T,int16_T,uint16_T,int32_T,uint32_T 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)(delayPort++) ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	 
+      %else     
+	    dly = 0; 
+	    
+      %endif  
+                 } 	    
+    	    %endif
+       %%
+     for (j=0; j++ < %<nSamps>; ) {
+         %if (incrementDelayPerSample) 
+         int_T dly;
+	  {
+      %if (%<dlyDtypeid> == 0 || %<dlyDtypeid> ==1)
+           %% datatype: Double,Single 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)(delayPort++) + 0.5 ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	
+      %elseif (%<dlyDtypeid> >= 2 || %<dlyDtypeid> <=7)
+           %% datatype: int8_T,uint8_T,int16_T,uint16_T,int32_T,uint32_T 
+            /* Get rounded delay time: */
+            dly = (int_T) (*(%<dly_datatype> *)(delayPort++) ); 
+            /* Clip delay time to legal range: [0,%<dmax>] */
+	    dly = (dly < 0 ? 0 : (dly > %<dmax> ? %<dmax> : dly));	 
+      %else     
+	    dly = 0; 
+	    
+      %endif  
+          }
+	  %endif
+	  %%
+          /* Rotate the circular buffer */
+          if (++buffstart == %<buffLen>) buffstart = 0;
+          memcpy((buff + buffstart*bytesPerElem), u, bytesPerElem);
+          u += bytesPerElem;
+          %%
+          %%
+          ti = buffstart - dly;
+          if (ti < 0) ti += %<buffLen>;
+          memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+          y += bytesPerElem;
+                                  }
+          buff += buffLenBytes;
+          %if (incrementDelayPerSample && delayLen == nSamps)
+             /* Bump pointer back to beginning of delay vector */ 
+              delayPort -= %<delayLen>;
+          %endif
+        }
+    }
+    %%
+    *bufoff += %<nSamps>;
+    while (*bufoff >= %<buffLen>) *bufoff -= %<buffLen>;
+}
+
+%endfunction  %% Outputs
+
+%% [EOF] sdspvidly2.tlc
+

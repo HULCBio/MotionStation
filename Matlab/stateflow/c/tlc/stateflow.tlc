@@ -1,0 +1,309 @@
+%% $Revision: 1.1.6.8 $
+%% $RCSfile: stateflow.tlc,v $
+%%
+%% Abstract:
+%%   TLC file for Stateflow blocks.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+
+%implements "stateflow" "C"
+
+%function BlockTypeSetup(block,system) void
+
+  %% Check compatibility
+
+  %if !FEVAL("sfrtw_compliant")
+    %%START_ASSERT
+    %assign errTxt = "You are running incompatible versions of Real-Time " ...
+      "Workshop and Stateflow.  This happened when you installed " ...
+      "Stateflow on top of the Simulink 4.1.1 web update.  To fix the " ...
+      "incompatibility simply reinstall the Real-Time Workshop 4.1.1 web update."
+    %<LibReportFatalError(errTxt)>
+    %%END_ASSERT
+  %endif
+
+  %addtorecord CompiledModel SFEventName "_sfEvent_%<CompiledModel.Name>_"
+
+  %if !PrefixModelToStructs
+    %assign CompiledModel.SFEventName = "_sfEvent_"
+  %endif
+
+  %% Add a once flag for use the Start and Terminate
+  %<LibAddToCompiledModel("StateflowStart",0)>
+  %<LibAddToCompiledModel("StateflowTerminate",0)>
+
+  %% Get Machine Info
+  %if CodeFormat == "S-Function"
+    %assign SFMachineInfo = ...
+      FEVAL("sf_rtw","get_machine_info",CompiledModel.OrigName)
+  %else
+    %assign SFMachineInfo = ...
+      FEVAL("sf_rtw","get_machine_info",CompiledModel.Name)
+  %endif
+
+  %% Generate the machine tlc file
+  %assign pwd = FEVAL("pwd")
+  %assign filesep = FEVAL("filesep")
+  %foreach index = (SIZE(SFMachineInfo,1)/3)
+    %assign machineName = SFMachineInfo[index*3+2]
+    %assign inlineMachine = SFMachineInfo[index*3+1]
+    %assign machineTLCFILE = SFMachineInfo[index*3]
+    %assign includePathForMachine = pwd + filesep + "sfprj" + filesep + ...
+      "build" + filesep + machineName + filesep + "rtw" + filesep + "src"
+    %addincludepath includePathForMachine
+  %endforeach
+  %assign CachedSFMachineInfo = SFMachineInfo
+  %assign CompiledModel = CompiledModel + CachedSFMachineInfo
+
+  %% Set machine init/term code
+
+  %assign machineTLCFILE = SFMachineInfo[0*3]
+  %generatefile "machineSource" "%<machineTLCFILE>.tlc"
+  
+  %assign tmpBuf = ...
+    GENERATE_TYPE(block,"GlobalMachineInitializer","machineSource")
+
+  %if !WHITE_SPACE(tmpBuf)
+    %<SLibSetMachineInitialize(tmpBuf)>
+  %endif
+
+  %if IncludeMdlTerminateFcn
+    %assign tmpBuf = ...
+      GENERATE_TYPE(block,"GlobalMachineTerminator","machineSource")
+    %if !WHITE_SPACE(tmpBuf)
+      %<SLibSetMachineTerminate(tmpBuf)>
+    %endif
+  %endif
+
+%endfunction
+
+%function Start(block,system) Output
+  %if !StateflowStart
+    %assign CompiledModel.StateflowStart = 1
+    %assign SFMachineInfo = CompiledModel.CachedSFMachineInfo
+    %% Cache machine source and header code
+    %foreach index = (SIZE(SFMachineInfo,1)/3)
+      %assign machineName = SFMachineInfo[index*3+2]
+      %assign inlineMachine = SFMachineInfo[index*3+1]
+      %assign machineTLCFILE = SFMachineInfo[index*3]
+      %assign filename = CompiledModel.Name
+      %assign prvHFile = SLibAddModelFile("SystemHeader","Simulink",filename+"_private")
+      %assign cFile = GetBaseFile("SystemBody")
+      %if inlineMachine == "No"
+        %generatefile "machineSource" "%<machineTLCFILE>.tlc"
+        %<GENERATE_TYPE(block,"CacheMachineDefinitions","machineSource",system,prvHFile,cFile)>\
+        %<GENERATE_TYPE(block,"CacheMachineFunctions","machineSource",system,prvHFile,cFile)>\
+        %assign unused = UNLOAD_GENERATE_TYPE(block, "machineSource")
+      %endif
+      %assign pubHFile = GetBaseFile("SystemHeader")
+      %generatefile "machineHeader" "%<machineTLCFILE>.tlh"
+      %<GENERATE_TYPE(block,"CacheOutputs","machineHeader",system,pubHFile,prvHFile,cFile)>\
+      %assign unused = UNLOAD_GENERATE_TYPE(block, "machineHeader")
+    %endforeach
+  %endif
+  %if SFInfo.ChartInLibrary == "No"
+    %<BlockRegistrationFcn(block, system)>
+  %endif
+%endfunction
+
+%function Terminate(block, system) Output
+  %if !StateflowTerminate
+    %assign CompiledModel.StateflowTerminate = 1
+  %endif
+%endfunction
+
+%function BlockInstanceSetup(block,system) void
+  %% Call m-script to get all stateflow information.
+  %assign StateflowInfo = FEVAL("sf_rtw", "get_block_info", block.Tag)
+
+  %addtorecord block ChartInstanceAccessed 0
+
+  %% put the vector of strings into a record for easy access,
+  %% assume identifier/value pairs
+  %% Fields in SFInfo:
+  %%  'StateflowVersion'
+  %%  'ChartInLibrary'
+  %%  'InlineChart'
+  %%  'ChartTLCFile'
+  %%  'ChartInitializeFcn'
+  %%  'ChartOutputsFcn'
+  %%  'ChartInstanceTypedef'
+  %%  'ChartRTWInitializer'
+  %%  'MultiInstanced' (added below)
+
+  %assign tempVar = SFInfo {Temp 1}
+  %foreach idx = (SIZE(StateflowInfo, 1) / 2)
+    %assign fieldName = StateflowInfo[idx*2]
+    %assign fieldValue = StateflowInfo[idx*2+1]
+    %assign %<fieldName> = fieldValue
+    %assign SFInfo = SFInfo + %<fieldName>
+  %endforeach
+
+  %assign block = block + SFInfo
+
+  %assign SFInfo.InlineChart = "Yes"
+
+  %<LibBlockSetIsExpressionCompliant(block)>
+
+  %% Setup flags to determine what is needed by stateflow code.
+  %% attach to block since they are used across functions
+
+  %assign SFChartInstanceDeclaration = ""
+  %if 0
+    %assign UniqueIdentifier = block.Identifier
+  %else
+    %assign UniqueIdentifier = ""
+  %endif
+
+  %%% WISH: This is a temporary work-around for
+  %%% G90619. Until we figure out a proper fix
+  %%% we force this variable to be 1 => all chart data
+  %%% are initialized even if their init val is zero.
+  %if system.StatesCanReset == "yes"
+    %assign canEnable = 1
+  %else
+    %assign canEnable = 0
+  %endif
+  %assign BelongsToEnabledSubsystem = canEnable
+
+  %assign block.SFInfo = block.SFInfo + SFChartInstanceDeclaration
+  %assign block.SFInfo = block.SFInfo + UniqueIdentifier
+  %assign block.SFInfo = block.SFInfo + BelongsToEnabledSubsystem
+
+  %if SFInfo.ChartInstanceOptimizedOut=="No"
+    %assign dtId  = LibBlockDWorkDataTypeId(DWork[0])
+    %assign dtRec = CompiledModel.DataTypes.DataType[dtId]
+    %<SLibSetDataTypeName(dtRec, "%<SFInfo.ChartInstanceTypedef>")>
+  %endif
+
+%endfunction
+
+%function GeneratePassThryArgs(block, system) void
+  %<LibSFResetPassThruArgs(block)>
+  %<LibSFResetProtoTypeInfo(block)>
+  %assign tmpBuf = GENERATE_TYPE(block,"Outputs","chartSource",system)
+  %assign tmpBuf = GENERATE_TYPE(block,"ChartFunctions","chartSource",system)
+  %assign tmpBuf = LibSFPassThruPairsForce(block)
+  %undef tmpBuf
+  %<LibSFSetProtoTypeInfo(block)>  
+%endfunction
+
+%function InitializeConditions(block,system) Output
+  %generatefile "chartSource" "%<SFInfo.ChartTLCFile>.tlc"
+  %assign chartConfig = ...
+    GENERATE_TYPE(block, "ChartConfig", "chartSource", system)
+  %if chartConfig.executeAtInitialization == 1
+    %assign orgSysFcns = LibGetGlobalSysFcnsForArgAccess()
+    %assign sysFcns = orgSysFcns + "Output"
+    %<LibSetGlobalSysFcnsForArgAccess(sysFcns)>
+    %assign tmpBlkFcn = ::BlockFcn
+    %if ISFIELD(system, "OutputFcn") 
+      %assign ::BlockFcn = "Output"    
+    %else
+      %assert ISFIELD(system, "OutputUpdateFcn")
+      %assign ::BlockFcn = "OutputUpdate"
+    %endif
+    %<GeneratePassThryArgs(block, system)>
+    %assign ::BlockFcn = tmpBlkFcn
+     %<LibSetGlobalSysFcnsForArgAccess(orgSysFcns)>
+  %endif
+  %<GENERATE_TYPE(block, "InlinedInitializerCode", "chartSource", system)>
+  %<GENERATE_TYPE(block, "DumpSharedUtils", "chartSource", system)>
+  %assign unused = UNLOAD_GENERATE_TYPE(block, "chartSource")
+%endfunction
+
+
+%function Enable(block,system) Output
+  %generatefile "chartSource" "%<SFInfo.ChartTLCFile>.tlc"
+  %<GENERATE_TYPE(block, "EnableUnboundOutputEventsCode", "chartSource", system)>
+  %assign unused = UNLOAD_GENERATE_TYPE(block, "chartSource")
+%endfunction
+
+%function Disable(block,system) Output
+  %generatefile "chartSource" "%<SFInfo.ChartTLCFile>.tlc"
+  %<GENERATE_TYPE(block, "DisableUnboundOutputEventsCode", "chartSource", system)>
+  %assign unused = UNLOAD_GENERATE_TYPE(block, "chartSource")
+%endfunction
+
+%function Outputs(block,system) Output
+  %assign chartConfig = ...
+    GENERATE_TYPE(block, "ChartConfig", "chartSource", system)
+  %% Setup tlc file for the type, chart, to be path to the file
+  %generatefile "chartSource" "%<SFInfo.ChartTLCFile>.tlc"
+  %%
+  %% Generate the source code for the Stateflow chart
+  %%
+  %if EXISTS("ParamSettings.SFLibraryName")
+    %assign chartIndex = ...
+      LibSFGetChartIndexAndGenerate(ParamSettings.SFLibraryName)
+  %else
+    %% -1 indicates a single instance chart
+    %assign chartIndex = -1
+  %endif
+  %%
+  %assign filename = SLibGetSystemOutputFileBaseName(system)
+  %assign cFile = GetBaseFile("SystemBody")
+  %if filename == CompiledModel.Name
+    %assign prvFilename = filename + "_private"
+  %else
+    %assign prvFilename = filename
+  %endif
+  %assign typeDefFilename = "%<CompiledModel.Name>_types"
+  %assign hFile = SLibAddModelFile("SystemHeader","Simulink",prvFilename)
+  %assign typeDefHFile = SLibAddModelFile("SystemHeader","Simulink",typeDefFilename)
+  %%
+  %if chartConfig.executeAtInitialization == 0
+    %<GeneratePassThryArgs(block, system)>
+  %endif
+  %%
+  %% 1) Now that the outputs code is generated, cache the requirements.
+  %% 2) Call chartHeader CacheOutputs at this point since doing so has
+  %% the side effect of setting SFInfo.ChartInstanceEmpty flag used below.
+  %%
+  %if chartIndex != -2
+    %generatefile "chartHeader" "%<SFInfo.ChartTLCFile>.tlh"
+    %<GENERATE_TYPE(block,"CacheOutputs","chartHeader",system,typeDefHFile,hFile,cFile)>\
+    %assign unused = UNLOAD_GENERATE_TYPE(block, "chartHeader")
+  %endif
+  %%
+  %<GENERATE_TYPE(block,"Outputs","chartSource",system)>\
+  %%
+  %%
+  %% Adding any chart functions to the c-file buffer
+  %%
+  %assign tmpChartFcnBuf = GENERATE_TYPE(block,"ChartFunctions","chartSource",system)
+  %assign tmpChartSharedFcnBuf = GENERATE_TYPE(block,"ChartSharedFunctions","chartSource",system)
+  %if !WHITE_SPACE(tmpChartFcnBuf)
+    %assign chartFcnBuf = ""
+    %openfile chartFcnBuf
+
+    /* Functions for block: %<LibParentMaskBlockName(block)> */
+    %<tmpChartFcnBuf>\
+    %closefile chartFcnBuf
+    %<SLibAppendToSystemStateflowFcnCache(system,chartFcnBuf)>
+  %endif
+
+  %if !WHITE_SPACE(tmpChartSharedFcnBuf)
+    %assign chartSharedFcnBuf = ""
+    %openfile chartSharedFcnBuf
+
+    /* Shared Utility Functions */
+    %<tmpChartSharedFcnBuf>\
+    %closefile chartSharedFcnBuf
+    %<SLibAppendToSystemStateflowFcnCache(system,chartSharedFcnBuf)>
+  %endif
+  %assign unused = UNLOAD_GENERATE_TYPE(block, "chartSource")
+%endfunction
+
+%function BlockRegistrationFcn(block, system) void
+  %return ""
+%endfunction %% BlockRegistrationFcn
+
+%% [EOF] stateflow.tlc
+
+
+
+
+
+
+

@@ -1,0 +1,177 @@
+%% File : sfun_bitop.tlc generated from sfun_bitop.ttlc revsion 1.9
+%% $Date: 2002/04/10 18:18:05 $
+%%
+%% Rob Aberg
+%% December 22, 1998
+%% Copyright 1990-2002 The MathWorks, Inc.
+%%
+%% Description: 
+%%   Bitwise Logical Operator block target file
+%%   Note that code generation for all built-in data types
+%%   even though Simulink currently only supports double and boolean types
+%%   for the Logic block.
+%%
+
+%implements sfun_bitop "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function FcnGetLogicOp =====================================================
+%%
+%% Abstract: return logical operator for block
+%%
+%function FcnGetLogicOp() void
+  %switch(SFcnParamSettings.Operator)
+    %case "AND"
+      %assign LogicOp        = "&"
+      %break
+    %case "OR"
+      %assign LogicOp        = "|"
+      %break
+    %case "XOR"
+      %assign LogicOp        = "^"
+      %break
+    %case "SHIFT_LEFT"
+      %assign LogicOp        = "\<\<"
+      %break
+    %case "SHIFT_RIGHT"
+      %assign LogicOp        = "\>\>"
+      %break
+    %case "NOT"
+      %assign LogicOp        = "~"
+      %break
+    %default
+      %error RTW Error: Illegal operator value: "%<ParamSettings.Operator>"
+  %endswitch
+  %return LogicOp
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%    Support logical and shift operations with special handling for
+%%    buffer-reuse case to take advantage of the &=, |=, etc. operators
+%%    in C.
+%%
+%function Outputs(block, system) void
+  %openfile tmpBuf
+  %%
+  %% Select Operator
+  %assign LogicOp = FcnGetLogicOp()
+  /* Bitwise Logical Operator Block: '%<Name>' */
+  /* [input] %<SFcnParamSettings.Operator> %<SFcnParamSettings.OperandCommentString> */
+  %%
+  %if SFcnParamSettings.Operator != "NOT"
+    %% --- u <op> P case:   1:N, N:1 and N:N cases for inputs:params
+    %%
+    %if SIZE(SFcnParamSettings.Operand,1) == 1
+      %% Second Operand is scalar, we can generate rolled code
+      %assign opd  = SFcnParamSettings.Operand[0]
+      %assign opds = SFcnParamSettings.OperandString[0]
+      %assign inplace = LibBlockInputSignalBufferDstPort(0) == 0 && ...
+	                    SFcnParamSettings.Operator != "SHIFT_LEFT" && ...
+	                    SFcnParamSettings.Operator != "SHIFT_RIGHT"
+      %if inplace
+	%assign rollVars = ["Y"]
+      %else
+	%assign rollVars = ["U", "Y"]
+      %endif
+      %roll  idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%if !inplace
+	  %assign u = LibBlockInputSignal(0, "", lcv, idx)
+	%endif
+	%assign y = LibBlockOutputSignal(0, "", lcv, idx)
+	%if  SFcnParamSettings.Operator == "SHIFT_LEFT" || ...
+	     SFcnParamSettings.Operator == "SHIFT_RIGHT"
+	  %if inplace
+	    %<y> %<LogicOp>= %<opd>;
+	  %else
+	    %<y> = %<u> %<LogicOp> %<opd>;
+	  %endif
+	%else
+	  %if inplace
+	    %<y> %<LogicOp>= 0x%<opds>;
+	  %else
+	    %<y> = %<u> %<LogicOp> 0x%<opds>;
+	  %endif
+	%endif
+      %endroll
+    %else
+      %foreach idx = LibBlockOutputSignalWidth(0)
+	%assign opd  = SFcnParamSettings.Operand[idx]
+	%assign opds = SFcnParamSettings.OperandString[idx]
+	%assign u    = LibBlockInputSignal(0, "", "", idx)
+	%assign y    = LibBlockOutputSignal(0, "", "", idx)
+	%if  SFcnParamSettings.Operator == "SHIFT_LEFT" ...
+	  || SFcnParamSettings.Operator == "SHIFT_RIGHT"
+	  %<y> = %<u> %<LogicOp> %<opd>;
+	%else
+	  %if LibBlockInputSignalBufferDstPort(0) == 0
+	    %<y> %<LogicOp>= 0x%<opds>;
+	  %else
+	    %<y> = %<u>  %<LogicOp> 0x%<opds>;
+	  %endif
+	%endif
+      %endforeach
+    %endif
+    %%    
+  %else
+    %% --- unary case for NOT
+    %assign rollVars = ["U", "Y"]
+    %roll  idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0, "", lcv, idx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+      %<y> = %<LogicOp>(%<u>);
+    %endroll
+  %endif
+
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %% Select Operator
+      %assign LogicOp = FcnGetLogicOp()
+      %if SFcnParamSettings.Operator != "NOT"
+	%% --- u <op> P case:   1:N, N:1 and N:N cases for inputs:params
+	%%
+	%if SIZE(SFcnParamSettings.Operand,1) == 1
+	  %% Second Operand is scalar, we can generate rolled code
+	  %assign opd  = SFcnParamSettings.Operand[0]
+	  %assign opds = SFcnParamSettings.OperandString[0]
+	  %assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+	  %if  SFcnParamSettings.Operator == "SHIFT_LEFT" ...
+	    || SFcnParamSettings.Operator == "SHIFT_RIGHT"
+	    %return "(%<u> %<LogicOp> %<opd>)"
+	  %else
+	    %return "(%<u> %<LogicOp> 0x%<opds>)"
+	  %endif
+	%else
+	  %<LibReportFatalError("Should not be here")>
+	%endif
+	%%    
+      %else
+	%assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+	%return "(%<LogicOp>(%<u>))"
+      %endif
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+%endfunction
+
+%% [EOF] sfun_bitop.ttlc

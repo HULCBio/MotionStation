@@ -1,0 +1,400 @@
+%% Abstract: Register C6200 TLC replacement functions ====================
+%%
+%% Copyright 2002 The MathWorks, Inc.
+%% $RCSfile: c62_gain.tlc,v $
+%% $Revision: 1.5 $ $Date: 2002/05/18 02:02:14 $
+%%
+%%construct v-table for TI-specific TLC replacement of fixed-point
+%%Outputs function for Simulink built-in blocks: Product, Sum, Gain
+%%
+%%
+%include "c62_common.tlc"
+
+%implements * "C"
+
+%%----------------------------------------------------------------------
+%% Functions In this file:
+%% C62_FixptOutputs          - Entry point to this file.
+%% C62_FixPtGain             - Gain Block routine entry point.
+%% C62_MulCreateNameFunction - Creates a unique C function name.
+%%----------------------------------------------------------------------
+
+
+%% Function: C62_FixptOutputs =====================================================
+%% Entry point to this TLC.
+%% Abstract:
+%%      Y[i] = K[i] * X[i]
+%% for fixed point inputs only. Note that the scaling factor should
+%% be non zero.
+%%
+%function C62_FixptOutputs(block, system) Output
+    %%
+    %if ParamSettings.Multiplication == "Element-wise(K.*u)"
+      %%
+      %assign Multiplication = "Element-wise"
+      %%
+    %elseif ParamSettings.Multiplication == "Matrix(K*u)" || ...
+            ParamSettings.Multiplication == "Matrix(K*u) (u vector)"
+      %%
+      %assign Multiplication = "K*u"
+      %%
+    %elseif ParamSettings.Multiplication == "Matrix(u*K)"
+      %%
+      %assign Multiplication = "u*K" 
+      %%
+    %else
+      %% START_ASSERT
+      %<LibBlockReportFatalError(block,"Unsupported gain multiplication type.")>
+      %% END_ASSERT      
+    %endif
+    %%
+    %assign FixPtGainID = ParamSettings.FixPtGainID
+    %%
+    %assign gainIsComplex = LibBlockParameterIsComplex(Gain)
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% Get input data type
+    %%
+    %assign u0DT  = FixPt_GetInputDataType(0)
+    %%
+    %% create RadixOnly version of input Data Type
+    %%
+    %copyrecord u0RadixDT u0DT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %% Get output data type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %assign y0RadixDT.Bias      = 0.0
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point Gain Block: %<MaskBlockName>
+     *
+    %if Multiplication == "Element-wise"
+      %%
+      %% the output to be created
+      %%
+      %if LibDataOutputPortWidth(0) > 1
+        %assign opstr = "*  y[i] ="
+      %else
+        %assign opstr = "*  y ="
+      %endif
+      %%
+      %% get Gain parameter size
+      %%
+      %assign gainSize = LibBlockParameterSize(Gain)
+      %%
+      %% the gain to be used
+      %%
+      %if gainSize[1] > 1
+	%assign opstr = opstr + " k[i]"
+      %else
+	%assign opstr = opstr + " k"
+      %endif
+      %%
+      %% the input to be used
+      %%
+      %if LibDataInputPortWidth(0) > 1
+	%assign opstr = opstr + " * u[i]"
+      %else
+	%assign opstr = opstr + " * u"
+      %endif
+      %%
+      %% width of signal
+      %%
+      %if LibDataOutputPortWidth(0) > 1
+	%assign opstr = opstr + "    i = 0 to "+STRING(LibDataOutputPortWidth(0)-1)
+      %endif
+      %%
+      %% spit out operation string
+      %%
+      %<opstr>
+    %elseif Multiplication == "K*u"
+      %%
+      *  y = K*u   Matrix Multiply
+      %%
+    %else
+      %%
+      *  y = u*K   Matrix Multiply
+      %%
+    %endif
+    *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+     *
+    %%
+    %% add comments about fixed point parameters
+    %%
+    %<FixPt_ParameterBlockComment(Gain,FixPtGainID,"Gain")>
+    %%
+    %% END: header comment
+    %%
+     */
+    %if Multiplication == "Element-wise"
+      {
+      %%
+      %% for the case of a full complex by complex multiply
+      %% a temporary variable is needed
+      %%
+      %if u0IsComplex && gainIsComplex
+          %%
+          %assign ytmpLabel = "yTemp"
+          %<y0DT.NativeType> %<ytmpLabel>;
+      %endif
+      %%
+      %% get roll variables for loop ie rolling around input, output and gain
+      %%       jumps in scaling from column to column of the matrix gain
+      %%   AND noncontiguous storage of the inputs
+      %%       determine whether or not rolling is possible
+      %%
+      %assign outerRollRegions = RollRegions
+      %%
+      %% adjust rollregions based on gain scaling
+      %% ONLY if gain is not a scalar
+      %%
+      %if ( gainSize[1] > 1 ) || ( gainSize[0] > 1 )
+          %%
+          %% get roll regions based on parameter scaling discontinuities
+          %%
+          %assign colRollRegions = FixPt_ParameterColRollRegions(Gain,FixPtGainID)
+          %%
+          %% find the worst case intersection between noncontiguous inputs and
+          %% jumps in parameter scaling
+          %%
+          %assign outerRollRegions = LibIntersectRollRegions(colRollRegions,outerRollRegions)
+      %endif
+      %%
+      %assign outerRollVars = ["U", "Y", "P"]
+      %%
+      %% Roll around OUTPUT and INPUT signal width and around GAIN
+      %%
+    %if C62_FixPtGain()==0
+      %roll outersigIdx = outerRollRegions, outerlcv = RollThreshold, block, "Roller", outerRollVars
+          %%
+          %assign reOut = (tRealPart + STRING(outersigIdx))
+          %assign imOut = (tImagPart + STRING(outersigIdx))
+          %%
+          %% Get output
+          %%
+          %assign y0ReLabel = LibBlockOutputSignal(0, "", outerlcv, reOut)
+          %if u0IsComplex || gainIsComplex
+            %assign y0ImLabel = LibBlockOutputSignal(0, "", outerlcv, imOut)
+          %endif
+          %%
+          %% Get input
+          %%
+          %assign u0ReLabel = LibBlockInputSignal(0, "", outerlcv, reOut)
+          %if u0IsComplex
+            %assign u0ImLabel = LibBlockInputSignal(0, "", outerlcv, imOut)
+          %endif
+          %%
+          %% Get gain
+          %%
+          %assign iRow = 0
+          %assign kDT = FixPt_GetParameterDataType(FixPtGainID,iRow,outersigIdx)
+          %%
+          %if FixPt_ParameterCouldBeInlined(Gain, "", outerlcv, reOut)
+              %%
+              %assign kReLabel = LibBlockParameterValue(Gain, reOut)
+              %if gainIsComplex
+                  %assign kImLabel = LibBlockParameterValue(Gain, imOut)
+              %endif
+          %else
+              %assign kReLabel = LibBlockParameter(Gain, "", outerlcv, reOut)
+              %if gainIsComplex
+                  %assign kImLabel = LibBlockParameter(Gain, "", outerlcv, imOut)
+              %endif
+          %endif
+          %%
+          %% Handle multiplication
+          %%
+          %if   !u0IsComplex
+            %if !gainIsComplex
+              %%
+              %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+            %else %% gainIsComplex
+              %%
+              %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kImLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+             %endif
+          %else %% u0IsComplex
+            %if !gainIsComplex
+              %%
+              %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                               u0ImLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+            %else %% gainIsComplex
+              %%
+              %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(ytmpLabel,y0RadixDT,...
+                               u0ImLabel,u0RadixDT,...
+                               kImLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+                               ytmpLabel,y0RadixDT,...
+                               FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                               u0ReLabel,u0RadixDT,...
+                               kImLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(ytmpLabel,y0RadixDT,...
+                               u0ImLabel,u0RadixDT,...
+                               kReLabel, kDT,...
+                               FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+                               ytmpLabel,y0RadixDT,...
+                               FixPtSaturationMode)>\
+              %%
+            %endif
+          %endif
+      %endroll
+    %endif
+      %%
+      %% close block needed for gain declaration
+      }
+    %else
+      %%
+      %% handle matrix cases
+      %%
+      %assign dims = ParamSettings.Dimensions
+      %assign yLabelAddr = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign uLabelAddr = LibBlockInputSignalAddr(0, "", "", 0)
+      %assign kLabelAddr = LibBlockParameterAddr(Gain, "", "", 0)
+      %assign kDT = FixPt_GetParameterDataType(FixPtGainID, 0, 0)
+      %assign nRows = SIZE(FixPtGainID,0)
+      %assign nCols = SIZE(FixPtGainID,1)
+      %if y0IsComplex
+	%% Output is complex and is independent of input
+	%% complexity
+	%% Therefore input could be either real or complex.
+	%if Multiplication == "K*u"
+	  %if (nRows == 1) && (nCols == 1)
+	    %<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,kLabelAddr,kDT,uLabelAddr,u0DT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],gainIsComplex, u0IsComplex)>\
+	  %else
+	    %<FixPt_ComplexMatrixMultiplyHetrogenous(yLabelAddr,y0RadixDT,kLabelAddr,kDT,uLabelAddr,u0DT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],gainIsComplex,u0IsComplex,Multiplication,FixPtGainID)>\
+	  %endif
+	%else
+	  %if (nRows == 1) && (nCols == 1)
+	    %<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,uLabelAddr,u0DT,kLabelAddr,kDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],u0IsComplex, gainIsComplex)>\
+	  %else
+	    %<FixPt_ComplexMatrixMultiplyHetrogenous(yLabelAddr,y0RadixDT,uLabelAddr,u0DT,kLabelAddr,kDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],u0IsComplex,gainIsComplex,Multiplication,FixPtGainID)>\
+	  %endif
+	%endif
+      %else
+	%%Output is real
+	%% Perform Matrix Gain
+	%if Multiplication == "K*u"
+	  %if (nRows == 1) && (nCols == 1)
+	    %<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,kLabelAddr,kDT,uLabelAddr,u0RadixDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	  %else
+	    %<FixPt_MatrixMultiplyHetrogenous(yLabelAddr,y0RadixDT,kLabelAddr,kDT,uLabelAddr,u0RadixDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],Multiplication,FixPtGainID)>\
+	  %endif
+	%else
+	  %if (nRows == 1) && (nCols == 1)
+	    %<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,uLabelAddr,u0RadixDT,kLabelAddr,kDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	  %else
+	    %<FixPt_MatrixMultiplyHetrogenous(yLabelAddr,y0RadixDT,uLabelAddr,u0RadixDT,kLabelAddr,kDT,...
+	      FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],Multiplication,FixPtGainID)>\
+	  %endif
+	%endif
+      %endif
+    %endif
+    %%
+    %% blank line for formating
+
+%endfunction %% end FixptOutputs
+
+
+
+
+
+%% Function: C62_FixPtGain =====================================================
+%%
+%% Abstract: 
+%%
+%%   this routine calls the multiply routine with a
+%%   parameter of 1, which tells the multiply routine to interpret
+%%   the block as gain block. this avoids maintaining two sets of codes
+%%   for similar routines.
+%%
+%function C62_FixPtGain() Output
+%%----------------------------------------------------------------------
+  %%
+  %% Call Multiply Block. the parameter tells the multiply block 
+  %% to process as gain block. Notice that gain is simply a 
+  %% multiplication.
+  %assign FixPtGainID = ParamSettings.FixPtGainID
+  %assign kDT = FixPt_GetParameterDataType(FixPtGainID,0,0)
+  %%
+  %if FixPtRoundingMode == "Zero"
+    %%
+    %return 0
+    %%
+  %endif
+  %%
+  %if FixPt_GetInputDataType(0).ActualBits  == 0 || ...
+      kDT.ActualBits  == 0
+      %return 0
+  %endif
+  %%
+  %% // %<FixPt_GetInputDataType(0).ActualBits>
+  %% // %<kDT.ActualBits>
+  %if (FixPt_GetInputDataType(0).ActualBits  != 16 && ...
+      FixPt_GetInputDataType(0).ActualBits  != 32) || ...
+      (kDT.ActualBits  != 16 && kDT.ActualBits  != 32)
+      %%
+      %return 0
+      %%
+  %endif
+  %%
+  %if FixPt_GetOutputDataType(0).ActualBits != 16 && ...
+      FixPt_GetOutputDataType(0).ActualBits != 32
+      %%
+      %return 0
+      %%
+  %endif
+  %%
+  %% // generating
+  %return C62_MulWriteFunction(1)
+  %%
+%endfunction

@@ -1,0 +1,6 @@
+% function [varval1,varval2,varval3,varval4,varval5,varval6] = ...
+%         gguivar(varname1,varname2,varname3,varname4,varname5,...
+%         varname6,varname7)
+
+%   $Revision: 1.6.2.2 $  $Date: 2004/03/10 21:30:41 $
+%   Copyright 1991-2002 by MUSYN Inc. and The MathWorks, Inc. 

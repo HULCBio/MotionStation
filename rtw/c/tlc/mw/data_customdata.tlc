@@ -1,0 +1,1537 @@
+%% ============================================================================
+%% File: data_customdata.tlc
+%%
+%% Abstract:
+%%   Caches Definitions/Declarations/Typedefs of Custom storage class objects
+%%   into CompiledModel.CustomDataBuffers
+%%   
+%%   
+%% $Revision: 1.1.6.8 $ 
+%% $Date: 2004/04/14 23:47:59 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%% 
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_DATA_CUSTOMDATA_") == 0
+%assign _DATA_CUSTOMDATA_ = 1
+
+%include "data_cacheutils.tlc"
+
+%% Function: SLibCacheCustomDataBuffers =======================================
+%% Abstract:
+%%   Cache declaration, definition, typedef for Custom data in data buffers.
+%%   #includes are not cached but directly put into files.
+%%   This function is called in SLibCacheDataBuffers in data_cachebuffers.tlc
+%%
+%function SLibCacheCustomDataBuffers() void
+
+  %% Create data buffers using new buffering scheme
+  %<SLibCreateCustomDataBuffers()>
+  
+  %% Loop through custom storage classes and cache into CSC buffers
+  %<FcnCacheCustomDataBuffers()>
+  
+%endfunction %% SLibCacheCustomDataBuffers
+
+%% Function: SLibCreateCustomDataBuffers ====================================
+%% Abstract:
+%%   Adds a TLC record CustomDataBuffers to CompiledModel record. This record 
+%%   will be used to cache custom storage class (CSC) buffers
+%%
+%function SLibCreateCustomDataBuffers() void
+  %with CompiledModel
+    %% Create CustomDataBuffers record.
+    %addtorecord CompiledModel CustomDataBuffers { \
+	NumFiles    0; \
+	FileRec    []; \
+	FileRecMap {}  \
+      }
+  %endwith %% CompiledModel
+%endfunction
+
+%% Local Function: FcnCacheCustomDataBuffers =================================
+%% Abstract:
+%%   The function loops through Custom storage objects and depending upon the 
+%%   scope and file placement of the object caches it in data buffers. 
+%%   Caches the custom data buffers for a given access method
+%%
+%% *** RESTRICTIONS WITH MODEL REFERENCE ***
+%% - In theory, exported grouped CSCs can be used if:
+%%   - they contain only signals
+%%   - all signals are used in a single model (don't cross the boundary).
+%% - However, for now we are preventing the use of any grouped CSCs
+%%   with model reference unless they are Imported.
+%% - Ungrouped data may only be exported via default header file (HeaderFile = '')
+%% - Currently, exported macros are being defined in model.h for all models.
+%%   However, in concept it would be better for the submodels to define these
+%%   in submodel_private.h instead (to prevent duplicate declarations).
+%% *****************************************
+%%
+%function FcnCacheCustomDataBuffers() void
+  
+  %with CustomStorageClasses
+    
+    %% Setup RTW File defaults. CSC buffers will be placed in these files
+    %assign defDefineFile = FcnGetFileIdx(CompiledModel.Name, "source", "no")
+    %assign defExportFile = FcnGetFileIdx(CompiledModel.Name, "header", "no") 
+    %assign defImportFile = \
+                 FcnGetFileIdx("%<CompiledModel.Name>_private", "header", "no")
+    %assign defTypesFile = \
+                 FcnGetFileIdx("%<CompiledModel.Name>_types", "header", "no")
+    
+    %% Setup RTW Default Template Symbols. 
+    
+    %assign defDefineSymbol  = FcnGetSymbolIdx("Definitions")
+    %assign defDeclareSymbol = FcnGetSymbolIdx("Declarations")
+    %assign defMacroSymbol   = FcnGetSymbolIdx("Defines")
+    %assign defTypesSymbol   = FcnGetSymbolIdx("Typedefs")
+
+    %% Loop through customstorage classes 
+    %foreach cscIdx = NumCustomStorageClasses
+      
+      %assign csc        = CustomStorageClass[cscIdx]
+      %assign cscName    = csc.Name
+      %assign cscPackage = csc.Package
+      
+      %% Get the class record from  Global Memory Map
+      %assign class      = LibGetCustomStorageInMap(cscPackage, cscName)
+      
+      %if ISEMPTY(class)
+	%continue
+      %endif
+      
+      %% Get Class specific properties
+      %assign classDefn          = SLibGetCSCDefForCSC(class)
+      
+      %if ISEMPTY(classDefn)
+	%% R13 Classes - Backward Compatibilty
+	%if !ISFIELD(CompiledModel.CustomStorageClasses.CSCReg, "R13CSCDefs")
+	  %% R13 CSC's are handled in special fashion.
+	  %% A default record, which contains the required info for data 
+	  %% placement, is added to CompiledModel.CustomStorageClasses.CSCReg
+	  %% The default values set are
+	  %% IsGrouped  - TLC_FALSE (Grouped are handled via Setup in ClassAccess)
+	  %% HeaderFile - ""
+	  %% DataInit   - None
+	  %% DataAccess - Direct
+	  %% *Comments  - ""
+	  %% DataScope  - "Exported"
+	  %% The only exceptions are
+	  %if (cscName == "GetSet") || (cscName == "ImportFromFile")
+	    %assign dScope = "Imported"
+	  %else
+	    %assign dScope = "Exported"
+	  %endif
+	      
+	  %addtorecord CompiledModel.CustomStorageClasses.CSCReg \
+	  R13CSCDefs {  \
+	    Name             "zzzR13"; \
+	    IsGrouped       TLC_FALSE; \
+	    HeaderFile             ""; \
+	    DataScope          dScope; \
+	    DataInit           "None"; \
+            DataAccess       "Direct"; \
+	    TypeComment            ""; \
+	    DeclareComment         ""; \
+	    DefineComment          ""  \
+	  }
+	%endif
+	%assign classDefn = CompiledModel.CustomStorageClasses.CSCReg.R13CSCDefs
+      %endif   %% R13 classes
+
+      %% CSC properties
+      %assign isClassGrouped     = classDefn.IsGrouped
+      %assign classHdr           = classDefn.HeaderFile
+      %assign isClassHeaderEmpty = WHITE_SPACE(classHdr)
+      %assign classScope         = classDefn.DataScope
+      %assign classInitViaMacro  = (classDefn.DataInit == "Macro")
+      %assign classInit          = classDefn.DataInit
+      
+      %% Add FilePackagingDefaults to each class
+      %<FcnAddFilePackagingByRTW(class, "FilePackagingDefaults", classScope,\
+                                 isClassHeaderEmpty, classInitViaMacro, \
+		                 defDefineFile, defExportFile, defImportFile, \
+				 classHdr, defDefineSymbol, defDeclareSymbol, \
+				 defMacroSymbol)>
+      
+      %% Grouped data is handled by Class Access
+      %if isClassGrouped   %% Grouped Data
+	
+	%% Handle supported data scopes
+	%if ((classScope != "Imported") && ...
+	     (HasModelReferenceBlocks() || IsModelReferenceTarget()))
+	  %assign errTxt = ...
+	    "Invalid DataScope '%<classScope>' for custom storage class: %<cscName>\n" ...
+	    "Grouped custom storage classes must be Imported when used with " ...
+	    "referenced models or models that contain Model blocks."
+	  %<LibReportError(errTxt)>
+
+	  %% NOTE: We could throw a warning and switch to Imported instead
+	  %% %<LibReportWarning(errTxt)>
+	  %% %assign classScope = "Imported"
+	%endif
+	
+	%switch classScope
+	  %case "Auto"
+	    %assign classScope = "Exported"
+	    %break
+	  %case "File"
+	    %assign errTxt = ...
+	      "Invalid DataScope 'File' for custom storage class: %<cscName>\n" ...
+	      "File scope is not currently supported for grouped custom storage classes."
+	    %<LibReportFatalError(errTxt)>
+	    %break
+	%endswitch
+
+	%assert((classScope == "Exported") || (classScope == "Imported"))
+	
+	%% Add a FilePackaging record to each class
+	%% The empty record will reference the class defaults
+	%addtorecord class FilePackaging { }
+		
+	%% Get Memory Section information for this class
+	%assign memSecDef  = SLibGetMemorySectionDefForCSC(class)
+	
+	%% Get class type(def), declaration, definition via Class Access method
+	%assign typeDeclDefn = LibCustomClass(class, "groupTypeDeclDefn")
+	
+	%% Depending on class scope put the definition/declaration/typedef in
+	%% appropriate buffers
+	%assign rootSystem    = CompiledModel.System[NumSystems-1]
+	%assign reqInsts      = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+	%if ((reqInsts.GroupedCustomDataInst) && (classScope == "Exported"))
+	  
+	  %% Put class definition in "Definitions" symbol of DefineFile
+	  %% Put class typedef in "Typedefs" symbol of TypesFile
+	  %assign defFile = class.FilePackaging.DefineFile
+	  %if defFile < 0
+	    %<LibReportFatalError("DefineFile was not specified.")>
+	  %else
+	    
+	    %openfile defnBuf
+	    %if !WHITE_SPACE(typeDeclDefn[2])
+	      %<typeDeclDefn[2]>
+	    %endif
+	    %closefile defnBuf
+	    
+	    %% Add to Define symbol in the define file buffer
+	    %<SLibAddToCSCBuffers(defFile, \ 
+	                          class.FilePackaging.DefineSymbol, \
+				  "Definitions", cscPackage, memSecDef, \
+				  classDefn, defnBuf)>
+	    
+	    %% Get class typedef using Class Access method
+	    %openfile typeBuf
+	      %<typeDeclDefn[0]>
+	    %closefile typeBuf
+	    %% Add directly to Typedef symbol in typesFile
+	    %<SLibAddToCSCBuffers(defTypesFile, defTypesSymbol,"Types", \
+	                          cscPackage, memSecDef, classDefn, typeBuf)>
+	  
+	  %endif  %% defFile < 0
+	  
+	%endif %% classScope = Exported
+	  
+	%% Files with extern declaration 
+	%assign externFiles    = class.FilePackaging.FilesWithDeclare
+	%assign numExternFiles = SIZE(externFiles)[1]
+	%if numExternFiles > 0
+	  %openfile declBuf
+	  %if !WHITE_SPACE(typeDeclDefn[1])
+	    %<typeDeclDefn[1]>
+	  %endif
+	  %closefile declBuf
+	%endif
+	%foreach exIdx = numExternFiles
+	  %assign externFile = externFiles[exIdx]
+	  %if externFile < 0
+	    %assign errTxt = "ExternFile[%<exIdx>] undefined for %<class.Name>"
+	    %<LibReportError(errTxt)>
+	  %endif
+	  
+	  %<SLibAddToCSCBuffers(externFile, class.FilePackaging.DeclareSymbol,\
+				"Declarations", cscPackage, memSecDef, \
+				classDefn, declBuf)>
+	%endforeach %% numExternFiles
+	    
+	%% Files which import via #include header declaration
+	%% #includes are always put directly in Includes area of the file
+	%% CSC Buffers are not created for #includes
+	%assign importFiles = class.FilePackaging.FilesWithInclude
+	%assign headerFile  = class.FilePackaging.HeaderFile
+	%assign numImportFiles = SIZE(importFiles)[1]
+	%foreach hdrIdx = numImportFiles
+	  %assign importFile = importFiles[hdrIdx]
+	  %if (importFile < 0)
+	    %assign errTxt ="ImportFile[%<hdrIdx>] undefined for %<class.Name>"
+	    %<LibReportError(errTxt)>
+	  %endif
+	  %<FcnCacheHeaderInImportsFile(class.Name, headerFile, importFile)>
+	%endforeach %% numHdrFiles
+	
+	%<REMOVEFIELD(class, "FilePackaging")>
+	  	  	
+      %else  %% Ungrouped Data
+
+	%% Loop through the data in this class in an alphabetical order
+	%assign cscDataNames = FIELDNAMES(csc.Data)
+	%assign numData      = SIZE(cscDataNames)[1]
+	%foreach dataIdx = numData
+	  
+	  %% Get Data Record
+	  %assign dataRec =  GETFIELD(csc.Data, cscDataNames[dataIdx])
+	  
+	  %% Unless instance specific, data properties are inherited 
+	  %% from class properties
+	  %assign dataScope         = classScope
+          %assign dataInit          = classInit
+          %assign dataInitViaMacro  = classInitViaMacro
+	  %assign isDataHeaderEmpty = isClassHeaderEmpty
+	  %assign dataHdr           = classHdr
+	  %assign hasInstSpecific   = TLC_FALSE
+	  
+	  %% Check for File or Auto data scope
+	  %% If Auto, resolve to the tightest possible scope
+	  %% If File, check for readers and writers and set the define file
+	  %assign verScope       = FcnVerifyDataScope(dataRec, dataScope)
+	  %assign dataScope      = verScope[0]
+	  %assign isFileScope    = verScope[2]
+	  %assign dataDefineFile = (isFileScope ? verScope[1] : defDefineFile)
+	  
+	  %% MPT flag
+	  %assign modifiedByMPT = TLC_FALSE
+	  	  
+	  %with class
+	    %% If file packaging of the data object is modified by MPT, 
+	    %% set FilePackaging record from the information provided by MPT
+	    %with CompiledModel.DataObjectUsage
+	      %if ISFIELD(DataObjectSymbols, \
+		          FcnGetUnaliasedDataIdentifier(dataRec))
+		%assign dataObjectIdx = GETFIELD(DataObjectSymbols, \
+		                        FcnGetUnaliasedDataIdentifier(dataRec))
+		%assign dataObject    = DataObject[dataObjectIdx[0]]
+		
+		%if dataObject.HasMPTAttributes[0]
+		  %assign modifiedByMPT = TLC_TRUE
+		  %<FcnAddFilePackagingByMPT(dataRec, dataObject)>
+		  %if ISFIELD(dataObject, "Scope") && \
+		    (dataObject.Scope != dataScope)
+		    %assign dataScope    = dataObject.Scope
+		  %endif
+		%endif   %% HasMPTAttributes
+	       
+	      %endif   %% ISFIELD dataRec.Name
+	    %endwith %% CompiledModel.DataObjectUsage
+    
+	    %% Get the instance specific properties of the data object
+	    %assign props = LibGetCustomStorageAttributes(dataRec)
+	    
+	    %% If properties exist and MPT has'nt modifed FilePackaging, then
+	    %% set FilePackaging according to instance specific properties
+	    %if !(ISEMPTY(props) || modifiedByMPT)
+	      
+	      %% Get Instance specific scope
+	      %assign scopeInst = ...
+		LibGetInstanceSpecificProp(classDefn, props, "DataScope")
+	      %% Reassign data scope if instance specific scope is different
+	      %% from data scope
+	      %% If instance specific scope is Auto, then the scope was resolved
+	      %% earlier via call to FcnVerifyDataScope.
+	      %if (scopeInst != classScope) && (scopeInst != "Auto")
+		%assign dataScope       = scopeInst
+		%assign hasInstSpecific = TLC_TRUE
+	      %endif   %%  (scopeInst != dataScope) && scopeInst != "Auto"
+
+	      %% Get Instance specific init
+	      %assign initInst = \
+	             LibGetInstanceSpecificProp(classDefn, props, "DataInit")
+	      %if (initInst != dataInit)
+		%assign dataInit         = initInst
+		%assign hasInstSpecific  = TLC_TRUE
+                %assign dataInitViaMacro = (dataInit == "Macro")
+	      %endif   %% (initInst != dataInit))
+
+
+              %%---------------------------------------------------------------
+              %% Validate DataScope / DataInit / DataAccess
+              %% NOTE: Similar validation is done for CSCs in cscdesigner or
+              %%       processcsc.  But that couldn't cover instance specific
+              %%       cases (which we have to validate here).
+              %%
+
+              %% Get Instance specific access
+              %% NOTE: DataAccess does not affect our FilePackaging for now.
+              %%       So no need to care if hasInstSpecific true here.
+              %%       Get it just for validation purpose.
+              %assign dataAccess = LibGetInstanceSpecificProp(classDefn, props, "DataAccess")
+
+              %% Imported must be of data init None or Macro
+              %if (dataScope == "Imported")
+                %if ((dataInit != "None") && (dataInit != "Macro"))
+                  %assign errTxt = "Imported data cannot be initialized statically or dynamically."
+                  %<LibReportFatalError(errTxt)>
+                %endif
+
+              %% Any non-Imported must be of data access Direct
+              %elseif (dataAccess != "Direct")
+                %assign errTxt = "Non-Imported data cannot be accessed via pointer."
+                %<LibReportFatalError(errTxt)>
+              %endif
+
+              %% Macro must be of data access Direct
+              %if ((dataInit == "Macro") && (dataAccess != "Direct"))
+                %assign errTxt = "Data with macro initialization cannot be accessed via pointer."
+                %<LibReportFatalError(errTxt)>
+              %endif
+
+              %%
+              %%---------------------------------------------------------------
+
+	      %% Get Instance Specific headerfile
+	      %assign hdrInst = \
+	            LibGetInstanceSpecificProp(classDefn, props, "HeaderFile")
+	      %if (hdrInst != dataHdr) 
+		%assign dataHdr         = hdrInst
+		%assign hasInstSpecific = TLC_TRUE
+		%if WHITE_SPACE(hdrInst)
+		  %assign isDataHeaderEmpty = TLC_TRUE
+		%else
+		  %assign isDataHeaderEmpty = TLC_FALSE
+		%endif
+	      %endif   %% hdrInst != dataHdr
+	     
+	    %endif   %% (!ISEMPTY(props) && !(modifiedByMPT))
+	   
+	    %if !(modifiedByMPT)
+	      %if hasInstSpecific || isFileScope
+		%<FcnAddFilePackagingByRTW(dataRec, "FilePackaging", \
+	                                  dataScope, isDataHeaderEmpty, \
+					  dataInitViaMacro, dataDefineFile, \
+					  defExportFile, defImportFile, \
+					  dataHdr, defDefineSymbol,\
+					  defDeclareSymbol, defMacroSymbol)>
+	      %else
+		%% The empty record will reference the class defaults
+		%addtorecord dataRec FilePackaging {}
+	      %endif
+	    %endif
+	   
+	    %% Get Memory Section information
+	    %% Data Access takes care of instance specific case
+	    %assign memSecDef  = SLibGetMemorySectionDefForData(dataRec)
+	   
+	    %if ISEMPTY(memSecDef)
+	      %if !ISFIELD(CompiledModel.CustomStorageClasses.CSCReg, "R13MSecDefs")
+		%addtorecord CompiledModel.CustomStorageClasses.CSCReg \
+		R13MSecDefs {       \
+		  Name    "zzzR13"; \
+	          Comment       ""; \
+		  PrePragma     ""; \
+		  PostPragma    ""  \
+		}
+	      %endif
+	      %assign memSecDef = \
+	                 CompiledModel.CustomStorageClasses.CSCReg.R13MSecDefs
+	    %endif
+	    
+	    %% Cache data according to scope
+	    %if FcnWriteOutCustomDataDefinition(dataRec, dataScope, dataInit)
+
+	      %assign defFile = dataRec.FilePackaging.DefineFile
+	      %if (defFile < 0)
+		%assign errTxt="Define File undefined for %<dataRec.Identifier>"
+		%<LibReportError(errTxt)>
+	      %endif
+	      %assign staticKey = ""
+	      %if (dataScope == "File" && !dataInitViaMacro)
+		%assign staticKey = "static"
+	      %endif
+	     
+	      %assign defns      = LibCustomData(dataRec,"define","","")
+	      %assign comment    = LibCustomData(dataRec,"defnComment","","")
+	     
+	      %% Error checking for comments
+	      %if ((TYPE(comment) != "Vector") || (SIZE(comment)[1] != 3))
+		%assign errTxt = "Insufficient Comments provided for \
+	                         %<dataRec.Identifier>.\n \
+				 The comment should be a 3 element Vector of \
+				 Strings:\n[\"Top Comment\", \"Side Comment \" \
+				 \"Bottom Comment\"]\n \
+				 Modify Data Access method\n"
+	        %<LibReportError(errTxt)>
+	      %endif
+	     
+	      %openfile defnBuf
+	      %if !WHITE_SPACE(defns)
+		%if !(WHITE_SPACE(comment[0]))
+		  %<comment[0]>
+		%endif
+		%<staticKey> %<defns>   %<comment[1]>
+		%if !(WHITE_SPACE(comment[2]))
+		  %<comment[2]>
+		%endif
+	       
+	      %endif
+	      %closefile defnBuf
+	       
+	      %% Put defnbuf in appropriate file buffer
+	      %if !dataInitViaMacro
+		%% Add to Definitions symbol in the define file
+		%<SLibAddToCSCBuffers(defFile,dataRec.FilePackaging.DefineSymbol,\
+		                      "Definitions", cscPackage, memSecDef, \
+		                      classDefn, defnBuf)>
+	      %else
+		%% Add to Defines symbol in the define file
+		%<SLibAddToCSCBuffers(defFile,dataRec.FilePackaging.DefineSymbol,\
+		                      "Defines", cscPackage, memSecDef, \
+		                       classDefn, defnBuf)>
+	      %endif
+	     
+	      %if dataScope == "File"
+		%continue  %% Skip the loop
+	      %endif
+	      
+	    %endif %% dataScope if "File" or elseif "Exported"
+	    
+	    %% Files with extern declaration 
+	    %assign externFiles = dataRec.FilePackaging.FilesWithDeclare
+	    %assign numExternFiles = SIZE(externFiles)[1]
+	    %assign decls      = LibCustomData(dataRec,"declare","","")
+	    %assign comment    = LibCustomData(dataRec,"declComment","","")
+	    
+	    %% Error checking for comments
+	    %if ((TYPE(comment) != "Vector") || (SIZE(comment)[1] != 3))
+	      %assign errTxt = "Insufficient Comments provided for \
+	                       %<dataRec.Identifier>.\n \
+			       The comment should be a 3 element Vector of \
+			       Strings:\n[\"Top Comment\", \"Side Comment \" \
+			       \"Bottom Comment\"]\n \
+			       Modify Data Access method\n"
+	      %<LibReportError(errTxt)>
+	    %endif
+	    
+	    %openfile declBuf
+	    %if !WHITE_SPACE(decls)
+	      %if !(WHITE_SPACE(comment[0]))
+		%<comment[0]>
+	      %endif
+	      %<decls>   %<comment[1]>
+	      %if !(WHITE_SPACE(comment[2]))
+		%<comment[2]>
+	      %endif
+	      
+	    %endif
+	    %closefile declBuf
+	    
+	    %foreach exIdx = numExternFiles
+	      %assign externFile = externFiles[exIdx]
+	      %if externFile < 0
+		%assign errTxt = "ExternFile[%<exIdx>] undefined \
+		for %<dataRec.Identifier>"
+		%<LibReportError(errTxt)>
+	      %endif
+	      
+	      %<SLibAddToCSCBuffers(externFile, \
+	                           dataRec.FilePackaging.DeclareSymbol, \
+	                           "Declarations", cscPackage, memSecDef, \
+				   classDefn, declBuf)> 
+	    %endforeach %% numExternFiles
+	    
+	    %%Files which import via #include header declaration
+	    %assign importFiles = dataRec.FilePackaging.FilesWithInclude
+	    %assign headerFile  = dataRec.FilePackaging.HeaderFile
+	    %assign numImportFiles = SIZE(importFiles)[1]
+	    %foreach hdrIdx = numImportFiles
+	      %assign importFile = importFiles[hdrIdx]
+	      %if importFile < 0
+		%assign errTxt = "Import File[%<hdrIdx>] undefined \
+		                  for %<dataRec.Identifier>"
+		%<LibReportError(errTxt)>
+	      %endif
+	      %<FcnCacheHeaderInImportsFile(dataRec.Identifier, headerFile, importFile)>
+	    %endforeach %% numHdrFiles
+	  
+	  %endwith %% class
+	
+	%endforeach %% foreach numData
+      
+      %endif  %% if isClassGrouped
+      %<REMOVEFIELD(class, "FilePackagingDefaults")>
+    %endforeach %% cscIdx
+ 
+  %endwith  %% CompiledModel 
+%endfunction %% FcnCacheCustomDataBuffers
+
+%% Function: FcnWriteOutCustomDataDefinition ==================================
+%% Abstract:
+%%   Determine whether or not to write out data definition for ungrouped data.
+%%
+%function FcnWriteOutCustomDataDefinition(dataRec, dataScope, dataInit) void
+  %assign retVal = TLC_FALSE
+  
+  %if (dataScope == "File" || dataScope == "Exported")
+  
+    %assign gmmDataRec = SLibGetGlobalMemoryDataRecord(dataRec.MemoryMapIdx)
+    %assign rootSystem = CompiledModel.System[NumSystems-1]
+    %assign reqInsts   = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+    
+    %switch gmmDataRec.Type
+      %case "parameter"
+	%assign retVal = ((reqInsts.ExpGlobalPrmsInst) || (dataInit == "Macro"))
+	%break
+      %case "signal"
+	%assign retVal = ((reqInsts.ExpGlobalSigsInst) && ...
+	                  (SLibWriteOutInstForSignalRec(gmmDataRec.RTWRecord)))
+	%break
+      %case "state"    %% Dwork used as state
+      %case "unknown"  %% DWork not used as State - Data Stores etc
+	%assign retVal = reqInsts.ExpGlobalDworkInst
+	%break
+      %default
+	%assign errTxt = "Unexpected Type of data for custom storage class: " ...
+	  "%<gmmDataRec.Type>"
+	%<LibReportFatalError(errTxt)>
+    %endswitch
+  %endif
+
+  %return retVal
+%endfunction
+  
+%% Function FcnGetUnalisedDataIdentifier =====================================
+%% Abstract
+%%
+%function FcnGetUnaliasedDataIdentifier(dataRec) void
+  %if ISFIELD(dataRec, "OrigIdentifier") && !ISEMPTY(dataRec.OrigIdentifier)
+    %return dataRec.OrigIdentifier
+  %else
+    %return dataRec.Identifier
+  %endif
+%endfunction
+
+%% Function: FcnGetCSCFileRec =================================================
+%% Abstract:
+%%   Generic function for accessing file buffers of CustomStorageClasses
+%%
+%%
+%function FcnGetCSCFileRec(fileName) void
+  
+  %with CompiledModel
+    %assign record = CompiledModel.CustomDataBuffers
+    
+    %% Create record for this file name, if not exists already
+    %if !ISFIELD(record.FileRecMap, "FileMap%<fileName>")
+      
+      %if (fileName < 0)
+	%<LibReportError("File Errror : File = -1")>
+      %endif
+      
+      %assign newFileRec = FileRec { ...
+	Index          fileName; ...
+	NumSymbols           0 ; ...
+	Symbol              [] ; ...
+	SymbolMap           {} ; ...
+	IncludesMap         {}   ...
+      }  
+     %% Add newFileRec to CSCBuffers.
+      %assign idx = record.NumFiles
+      %assign record.FileRec = record.FileRec + newFileRec
+      %addtorecord record.FileRecMap FileMap%<fileName> record.FileRec[idx]
+      %assign record.NumFiles = idx+1
+    %endif
+    
+    %return record.FileRecMap.FileMap%<fileName>
+  %endwith
+%endfunction
+
+%% Function: FcnGetCSCDataBuffer ============================================
+%% Abstract:
+%%   Generic function for accessing data buffers for CustomStorageClasses
+%%
+%%
+%function FcnGetCSCDataBuffer(fileName, symbol, symbolType, package, \
+                           memSectionDef, cscDef) void
+
+  %with CompiledModel
+    %assign record = CompiledModel.CustomDataBuffers
+    
+    %% Get File record
+    %assign record = FcnGetCSCFileRec(fileName)
+        
+    %% Create symbol record for this File Record, if not exists already
+    %if !ISFIELD(record.SymbolMap, "SymbolMap%<symbol>")
+      
+      %if (symbol < 0)
+	%<LibReportError("Symbol Errror : Symbol = -1")>
+      %endif
+      
+      %assign newSymbol = Symbol { ...
+	Index              symbol; ...
+	Type           symbolType; ...
+	NumPackages             0; ...
+	Package                []; ...
+	PackageMap             {}  ...
+      }
+      
+      %% Add new symbol to this File
+      %assign idx = record.NumSymbols
+      %assign record.Symbol = record.Symbol + newSymbol
+      %addtorecord record.SymbolMap SymbolMap%<symbol> record.Symbol[idx]
+      %assign record.NumSymbols = idx+1
+    %endif
+    %assert (record.SymbolMap.SymbolMap%<symbol>.Type == symbolType)
+    %assign record = record.SymbolMap.SymbolMap%<symbol>
+    
+    %% Create package record for this symbol, if not exists already
+    %if !ISFIELD(record.PackageMap, package)
+      %assign newPackage = Package  { ...
+	Name                 package; ...
+	NumMemSections             0; ...
+	MemSection                []; ...
+	MemSectionMap             {}  ...
+      }
+      
+      %% Add new package to this symbol record
+      %assign idx = record.NumPackages
+      %assign record.Package = record.Package + newPackage
+      %addtorecord record.PackageMap %<package> record.Package[idx]
+      %assign record.NumPackages = idx+1
+    %endif
+    %assign record = record.PackageMap.%<package>
+    
+    %% Create Memory Section record for this Package, if not exists already
+    %if !ISFIELD(record.MemSectionMap, memSectionDef.Name)
+      
+      %assign newMemSection = MemSection { ...
+	Definition       memSectionDef; ...
+	NumClasses                   0; ...
+	Class                       []; ...
+	ClassMap                    {}  ...
+      }
+      
+      %% Add new memory section to this package record
+      %assign idx = record.NumMemSections
+      %assign record.MemSection = record.MemSection + newMemSection
+      %addtorecord record.MemSectionMap \
+          %<memSectionDef.Name> record.MemSection[idx]
+      %assign record.NumMemSections = idx+1
+    %endif
+    %assign record = record.MemSectionMap.%<memSectionDef.Name>
+    
+  
+    %% Return Custom class if exists
+    %if ISFIELD(record.ClassMap, cscDef.Name)
+      %return record.ClassMap.%<cscDef.Name>
+    %endif
+    
+    %% else add and return custom class
+    %assign newClass = Class { ...
+      Definition       cscDef; ...
+      Code                ""   ...
+    }
+    
+    %% Add newClass to Memory Section record
+    %assign idx = record.NumClasses
+    %assign record.Class = record.Class + newClass
+    %addtorecord record.ClassMap %<cscDef.Name> record.Class[idx]
+    %assign record.NumClasses = idx+1
+  
+  %endwith %% CompiledModel
+  %return record.Class[record.NumClasses - 1]
+%endfunction %% FcnGetCSCDataBuffer
+
+%% Function SLibAddToCSCBuffers ===========================================
+%% Abstract:
+%%   Adds a buffer to CompiledModel.CustomDataBuffers
+%%
+%%   fileName    - Index of the file in CM.DataObjectUsage.File 
+%%   symbol      - Index of the symbol in CM.DataObjectUsage.TemplateSymvols
+%%   symbolType  - Type/Association/Parent of the symbol; Custom Data symbols 
+%%                 can be associated ExternData | Definitions | Types 
+%%   package     - Name of the CSC Package, for e.g "Simulink" or "MPT"
+%%   memSectionDef - CM.CustomStorageClasses.CSCReg.MemorySectionDefs.%<MemSec>
+%%   cscDef        - CM.CustomStorageClasses.CSCReg.CSCDefs.%<CSCName>
+%%   fBuf          - Buffer
+%%
+%%
+%%   CustomDataBuffers {
+%%     NumFiles    2;
+%%     FileRecMap  {FileMap0 FileRec[0]; FileMap1 FileRec[1]};
+%%     FileRec {
+%%       Index       fileName;
+%%       NumSymbols         1;
+%%       IncludesMap {};
+%%       SymbolMap   {SymbolMap0 Symbol[0]};
+%%       Symbol {
+%%         Index        symbol;
+%%         Type         "Definitons"; 
+%%         NumPackages      1;
+%%         PackageMap   {Simulink Package[0]};  %% CSC in Simulink Package
+%%         Pacakage {
+%%           Name              Simulink;
+%%           NumMemSections           1;
+%%           MemSectionMap {memSectionDef.Name MemSection[0]}
+%%           MemSection {
+%%             Definiton   memSectionDef;
+%%             NumClasses  1;
+%%             ClassMap    {cscDef.Name Class[0]};
+%%             Class {
+%%               Definition   cscDef
+%%               Code       "const volatile int_T k = 1;";
+%%             }
+%%           }
+%%         }
+%%       }
+%%     }
+%%     FileRec{
+%%     }
+%%   }
+%%
+%function SLibAddToCSCBuffers(fileName, symbol, symbolType, package, \
+                              memSectionDef, cscDef, fBuf) void
+  %if !WHITE_SPACE(fBuf)
+    %assign cscBuffer = FcnGetCSCDataBuffer(fileName, symbol, symbolType, \
+                                            package, memSectionDef, cscDef)
+    %assign cscBuffer.Code = cscBuffer.Code + fBuf
+  %endif
+  
+%endfunction
+
+%% Function SLibDumpCustomClassData() =========================================
+%% Abstract: 
+%% Loop through each file record in CustomDataBuffers and Dump the contents
+%% into corresponding model file in ModelFiles vector
+%%
+%%  CompiledModel.CustomDataBuffers   |   CompiledModel.ModelFiles
+%%    |                               |      |
+%%    ->FileRec                       |      ->ModelFile
+%%       |                            |         | 
+%%       -> Symbol ------------------------------> TemplateSymbol/Attribute
+%%           |                        | 
+%%           -> Package               |
+%%               |                    |
+%%               -> MemorySection     | 
+%%                   |                |
+%%                    -> CSCBuffers   |
+%%
+%function SLibDumpCustomClassData() void
+  
+  %with CompiledModel.CustomDataBuffers
+    %% For each file in CustomDataBuffers
+    %foreach fileIdx = NumFiles
+      %% Get file record 
+      %assign fileRecord = FileRec[fileIdx]   	
+      %assign fileIndex  = fileRecord.Index
+      %% Get corresponding file record in CompiledModel.ModelFiles vector
+      %assign opFile     = FcnGetModelFile(fileIndex)
+      %% For each symbol in the file record	
+      %foreach symbolIdx = fileRecord.NumSymbols
+	%% Get symbol  record 
+	%assign symbolRecord = fileRecord.Symbol[symbolIdx]
+	%assign symIdx       = symbolRecord.Index
+	%% Get symbol name from DataObject usage record
+	%assign symbolName   = \
+	            CompiledModel.DataObjectUsage.TemplateSymbol[symIdx].Name
+	%assign symbolType   = symbolRecord.Type
+	%assign tmpSymBuffer    = ""
+	%% Sort the Packages in this symbol by alphabetical order.
+	%assign packages     = FIELDNAMES(symbolRecord.PackageMap)
+	%% For each Package in the symbol record
+	%foreach packIdx = symbolRecord.NumPackages
+	  %% Get Pacakge record
+	  %assign packRecord  = symbolRecord.PackageMap.%<packages[packIdx]>
+	  %assign packName    = packRecord.Name
+	  %% Sort Memory Sections in this package by alphabetical order.
+	  %assign memSections = FIELDNAMES(packRecord.MemSectionMap)
+	  %% For each Memory Section in the Package record
+	  %foreach memIdx = packRecord.NumMemSections
+	    %% Get Memory section record
+	    %assign memSecRecord = \
+	                      packRecord.MemSectionMap.%<memSections[memIdx]>
+            %% open a temporary buffer to dump memory section comments
+	    %openfile tmpMemBuffer
+	    %% Add comment a pre-pragma is not empty
+	    %if !WHITE_SPACE(memSecRecord.Definition.Comment)
+	      %<memSecRecord.Definition.Comment>
+	      
+	    %endif
+	    %if !WHITE_SPACE(memSecRecord.Definition.PrePragma) \
+	                               && symbolType =="Definitions"
+	      %<memSecRecord.Definition.PrePragma>
+	      
+	    %endif
+	    %% Sort custom storage classes by alphabetical order.
+	    %assign classes      = FIELDNAMES(memSecRecord.ClassMap)
+	    %% For each class
+	    %foreach cscIdx = memSecRecord.NumClasses
+	      %% Get CSC record
+	      %assign csc = memSecRecord.ClassMap.%<classes[cscIdx]>
+	      %if !WHITE_SPACE(csc.Code)
+		%% Get the appropriate CSC comment based on the symbol type
+		%switch(symbolType)
+		  %case "Definitions"
+		    %assign cscComment   = csc.Definition.DefineComment
+		    %break
+		  %case "Defines"
+		    %assign cscComment   = csc.Definition.DefineComment
+		    %break
+		  %case "Declarations"
+		    %assign cscComment   = csc.Definition.DeclareComment
+		    %break
+		  %case "Types"
+		    %assign cscComment   = csc.Definition.TypeComment
+		    %break
+		  %default
+		    %assign cscComment = ""
+		    %break
+		%endswitch
+		%% if not empty, put CSC comment
+		%if !ISEMPTY(cscComment) || !WHITE_SPACE(cscComment)
+		  %<cscComment>
+		  
+		%endif
+		%% Dump CSC code
+		%<csc.Code>
+		  
+	      %endif
+	    %endforeach
+	    %% Dump pragma if not empty
+	    %if !WHITE_SPACE(memSecRecord.Definition.PostPragma) \
+	                                    && symbolType == "Definitions"
+	      %<memSecRecord.Definition.PostPragma>
+	      
+	    %endif
+	    %closefile tmpMemBuffer
+	    %% Append the buffer for this memory section to the symbol buffer  
+	    %assign tmpSymBuffer = tmpSymBuffer + tmpMemBuffer
+	  %endforeach %% NumMemSections
+	%endforeach %% NumPackages
+		
+	%if ISFIELD(opFile.Contents, symbolName)
+	  %if (symbolName == "Typedefs")
+	    %% For typedefs, symbolType (Types) is not same as symbolName
+	    %<LibSetSourceFileSection(opFile, symbolName, tmpSymBuffer)>
+	  %else
+	    %% Assert symbolType is same as symbolName
+	    %assert (symbolName == symbolType)
+	    %<LibSetSourceFileSection(opFile, symbolName, tmpSymBuffer)>
+	  %endif
+	%else
+	  %<LibAddSourceFileCustomSection(opFile, symbolType, symbolName)>
+	  %<LibSetSourceFileCustomSection(opFile, symbolName, tmpSymBuffer)>
+	%endif
+      %endforeach %% NumSymbols
+      %<FcnAddIncludesToCustomDataFiles(opFile, fileIndex)>
+    %endforeach  %% NumFiles
+  %endwith
+  
+%endfunction
+
+%% Local Function:  FcnAddIncludesToCustomDataFiles ==========================
+%% Abstract :
+%%   Adds neccessary includes into files added during code generation of custom
+%%   storage classes. Files can be added via
+%%      a) some custom storage objects are exported via a specified header file
+%%      b) all custom storage objects are either "Defined in a separate source
+%%         file" or "referenced in a separate source file". This option can be
+%%         specified via Sim Parameters dialog
+%%
+%function FcnAddIncludesToCustomDataFiles(opFile, fileIdx) void
+  %with CompiledModel.DataObjectUsage
+    
+    %assign fileRec = CompiledModel.DataObjectUsage.File[fileIdx]
+    %if fileRec.IsCustom == "yes"
+      
+      %% Required includes
+      %% rtwtypes.h for mathworks defined data types - real_T, int_T etc
+      %% model_types.h for any aliased data types
+      %% TRUE | FALSE for bitfield data types
+      %openfile includesBuf 
+      #include "rtwtypes.h"
+      #include "%<CompiledModel.Name>_types.h"
+      
+      %closefile includesBuf
+      
+      %<SLibSetModelFileAttribute(opFile, "Includes", includesBuf)>
+    %endif   %% fileRec.IsCustom == "yes"
+  %endwith
+%endfunction
+
+%% Local Function: FcnCacheHeaderInImportsFile ================================
+%% Abstract:
+%%   Caches a header file (header) in the IncludesMap of the given 
+%%   Imports File (fileName)
+%%   If the header file is not already included in the imports file, then adds
+%%   the header file into IncludesMap hash table and then puts a 
+%%   #include "header" to the Includes section of the Imports file
+%%   This function is called in FcnCacheCustomDataBuffers
+%%
+%function FcnCacheHeaderInImportsFile(objName, header, importsFile) void
+  
+  %if WHITE_SPACE(header)
+    %assign errTxt = "HeaderFile not specified StorageClass/Object: %<objName>."
+    %<LibReportFatalError(errTxt)>
+    %return
+  %endif
+  
+  %if header == "%<CompiledModel.Name>.h"
+    %% Dont add model header files. These are added later via 
+    %% SLibGetSystemBodyCache in commonbodlib.tlc
+    %return
+  %endif
+  
+  %assign header = SLibAddHeaderFileDelimeter(header)
+  
+  %% Keep track of when we've already #include'd this file for some
+  %% other data of this class.  #include this file once.
+  %% Note the file should already include delimeter.
+  
+  %assign hdrmarker  = LibConvertNameToIdentifier(header)
+  %assign fileBuffer = FcnGetCSCFileRec(importsFile)
+  %assign opFile     = FcnGetModelFile(importsFile)
+    
+  %if !ISFIELD(fileBuffer.IncludesMap, hdrmarker)
+    %assign tmpBuffer = "#include %<header>\n"
+    %if ISFIELD(opFile.CustomContents, "RTWCSCIncludes")
+      %<LibSetSourceFileCustomSection(opFile, "RTWCSCIncludes", tmpBuffer)>
+    %else
+      %<LibAddSourceFileCustomSection(opFile, "Includes", "RTWCSCIncludes")>
+      %assign inclComment = "/* Includes for objects with custom storage classes. */\n"
+      %assign tmpBuffer   = inclComment + tmpBuffer
+      %<LibSetSourceFileCustomSection(opFile, "RTWCSCIncludes", tmpBuffer)>
+    %endif
+    %addtorecord fileBuffer.IncludesMap %<hdrmarker> 1
+  %endif
+  
+%endfunction
+
+%% Function: FcnAddFilePackagingByRTW ====================================
+%% Abstract:
+%%   Default RTW file placement for the class buffers
+%%
+%% ----------------------------------------------------------------------
+%% Scope  Packaging  Class   DefineFile  Fileswith   Fileswith HeaderFile
+%%                    Init              Declaration   Include
+%% ----------------------------------------------------------------------
+%% Import  Default  NonMacro    ""     [model_private.h] []      IMPLICIT
+%%         --------------------------------------------------------------
+%%          Via     NonMacro    ""         []   [model_private.h] "hdr.h"
+%%         Header
+%%         --------------------------------------------------------------
+%% Export  Default  NonMacro  model.c    [model.h]       []      IMPLICIT
+%%                  -----------------------------------------------------
+%%                  Macro     model.h      []            []      IMPLICIT
+%%         --------------------------------------------------------------
+%%          Via     NonMacro  model.c     [hdr.h]     [model.h]  "hdr.h"
+%%         Header   -----------------------------------------------------
+%%                  Macro     "hdr.h"      []         [model.h]  "hdr.h"
+%%         --------------------------------------------------------------
+%% File    Default  NonMacro  model.c      []            []        ""
+%%                  -----------------------------------------------------
+%%                  Macro     model.c      []            []      IMPLICIT
+%% ----------------------------------------------------------------------
+%%
+
+%function FcnAddFilePackagingByRTW(record, packagingType, scope, \
+                                   isHeaderEmpty, isMacro, \
+				   defDefineFile, defExportFile, \
+				   defImportFile, hdrFile, \
+				   defDefineSymbol, defDeclareSymbol, \
+				   defMacroSymbol) void
+  %switch(scope)
+    %case "Imported"
+      %% Scope : Imported
+      %if isHeaderEmpty
+	%% Packaging : Default
+	%if isMacro
+	  %% Sanity check - If a Macro is imported then it has to be 
+	  %% imported via a header file. otherwise, Error out.
+	  %assign errTxt = "HeaderFile not specified for object \
+	                   %<record.Name> "
+	  %<LibReportFatalError(errTxt)>
+	%endif
+	%%
+	%addtorecord record                   \
+	%<packagingType>{                        \
+	  DefineFile                         -1; \
+	  DefineSymbol                       -1; \
+	  FilesWithDeclare   [%<defImportFile>]; \
+	  DeclareSymbol        defDeclareSymbol; \   
+	  FilesWithInclude                   []; \
+	  HeaderFile                         ""  \
+	}
+      %else
+	%% Import : via specified Header file
+	%addtorecord record                   \
+	%<packagingType>{                        \
+	  DefineFile                         -1; \
+	  DefineSymbol                       -1; \
+	  FilesWithDeclare                   []; \
+	  DeclareSymbol                      ""; \
+	  FilesWithInclude   [%<defImportFile>]; \
+	  HeaderFile                    hdrFile  \
+	}
+      %endif
+      %break
+    %case "Exported"
+    %case "Auto"
+      %% Scope : Exported
+      
+      %if ((!isHeaderEmpty) && ...
+	   (IsModelReferenceTarget() || HasModelReferenceBlocks()))
+	%assign errTxt = ...
+	  "Invalid HeaderFile '%<hdrFile>' for data object: %<record.Identifier>.  " ...
+	  "The header file must be empty when using data with " ...
+	  "referenced models or models that contain Model blocks."
+	%<LibReportError(errTxt)>
+
+	%% NOTE: We could throw a warning and switch to empty headerfile instead
+	%% %<LibReportWarning(errTxt)>
+	%% %assign isHeaderEmpty = TLC_TRUE
+	%% %assign hdrFile = ""
+      %endif
+       
+      %if isHeaderEmpty
+	%% Packaging : Default
+	%if !isMacro
+	  %% Data Initialization : Non-Macro
+	  %addtorecord record                   \
+	  %<packagingType>{                        \
+	    DefineFile              defDefineFile; \
+	    DefineSymbol          defDefineSymbol; \
+	    FilesWithDeclare   [%<defExportFile>]; \
+	    DeclareSymbol        defDeclareSymbol; \
+	    FilesWithInclude                   []; \
+	    HeaderFile                         ""  \
+	  }
+	%else
+	  %% Data Initialization : Macro
+	  %addtorecord record                   \
+	  %<packagingType>{                        \
+	    DefineFile              defExportFile; \
+	    DefineSymbol           defMacroSymbol; \
+	    FilesWithDeclare                   []; \
+	    DeclareSymbol                      -1; \
+	    FilesWithInclude                   []; \
+	    HeaderFile                         ""  \
+	  }
+	%endif
+      %else
+	%% Packaging : via specified header file
+	%if !isMacro
+	  %% Data Initialization : Non-Macro
+	  %assign hdrIdentifier = FEVAL("strtok", hdrFile, ".")
+	  %assign hdrIndex      = FcnGetFileIdx(hdrIdentifier, "header", "yes")
+	  %addtorecord record                       \
+	  %<packagingType>{                        \
+	    DefineFile              defDefineFile; \
+	    DefineSymbol          defDefineSymbol; \
+	    FilesWithDeclare        [%<hdrIndex>]; \
+	    DeclareSymbol        defDeclareSymbol; \
+	    FilesWithInclude   [%<defExportFile>]; \
+	    HeaderFile                    hdrFile  \
+	  }
+	%else
+	  %% Data Initialization : Macro
+	  %addtorecord record                   \
+	  %<packagingType>{                        \
+	    DefineFile                    hdrFile; \
+	    DefineSymbol           defMacroSymbol; \
+	    FilesWithDeclare                   []; \
+	    DeclareSymbol                      -1; \
+	    FilesWithInclude   [%<defExportFile>]; \
+	    HeaderFile                    hdrFile  \
+	  }
+	%endif
+      %endif
+      %break 
+    %case "File"
+      %% Scope : File
+      %if !isMacro
+	%% Data Initialization : Non-Macro
+	%addtorecord record                    \
+	%<packagingType>{                         \
+	  DefineFile               defDefineFile; \
+	  DefineSymbol           defDefineSymbol; \
+	  FilesWithDeclare                    []; \
+	  DeclareSymbol                       -1; \
+	  FilesWithInclude                    []; \
+	  HeaderFile                          ""  \
+	}
+      %else
+	%% Data Initialization : Macro
+	%addtorecord record                    \
+	%<packagingType>{                         \
+	  DefineFile               defDefineFile; \
+	  DefineSymbol            defMacroSymbol; \
+	  FilesWithDeclare                    []; \
+	  DeclareSymbol                       -1; \
+	  FilesWithInclude                    []; \
+	  HeaderFile                          ""  \
+	}
+      %endif
+      %break
+    %default
+      %addtorecord record    \
+	%<packagingType>{       \
+        DefineFile          -1; \
+	DefineSymbol        -1; \
+	FilesWithDeclare    []; \
+	DeclareSymbol       -1; \
+	FilesWithInclude    []; \
+	HeaderFile          ""  \
+      }
+      %break
+  %endswitch  %% scope
+%endfunction
+
+%% Function: FcnAddFilePackagingByMPT ========================================
+%% Abstract:
+%%    Adds FilePackaging information set by MPT in dataObject to a ungrouped
+%%    data record - record
+%%
+%function FcnAddFilePackagingByMPT(record, dataObject) void
+  
+  %% Error check
+  %if (!ISFIELD(dataObject.FilePackaging, "DefineFile")  || \
+    !ISFIELD(dataObject.FilePackaging, "DefineSymbol")   || \
+    !ISFIELD(dataObject.FilePackaging, "FilesWithDecl")  || \
+    !ISFIELD(dataObject.FilePackaging, "DeclareSymbol")  || \
+    !ISFIELD(dataObject.FilePackaging, "FilesWithIncl")  || \
+    !ISFIELD(dataObject.FilePackaging, "HeaderFile"))
+    
+    %assign errTxt = "MPT-Engine Interface  has not set all the FilePackaging \
+                      fields for Data Object -  %<dataObject.Name>."
+    %<LibReportError(errTxt)>		      
+  %endif
+
+  %with dataObject.FilePackaging
+    %if !ISEMPTY(DefineFile)
+      %assign defineFile = DefineFile[0]
+    %else
+      %assign defineFile = -1
+    %endif
+    %if !ISEMPTY(FilesWithDecl)
+      %assign declFiles  = FilesWithDecl
+    %else
+      %assign declFiles  = []
+    %endif
+    %if !ISEMPTY(FilesWithIncl)
+      %assign inclFiles  = FilesWithIncl
+    %else
+      %assign inclFiles  = []
+    %endif
+    %if !ISEMPTY(HeaderFile)
+      %assign hdrFile      = HeaderFile
+    %else
+      %assign hdrFile    = ""
+    %endif
+    %if !ISEMPTY(DefineSymbol)
+      %assign defineSymbol = DefineSymbol[0]
+    %else
+      %assign defineSymbol = -1
+    %endif
+    %if !ISEMPTY(DeclareSymbol)
+      %assign declSymbol   = DeclareSymbol[0]
+    %else
+      %assign declSymbol   = -1
+    %endif
+  %endwith
+  
+  %addtorecord record               \
+  FilePackaging{                    \
+    DefineFile          defineFile; \
+    DefineSymbol      defineSymbol; \
+    FilesWithDeclare     declFiles; \
+    DeclareSymbol       declSymbol; \
+    FilesWithInclude     inclFiles; \
+    HeaderFile             hdrFile  \
+  }
+%endfunction
+ 
+%% Function: FcnGetSymbolIdx =================================================
+%% Abstract:  
+%%   Given a symbol name, find the corresponding symbol record in
+%%   CompiledModel.DataObjectUsage.TemplateSymbol[] vector of symbol records
+%%
+%function FcnGetSymbolIdx(symbolName) void
+  
+  %if !ISFIELD(CompiledModel.DataObjectUsage, "NumTemplateSymbols")
+    %addtorecord CompiledModel.DataObjectUsage NumTemplateSymbols [0]
+  %endif
+  
+  %assign symbolIdx = -1
+  
+  %with CompiledModel.DataObjectUsage
+    %foreach tSymIdx = CompiledModel.DataObjectUsage.NumTemplateSymbols[0]
+      %if (TemplateSymbol[tSymIdx].Name == symbolName)
+	%assign symbolIdx =  tSymIdx
+	%break
+      %endif
+    %endforeach
+    
+    %if (symbolIdx == -1)
+      %addtorecord CompiledModel.DataObjectUsage \
+      TemplateSymbol {  \
+        Name symbolName \
+      }
+    
+      %assign symbolIdx          = \
+                     CompiledModel.DataObjectUsage.NumTemplateSymbols[0]
+      %assign CompiledModel.DataObjectUsage.NumTemplateSymbols[0] = \
+                     CompiledModel.DataObjectUsage.NumTemplateSymbols[0] + 1
+    %endif
+    
+  %endwith
+  
+  %return symbolIdx
+%endfunction
+
+%% Function: FcnGetFileIdx =================================================
+%% Abstract:  
+%%   Given a file name and type, find the corresponding file record in
+%%   CompiledModel.DataObjectUsage.File[] vector of file records
+%%
+%function FcnGetFileIdx(fileName, fileType, isCustom) void
+  
+  %assign fileIdx = -1
+  
+  %with CompiledModel.DataObjectUsage
+    %foreach fIdx = NumFiles[0]
+      %if (File[fIdx].Name == fileName) && (File[fIdx].Type == fileType)
+	%assert (File[fIdx].IsCustom == isCustom)
+	%assign fileIdx =  fIdx
+	%break
+      %endif
+    %endforeach
+    
+    %if (fileIdx == -1)
+      %addtorecord CompiledModel.DataObjectUsage \
+      File {                \
+        Name     fileName;  \
+	Type     fileType;  \
+	IsCustom isCustom   \
+      }
+    
+      %assign fileIdx  = CompiledModel.DataObjectUsage.NumFiles[0]
+      %assign NumFiles[0] = NumFiles[0] + 1
+    %endif
+    
+  %endwith
+  
+  %return fileIdx
+%endfunction
+
+%% Local Function:  FcnGetModelFile ===========================================
+%% Abstract :
+%%   Using dataObjFileIdx, the function finds a given file in the file vector
+%%   CompiledModel.DataObjectUsage.File[]. From this file record, it gets the
+%%   corresponding file from CompiledModel.ModelFiles.ModelFile[] vector.
+%%   If the corresponding file does not exist, then the file is added to
+%%   CompiledFiles.ModelFiles record
+%%   This function is called in 
+%%          FcnAddBannerAndIncludesToAddedFiles
+%%          FcnCacheHeaderInImportsFile
+%%          SLibDumpCustomClassData
+%%
+%function FcnGetModelFile(dataObjFileIdx) void
+  %with CompiledModel.DataObjectUsage
+    %assign fileName   = File[dataObjFileIdx].Name
+    %assign fileType   = File[dataObjFileIdx].Type
+    %assign fileIsCust = (File[dataObjFileIdx].IsCustom == "no" ? 0 : 1)
+      
+    %switch (fileType)
+      %case "source"
+	%assign opFile = LibCreateSourceFile("Source", "Simulink", fileName)
+	%if fileIsCust
+	  %<LibSetSourceFileCodeTemplate(opFile, ERTDataSrcFileTemplate)>
+	%endif
+	%break
+      %case "header"
+	%assign opFile = LibCreateSourceFile("Header","Simulink",fileName)
+	%if fileIsCust
+	  %<LibSetSourceFileCodeTemplate(opFile, ERTDataHdrFileTemplate)>
+	%endif
+	%break
+      %default
+	%<LibReportError("File cannot be created")>
+    %endswitch
+  %endwith
+  
+  %return opFile
+%endfunction
+
+%% Function FcnVerifyDataScope ===============================================
+%% Abstract:
+%%   Verifies whether File or Auto is a valid scope for this data object
+%%   dataRec       - The record of the ungrouped data
+%%   dataScope     - dataScope as specified by the user
+%%   returnScope   - scope determined by RTW using Readers and writers.
+%%   returnDefFile - Define file determined from reader or writer.
+%%   isFileScope   - a flag indicating whether the data scope is 'File'
+%%
+%function FcnVerifyDataScope(dataRec, dataScope) void
+  
+  %% Override with the instance-specific value
+  %assign instProps       = LibGetCustomStorageAttributes(dataRec)
+  %if (!ISEMPTY(instProps) && ISFIELD(instProps, "DataScope"))
+    %assign dataScope = instProps.DataScope
+  %endif
+  
+  %% Default return values
+  %assign returnScope     = dataScope
+  %assign returnDefFile   = -1
+  %assign isFileScope     = TLC_FALSE
+  
+  %% Modify scope only if it is File or Auto
+  %if (dataScope == "File" || dataScope == "Auto")
+    
+    %% xxx (apillari) SHOULD ALSO BE HANDLING EXTERNAL OUTPUTS
+    
+    %if dataRec.RecordType == "ExternalInput"
+      %% External Input Signals are always exported. 
+      %% External Ouptut signals should also be always exported. 
+      %% Right now they can be marked FileScope with a static keyword, we need
+      %% a flag saying the output signal drives a root output port.
+      %assign returnScope   = "Exported"
+      
+    %elseif (dataRec.RecordType=="ModelParameter" && IsModelReferenceTarget())
+      %% Model Reference - Parameters are always exported
+      %assign returnScope   = "Exported"
+
+    %else
+      %% Ascertain scope from readers and writers
+      %with CompiledModel.DataObjectUsage
+	
+	%% Get data object from DataObjectUsage
+	%assign origIdentifier = FcnGetUnaliasedDataIdentifier(dataRec)
+	%if ISFIELD(DataObjectSymbols, origIdentifier)
+	  %assign dataObjectIdx = GETFIELD(DataObjectSymbols, origIdentifier)
+	  %assign dataObject    = DataObject[dataObjectIdx[0]]
+	  
+	  %% Get number of readers & writers for the data object
+	  %if ISFIELD(dataObject, "ReadFromFile")
+	    %assign dataReaders = dataObject.ReadFromFile
+	  %else
+	    %assign dataReaders = []
+	  %endif
+	  %if ISFIELD(dataObject,"WrittenInFile")
+	    %assign dataWriters = dataObject.WrittenInFile
+	  %else
+	    %assign dataWriters = []
+	  %endif
+	  %assign numReaders  = SIZE(dataReaders)[1]
+	  %assign numWriters  = SIZE(dataWriters)[1]
+	  
+	  %% Scope Rules Table
+	  %%-------------------------------------------------------------
+	  %%           |               numReaders                        |
+	  %%           | ------------------------------------------------|
+	  %%           |        0              1               > 1       |
+	  %%           |    ----------------------------------------------
+	  %% numWriters| 0      NA           "File"           "Exported" |
+	  %%           |    ----------------------------------------------
+	  %%           | 1    "File"  if(Reader == Writer)    "Exported" |
+	  %%           |                      "File"                     |
+	  %%           |              else                               |
+	  %%           |                    "Exported"                   |
+	  %%           |    ---------------------------------------------|
+	  %%           |> 1    "Exported"     "Exported"       "Exported"|
+	  %%----------- -------------------------------------------------
+	  
+	  %if (numReaders > 1) || (numWriters > 1)
+	    %% Multiple readers / writers
+	    %assign returnScope = "Exported"
+	  %elseif (numReaders == 1) && (numWriters == 1)
+	    %if (dataReaders[0] == dataWriters[0])
+	      %% Reader & writer are in the same file
+	      %assign returnScope   = "File"
+	      %assign returnDefFile = dataWriters[0]
+	      %assign isFileScope   = TLC_TRUE
+	    %else
+	      %% Reader and writer are in different file
+	      %assign returnScope   = "Exported"
+	    %endif
+	  %else
+	    %% There is atleast one reader or  writer
+	    %assert (numReaders + numWriters == 1)
+	    %assign returnScope = "File"
+	    %assign isFileScope = TLC_TRUE
+	    %if (numReaders == 1)
+	      %% Parameters read/written in single file
+	      %assign returnDefFile = dataReaders[0]
+	    %else
+	      %% Data Store writes with no reads
+	      %assign returnDefFile = dataWriters[0]
+	    %endif
+	  %endif  %% numReaders > 1
+	  
+	%endif  %% ISFIELD (dataObject)
+      %endwith
+    %endif  %% if RecordType == "ExternalInput"
+  
+    %if dataScope == "File" && (dataScope != returnScope)
+      %assign errTxt = "Invalid scope setting \'File\' for data object " + ...
+	"\'%<dataRec.Identifier>\' because it is used in more than one " + ...
+	"file in the generated code.\n\n"                                + ...
+	"Modify scope of data Object to either \'Auto\' or \'Exported\'."
+      
+      %<LibReportError(errTxt)>
+    %endif
+  %endif   %% dataScope == File || Auto
+  
+  %return ["%<returnScope>", %<returnDefFile>, %<isFileScope>]
+%endfunction
+
+%% Function: SLibCustomDataBufferIsEmpty ======================================
+%% Abstract:
+%%
+%function SLibCustomDataBufferIsEmpty(symbolType) void
+  %return FcnCustomDataBuffersIsEmpty(CompiledModel.Name, "source", symbolType)
+%endfunction %% SLibCustomDataBufferIsEmpty
+
+%% Function: FcnCustomDataBuffersIsEmpty =====================================
+%function FcnCustomDataBuffersIsEmpty(fileName, fileType, symbolType) void
+  
+  %% Check if CustomDataBuffers exists in CompiledModel
+  %if !ISFIELD(CompiledModel, "CustomDataBuffers") || \
+                            (CompiledModel.CustomDataBuffers.NumFiles == 0)
+    %return TLC_TRUE
+  %endif
+  %assign record = CompiledModel.CustomDataBuffers.FileRecMap
+  
+  %% Check if the given fileName and type exists in ComiledModel.DataObjectUsage
+  %assign fileIdx = -1
+  %with CompiledModel.DataObjectUsage
+    %foreach fIdx = NumFiles[0]
+      %if (File[fIdx].Name == fileName) && (File[fIdx].Type == fileType)
+	%assign fileIdx =  fIdx
+	%break
+      %endif
+    %endforeach
+  %endwith
+  %if (fileIdx == -1)  %% return empty if file name does not exist
+    %return TLC_TRUE
+  %endif
+  
+  %% Check if the corresponding file exists in 
+  %if !ISFIELD(record,"FileMap%<fileIdx>") || \ 
+                                   (record.FileMap%<fileIdx>.NumSymbols == 0) 
+    %return TLC_TRUE
+  %endif
+  %assign fRecord = record.FileMap%<fileIdx>
+  
+  %foreach symIdx = fRecord.NumSymbols
+    %assign symRecord = fRecord.Symbol[symIdx]
+    %if symRecord.Type == symbolType
+      %return TLC_FALSE
+    %endif
+  %endforeach
+  
+  %return TLC_TRUE
+%endfunction
+
+%endif %% EXISTS("_DATA_CUSTOMDATA_")
+
+%% [EOF] data_customdata.tlc

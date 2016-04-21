@@ -1,0 +1,228 @@
+%% $RCSfile: sdspmprod.tlc,v $
+%% $Revision: 1.8.4.2 $ 
+%% $Date: 2004/04/12 23:09:05 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix product
+
+%implements sdspmprod "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Columns")>
+  %<LibRenameParameter(block, P2, "Dimension")>
+  %%
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Product (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT    = 0
+  %assign OUTPORT   = 0
+  %assign need_copy = (LibBlockInputSignalBufferDstPort(INPORT) != OUTPORT)
+  %assign contig    = IsInputPortContiguous(block, INPORT)
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT) != 0
+  %assign dtype     = cplx ? "creal_T" : "real_T"
+  %assign cols      = CAST("Number",LibBlockParameterValue(Columns,0))
+  %assign dim       = CAST("Number",LibBlockParameterValue(Dimension,0))
+  %assign dim_rows  = 1
+  %assign dim_cols  = 2
+  %assign width     = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign rows      = CAST("Number",width/cols)
+  %%
+  %if need_copy
+    %if width==1
+      %%
+      /* Scalar input */
+      %%
+      %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<LibBlockInputSignal(INPORT, "","",0)>;
+      %%
+    %elseif cols ==1 ||  rows ==1
+      %%
+      %% Vector input
+      %%
+      %if (rows == 1 && dim == dim_rows) || (cols == 1 && dim == dim_cols)
+	%%
+	/* Scalar output */
+	%%      
+	%assign u    = LibBlockInputSignal(INPORT, "", "",0)
+	%assign y    = LibBlockOutputSignal(OUTPORT, "","",0)
+	%assign y_re = LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")
+	%assign y_im = LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")
+	%%
+	%<y> = %<u>;
+	%%
+	%assign rollVars = ["U", "Y"]
+	%assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	%roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	  block, "Roller", rollVars
+	  %if !cplx
+	    %<y> *= %<LibBlockInputSignal(INPORT, "", lcv, sigIdx)>;
+	  %else
+	    %assign uc = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	    {
+	      creal_T y_old = %<y>; 
+	      %<y_re> = CMULT_RE(y_old, %<uc>);
+	      %<y_im> = CMULT_IM(y_old, %<uc>);
+	    }
+	  %endif
+	%endroll
+      %else
+	%%
+	/* Output == Input */
+	%%
+	%assign rollVars = ["U", "Y"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, \
+	  block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	  %assign y = LibBlockOutputSignal(OUTPORT, "",lcv, sigIdx)
+	  %<y> = %<u>;
+	%endroll                  
+      %endif
+      %%      
+    %else
+      %%
+      %% Matrix input
+      %%
+      %if dim == dim_rows
+	%%%%%%%%%%%%%%%%%%%%%
+	/* Matrix row prod. */
+	%%%%%%%%%%%%%%%%%%%%%
+	%if contig
+	  {
+	    %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+	    %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	    int_T j;
+	    
+	    for (j=0; j++<%<rows>; ) {
+	      %<dtype> s = *u;
+	      int_T i;	    
+	      for (i=1; i<%<cols>; i++) {
+		%if !cplx
+		  s *= u[%<rows>*i];
+		%else
+		  creal_T s_old = s; 
+		  s.re = CMULT_RE(u[%<rows>*i], s_old);
+		  s.im = CMULT_IM(u[%<rows>*i], s_old);
+		%endif
+	      }
+	      *y++ = s;
+	      u++;
+	    }
+	  }
+	%else
+	  %% 
+	  %% Discontiguous
+	  %%
+	  /* Copy first column input output area: */      
+	  %assign rollVars = ["U"]
+	  %assign rollRegions1 = LibClipRollRegions(RollRegions, 1, rows)
+	  %roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	    block, "Roller", rollVars
+	    %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(OUTPORT, "",lcv, sigIdx)
+	    %<y> = %<u>;                  
+	  %endroll
+	  {
+	    /* Add subsequent columns to output: */
+	    %assign yj    = LibBlockOutputSignal(OUTPORT, "j","", 0)
+	    %assign yj_re = LibBlockOutputSignal(OUTPORT, "j","", "%<tRealPart>0")
+	    %assign yj_im = LibBlockOutputSignal(OUTPORT, "j","", "%<tImagPart>0")
+	    int_T j = 0;
+	    %assign rollVars = ["U"]
+	    %assign rollRegions1 = LibClipRollRegions(RollRegions, rows+1, -1)
+	    %roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	      block, "Roller", rollVars
+	      %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	      %if !cplx
+		%<yj> *= %<u>;
+	      %else
+		{
+		  creal_T y_old = %<yj>;
+		  %<yj_re> = CMULT_RE(y_old, %<u>);
+		  %<yj_im> = CMULT_IM(y_old, %<u>);
+		}
+	      %endif
+	      if(++j > %<rows-1>) j=0;
+	    %endroll      
+	  }
+	%endif
+      %else
+	%%%%%%%%%%%%%%%%%%%%%%%
+	/* Matrix column prod */
+	%%%%%%%%%%%%%%%%%%%%%%%
+	%if contig
+	  {
+	    %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+	    %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	    int_T j = %<cols>;
+	    while(j-- > 0) {
+	      %<dtype> s = *u++;
+	      int_T i  = %<rows-1>;
+	      while(i-- > 0) {
+		%if !cplx
+		  s *= *u++;
+		%else
+		  creal_T u_val = *u++;
+		  creal_T s_old = s;
+		  s.re = CMULT_RE(s_old, u_val);
+		  s.im = CMULT_IM(s_old, u_val);
+		%endif
+	      }
+	      *y++ = s;
+	    }
+	  }
+	%else
+	  %%
+	  %% Discontiguous inputs
+	  %%
+	  {	  
+	  %assign u0 = LibBlockInputSignal(INPORT, "", "", 0)
+	  %assign yj = LibBlockOutputSignal(OUTPORT, "j++","",0)
+	  %%
+	  %<dtype> s = %<u0>;  /* initialize s to first input */
+	  int_T i = 1;
+	  int_T j = 0;
+	  %%
+	  %assign rollVars = ["U"]
+	  %assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	  %roll sigIdx = rollRegions1, lcv = RollThreshold, \	  
+	    block, "Roller", rollVars
+	    %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	    %%
+	    if(i == %<rows>) {
+	      s = %<u>;   /* Reset the prod to next input value */
+	      i = 1;      /* Reset the count                    */
+	      %%
+	    } else {
+	      %%
+	      %if !cplx
+		s *= %<u>;
+	      %else
+		creal_T s_old = s;
+		s.re = CMULT_RE(s_old, %<u>);
+		s.im = CMULT_IM(s_old, %<u>);
+	      %endif	      
+	      if(++i==%<rows>) %<yj> = s;  /* Output the product. */
+	    }
+
+	  %endroll
+	}
+      %endif %% contig      
+    %endif %% dim
+  %endif %% matrix
+%else
+  /* Output is identical to input.  No code needed. */
+%endif  %% need_copy
+
+%endfunction
+
+%% [EOF] sdspmprod.tlc

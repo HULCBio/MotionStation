@@ -1,0 +1,413 @@
+%% $Revision: 1.23.4.2 $ 
+%% $RCSfile: sdspcount.tlc,v $
+%% $Date: 2004/04/12 23:08:18 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspcount.c
+%%           Used for the Counter Block
+
+%implements "sdspcount" "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign block = AddParamsToBlock(block)
+
+  %if !FreeRun
+    %<ErrorIfDiscontiguous(block,INPORT_CLK)>
+  %endif
+  
+  %<LibDefineIWork(block, "CLK_STATE", 1)>
+  
+  %if(RstPort)
+    %<ErrorIfDiscontiguous(block,INPORT_RST)>
+    %<LibDefineIWork(block, "RST_STATE", 1)>
+  %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions ============================================================
+%% Abstract:
+%%      During initialize set the clock count IWork vector with
+%%      the value specified by the start count ParamSetting.
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Counter (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %if TypeCast == "(uint32_T)"
+    %% This special case is here because the SGI cannot cast properly
+    %% from a real_T to a uint32_T.  This avoids the problem by generating
+    %% the constant as a uint32, so no casting is needed.
+    %<LibBlockDWork(Count, "", "", 0)> = %<CAST("Unsigned",InitCount)>;
+  %else
+    %<LibBlockDWork(Count, "", "", 0)> = %<TypeCast>%<InitCount>;
+  %endif
+  %%	
+  %if (EventType==RISING || EventType==FALLING || EventType==EITHER)
+    %<LibBlockIWork(CLK_STATE, "", "", 0)> = UNINITIALIZED_ZCSIG;
+    %%
+  %endif
+  %if RstPort
+    %<LibBlockIWork(RST_STATE, "", "", 0)> = UNINITIALIZED_ZCSIG;
+  %endif
+  
+%endfunction 
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Counter (%<ParamSettings.FunctionName>) - %<Name> */
+  /* %<CounterComment(block)> */
+  %%
+  %assign cnt = LibBlockDWork(Count, "", "", 0)
+  %%
+  %<RESET_CNT_IF_RST_TRUE(block, cnt)>\
+  %%
+  %% LOOP over InputFrameSize
+  %if InputFrameSize > 1
+    %if HitPort
+      %% If InputFrameSize > 1, we need to clear hitout before inputframe loop.
+      %% Otherwise the hitout can be calculated everytime in the outframe loop.
+      %<LibBlockOutputSignal(OUTPORT_HIT, "", "", 0)> = 0.0; /* Clear hit output */
+    %endif
+    {
+        const int_T InputFrameSize = %<InputFrameSize>;
+        int_T i;
+        for(i=0; i < InputFrameSize; i++){
+  %endif
+    %%
+    %% Loop over OutputFrameSize
+    %assign j_str = (OutputFrameSize > 1) ? "j" : "" 
+    %%
+    %if FreeRun && (OutputFrameSize > 1)
+      {
+        const int_T OutputFrameSize = %<OutputFrameSize>;
+        int_T j;
+        for(j=0; j < OutputFrameSize; j++){
+    %endif
+          %%
+	  %if !FreeRun
+	    %% PRE_UPDATE_STATE
+	    %<UPDATE_CNT_IF_EVENT(block, cnt)>\
+	  %endif
+	  %%
+	  %% OUTPUT_COUNT
+	  %if CntPort
+	    %<LibBlockOutputSignal(OUTPORT_CNT,"%<j_str>", "", 0)> = %<cnt>; /* Output count */
+	  %endif
+	  %%
+	  %% OUTPUT_HIT
+	  %if HitPort
+	    %if InputFrameSize > 1
+	      if(%<cnt>==%<HitValParam>) {
+		%<LibBlockOutputSignal(OUTPORT_HIT,"%<j_str>", "", 0)> = 1; /* Set hit output */
+	      }
+	    %else
+	      %% Note while in FreeRun, the InputFrameSize is always 1.
+	      %<LibBlockOutputSignal(OUTPORT_HIT,"%<j_str>", "", 0)> = (%<cnt>==%<HitValParam>);  /* Output hit */
+	    %endif
+	  %endif	
+	  %%
+	  %if FreeRun
+	    %% POST_UPDATE_STATE
+	    %<UPDATE_CNT_IF_EVENT(block, cnt)>\
+	  %endif
+	  %%
+    %if FreeRun && (OutputFrameSize > 1)
+        } %% close for OutputFrameSize
+      }
+    %endif
+  %if InputFrameSize > 1
+    } %% close for InputFrameSize
+  }
+  %endif
+ 
+%endfunction %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Get_zc_dir
+%function Get_zc_dir(block) void
+  
+  %if EventType==RISING 
+    %assign zc_dir = "RISING_ZERO_CROSSING"
+  %elseif EventType==FALLING 
+    %assign zc_dir = "FALLING_ZERO_CROSSING"
+  %else                
+    %assign zc_dir = "ANY_ZERO_CROSSING"
+  %endif
+  
+  %return zc_dir
+  
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%% 
+%% Function: GetDataType ==========================================================
+%%
+%function GetDataType(CountSize) void
+
+  %switch CountSize
+    %case "SS_UINT8"
+      %assign TypeCast = "(uint8_T)"
+      %break
+    %case "SS_UINT16"
+      %assign TypeCast = "(uint16_T)"
+      %break
+    %case "SS_UINT32"
+      %assign TypeCast = "(uint32_T)"
+      %break
+    %case "SS_DOUBLE"
+      %assign TypeCast = "(real_T)"
+      %break
+  %endswitch
+
+  %return TypeCast
+
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: UPDATE_CNT_IF_EVENT
+%function  UPDATE_CNT_IF_EVENT(block, cnt) Output
+  %%
+  %assign i_str = (InputFrameSize > 1) ? "i" : "" 
+  %%
+  %% Generate conditional code based on the count event type:
+  %if EdgeTrig
+    if(rt_ZCFcn(%<Get_zc_dir(EventType)>, (ZCSigState *)(&%<LibBlockIWork(CLK_STATE, "", "", 0)>),
+    %<LibBlockInputSignal(INPORT_CLK,"%<i_str>","",0)>) != NO_ZCEVENT) {
+  %elseif EventType == NONZERO	
+    if(%<LibBlockInputSignal(INPORT_CLK,"%<i_str>","",0)> != 0) {
+  %else
+    %% Free run mode.
+  %endif
+  %%
+  %<Gen_Count_Code(cnt)>\
+  %%
+  %if EventType != FREE_RUN
+    } %% Closing brace for if(event) statement 
+  %endif
+  %%
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: isTrivialUserDefMax
+%function isTrivialUserDefMax(MaxCount) void
+%% If the user selects a user defined max count
+%% that equals the max range of a built-in, then
+%% use the built-in datatype.  This removes one
+%% piece of conditional code in the usdef case.
+%%
+ %switch CountSize
+    %case "SS_UINT8"
+      %assign isTriv = (MaxCount == 255)        %% 2^8 -1
+      %break
+    %case "SS_UINT16"
+      %assign isTriv = (MaxCount == 65535)      %% 2^16 -1
+      %break
+    %case "SS_UINT32"
+      %assign isTriv = (MaxCount == 4294967295) %% 2^32 -1
+      %break
+    %default
+      %assign isTriv = 0
+      %break
+  %endswitch
+
+  %return isTriv
+
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Gen_Count_Code
+%function Gen_Count_Code(cnt) Output
+  %%
+  %assign isUserDefMax = (SFcnParamSettings.UserDefMax == "yes")
+  %%
+  %if !isUserDefMax || isTrivialUserDefMax(MaxCount)
+    %if isTrivialUserDefMax(MaxCount)
+    /* User defined maximum is equal to upper limit of data type */
+    %endif
+    %if CntDirection==UP
+      %<cnt>++;
+    %else
+      %<cnt>--;
+    %endif
+  %else
+    %if CntDirection==UP
+      if (%<cnt> < %<TypeCast>%<MaxCount>) { /* Max count = %<MaxCount> */
+	%<cnt>++;
+      } else {
+	%<cnt> = 0;
+      }
+    %else
+      if (%<cnt> > 0) {
+	%<cnt>--;
+      } else {
+	%<cnt> = %<TypeCast>%<MaxCount>; /* Wrap to max count */
+      }  
+    %endif
+  %endif
+  %%  
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: RESET_CNT_IF_RST_TRUE
+%function RESET_CNT_IF_RST_TRUE(block, cnt) Output
+  %%
+  %if RstPort
+    %if EdgeTrig
+      if( rt_ZCFcn(%<Get_zc_dir(EventType)>, (ZCSigState *)(&%<LibBlockIWork(RST_STATE, "", "", 0)>),
+      %<LibBlockInputSignal(INPORT_RST,"","",0)>) != NO_ZCEVENT ) {
+	%<cnt> = %<TypeCast>%<InitCount>; /* If reset, set count to initial value */
+      }
+    %else
+      if(%<LibBlockInputSignal(INPORT_RST,"","",0)> != 0) {
+	%<cnt> = %<TypeCast>%<InitCount>;   /* If reset, set count to initial value */
+      }
+    %endif
+  %endif
+  %%
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: CounterComment   ===============================================
+%%
+%function CounterComment(block) void
+
+    %switch EventType
+    %case RISING
+      %assign Event_str = "Rising edge trigger mode, "
+      %break
+    %case FALLING
+      %assign Event_str = "Falling edge trigger mode, "
+      %break
+    %case EITHER
+      %assign Event_str = "Either edge trigger mode, "
+      %break
+    %case NONZERO
+      %assign Event_str = "Non-zero sample trigger mode, "
+      %break
+    %case FREE_RUN
+      %assign Event_str = "Free running mode, "
+      %break
+  %endswitch
+
+  %switch CountSize
+    %case "SS_UINT8"
+      %assign CntSize_str = "8 bit, "
+      %break
+    %case "SS_UINT16"
+      %assign CntSize_str = "16 bit, "
+      %break
+    %case "SS_UINT32"
+      %assign CntSize_str = "32 bit, "
+      %break
+    %case "SS_DOUBLE"
+      %assign CntSize_str = "double precision floating point, "
+      %break
+  %endswitch  
+  
+  %if CntDirection == UP
+    %assign Dir_str = "Up counter"
+  %else
+    %assign Dir_str = "Down counter"
+  %endif
+  
+  %return (Event_str + CntSize_str + Dir_str)
+  
+%endfunction  %% CounterComment  
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: AddParamsToBlock ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+  
+  %assign RISING   = 1 
+  %assign FALLING  = 2
+  %assign EITHER   = 3
+  %assign NONZERO  = 4
+  %assign FREE_RUN = 5
+
+  %assign OUTPORT_CNT = 0
+  %assign INPORT_CLK  = 0
+
+  %assign UP           = 1
+  %assign DOWN         = 2
+  %assign CntDirection = SFcnParamSettings.Direction
+  
+  %assign CntPort     = (SFcnParamSettings.CntPort == "yes")
+  %assign HitPort     = (SFcnParamSettings.HitPort == "yes")
+  %assign RstPort     = (SFcnParamSettings.RstPort == "yes")
+  
+  %% Don't CAST MaxCount and InitCount because is restricts the range!
+  %assign EventType      = SFcnParamSettings.CountEvent
+  %assign MaxCount       = SFcnParamSettings.MaxCount
+  %assign InitCount	 = InitialCount.Value[0]
+
+  %assign Framebased	 = (SFcnParamSettings.FrameBased == "yes")
+  %assign NumOutputPorts = (CntPort && HitPort) ? 2 : 1
+  %assign OUTPORT_HIT    = NumOutputPorts-1
+  %assign CountSize	 = SFcnParamSettings.CountSize 
+  
+  %%
+  %% Type casting to get rid of compiler warnings.
+  %% The simulation already guarantees we are in range.
+  %%
+  %assign TypeCast = GetDataType(CountSize)
+  %%
+  %assign OutputFrameSize = CAST("Number",SFcnParamSettings.OutputFrameSize)
+  %assign FreeRun        = (EventType==FREE_RUN)
+  %assign EdgeTrig       = (EventType==RISING || EventType==FALLING || EventType==EITHER)
+  %assign INPORT_RST     = (FreeRun) ? 0 : 1
+
+  %if FreeRun 
+    %assign InputFrameSize = 1
+  %else
+    %assign InputFrameSize = LibDataInputPortWidth(INPORT_CLK)
+  %endif
+
+  %if TypeCast == "(uint32_T)"
+    %%
+    %% This special case is here because the SGI cannot cast properly
+    %% from a real_T to a uint32_T.  This avoids the problem by generating
+    %% the constant as a uint32, so no casting is needed.
+    %%
+    %assign InitCount = CAST("Unsigned",InitCount)
+    %assign MaxCount  = CAST("Unsigned",MaxCount)
+  %endif
+  
+  %if HitPort
+    %assign HitValParam = LibBlockParameter(HitValue,  "", "", 0)
+  %else
+    %assign HitValParam = ""
+  %endif
+  
+  %assign block = block + RISING + FALLING + EITHER + NONZERO + FREE_RUN + \
+                  OUTPORT_CNT + CntPort + HitPort + RstPort + EventType + \
+		  HitValParam + InitCount + Framebased + NumOutputPorts + \
+		  CountSize + TypeCast + OutputFrameSize + MaxCount + InputFrameSize + \
+		  FreeRun + EdgeTrig + INPORT_CLK + INPORT_RST + OUTPORT_HIT + \
+		  UP + DOWN + CntDirection
+  %return block
+
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] sdspcount.tlc
+
+

@@ -1,0 +1,249 @@
+%% 
+%% $Revision: 1.1.6.6 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   This system TLC library file contains functions that are common
+%%   between the different code generators for producing the the model's
+%%   dwork structure definition.
+
+%if EXISTS("_COMMONHDR_DWORKLIB_") == 0
+%assign _COMMONHDR_DWORKLIB_ = 1
+
+%% ============================================================================
+%% Create global cache variables to hold each structure definition
+%% ============================================================================
+
+%<LibAddToCompiledModel("DWorkStructDefn", 0)>
+
+%% Function: FcnDefineDWorkElement =============================================
+%% Abstract:
+%%   This function defines a element in the DWork structure.
+%%
+%function FcnDefineDWorkElement(id, dataType, width) void
+  %openfile buffer
+  %assign optWidth = LibOptionalVectorWidth(width)
+  %<dataType>%<id>%<optWidth>;\
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: FcnReportDWorkError ===============================================
+%% Abstact:
+%%   Shared error message.
+%%
+%function FcnReportDWorkError(block, dwType, count, width) void
+  %assign errTxt = "%<dwType> size mismatch detected.\n" + \
+      "  Block requires    : %<width> elements\n" + \
+      "  Actually generated: %<count> elements\n\n" + \
+      "This can occur when an inlined s-function defines more/less work \n" + \
+      "vector elements in TLC than it did in the C-MEX version of the block.\n"
+      %<LibBlockReportError(block,errTxt)>
+%endfunction
+
+%% Function: FcnDefineDWorkRecord ==============================================
+%% Abstract:
+%%   Returns a DWork substructure or element for a block depending on the number
+%%   of declared work vector elements.
+%%
+%function FcnDefineDWorkRecord(dwRec, dwType, dataType) Output
+  %assign block = System[dwRec.SigSrc[0]].Block[dwRec.SigSrc[2]]
+  %assign dwId  = dwRec.Identifier
+  %if GETFIELD(block, "Num%<dwType>Defines") > 0
+    %assign count = 0
+    struct {
+    %foreach i = GETFIELD(block, "Num%<dwType>Defines")
+      %assign def = GETFIELD(block, "%<dwType>Define")
+      %<FcnDefineDWorkElement(def[i].Name, dataType, def[i].Width)>
+      %assign count = count + def[i].Width
+    %endforeach
+    } %<dwId>; /* %<LibBlockDWorkOwnerComment(dwRec)> */
+    %%
+    %if count != dwRec.Width
+      %<FcnReportDWorkError(block, dwType, count, dwRec.Width)>
+    %endif
+  %else
+    %<FcnDefineDWorkElement(dwId, dataType, dwRec.Width)>\
+    /* %<LibBlockDWorkOwnerComment(dwRec)> */
+  %endif
+%endfunction
+
+%% Function: SLibGetSystemDWork ================================================
+%% Abstract:
+%%   Returns the contents of a systems DWork structure.
+%%
+%function SLibGetSystemDWork(sysIdx) void
+  %assign sysDWork      = ""
+  
+  %assign dWorkArg      = System[sysIdx].Interface.DWorkArgDef
+  %assign childTypeDefs =  FcnGetHStructChildSystemTypedefs(sysIdx, "rtDW", "DWork")
+  %assign numElements  = childTypeDefs[1]
+  %assign res          = ["", 0 ]
+  
+  %openfile sysDWork
+  %if dWorkArg.NumFlatFields > 0
+    %with CompiledModel.DWorks
+      %foreach boIdx = dWorkArg.NumFlatFields
+	%assign dwRec = DWork[dWorkArg.FirstLocation + boIdx]
+	%assign dwId  = dwRec.Identifier
+	%switch dwRec.Origin
+	  %case "MODE"
+	    %<FcnDefineDWorkElement(dwId, "int_T ", dwRec.Width)>\
+	    /* %<LibBlockDWorkOwnerComment(dwRec)> */
+	    %assign numElements = numElements + 1
+	    %break
+	  %case "RWORK"
+	    %<FcnDefineDWorkRecord(dwRec, "RWork", "real_T ")>\
+	    %assign numElements = numElements + 1
+	    %break
+	  %case "IWORK"
+	    %<FcnDefineDWorkRecord(dwRec, "IWork", "int_T ")>\
+	    %assign numElements = numElements + 1
+	    %break
+	  %case "PWORK"
+	    %<FcnDefineDWorkRecord(dwRec, "PWork", "void *")>\
+	    %assign numElements = numElements + 1
+	    %break
+	  %case "DSTATE"
+	  %case "DWORK"
+	    %if dwRec.StorageClass == "Auto"
+	      %assign dataType = SLibGetRecordDataTypeName(dwRec, "")
+	      %assign optWidth = LibOptionalVectorWidth(dwRec.Width)
+	      %<dataType> %<dwId>%<optWidth>; /* %<LibBlockDWorkOwnerComment(dwRec)> */
+	      %assign numElements = numElements + 1
+	    %endif
+	    %break
+	  %default
+	    %assign errTxt = "Unknown DWork Origin Flag: %<dwRec.Origin>"
+	    %<LibReportFatalError(errTxt)>
+	%endswitch
+	%if dwRec.Padding != 0 
+	  %assign optPadWidth = LibOptionalVectorWidth(dwRec.Padding)
+	  char pad_%<dwId>%<optPadWidth>;
+	%endif
+      %endforeach
+    %endwith
+  %endif
+  %closefile sysDWork
+  %assert !ISFIELD(System[sysIdx], "HasDWorkArg")
+  %addtorecord System[sysIdx] HasDWorkArg (numElements == 0 ? 0 : 1)
+  %if numElements > 0
+    %assign res[0] = "%<sysDWork>%<childTypeDefs[0]>"
+    %assign res[1] = %<numElements>
+    
+  %endif
+  %return res %% return [%<sysDWork>, %<numElements>] 
+%endfunction %% SLibGetSystemDWork
+
+%% Function: LibCacheSystemDWorkStructDef ======================================
+%% Abstract:
+%%   Caches the definition of the system DWork structure.
+%%
+%function LibCacheSystemDWorkStructDef(sysIdx) void
+  %if !SLibSystemHasOwnDataScope(System[sysIdx])
+    %return
+  %endif
+  %assign dWorkBuff = SLibGetSystemDWork(sysIdx)
+  %assign dWorkDef = ""
+  %openfile comment
+    /* Block states (auto storage) for system: '%<System[sysIdx].Name>' */
+  %closefile comment
+  %if (sysIdx < (NumSystems-1))
+    %assign identifier = "rtDW%<FcnGetSystemIdentifier(sysIdx)>"  
+  %else
+    %assign ::CompiledModel.DWorkStructDefn = ...
+      WHITE_SPACE(dWorkBuff[0])?"":"Nonempty"
+    %assign identifier = tDWorkType
+  %endif
+  %%
+  %if dWorkBuff[1] > 0 %% number of elements
+    %openfile dWorkDef
+    
+    %<comment>\
+    %<SLibAddPreStructTypedefPragma(identifier)>\
+    typedef struct %<identifier>_tag {
+      %<dWorkBuff[0]>
+    } %<identifier>;
+    %<SLibAddPostStructTypedefPragma(identifier)>\
+  %closefile dWorkDef
+  %endif
+  %%
+  %assign fileName = SLibGetSystemOutputFileBaseName(System[sysIdx])
+  %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fileName)
+  %<SLibSetModelFileAttribute(opFile, "Typedefs", dWorkDef)>
+%endfunction %% LibCacheSystemDWorkStructDef
+
+%% Function: LibCacheNonAutoStorageClassDWorkDefinition ========================
+%% Abstract:
+%%   Cache the DWorks that have non-auto storage class.
+%%
+%function LibCacheNonAutoStorageClassDWorkDefinition() void
+
+  %assign numDWorks = CompiledModel.DWorks.NumDWorks
+
+  %if numDWorks == 0
+    %assign ::CompiledModel.ExportedGlobalDWorkDefn = ""
+    %assign ::CompiledModel.ImportedExternDWorkDefn = ""
+    %assign ::CompiledModel.ImportedExternPointerDWorkDefn = ""
+    %return ""
+  %endif
+
+  %openfile exportedGlobalsBuffer
+  %openfile importedExternBuffer
+  %openfile importedExternPointerBuffer
+  %foreach dwIdx = numDWorks
+
+    %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+    
+    %if  dwRec.StorageClass == "Auto" 
+      %continue
+    %endif
+    
+    %switch dwRec.StorageClass
+      %case "ExportedGlobal"
+	%selectfile exportedGlobalsBuffer
+	%break
+      %case "ImportedExtern"
+	%selectfile importedExternBuffer
+	%break
+      %case "ImportedExternPointer"
+	%selectfile importedExternPointerBuffer
+	%break
+      %case "Custom"
+	%break
+      %default
+	%assign errTxt = "Should not get here"
+	%<LibReportFatalError(errTxt)>
+    %endswitch
+    
+     %<FcnGenerateBlockDWorkExternalDefinition(dwRec)>
+     
+    %if dwRec.Padding != 0
+      %assign optPadWidth = LibOptionalVectorWidth(dwRec.Padding)
+      char pad_%<dwId>%<optPadWidth>;
+    %endif
+  %endforeach
+  %closefile exportedGlobalsBuffer
+  %closefile importedExternBuffer
+  %closefile importedExternPointerBuffer
+  
+  %assign ::CompiledModel.ExportedGlobalDWorkDefn = exportedGlobalsBuffer
+  %assign ::CompiledModel.ImportedExternDWorkDefn = importedExternBuffer
+  %assign ::CompiledModel.ImportedExternPointerDWorkDefn = importedExternPointerBuffer
+  
+%endfunction %% LibCacheNonAutoStorageClassDWorkDefinition
+
+
+%% Function: LibDWorkStructIsEmpty ============================================
+%% Abstract:
+%%   Is the cache empty?
+%%
+%function LibDWorkStructIsEmpty() void
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %assert ISFIELD(System[baseSysIdx],"HasDWorkArg")
+  %return (System[baseSysIdx].HasDWorkArg == 0)
+%endfunction
+
+%endif %%  _COMMONHDR_DWORKLIB_

@@ -1,0 +1,33 @@
+function h = BoundingBox(name,textstring,box,ax)
+%BOUNDINGBOX Draw a bounding box
+%
+%   BOUNDINGBOX(NAME,BOX,AX) Draws a BoundingBox object, with the name NAME,
+%   into the axes AX.  BOX is a 5-by-2 array of coordinates, for the 5 corners
+%   of the bounding box, in clockwise or counterclockwise order.
+
+%   Copyright 1996-2003 The MathWorks, Inc.
+%   $Revision: 1.1.6.3 $  $Date: 2003/12/13 02:48:48 $
+
+h = MapGraphics.BoundingBox;
+
+h.Name = name;
+h.LineHandle = MapGraphics.Line(name,...
+                              'XData',box(:,1),'YData',box(:,2),...
+                              'Color','Black','Parent',ax,'Visible','On');
+
+h.TextHandle = MapGraphics.Text(name,'Parent',ax,...
+                                'HorizontalAlignment','center',...
+                                'VerticalAlignment','middle',...
+                                'Position',getBoxCenter(box),...  
+                                'Clipping','on',...
+                                'String',textstring,...
+                                'Color',[0 0 0],...
+                                'Interpreter','none',...
+                                'Visible','On');
+
+function center = getBoxCenter(box)
+
+corners = [min(box(:,1)) min(box(:,2));
+           max(box(:,1)) max(box(:,2))];
+
+center = (corners(1,:) + corners(2,:))/2;

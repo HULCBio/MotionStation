@@ -1,0 +1,474 @@
+%% $RCSfile: fixptfft.tlc,v $
+%% $Revision: 1.2.4.3 $
+%% $Date: 2004/04/14 23:47:14 $
+%%
+%% This file contains tlc code for generation of fixed point FFTs
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: FixPt_Multiply ==========================================
+%%
+%% Synopsis:
+%%      FixPt_FFT(C,A,B,roundMode,satMode)
+%%
+%%      C = record describing output
+%%      A = record describing input 1
+%%      B = record describing input 2
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%
+%function FixPt_FFT(sizeLabel, ptrLabel, dataTypeIdx ) Output
+  %<LibPushEmptyStackSharedUtils()>\
+  %%
+  %% need to improve this data type detection
+  %%
+  %% %if tSS_DOUBLE == LibGetDataTypeEnumFromId(dataTypeIdx)    
+  %if 0 == dataTypeIdx
+      %%
+      %% handle case of Doubles
+      %%
+      %% Create a string to represent the multiplication utility
+      %% 
+      %assign utilityName = "dbl_fft"
+      %%
+      %% Output a "call" to the required utility
+      %% case of C function call
+      %%
+      %<utilityName>( %<sizeLabel>, %<ptrLabel> );
+      %%
+      %% determine if the required utility has already been defined
+      %%   If it has not, then create the definition.
+      %%
+      %assign fieldFixPtUtils = "FixPtUtils." + utilityName
+      %%
+      %if !EXISTS("%<fieldFixPtUtils>")
+        %%
+        %% register that utility is being defined
+        %%
+        %assign %<utilityName> = 1
+        %assign FixPtUtils = FixPtUtils + %<utilityName>
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% open a buffer to hold the utility definition
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %openfile utilityDef
+%%
+%% path issues with the use of this file???
+%%           #include "dbl_fft.c"
+      #include "D:/R12/toolbox/fixpoint/dbl_fft.c"
+        %closefile utilityDef
+        %%
+        %<SLibCacheSourceCode(utilityDef)>
+        %%
+      %endif  %% definition of utility
+  %else
+      %%
+      %% handle case of Fixed Point      
+      %%
+      %% get fixed point data type record
+      %%
+      %assign y0DT  = FixPt_GetDataTypeFromIndex(dataTypeIdx)
+      %%
+      %<FixPt_FloatingPointNotSupported(y0DT)>\
+      %%
+      %assign yComplexDTName = LibGetDataTypeComplexNameFromId(dataTypeIdx)
+      %assign yRealDTName    = LibGetDataTypeNameFromId(dataTypeIdx)
+      %%
+      %% Create a string to represent the multiplication utility
+      %% 
+      %assign utilityName = "FFT"
+      %%
+      %% for now use one FFT per size of data, but can optimize
+      %% ?????????????
+      %%
+      %assign nSine = SIZE(FixPtCosValue,1)
+      %assign utilityName = utilityName + "_%<nSine>"
+      %%
+      %% identify output storage type
+      %%
+      %if y0DT.IsSigned
+          %assign utilityName = utilityName + "_S"
+      %else
+          %assign utilityName = utilityName + "_U"
+      %endif
+      %assign utilityName = utilityName + STRING(y0DT.RequiredBits)
+      %%
+      %% identify radix point   ie scaling
+      %%
+      %if y0DT.FixedExp >= 0 
+          %assign utilityName = utilityName + "_E"
+          %assign utilityName = utilityName + STRING(y0DT.FixedExp)
+      %else
+          %assign utilityName = utilityName + "_En"
+          %assign utilityName = utilityName + STRING(-1*y0DT.FixedExp)
+      %endif
+      %%
+      %% END: Create a string to represent the FFT utility
+      %%       
+      %%
+      %% Output a "call" to the required utility
+      %% case of C function call
+      %%
+      %<utilityName>( %<sizeLabel>, %<ptrLabel> );
+      %%
+      %% determine if the required utility has already been defined
+      %%   If it has not, then create the definition.
+      %%
+      %assign fieldFixPtUtils = "FixPtUtils." + utilityName
+      %%
+      %if !EXISTS("%<fieldFixPtUtils>")
+        %%
+        %% define the rounding mode, this can become a parameter later
+        %%
+        %assign FixPtRoundingMode = "Floor"
+        %assign FixPtSaturationMode = "Wrap"       
+        %%
+        %% register that utility is being defined
+        %%
+        %assign %<utilityName> = 1
+        %assign FixPtUtils = FixPtUtils + %<utilityName>
+        %%
+        %% Get fixpt records for generic variables INSIDE this util
+        %%
+        %assign pFixYjReRec = fixPtSigRec { Label "pFixY[j].re"; DT y0DT }
+        %assign pFixYjImRec = fixPtSigRec { Label "pFixY[j].im"; DT y0DT }
+        %assign pFixYiReRec = fixPtSigRec { Label "pFixY[i].re"; DT y0DT }
+        %assign pFixYiImRec = fixPtSigRec { Label "pFixY[i].im"; DT y0DT }
+        %%
+        %assign fixTempY1ReRec  = fixPtSigRec { Label "fixTempY1.re"; DT y0DT }
+        %assign fixTempY1ImRec  = fixPtSigRec { Label "fixTempY1.im"; DT y0DT }
+        %assign fixTempY2ReRec  = fixPtSigRec { Label "fixTempY2.re"; DT y0DT }
+        %assign fixTempY2ImRec  = fixPtSigRec { Label "fixTempY2.im"; DT y0DT }
+        %%
+        %% set up data type record for the sin variables
+        %%
+        %% not sure why following caused error
+        %if 1
+        %assign cTempDT = fixPtDT { ...
+                              IsSigned         1; ...
+                              ActualBits       y0DT.ActualBits; ...
+                              RequiredBits     y0DT.RequiredBits; ...
+                              FixedExp         (2-y0DT.RequiredBits); ...
+                              FracSlope        1; ...
+                              Bias             0; ...
+                              NumNativeTypes   1; ...
+                              NativeTypes      y0DT.NativeTypes ...
+                            }
+        %elseif 0
+        %assign cTempDT = fixPtDT { ...
+                              IsSigned         1 ...
+                              ActualBits       y0DT.ActualBits; ...
+                              RequiredBits     y0DT.RequiredBits; ...
+                              FixedExp         (2-y0DT.RequiredBits); ...
+                              FracSlope        1; ...
+                              Bias             0; ...
+                              NumNativeTypes   1; ...
+                              NativeTypes      y0DT.NativeTypes ...
+                            }
+        %else 
+        %assign actualBits   = y0DT.ActualBits
+        %assign requiredBits = y0DT.RequiredBits
+        %assign fixedExp     = (2-y0DT.RequiredBits)
+        %assign nativeTypes  = y0DT.NativeTypes
+        %assign cTempDT = fixPtDT { ...
+                              IsSigned         1 ...
+                              ActualBits       actualBits; ...
+                              RequiredBits     requiredBits; ...
+                              FixedExp         fixedExp; ...
+                              FracSlope        1; ...
+                              Bias             0; ...
+                              NumNativeTypes   1; ...
+                              NativeTypes      nativeTypes ...
+                            }
+        %endif                    
+        %%
+        %assign fixRefSinReRec   = fixPtSigRec { Label "fixRefSin.re";   DT cTempDT }
+        %assign fixRefSinImRec   = fixPtSigRec { Label "fixRefSin.im";   DT cTempDT }
+        %assign fixCurSinReRec   = fixPtSigRec { Label "fixCurSin.re";   DT cTempDT }
+        %assign fixCurSinImRec   = fixPtSigRec { Label "fixCurSin.im";   DT cTempDT }
+        %assign fixTempSin1ReRec = fixPtSigRec { Label "fixTempSin1.re"; DT cTempDT }
+        %assign fixTempSin1ImRec = fixPtSigRec { Label "fixTempSin1.im"; DT cTempDT }
+        %assign fixTempSin2ReRec = fixPtSigRec { Label "fixTempSin2.re"; DT cTempDT }
+        %assign fixTempSin2ImRec = fixPtSigRec { Label "fixTempSin2.im"; DT cTempDT }
+        %%
+        %% open a buffer to hold the utility header comments
+        %%
+        %openfile utilityHeaderComment
+        %%
+        %%  Produce header comment for utility
+        %%
+        
+        /*********************************************************************
+         * Fixed Point FFT Utility %<utilityName>
+        %%
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% open a buffer to hold the utility definition
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %openfile utilityDef
+        %%
+        %% case of C function
+        %%   including prototype definition
+        %%
+        %openfile funcProto
+        void %<utilityName>(const uint_T n, %<yComplexDTName> *pFixY );
+        %closefile funcProto
+        %selectfile utilityDef 
+        void %<utilityName>(const uint_T n, %<yComplexDTName> *pFixY )            
+        {
+        %%
+        %% declare sin look up tables, this should be done in a global
+        %% so that the rest of the code can be reused.  
+        %%  Bette yet only the largest Sine vectors should be declared
+        %% all other cases are just subsets.
+        %%
+        static %<yRealDTName> fixCosLookUp[] = {
+        %foreach i = (nSine-1)
+            %<FixPtCosValue[i]>,
+        %endforeach
+            %<FixPtCosValue[nSine-1]>
+        };
+        
+        static %<yRealDTName> fixSinLookUp[] = {
+        %foreach i = (nSine-1)
+            %<FixPtSinValue[i]>,
+        %endforeach
+            %<FixPtSinValue[nSine-1]>
+        };
+        
+        %<yComplexDTName> fixTempY1, fixTempY2;
+    
+        %<yComplexDTName> fixRefSin, fixCurSin, fixTempSin1, fixTempSin2;
+    
+        uint_T i, j, iBitMask, jBitMask, netI;
+
+        uint_T iSine = 0;
+    
+        uint_T butterflyWidth, groupWidth, iGroup;
+    
+        /*
+         * do bit reversal
+         *
+         * Note this code is written so it can be readily understood.
+         * IMO, classical presentations of the bit reversal are quite 
+         * convoluted in appearance.  Probably, the convoluted
+         * algorithm is designed to reduce operations and perhaps
+         * reduce the number of variables.  The latter increases
+         * the likelihood that everything will be in quick access
+         * registers rather than in slower access stack???
+         *    Also some chips have special assembly language 
+         * instructions that do bit reversal in one shot.
+         */
+         /* note i=0 never has valid reversal so no need to do it
+         */
+        for ( i = 1; i < n; i++ )
+        {
+            j = 0;
+            jBitMask = 1;        
+            iBitMask = n >> 1;
+            netI = i;
+    
+            while ( netI > 0 )
+            {
+                if ( netI >= iBitMask )
+                {
+                    netI -= iBitMask;
+                    j    += jBitMask;
+                }
+    
+                jBitMask <<= 1;        
+                iBitMask >>= 1;
+            }
+    
+            /*
+             * if j == i then no sense swapping
+             * if j <  i then the case was already handled 
+             *           when the value of i equalled the current value of j
+             */
+            if ( j > i )
+            {
+                fixTempY1  = pFixY[i];
+                pFixY[i]   = pFixY[j];
+                pFixY[j]   = fixTempY1;
+            }
+        }
+       
+        butterflyWidth = 1;
+    
+        while ( n > butterflyWidth )
+        {
+            groupWidth = 2 * butterflyWidth;
+    
+           /*
+            * Get the sine and cosine.  This uses floating point operations
+            * but it is assumed that these would be computed off-line
+            * and stored in a ROM lookup table for on-line use.
+            *
+            * Note 
+            *    Only one sine and cosine value is stored for each stage of the FFT,
+            * ie log2(n) pairs of values.  The remaining values are  computed via
+            * successive multiplications of the original value with itself.  This
+            * could lead to significant loss of precision.
+            *    An alternate approach is to store all 2^n sin and cosine values
+            * put this could use tremendous ROM.
+            *    Another approach is to select certain points and do interpolation
+            * between them as needed.
+            *    Probably many others with their own particular tradeoff of ROM,
+            * speed, and accuracy.
+            */
+            %if 1
+
+                %<fixRefSinReRec.Label> = fixCosLookUp[iSine];
+                %<fixRefSinImRec.Label> = fixSinLookUp[iSine];
+                iSine++;
+            %else
+              {
+                /*
+                 * this code is not Fixed Point!  It must be replaced with
+                 * look up tables!!!!!!!!!!!
+                 */
+                real_T theta, costheta, sintheta;
+    
+                theta = ((real_T)(-3.141592653589793)) / butterflyWidth;
+                %%costheta = cos(theta);
+                costheta = %<LibGenSharedMathFcnCall("cos",tSS_DOUBLE,"theta","")>;
+                %%sintheta = sin(theta);                
+                sintheta = %<LibGenSharedMathFcnCall("sin",tSS_DOUBLE,"theta","")>;
+    
+                %<FixPt_Dbl2Fix(fixRefSinReRec,"costheta","real_T",...
+                                        FixPtRoundingMode,FixPtSaturationMode)>
+                %<FixPt_Dbl2Fix(fixRefSinImRec,"sintheta","real_T",...
+                                        FixPtRoundingMode,FixPtSaturationMode)>
+              }
+            %endif
+            
+            %%
+            %% the following assumes that the data type for fixCurSin
+            %% is radix only and the radix point is placed in such a 
+            %% manner that the real world value of +1 can be represented
+            %% exactly!!!
+            %%
+            /* set the current sin to real world value 
+             *    1.0 + j 0.0
+             */
+            %<fixCurSinReRec.Label> = %<PowerOfTwoStr(-fixCurSinReRec.DT.FixedExp,1)>;
+            %<fixCurSinImRec.Label> = 0;
+                
+            /*
+             * handle each butterfly in a grouping
+             */
+            for ( iGroup = 0; iGroup < butterflyWidth; iGroup++ )
+            {
+                /*
+                 * step thru each grouping of butterflys
+                 *   handling just one specific butterfly in each grouping
+                 */
+                for ( i = iGroup; i < n; i+=groupWidth )
+                {
+                    j = i + butterflyWidth;
+    
+                    /* In the fixed point calculations 
+                     * use Wrapping and Floor for now, 
+                     * these can be added as parameters later
+                     */
+    
+                    /* For the current FFT "Butterfly" 
+                     * multiply the lower left corner by the current complex exponential
+                     */
+%%
+%% Printing out fixed point records for debugging
+%%                     
+%<FixPt_DisplayDataType( fixCurSinReRec.DT, "", fixCurSinReRec.Label )>
+%<FixPt_DisplayDataType( pFixYjReRec.DT,    "", pFixYjReRec.Label    )>
+%<FixPt_DisplayDataType( fixTempY2ReRec.DT, "", fixTempY2ReRec.Label )>
+%%
+                    %<FixPt_Multiply(  fixTempY2ReRec, fixCurSinReRec, pFixYjReRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                    %<FixPt_Multiply(  fixTempY1ReRec, fixCurSinImRec, pFixYjImRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                    %<FixPt_NegAccum(fixTempY2ReRec, fixTempY1ReRec, ...
+                                        FixPtSaturationMode)>\
+        
+                    %<FixPt_Multiply(  fixTempY2ImRec, fixCurSinReRec, pFixYjImRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                    %<FixPt_Multiply(  fixTempY1ImRec, fixCurSinImRec, pFixYjReRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                    %<FixPt_PosAccum(fixTempY2ImRec, fixTempY1ImRec, ...
+                                        FixPtSaturationMode)>\
+        
+                    /* The upper left corner of the FFT "Butterfly" minus the 
+                     * product from above 
+                     * forms the lower right corner of the FFT "Butterfly"
+                     */
+                    pFixY[j] = pFixY[i];
+                    %<FixPt_NegAccum(pFixYjReRec, fixTempY2ReRec, ...
+                                        FixPtSaturationMode)>\
+                    %<FixPt_NegAccum(pFixYjImRec, fixTempY2ImRec, ...
+                                        FixPtSaturationMode)>\
+    
+                    /* The upper left corner of the FFT "Butterfly" plus the 
+                     * product from above 
+                     * forms the upper right corner of the FFT "Butterfly"
+                     */
+                    %<FixPt_PosAccum(pFixYiReRec, fixTempY2ReRec, ...
+                                        FixPtSaturationMode)>\
+                    %<FixPt_PosAccum(pFixYiImRec, fixTempY2ImRec, ...
+                                        FixPtSaturationMode)>\
+                }
+    
+                /* Update the complex exponential
+                 */
+                %<FixPt_Multiply(  fixTempSin2ReRec, fixCurSinReRec, fixRefSinReRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                %<FixPt_Multiply(  fixTempSin1ReRec, fixCurSinImRec, fixRefSinImRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                %<FixPt_NegAccum(fixTempSin2ReRec, fixTempSin1ReRec, ...
+                                        FixPtSaturationMode)>\
+    
+                %<FixPt_Multiply(  fixTempSin2ImRec, fixCurSinReRec, fixRefSinImRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                %<FixPt_Multiply(  fixTempSin1ImRec, fixCurSinImRec, fixRefSinReRec, ...
+                                        FixPtRoundingMode, FixPtSaturationMode)>
+                %<FixPt_PosAccum(fixTempSin2ImRec, fixTempSin1ImRec, ...
+                                        FixPtSaturationMode)>\
+    
+                fixCurSin = fixTempSin2;
+            }
+            butterflyWidth = groupWidth;
+        }
+        %%
+        %% finish header comment
+        %%
+        %selectfile utilityHeaderComment 
+         */
+        %closefile utilityHeaderComment
+        %%
+        %% finish off utility define
+        %%
+        %selectfile utilityDef 
+        }
+        %closefile utilityDef
+        %%
+        %% create utility trailer comment
+        %%
+        %openfile utilityTrailerComment 
+        
+        /* end %<utilityName> 
+         *********************************************************************/
+        %closefile utilityTrailerComment
+        %%
+        %% cause utility define to be included in generated code
+        %%
+        %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+        %%
+        %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+        %<LibCacheFunctionPrototype(funcProto)>
+        %%
+      %endif  %% definition of mul utility
+  %endif
+  %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction  %% FixPt_FFT
+
+
+
+    
+%% [EOF] fixptfft.tlc

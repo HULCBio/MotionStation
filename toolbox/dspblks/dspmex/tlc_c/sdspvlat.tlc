@@ -1,0 +1,383 @@
+%% $RCSfile: sdspvlat.tlc,v $
+%% $Revision: 1.9 $ 
+%% $Date: 2002/04/14 21:03:47 $
+%%
+%% Dale Shpak
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Time-Varying Direct-Form II Transpose filter
+%%
+
+%implements sdspvlat "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Name the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+    %assign INPORT          = 0
+    %assign COEFF_PORT1     = 1
+    %assign COEFF_PORT2     = 2
+    %assign CONTIG          = (IsInputPortContiguous(block,INPORT) && IsInputPortContiguous(block,COEFF_PORT1))
+    %if NumDataInputPorts == 3
+        %assign CONTIG      = (CONTIG && IsInputPortContiguous(block,COEFF_PORT2))
+    %endif
+    %%
+    %% We do not support discontiguous inputs
+    %if (!CONTIG)
+	%<LibDiscontiguousInputError(block)>
+    %endif
+    %%"Zeros", "Poles", "DataComplex", "FiltComplex", "ZerosComplex", "PolesComplex"
+    %assign STATES	    = block.DWork[0]
+    %assign SWAPPED	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number",  SFcnParamSettings.Chans)
+    %assign FILT_COMPLEX    = CAST("Boolean", SFcnParamSettings.FiltComplex)
+    %assign DATA_COMPLEX    = CAST("Boolean", SFcnParamSettings.DataComplex)
+    %assign ZEROS_FLAG      = CAST("Boolean", SFcnParamSettings.Zeros)
+    %assign POLES_FLAG      = CAST("Boolean", SFcnParamSettings.Poles)
+    %assign IS_COMPLEX      = CAST("Boolean", FILT_COMPLEX || DATA_COMPLEX)
+    %assign FILT_PER_FRAME  = CAST("Boolean", SFcnParamSettings.FiltPerFrame)
+    %assign IC              = SFcnParamSettings.IC
+    %assign IC_COMPLEX      = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign NUM_IC          = SIZE(SFcnParamSettings.IC, 1)
+    %%
+    %if (IS_COMPLEX)
+        %assign OUT_T       = "creal_T"
+    %else
+        %assign OUT_T       = "real_T"
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = "creal_T"
+    %else
+        %assign FIL_T       = "real_T"
+    %endif
+    %%
+    %assign ORDER     = LibDataInputPortWidth(COEFF_PORT1)
+    %%
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %elseif (FILT_PER_FRAME)
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+        %assign ORDER       = ORDER / FRAME
+    %endif
+    %assign NUM_ELE         = NUM_CHANS * ORDER
+    %%
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /*
+    * Initialize the state buffers with initial conditions.
+    * There is one extra memory element for each channel that is set
+    * to zero.  It simplifies the filtering algorithm.
+    */
+    %if (NUM_IC > 1)
+        %if (IC_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,%<IMAG(SFcnParamSettings.IC[NUM_IC-1])>}};
+        %elseif (IS_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,0.0},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,0.0}};
+        %else
+            const real_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                %<SFcnParamSettings.IC[Idx]>,
+            %endforeach
+            %<SFcnParamSettings.IC[NUM_IC-1]>};
+        %endif
+    %endif
+    %if (IS_COMPLEX)
+        %assign STATE_T     = CAST("String", "creal_T")
+    %else
+        %assign STATE_T     = CAST("String", "real_T")
+    %endif
+    %<STATE_T> *dlyBuff = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+
+    %if (NUM_IC == 0)
+        %if (IS_COMPLEX)
+            const creal_T zero  = {(real_T)0.0, (real_T)0.0};
+            %assign ZERO        = CAST("String", "zero")
+        %else
+            %assign ZERO        = CAST("String", "(real_T) 0.0")
+        %endif
+        int_T j;
+        for (j=0; j < %<NUM_ELE>; j++) *dlyBuff++ = %<ZERO>;
+    %elseif (NUM_IC == 1)
+        /* Single initial condition */
+        %if (IS_COMPLEX)
+            const creal_T ic  = {%<REAL(SFcnParamSettings.IC[0])>,%<IMAG(SFcnParamSettings.IC[0])>};
+        %endif
+        int_T j;
+        %if (IS_COMPLEX)
+            for (j=0; j < %<NUM_ELE>; j++) *dlyBuff++ = ic;
+        %else
+            for (j=0; j < %<NUM_ELE>; j++) *dlyBuff++ = %<SFcnParamSettings.IC[0]>;
+        %endif
+    %elseif (NUM_IC == ORDER)
+        /* Same IC's for every channel */
+        int_T   i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<STATE_T>  *icp = ic;
+            for (j=0; j < %<ORDER>; j++) *dlyBuff++ = *icp++;
+        }
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume ORDER rows and numCHANS columns
+         */
+        const %<STATE_T> *icp = ic;
+        int_T   i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            for (j=0; j < %<ORDER>; j++) *dlyBuff++ = *icp++;
+        }
+    %endif %% Number of ICs
+
+    %if (ZEROS_FLAG)
+        /* Set MA buffer swap flag to false */
+        %<LibBlockDWork(SWAPPED, "", "", 0)> = 0;
+    %endif
+}
+%endfunction
+
+%function Outputs(block, system) Output
+    %assign INPORT          = 0
+    %assign OUTPORT         = 0
+    %assign COEFF_PORT1     = 1
+    %assign COEFF_PORT2     = 2
+    %assign STATES	    = block.DWork[0]
+    %assign SWAPPED	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number",  SFcnParamSettings.Chans)
+    %assign FILT_COMPLEX    = CAST("Boolean", SFcnParamSettings.FiltComplex)
+    %assign DATA_COMPLEX    = CAST("Boolean", SFcnParamSettings.DataComplex)
+    %assign ZEROS_FLAG      = CAST("Boolean", SFcnParamSettings.Zeros)
+    %assign POLES_FLAG      = CAST("Boolean", SFcnParamSettings.Poles)
+    %assign IS_COMPLEX      = CAST("Boolean", FILT_COMPLEX || DATA_COMPLEX)
+    %assign FILT_PER_FRAME  = CAST("Boolean", SFcnParamSettings.FiltPerFrame)
+    %%
+    %if (IS_COMPLEX)
+        %assign OUT_T       = "creal_T"
+    %else
+        %assign OUT_T       = "real_T"
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = "creal_T"
+    %else
+        %assign FIL_T       = "real_T"
+    %endif
+    %%
+    %assign ORDER           = LibDataInputPortWidth(COEFF_PORT1)
+    %%
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %elseif (FILT_PER_FRAME)
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+        %assign ORDER       = ORDER / FRAME
+    %endif
+    %%
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    %<DAT_T>    *u          = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<OUT_T>    *y          = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>; 
+    %if (FILT_COMPLEX && !DATA_COMPLEX)
+        creal_T x = {(real_T) 0.0, (real_T) 0.0};
+    %endif
+    %% Stub for ARMA
+    %if (ZEROS_FLAG && POLES_FLAG)
+        %assign ZPORT = COEFF_PORT1
+        %assign PPORT = COEFF_PORT2
+        %<FIL_T> *ma, *ar;
+        %<FIL_T> *ARport;
+        %%
+        %% insert ARMA code here
+        %%
+    %elseif (ZEROS_FLAG)
+        %assign ZPORT = COEFF_PORT1
+        /* Start of state memory buffer */
+        %<OUT_T> *then_base  = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+        %<OUT_T> *now_base   = then_base;
+        %<FIL_T> *ma;
+
+        if (%<LibBlockDWork(SWAPPED, "", "", 0)>) then_base += %<NUM_CHANS * ORDER>;
+        else now_base  += %<NUM_CHANS * ORDER>;
+
+        {
+        /* Loop over each channel */
+        %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+            %<OUT_T> *then0  = then_base;
+            %<OUT_T> *now0   = now_base;
+            %if (!FILT_PER_FRAME)
+                /* Move to first filter for this sample time */
+                ma = %<LibBlockInputSignalAddr(ZPORT, "", "", 0)>;
+            %endif
+            {
+            %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+                %<OUT_T> *then = then0;
+                %<OUT_T> *now  = now0;
+                %<OUT_T> sum, *swap;
+                int_T j;
+
+                %if (FILT_PER_FRAME)
+                    /* Move to first filter for this frame */
+                    ma = %<LibBlockInputSignalAddr(ZPORT, "", "", 0)>;
+                %endif
+                %if (FILT_COMPLEX)
+                    %if (DATA_COMPLEX)
+                        sum = *u++;
+                    %else
+                        x.re = *u++;
+                        sum = x;
+                    %endif
+                    *now++      = sum;
+                    for (j=1; j < %<ORDER>; j++) {
+                        now->re     = then->re + CMULT_XCONJ_RE(*ma, sum);
+                        (now++)->im = then->im + CMULT_XCONJ_IM(*ma, sum);
+                        sum.re  += CMULT_RE(*ma, *then);
+                        sum.im  += CMULT_IM(*ma, *then);
+                        ++ma; ++then;
+                    }
+                    y->re     = sum.re + CMULT_RE(*ma, *then);
+                    (y++)->im = sum.im + CMULT_IM(*ma, *then);
+                    ++ma;
+                %elseif (DATA_COMPLEX)
+                    sum = *now++ = *u++;
+                    for (j=1; j < %<ORDER>; j++) {
+                        now->re     = then->re + *ma * sum.re;
+                        (now++)->im = then->im + *ma * sum.im;
+                        sum.re += then->re     * *ma;
+                        sum.im += (then++)->im * *ma++;
+                    }
+                    y->re     = sum.re + *ma   * then->re;
+                    (y++)->im = sum.im + *ma++ * then->im;
+                %else
+                    sum = *now++ = *u++;
+                    for (j=1; j < %<ORDER>; j++) {
+                        *now++ = *then + *ma * sum;
+                        sum   += *then++ * *ma++;
+                    }
+                    *y++ = sum + *ma++ * *then;
+                %endif
+
+                /* Swap state memories */
+                swap = then0;  then0 = now0;  now0 = swap;
+            %endroll %% Frame
+            }
+            %if (NUM_CHANS > 1)
+                then_base += %<ORDER>;
+                now_base += %<ORDER>;
+            %endif
+        %endroll %% Channel
+        }
+        %if (FRAME & 1)
+            %<LibBlockDWork(SWAPPED, "", "", 0)> = !(%<LibBlockDWork(SWAPPED, "", "", 0)>);
+        %endif
+    %else %% AR filter
+        %assign PPORT = COEFF_PORT1
+        /* The AR algorithm starts at the last coefficient */
+        /* End of state memory buffer */ 
+        %<OUT_T> *mem_base   = %<LibBlockDWorkAddr(STATES, "", "", 0)> + %<ORDER - 1>;
+        %<FIL_T> *ar;
+
+        /* Loop over each channel */
+        %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+            %if (!FILT_PER_FRAME)
+                /* Move to last coefficient for this sample time */
+                ar = %<LibBlockInputSignalAddr(PPORT, "", "", 0)> + %<ORDER - 1>;
+            %endif
+            {
+             /* Loop over each sample time */
+            %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+                %<OUT_T> *filt_mem = mem_base;
+                %<OUT_T> sum;
+                int_T j;
+
+                %if (FILT_PER_FRAME)
+                    /* Move to last coefficient for this frame */
+                    ar = %<LibBlockInputSignalAddr(PPORT, "", "", 0)> + %<ORDER - 1>;
+                %endif
+
+                %if (FILT_COMPLEX)
+                    %if (DATA_COMPLEX)
+                        sum = *u++;
+                    %else
+                        x.re = *u++;
+                        sum = x;
+                    %endif
+                    sum.re = sum.re - CMULT_RE(*ar, *filt_mem);
+                    sum.im = sum.im - CMULT_IM(*ar, *filt_mem);
+                    --ar;
+                    for (j=1; j < %<ORDER>; j++) {
+                        --filt_mem;
+                        sum.re -= CMULT_RE(*ar, *filt_mem);
+                        sum.im -= CMULT_IM(*ar, *filt_mem);
+                        (filt_mem + 1)->re = CMULT_YCONJ_RE(sum, *ar) + filt_mem->re;
+                        (filt_mem + 1)->im = CMULT_YCONJ_IM(sum, *ar) + filt_mem->im;
+                        --ar;
+                    }
+                    *y++ = *filt_mem = sum;
+                %elseif (DATA_COMPLEX)
+                    sum = *u++;
+                    sum.re = sum.re - *ar   * filt_mem->re;
+                    sum.im = sum.im - *ar-- * filt_mem->im;
+                    for (j=1; j < %<ORDER>; j++) {
+                        sum.re -= *ar * (--filt_mem)->re;
+                        sum.im -= *ar * filt_mem->im;
+                        (filt_mem+1)->re = sum.re * *ar   + filt_mem->re;
+                        (filt_mem+1)->im = sum.im * *ar-- + filt_mem->im;
+                    }
+                    *y++ = *filt_mem = sum;
+                %else
+                    sum = *u++ - *ar-- * *filt_mem;
+                    for (j=1; j < %<ORDER>; j++) {
+                        sum -= *ar * *(--filt_mem);
+                        *(filt_mem + 1) = sum * *ar-- + *filt_mem;
+                    }
+                    *y++ = *filt_mem = sum;
+                %endif
+
+                %if (!FILT_PER_FRAME)
+                    ar += %<2 * ORDER>;
+                %endif
+            %endroll  %% Frame
+            }
+            %if (NUM_CHANS > 1)
+                mem_base += %<ORDER>;
+            %endif
+        %endroll  %% Channel
+    %endif
+}
+%endfunction
+%% [EOF] sdspvlat.tlc

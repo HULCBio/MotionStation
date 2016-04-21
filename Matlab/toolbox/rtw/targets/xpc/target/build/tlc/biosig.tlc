@@ -1,0 +1,181 @@
+%% ============================================================================
+%% $RCSfile: biosig.tlc,v $
+%% $Revision: 1.12.8.5 $
+%% $Date: 2004/04/08 21:01:25 $
+%%
+%% Abstract:
+%%      This system file creates model_bio.c which is to monitor the block io
+%%      vector, and also modelbio.m which is used by MATLAB. This is a custom
+%%      version used by xPC Target.
+%%
+%% Copyright 1996-2004 The MathWorks, Inc.
+%%
+
+%if EXISTS("_BIOSIG_") == 0
+%assign _BIOSIG_ = 1
+
+%realformat "CONCISE"
+
+%with CompiledModel
+
+%% Generate Interface API
+%<SLibMapData()>
+
+%selectfile STDOUT
+%if RTWVerbose
+### Creating block IO files %<Name>_bio.c, %<Name>bio.m
+%endif
+%selectfile NULL_FILE
+
+%assign skipMsg = "Skipping signals in C-API\n\n" ...
+  "Skipping certain block signals in C-API.  Therefore, not all signals\n" ...
+  "are available for monitoring.  Relevant signal configurations: \n" ...
+  "   o Signal storage reuse (Advanced simulation parameter dialog)\n" ...
+  "   o Signal storage class (Signal attribute dialog or Simulink data " ...
+                             "object configuration)\n" ...
+  "   o Inlining Parameters  (Advanced simulation parameter dialog)\n" ...
+  "   o Local block outputs  (RTW options page -- General code generation option)\n"
+
+%with GlobalMemoryMap
+%assign bhm = CompiledModel.BlockHierarchyMap
+%openfile ModelDotBio = "%<Name>_bio.c"
+%openfile ModelBioDotM = "../%<Name>bio.m"
+
+%selectfile ModelDotBio
+
+/*
+ * %<Name>_bio.c
+ *
+%<SLibCommonHeaderInfo()>\
+ */
+
+#ifndef BLOCK_IO_SIGNALS
+#define BLOCK_IO_SIGNALS
+
+#include "bio_sig.h"
+
+
+%% ============================================================================
+%% instantiation
+%%
+/* Block output signal information */
+const %<tBlockIOSignalsType> %<tBlockIOSignals>[] = {
+
+  /* blockName,
+  * signalName, portNumber, signalWidth, signalAddr, dtName, dtSize
+  */
+
+%selectfile ModelBioDotM
+function bio=%<Name>bio(flag)
+bio = [];
+if nargin==0
+  bio = [];
+  %assign lenName = FEVAL ("length",CompiledModel.Name)
+  %if NumBlockSignals > 0
+    %assign numBlockSignals = 0
+    %assign numTotalSignals = 0
+    %assign warned = 0
+    %foreach sysIdx = NumSystems
+      %with System[sysIdx]
+        %foreach blkIdx = NumBlocks
+          %with Block[blkIdx]
+            %foreach portIdx = NumDataOutputPorts
+              %assign sigRec = SLibGetSourceRecord(DataOutputPort[portIdx],0)
+              %if !ISEMPTY(sigRec)   %% Skip function-call outputs
+                %if sigRec.MemoryMapIdx[2] == -1
+                  %continue
+                %elseif sigRec.MemoryMapIdx[1] == -1
+                  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+                  %assign data        = UnstructuredData.Data[dataIdx]
+                  %assign isComplex   = data.IsComplex
+                  %assign dataTypeIdx = data.DataTypeIdx
+                %else
+                  %assign grBlkIdx    = sigRec.GrSrc
+                  %if grBlkIdx[1] == -1 || grBlkIdx[0] == -1
+                    %continue
+                  %endif
+                  %assign grSubsys    = bhm.Subsystem[grBlkIdx[0]]
+                  %assign grBlk       = grSubsys.Block[grBlkIdx[1]]
+                  %assign structIdx   = sigRec.MemoryMapIdx[0]
+                  %assign secIdx      = sigRec.MemoryMapIdx[1]
+                  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+                  %assign section     = StructuredData[structIdx].Section[secIdx]
+                  %assign data        = section.Data[dataIdx]
+                  %assign dataTypeIdx = section.DataTypeIdx
+                  %assign isComplex   = section.IsComplex
+                %endif
+                %if isComplex || data.IsFixedPoint
+                  %if !warned
+                    %<LibReportWarning(skipMsg)>
+                    %assign warned = 1
+                  %endif
+                  %continue
+                %endif
+                %assign blkName =  LibGetFormattedBlockPath(grBlk)
+                %if sigRec.SigLabel != ""
+                  %assign sigName = STRING(sigRec.SigLabel)
+                %else
+                  %assign sigName = "NULL"
+                %endif
+                %assign sigAddress = data.BaseAddr
+                %assign sigWidth = data.NumRows * data.NumCols
+                %assign dtType = SLibGetRecordDataTypeName(sigRec, tRealPart)
+                %assign dtSize = "sizeof(%<dtType>)"
+                %% Map the RTW data type to the ANSI C data type.
+                %assign dtName = SLibGetANSICDataTypeFromId(dataTypeIdx)
+                %selectfile ModelDotBio
+                %assign resultN = FEVAL ("stripsysname",blkName,CompiledModel.Name,%<lenName>)
+                %if (grBlk.NumDataOutputPorts + grBlk.NumFcnCallOutputPorts > 1)
+                    %assign resultN=resultN+"/p"+"%<portIdx+1>"
+                %endif
+                {
+                  "%<resultN>",
+                  "%<sigName>", %<portIdx>, %<sigWidth>, %<sigAddress>, "%<dtName>", %<dtSize>
+                },
+                %selectfile ModelBioDotM
+                %assign resultN= FEVAL ("strrep",resultN,"'","''")
+                bio(%<numBlockSignals+1>).blkName='%<resultN>';
+                bio(%<numBlockSignals+1>).sigName='%<sigName>';
+                bio(%<numBlockSignals+1>).portIdx=%<portIdx>;
+                bio(%<numBlockSignals+1>).dim=[%<data.NumRows>,%<data.NumCols>];
+                bio(%<numBlockSignals+1>).sigWidth=%<sigWidth>;
+                bio(%<numBlockSignals+1>).sigAddress='%<sigAddress>';
+                %assign numBlockSignals = numBlockSignals + 1
+                %assign numTotalSignals = numTotalSignals + sigWidth
+              %endif
+            %endforeach
+          %endwith
+        %endforeach
+      %endwith
+    %endforeach
+  %endif
+  %selectfile ModelDotBio
+  {
+    NULL, NULL, 0, 0, 0, NULL, 0
+  }
+};
+
+#endif  /* BLOCK_IO_SIGNALS */
+%closefile ModelDotBio
+
+%selectfile ModelBioDotM
+else
+%if NumBlockSignals < 1
+  bio= 0;
+%else
+   bio= %<numTotalSignals>;
+%endif
+end
+%closefile ModelBioDotM
+%if NumBlockSignals < 1
+  %assign NumBlockIOSignalsInMap = NumBlockSignals
+%else
+  %assign NumBlockIOSignalsInMap = numBlockSignals
+%endif
+
+%endwith %% GlobalMemoryMap
+%endwith %% CompiledModel
+
+%endif %% _BIOSIG_
+
+%% [EOF] biosig.tlc

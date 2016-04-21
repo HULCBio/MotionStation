@@ -1,0 +1,315 @@
+%% 
+%% $Revision: 1.1.6.2 $ 
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Sine wave block target file
+%%
+%% The code generated for the sine wave block depends on TID.  
+%% If the block TID is discrete and it is a time based sine wave
+%% the following algorithm is implemented (based
+%% on the sine/cosine double angle formula)
+%%
+%% ampl = amplitude
+%% phi  = phase (rad)
+%% w    = frequency (rad/sec)
+%%
+%% Discrete coefficients:
+%%
+%% sin_h   = sin(dt * w)
+%% cos_h   = cos(dt * w)
+%% sin_phi = sin(-dt * w + phi)
+%% cos_phi = cos(-dt * w + phi)
+%%
+%% Initialization (start or enable):
+%% 
+%% lastSin = sin(w * Tstart);
+%% lastCos = cos(w * Tstart);
+%%
+%% Output:
+%%
+%% sin_out = ampl * ( (lastSin * cos_phi + lastCos * sin_phi) * cos_h
+%%                  + (lastCos * cos_phi - lastSin * sin_phi) * sin_h )
+%%
+%% Update:
+%%
+%% hold_sin = lastSin;
+%% hold_cos = lastCos;
+%%
+%% lastSin = hold_sin * cos_h + hold_cos * sin_h
+%% lastCos = hold_cos * cos_h - hold_sin * sin_h
+%%
+%% If TID is continuous, then the output is simply
+%%
+%% sin_out = ampl * sin(w*t + phi)
+%%
+%% If TID is discrete and it is a sample based sine wave
+%% 
+
+%implements Sin "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: Start ===========================================================
+%%
+%% Abstract:
+%%         Initialize the value of the counter based on start time
+%%         so that the sine wave starts in the correct part of its cycle
+%%
+%function Start(block, system) Output
+  %if LibIsDiscrete(TID)
+    %assign sineType = ParamSettings.SineType
+    %if (ISEQUAL(sineType,"Sample based") || ISEQUAL(sineType,"Sample-based")) && ...
+      CompiledModel.StartTime != 0.0
+      /* %<Type> Block: %<Name> */
+      %assign time      = RTMGet("TStart")
+      %assign sample_time =  LibBlockSampleTime(block)
+      %assign rollVars = ["<param>/Samples","IWork"]
+      %roll sigIdx = RollRegions,lcv=RollThreshold,block,"Roller",rollVars
+	%assign counter = LibBlockIWork(Counter,"",lcv,sigIdx)
+	%assign samples = LibBlockParameter(Samples,"",lcv,sigIdx)
+	%<counter> = (int)%<LibGenMathFcnCall("floor", tSS_DOUBLE,"%<time> / %<sample_time>","")> % (int)%<samples>;
+      %endroll
+    %endif
+  %endif  
+%endfunction
+
+%% Function: DiscTimeNoPortOutputs =============================================
+%%
+%function DiscTimeNoPortOutputs(block, system) Output
+  %%
+  %% Time based discrete sine, no input port
+  %%
+  /* check enable state */
+  if ( (int_T)%<LibBlockIWork(SystemEnable, "", "", 0)> ) {
+  %assign rollVars = ["<param>/Frequency", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block,"Roller",rollVars
+    %assign frequency = LibBlockParameter(Frequency, "", lcv, sigIdx)
+    %assign lastSin = LibBlockRWork(LastSin, "", lcv, sigIdx)
+    %assign lastCos = LibBlockRWork(LastCos, "", lcv, sigIdx)
+    %<lastSin> = %<LibGenMathFcnCall("sin", tSS_DOUBLE,"%<frequency> * %<LibGetTaskTimeFromTID(block)>","")>;
+    %<lastCos> =  %<LibGenMathFcnCall("cos", tSS_DOUBLE,"%<frequency> * %<LibGetTaskTimeFromTID(block)>","")>;
+  %endroll
+  %<LibBlockIWork(SystemEnable, "", "", 0)> = (int_T)FALSE;
+  }
+
+  /* output sine */
+  %assign rollVars = ["Y", "<param>/Amplitude","<param>/Bias",...
+    "<param>/SinH", "<param>/CosH", "<param>/SinPhi",...
+    "<param>/CosPhi", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block,"Roller",rollVars
+    %assign Y         = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %assign amplitude = LibBlockParameter(Amplitude, "", lcv, sigIdx)
+    %assign bias      = LibBlockParameter(Bias, "", lcv, sigIdx)
+    %assign sinH      = LibBlockParameter(SinH, "", lcv, sigIdx)
+    %assign cosH      = LibBlockParameter(CosH, "", lcv, sigIdx)
+    %assign sinPhi    = LibBlockParameter(SinPhi, "", lcv, sigIdx)
+    %assign cosPhi    = LibBlockParameter(CosPhi, "", lcv, sigIdx)
+    %assign lastSin   = LibBlockRWork(LastSin, "", lcv, sigIdx)
+    %assign lastCos   = LibBlockRWork(LastCos, "", lcv, sigIdx)
+    
+    %<Y> =
+          %<amplitude> *
+          (
+            (%<lastSin> * %<cosPhi> 
+            + %<lastCos> * %<sinPhi>) * %<cosH>
+          + (%<lastCos> * %<cosPhi> 
+            - %<lastSin> * %<sinPhi>) * %<sinH>
+	  ) + %<bias>;
+
+  %endroll
+  %% end of time based discrete case
+%endfunction
+
+
+%% Function: DiscSampNoPortOutputs =============================================
+%%
+%function DiscSampNoPortOutputs(block, system) Output
+  %%
+  %% Sample based discrete sine wave, no input port
+  %%
+  /* Sample Based Sine Wave Output Function */
+  %assign offsetCorrection = ParamSettings.TsOffsetCorrection
+  %assign ioType           = tSS_DOUBLE
+  %assign pi               = LibGetMathConstant("RT_PI", ioType)
+  %assign rollVars = ["Y", "<param>/Amplitude","<param>/Bias",...
+    "<param>/Samples", "<param>/Offset","IWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block,"Roller",rollVars
+    %assign Y         = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %assign amplitude = LibBlockParameter(Amplitude, "", lcv, sigIdx)
+    %assign bias      = LibBlockParameter(Bias, "", lcv, sigIdx)
+    %assign samples   = LibBlockParameter(Samples, "", lcv, sigIdx)
+    %assign offset    = LibBlockParameter(Offset, "", lcv, sigIdx)
+    %assign counter   = LibBlockIWork(Counter, "", lcv, sigIdx)
+    
+    %if (offsetCorrection == 0.0)
+      %<Y> = %<amplitude> 
+      * %<LibGenMathFcnCall("sin", ioType," 2.0 * %<pi>" ...
+      "*( %<counter> + %<offset>)" ...
+      "/ %<samples> ","")>
+      + %<bias>;
+    %else
+      %%Add in the phase shift to handle sample time offset
+      %<Y> = %<amplitude> 
+      * %<LibGenMathFcnCall("sin", tSS_DOUBLE," 2.0 * %<pi>" ...
+      "*( %<counter>" ... 
+      "+ %<offset>" ...
+      "+ %<offsetCorrection> )"... 
+      "/ %<samples> ","")>
+      + %<bias>;
+      
+    %endif
+    %%
+  %endroll
+%endfunction  
+
+
+%% Function: ContNoPortOutputs ==========================================================
+%%
+%function ContOrHasPortOutputs(block, system) Output
+  %%
+  %if timeSrc != 1
+    %%
+    %assign rollVars = ["Y","<param>/Amplitude", "<param>/Bias",...
+      "<param>/Phase", "<param>/Frequency"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["Y", "U", "<param>/Amplitude", "<param>/Bias",...
+      "<param>/Phase", "<param>/Frequency"]
+    %%
+  %endif
+  %%
+  %if timeSrc != 1
+    %%
+    %assign time = LibGetTaskTimeFromTID(block)
+    %%
+  %endif
+  %if (timeSrc == 1) && (LibDataInputPortWidth(0) == 1)
+    %%
+    %assign time = LibBlockInputSignal(0, "", "", 0)
+    %%
+  %endif
+  %%
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign Y         = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %assign amplitude = LibBlockParameter(Amplitude, "", lcv, sigIdx)
+    %assign bias      = LibBlockParameter(Bias, "", lcv, sigIdx)
+    %assign phase     = LibBlockParameter(Phase, "", lcv, sigIdx)
+    %assign frequency = LibBlockParameter(Frequency, "", lcv, sigIdx)
+    %if (timeSrc == 1) && (LibDataInputPortWidth(0) > 1)
+      %%
+      %assign time = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %%
+    %endif
+    %%
+    %%    Y = amplitude * sin(frequency * t + phase) + bias
+    %%
+    %<Y> = %<amplitude> *
+       %<LibGenMathFcnCall("sin", tSS_DOUBLE,"%<frequency> * %<time> + %<phase>","")> + %<bias>;
+       
+  %endroll
+  %%
+%endfunction  
+    
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %if LibIsDiscrete(TID)
+    %assign sineType = ParamSettings.SineType
+    %if ISEQUAL(sineType,"Time-based") || ISEQUAL(sineType,"Time based")
+      %if timeSrc == 1
+	%%
+	%<ContOrHasPortOutputs(block, system)>
+	%%
+      %else
+	%%
+	%<DiscTimeNoPortOutputs(block, system)>
+	%%
+      %endif
+      %%
+    %else
+      %%
+      %<DiscSampNoPortOutputs(block, system)>
+      %%  
+    %endif
+    %%
+  %else
+    %%
+    %<ContOrHasPortOutputs(block, system)>
+    %%
+  %endif
+  %%
+%endfunction
+ 
+
+%% Function: Update ===========================================================
+%%
+%function Update(block, system) Output
+  %%
+  %assign sineType = ParamSettings.SineType
+  %assign isTimeBased = ISEQUAL(sineType,"Time based") || ISEQUAL(sineType,"Time-based")
+  %%
+  %if LibIsDiscrete(TID) && !(timeSrc == 1 && isTimeBased)
+    /* %<Type> Block: %<Name> */
+     %if isTimeBased
+       {
+    real_T hold_sin;
+    real_T hold_cos;
+    \
+    %assign rollVars = ["<param>/SinH", "<param>/CosH", "RWork"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign sinH = LibBlockParameter(SinH, "", lcv, sigIdx)
+      %assign cosH = LibBlockParameter(CosH, "", lcv, sigIdx)
+      %assign lastSin = LibBlockRWork(LastSin, "", lcv, sigIdx)
+      %assign lastCos = LibBlockRWork(LastCos, "", lcv, sigIdx)
+
+      hold_sin = %<lastSin>;
+      hold_cos = %<lastCos>;
+
+      %<lastSin> = hold_sin * %<cosH> + hold_cos * %<sinH>;
+      %<lastCos> = hold_cos * %<cosH> - hold_sin * %<sinH>;
+    %endroll
+    }
+  %else
+      %% Sample Based Sine Wave 
+      %assign rollVars = ["<param>/Samples",  "IWork"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold,block,"Roller",rollVars
+	%assign samples = LibBlockParameter(Samples, "" , lcv, sigIdx)
+	%assign counter = LibBlockIWork(Counter,"",lcv,sigIdx)
+	%<counter> = %<counter> + 1;
+	if ((%<counter>) == (%<samples>)) {
+	  %<counter> = 0;
+	}
+      %endroll      
+    %endif
+  %endif
+
+%endfunction
+
+ 
+%% Function: Enable ===========================================================
+%% Abstract:
+%%      Subsystem Enable code is only required for the discrete form of the Sine 
+%%      Block.  Setting the boolean to TRUE causes the Output function to 
+%%      re-sync its last values of cos(wt) and sin(wt).
+%%
+%function Enable(block, system) Output
+  %if LibIsDiscrete(TID) && (timeSrc != 1)
+    %assign sineType = ParamSettings.SineType
+    %if ISEQUAL(sineType,"Time based") || ISEQUAL(sineType,"Time-based") 
+    /* %<Type> Block: %<Name> */
+    %<LibBlockIWork(SystemEnable, "", "", 0)> = (int_T) TRUE;
+   %endif
+  %endif
+%endfunction
+
+%% [EOF] sin_wave.tlc

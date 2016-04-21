@@ -1,0 +1,197 @@
+%%
+%% Abstract:
+%%	  RTW target file for N-Port Matrix Multiply block.
+%%
+%% $RCSfile: sdspmmult2.tlc,v $
+%% $Revision: 1.16.4.2 $ $Date: 2004/04/12 23:09:03 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+
+%implements sdspmmult2 "C"
+
+%include "dsplib.tlc"
+
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspmmult_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: getMatMultFcnName ==================================================
+%% Abstract:
+%%   Produces fcn names according to the following convention:
+%%
+%% R = single,
+%% C = single complex
+%% D = Double
+%% Z = Double complex
+%%
+%% Examples:
+%%     MWDSP_MatMult_DD  - two real, double-precision inputs
+%%     MWDSP_MatMult_RC  - 1st input is real single, 2nd is complex single
+%%
+%% NOTE: Inputs are either both single or both double.
+%%       No cross-type support is provided.
+%%
+%function getMatMultFcnName(A_Cplx, B_Cplx, DTypeId) void
+
+%switch DTypeId
+%case tSS_DOUBLE
+     %if A_Cplx && B_Cplx
+          %assign cplx = "ZZ"
+     %elseif A_Cplx && !B_Cplx
+          %assign cplx = "ZD"
+     %elseif !A_Cplx && B_Cplx
+          %assign cplx = "DZ"
+     %else
+          %assign cplx = "DD"
+     %endif
+     %break
+%case tSS_SINGLE
+     %if A_Cplx && B_Cplx
+          %assign cplx = "CC"
+     %elseif A_Cplx && !B_Cplx
+          %assign cplx = "CR"
+     %elseif !A_Cplx && B_Cplx
+          %assign cplx = "RC"
+     %else
+          %assign cplx = "RR"
+     %endif
+     %break
+%default
+     %error "Data type not handled."
+%endswitch
+
+%return "MWDSP_MatMult_" + cplx
+
+%endfunction %% getMatMultFcnName
+
+
+%% Function: getIOPtr =========================================================
+%% Abstract:
+%%      Determine the storage area of an input, output, or temp matrix
+%%      based on the IO Index.  0 = output, >0 = input, <0 = temp (DWork)
+%%
+%function getIOPtr(block, idx, cplx) void
+
+%assign DTypeId = LibBlockOutputSignalDataTypeId(0) 
+%assign ptrType = "%<getRealOrComplexDataType(DTypeId, cplx)> *" 
+%assign outport_Cplx = LibBlockOutputSignalIsComplex(0)
+
+%if idx < 0
+  %% Temp storage area
+  %assign dwName = "Temp" + STRING(-idx)
+  %assign dwRef = %<dwName>
+  %%
+  %% Only need to cast if we using temp area for a different complexity
+  %% We allocate based on real-equivalent elements.  So if we're using
+  %% it for complex data, use a cast:
+  %%
+  %assign ptr = cplx ? "(%<ptrType>)" : ""
+  %assign ptr = ptr + LibBlockDWorkAddr(dwRef,"","",0)
+
+%elseif idx == 0
+  %% Output port
+  %%
+  %% Must cast pointer if output is being reused for a partial result, and
+  %% complexity of output area does not match complexity of partial result.
+  %%
+  %assign ptr = (cplx == outport_Cplx) ? "" : "(%<ptrType>)"
+  %assign ptr = ptr + LibBlockOutputSignalAddr(0,"","",0)
+
+%else
+  %% Input port
+  %% Translate from 1,2,... to 0,1,...
+  %%
+  %% No need to cast, since input ports are never "reused"
+  %% for temporary results
+  %%
+  %assign ptr = LibBlockInputSignalAddr(idx-1,"","",0)
+
+%endif
+
+%return ptr
+
+%endfunction %% getIOPtr
+
+
+%% Function: CallTwoInputMultiply ========================================
+%% Abstract:
+%%
+%%
+%function CallTwoInputMultiply(block, pairNum, rows) Output
+%%
+%assign A_Cplx   = IO_Complex[pairNum][0]
+%assign B_Cplx   = IO_Complex[pairNum][1]
+%assign out_Cplx = IO_Complex[pairNum][2]
+%assign DType    = LibBlockOutputSignalDataTypeId(0)
+%%
+%assign A_Ptr   = getIOPtr(block, IO_Index[pairNum][0], A_Cplx)
+%assign B_Ptr   = getIOPtr(block, IO_Index[pairNum][1], B_Cplx)
+%assign out_Ptr = getIOPtr(block, IO_Index[pairNum][2], out_Cplx)
+%%
+%%
+%assign fcnName = getMatMultFcnName(A_Cplx, B_Cplx, DType)
+%%
+     %<fcnName>(%<out_Ptr>,
+                %<A_Ptr>, %<B_Ptr>, &dims[%<pairNum>][0]);
+%%
+%endfunction %% CallTwoInputMultiply
+
+
+%% Function: CreateStaticDimsArray =============================================
+%%
+%function CreateStaticDimsArray(block) void
+
+     %assign rows = SIZE(IO_Index,0)
+     %assign decl = "const int dims[%<rows>][3] = {"
+
+     %foreach pairNum = rows
+          %assign decl = decl + "{%<IO_Dims[pairNum][0]>, %<IO_Dims[pairNum][1]>, %<IO_Dims[pairNum][2]>}"
+          %if (pairNum < rows-1)
+               %assign decl = decl + ", "
+          %endif
+     %endforeach
+
+     %assign decl = decl + "};"
+
+     %return decl
+
+%endfunction %% CreateStaticDimsArray
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+%%
+/* Signal Processing Blockset N-Port Matrix Multiply (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+%assign numSteps = CAST("Number", %<SFcnParamSettings.numSteps>)
+%if numSteps>0
+	%assign rows = SIZE(IO_Index,0)
+	%assign cols = SIZE(IO_Index,1)
+	{
+		 %<CreateStaticDimsArray(block)>
+
+		 %foreach idx = rows
+			  %<CallTwoInputMultiply(block,idx,rows)>
+		 %endforeach
+	}
+%else
+   %% One input - just copy input to output if needed
+   %assign NEED_COPY = (LibBlockInputSignalBufferDstPort(0) != 0)
+   %if NEED_COPY
+     %<LibBlockCopyInputsToOutputs(0,0)>
+   %else
+     /* (no action necessary since buffer is reused) */
+   %endif
+%endif
+%%
+
+%endfunction
+
+
+%% [EOF] sdspmmult2.tlc

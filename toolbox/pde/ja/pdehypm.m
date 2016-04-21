@@ -1,0 +1,3 @@
+% PDEHYPM HYPERBOLIC —p‚ÌŽ¿—Ês—ñ
+
+%       Copyright 1994-2001 The MathWorks, Inc.

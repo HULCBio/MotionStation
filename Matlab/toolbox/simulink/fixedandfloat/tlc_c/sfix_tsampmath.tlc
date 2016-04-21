@@ -1,0 +1,505 @@
+%% $RCSfile: sfix_tsampmath.tlc,v $
+%% $Revision: 1.6.2.4 $
+%% $Date: 2004/04/15 00:35:42 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+
+%implements sfix_tsampmath "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+%endfunction
+
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return the appropriate reference to the parameter.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %return LibBlockParameter(WtEt,ucv,lcv,idx)
+    %case "SignalAddr"
+      %return LibBlockParameterAddr(WtEt,ucv,lcv,idx)
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+%endfunction
+
+
+%% Function: Outputs_Triggered ====================================================
+%%
+%function Outputs_Triggered(block, system) Output
+  %%
+  %assign probeOnly = SFIX_OP_ID == "TSAMPMATH_ONLY" || ...
+                      SFIX_OP_ID == "TSAMPMATH_INVO"
+  %%
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %% Get input data type
+  %%
+  %assign u0DT  = FixPt_GetInputDataType(0)
+  %%
+  %% create No Bias version of input Data Type
+  %%
+  %copyrecord u0NoBiasDT u0DT
+  %%
+  %assign u0NoBiasDT.Bias      = 0.0
+  %%
+  %% Get output data type
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %% create No Bias version of output Data Type
+  %%
+  %copyrecord y0NoBiasDT y0DT
+  %%
+  %assign y0NoBiasDT.Bias      = 0.0
+  %%
+  %assign elapseTimeDT = FixPt_GetDataTypeFromIndex( dTypeIdWtEt )
+  %%
+  %%
+  %% create header comment
+  %%
+  /* Sample Time Math Block: %<MaskBlockName>
+   *
+  %%
+  %if        SFIX_OP_ID == "TSAMPMATH_ADD"
+      %%
+      * y = u + K     where     K = ( w * Ts )
+      %% 
+  %elseif    SFIX_OP_ID == "TSAMPMATH_SUB"
+      %%
+      * y = u - K     where     K = ( w * Ts )
+      %%     
+  %elseif    SFIX_OP_ID == "TSAMPMATH_MUL"
+      %%
+      * y = u * K     where     K = ( w * Ts )
+      %%     
+  %elseif    SFIX_OP_ID == "TSAMPMATH_DIV"
+      %%
+      * y = u * K     where     K = 1 / ( w * Ts )
+      %%     
+  %elseif SFIX_OP_ID == "TSAMPMATH_ONLY"
+      %%
+      * y = K         where     K = ( w * Ts )
+      %%     
+  %else %%if SFIX_OP_ID == "TSAMPMATH_INVO"
+      %%
+      * y = K         where     K = 1 / ( w * Ts )
+      %%     
+  %endif    
+  %%
+  %% add general comments
+  %%
+  *
+  %<FixPt_GeneralComments()>\
+  %<FixPt_DataTypeComment(elapseTimeDT, "ElapsedTime")>
+  %%
+  %% END: header comment
+  %%
+   */
+  %%
+  %%
+  %%   3. tlc
+  %%      LibGetElapseTime(system)               
+  %%      LibGetElapseTimeCounter(system)
+  %%      LibGetElapseTimeCounterDtypeId(system) ==========
+  %%      LibGetElapseTimeResolution(system) 
+  %%
+  %if elapseTimeUseMode == "ELAPSE_TIME_USE_COUNTER" 
+    %%
+    %assign useCounter = 1
+    %assign elapseTimeLabel = LibGetElapseTimeCounter(system)
+    %%
+    %if SLibGetElapseTimeCounterUsesVector(system)
+      %%
+      %% Elapse Time Counter is a vector of two uint32_T
+      %% this block only uses the least significant word.
+      %%
+      %assign elapseTimeLabel = "((%<elapseTimeLabel>)[0])"
+      %%
+    %endif
+  %else
+    %assign useCounter = 0
+    %assign elapseTimeLabel = LibGetElapseTime(system)
+    %%
+    %if FixPt_ParameterCouldBeInlined(WtEt, "", "", 0)
+      %%
+      %assign wtLabel = LibBlockParameterValue(WtEt, 0)
+    %else
+      %assign wtLabel = LibBlockParameter(WtEt, "", "", 0)
+    %endif
+    %%
+    %assign elapseTimeLabel = "((%<elapseTimeLabel>)*(%<wtLabel>))"
+    %%
+  %endif
+  %%
+  %assign outerRollRegions = RollRegions
+  %%
+  %assign outerRollVars = ["U", "Y"]
+  %%
+  %% Roll around OUTPUT and INPUT signal width and around GAIN
+  %%
+  %roll outersigIdx = outerRollRegions, outerlcv = RollThreshold, block, "Roller", outerRollVars
+    %%
+    %assign reOut = (tRealPart + STRING(outersigIdx))
+    %assign imOut = (tImagPart + STRING(outersigIdx))
+    %%
+    %% Get output
+    %%
+    %assign y0ReLabel = LibBlockOutputSignal(0, "", outerlcv, reOut)
+    %if u0IsComplex
+      %assign y0ImLabel = LibBlockOutputSignal(0, "", outerlcv, imOut)
+    %endif
+    %%
+    %% Get input
+    %%
+    %assign u0ReLabel = LibBlockInputSignal(0, "", outerlcv, reOut)
+    %if u0IsComplex
+      %assign u0ImLabel = LibBlockInputSignal(0, "", outerlcv, imOut)
+    %endif
+    %%
+    %if      SFIX_OP_ID == "TSAMPMATH_ONLY"
+        %%
+        %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+                                    elapseTimeLabel,elapseTimeDT,...
+                                    FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+    %elseif  SFIX_OP_ID == "TSAMPMATH_INVO"
+        %%
+        %<FixPt_Reciprocal(y0ReLabel,y0DT,...
+                           elapseTimeLabel,elapseTimeDT,...
+                           FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+    %elseif  SFIX_OP_ID == "TSAMPMATH_ADD"
+      %%
+      %<FixPt_Add(y0ReLabel,y0DT,...
+        u0ReLabel,u0DT,...
+        elapseTimeLabel, elapseTimeDT,...
+        FixPtRoundingMode,FixPtSaturationMode)>\
+      %%
+      %if u0IsComplex
+        %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+          u0ImLabel,u0DT,...
+          FixPtRoundingMode,FixPtSaturationMode)>\
+      %endif
+      %%            
+    %elseif  SFIX_OP_ID == "TSAMPMATH_SUB"
+      %%
+      %<FixPt_Sub(y0ReLabel,y0DT,...
+        u0ReLabel,u0DT,...
+        elapseTimeLabel, elapseTimeDT,...
+        FixPtRoundingMode,FixPtSaturationMode)>\
+      %%
+      %if u0IsComplex
+        %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+          u0ImLabel,u0DT,...
+          FixPtRoundingMode,FixPtSaturationMode)>\
+      %endif
+      %%            
+    %elseif  SFIX_OP_ID == "TSAMPMATH_MUL"
+      %%
+      %<FixPt_Multiply(y0ReLabel,y0NoBiasDT,...
+        u0ReLabel,u0NoBiasDT,...
+        elapseTimeLabel, elapseTimeDT,...
+        FixPtRoundingMode,FixPtSaturationMode)>\
+      %%
+      %if u0IsComplex
+        %%
+        %<FixPt_Multiply(y0ImLabel,y0NoBiasDT,...
+          u0ImLabel,u0NoBiasDT,...
+          elapseTimeLabel, elapseTimeDT,...
+          FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+      %endif
+    %elseif  SFIX_OP_ID == "TSAMPMATH_DIV"
+      %%
+      %<FixPt_Division(y0ReLabel,y0NoBiasDT,...
+        u0ReLabel,u0NoBiasDT,...
+        elapseTimeLabel, elapseTimeDT,...
+        FixPtRoundingMode,FixPtSaturationMode)>\
+      %%
+      %if u0IsComplex
+        %%
+        %<FixPt_Division(y0ImLabel,y0NoBiasDT,...
+          u0ImLabel,u0NoBiasDT,...
+          elapseTimeLabel, elapseTimeDT,...
+          FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+      %endif
+      %%            
+    %else
+      %%
+      %<LibBlockReportFatalError(block, "Sample Time Math unknown operation ID.")>\
+      %%
+    %endif    
+  %endroll
+%endfunction %% Outputs_Triggered
+
+
+%% Function: Outputs_FixedRate ===============================================
+%%
+%function Outputs_FixedRate(block, system) Output
+  %%
+  %assign probeOnly = SFIX_OP_ID == "TSAMPMATH_ONLY" || ...
+                      SFIX_OP_ID == "TSAMPMATH_INVO"
+  %%
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %% Get input data type
+  %%
+  %assign u0DT  = FixPt_GetInputDataType(0)
+  %%
+  %% create No Bias version of input Data Type
+  %%
+  %copyrecord u0NoBiasDT u0DT
+  %%
+  %assign u0NoBiasDT.Bias      = 0.0
+  %%
+  %% Get output data type
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %% create No Bias version of output Data Type
+  %%
+  %copyrecord y0NoBiasDT y0DT
+  %%
+  %assign y0NoBiasDT.Bias      = 0.0
+  %%
+  %% create header comment
+  %%
+  /* Sample Time Math Block: %<MaskBlockName>
+   *
+  %%
+  %if        SFIX_OP_ID == "TSAMPMATH_ADD"
+      %%
+      * y = u + K     where     K = ( w * Ts )
+      %% 
+  %elseif    SFIX_OP_ID == "TSAMPMATH_SUB"
+      %%
+      * y = u - K     where     K = ( w * Ts )
+      %%     
+  %elseif    SFIX_OP_ID == "TSAMPMATH_MUL"
+      %%
+      * y = u * K     where     K = ( w * Ts )
+      %%     
+  %elseif    SFIX_OP_ID == "TSAMPMATH_DIV"
+      %%
+      * y = u * K     where     K = 1 / ( w * Ts )
+      %%     
+  %elseif SFIX_OP_ID == "TSAMPMATH_ONLY"
+      %%
+      * y = K         where     K = ( w * Ts )
+      %%     
+  %else %%if SFIX_OP_ID == "TSAMPMATH_INVO"
+      %%
+      * y = K         where     K = 1 / ( w * Ts )
+      %%     
+  %endif    
+  %%
+  %% add general comments
+  %%
+  *
+  %<FixPt_GeneralComments()>\
+  %%
+  %% add comments about fixed point parameters
+  %%
+  %if implementViaScaling
+      *
+      * Multiplication by K = %<weightedTsampQuantized> is being
+      * done implicitly by changing the scaling of the input signal.
+      * No work needs to be done here.  Downstream blocks may need
+      * to do work to handle the scaling of the output; this happens
+      * automatically.
+  %else
+      %%
+      %assign FixPtWtEtID = Matrix(1,1) [[%<WtEt.OriginalDataTypeIdx>]]
+      *
+      %<FixPt_ParameterBlockComment(WtEt,FixPtWtEtID,"WtEt == Weighted Elapsed Time")>
+  %endif
+  %%
+  %% determine if input buffer is identical to output buffer
+  %%
+  %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+  %%
+  %if (uDestPort == 0)
+       *
+       * This block only needed to perform the trivial operation 
+       * of setting the output equal to the input.
+       * By sharing the buffers for the input and output, it was
+       * possible to eliminate this block.
+  %endif
+  %%
+  %% END: header comment
+  %%
+   */
+  %%
+  %% generate code only if needed
+  %%
+  %%  trivial case should only occur for implementViaScaling
+  %%  C-s-function never marks input overwritable for other cases
+  %%
+  %if probeOnly
+      %%
+      %assign y0ReLabel = LibBlockOutputSignal(0, "", "", 0)
+      %%
+      %if FixPt_ParameterCouldBeInlined(WtEt, "", "", 0)
+        %%
+        %assign elapseTimeLabel = LibBlockParameterValue(WtEt, 0)
+      %else
+        %assign elapseTimeLabel = LibBlockParameter(WtEt, "", "", 0)
+      %endif
+      %%
+      %<y0ReLabel> = %<elapseTimeLabel>;
+      %%
+  %elseif ( uDestPort != 0 )
+      %%
+      %if implementViaScaling
+          %%
+          %assign u0ModifiedScaleDT = FixPt_GetDataTypeFromIndex( dTypeIdModifiedScaleIn )
+          %%
+      %else
+          %%
+          %assign elapseTimeDT = FixPt_GetDataTypeFromIndex( WtEt.OriginalDataTypeIdx )
+          %%
+          %if FixPt_ParameterCouldBeInlined(WtEt, "", "", 0)
+              %%
+              %assign elapseTimeLabel = LibBlockParameterValue(WtEt, 0)
+          %else
+              %assign elapseTimeLabel = LibBlockParameter(WtEt, "", "", 0)
+          %endif
+      %endif
+      %%
+      %assign outerRollRegions = RollRegions
+      %%
+      %assign outerRollVars = ["U", "Y"]
+      %%
+      %% Roll around OUTPUT and INPUT signal width and around GAIN
+      %%
+      %roll outersigIdx = outerRollRegions, outerlcv = RollThreshold, block, "Roller", outerRollVars
+          %%
+          %assign reOut = (tRealPart + STRING(outersigIdx))
+          %assign imOut = (tImagPart + STRING(outersigIdx))
+          %%
+          %% Get output
+          %%
+          %assign y0ReLabel = LibBlockOutputSignal(0, "", outerlcv, reOut)
+          %if u0IsComplex
+            %assign y0ImLabel = LibBlockOutputSignal(0, "", outerlcv, imOut)
+          %endif
+          %%
+          %% Get input
+          %%
+          %assign u0ReLabel = LibBlockInputSignal(0, "", outerlcv, reOut)
+          %if u0IsComplex
+            %assign u0ImLabel = LibBlockInputSignal(0, "", outerlcv, imOut)
+          %endif
+          %%
+          %% Get gain
+          %%
+          %if    SFIX_OP_ID == "TSAMPMATH_ADD"
+              %%
+              %<FixPt_Add(y0ReLabel,y0DT,...
+                          u0ReLabel,u0DT,...
+                          elapseTimeLabel, elapseTimeDT,...
+                          FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %if u0IsComplex
+                  %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+                                              u0ImLabel,u0DT,...
+                                              FixPtRoundingMode,FixPtSaturationMode)>\
+              %endif
+              %%            
+          %elseif    SFIX_OP_ID == "TSAMPMATH_SUB"
+              %%
+              %<FixPt_Sub(y0ReLabel,y0DT,...
+                          u0ReLabel,u0DT,...
+                          elapseTimeLabel, elapseTimeDT,...
+                          FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %if u0IsComplex
+                  %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+                                              u0ImLabel,u0DT,...
+                                              FixPtRoundingMode,FixPtSaturationMode)>\
+              %endif
+              %%            
+          %else %%if    SFIX_OP_ID == "TSAMPMATH_MUL" || SFIX_OP_ID == "TSAMPMATH_DIV"
+              %%
+              %if implementViaScaling
+                  %%
+                  %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+                                              u0ReLabel,u0ModifiedScaleDT,...
+                                              FixPtRoundingMode,FixPtSaturationMode)>\
+                  %%
+                  %if u0IsComplex
+                      %%
+                      %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+                                                  u0ImLabel,u0ModifiedScaleDT,...
+                                                  FixPtRoundingMode,FixPtSaturationMode)>\
+                      %%
+                  %endif
+              %else
+                  %<FixPt_Multiply(y0ReLabel,y0NoBiasDT,...
+                                   u0ReLabel,u0NoBiasDT,...
+                                   elapseTimeLabel, elapseTimeDT,...
+                                   FixPtRoundingMode,FixPtSaturationMode)>\
+                  %%
+                  %if u0IsComplex
+                      %%
+                      %<FixPt_Multiply(y0ImLabel,y0NoBiasDT,...
+                                       u0ImLabel,u0NoBiasDT,...
+                                       elapseTimeLabel, elapseTimeDT,...
+                                       FixPtRoundingMode,FixPtSaturationMode)>\
+                      %%
+                  %endif
+              %endif
+              %%            
+          %endif    
+      %endroll
+  %endif
+%endfunction %% Outputs_FixedRate
+
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y[i] = K[i] * X[i]
+%%
+%function Outputs(block, system) Output
+  %%
+  %if elapseTimeUseMode == "ELAPSE_TIME_USE_NONE"
+    %%
+    %<Outputs_FixedRate(block,system)>\
+    %%
+  %elseif elapseTimeUseMode == "ELAPSE_TIME_USE_COUNTER" || ...
+          elapseTimeUseMode == "ELAPSE_TIME_USE_REALWORLD"
+    %%
+    %<Outputs_Triggered(block,system)>\
+    %%
+  %else
+    %%
+    %<LibBlockReportFatalError(block, "Sample Time Math unknown elapse time mode.")>\
+    %%
+  %endif
+  %%
+  %% blank line for formating
+
+%endfunction
+
+%% [EOF] sfix_tsampmath.tlc

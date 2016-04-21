@@ -1,0 +1,425 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Minimax optimization</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-17">
+      <meta name="m-file" content="dfildemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Minimax optimization</h1>
+      <introduction>
+         <p>We use the Optimization Toolbox to solve a nonlinear filter design problem. Note that to run this demo you must have the Signal
+            Processing Toolbox installed.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Set finite precision parameters</a></li>
+            <li><a href="#2">Continuous design first</a></li>
+            <li><a href="#3">Set bounds for filter coefficients</a></li>
+            <li><a href="#4">Scale coefficients</a></li>
+            <li><a href="#5">Set optimization criteria</a></li>
+            <li><a href="#6">Minimize the absolute maximum values</a></li>
+            <li><a href="#7">Eliminate first value for optimization.</a></li>
+            <li><a href="#8">Check nearest integer values</a></li>
+            <li><a href="#9">Frequency response comparisons</a></li>
+         </ul>
+      </div>
+      <h2>Set finite precision parameters<a name="1"></a></h2>
+      <p>Consider an example for the design of finite precision filters.  For this, you need to specify not only the filter design
+         parameters such as the cut-off frequency and number of coefficients, but also how many bits are available since the design
+         is in finite precision.
+      </p><pre class="codeinput">nbits  = 8;         <span class="comment">% How many bits have we to realize filter</span>
+maxbin = 2^nbits-1; <span class="comment">% Maximum number expressable in nbits bits</span>
+n      = 4;         <span class="comment">% Number of coefficients (order of filter plus 1)</span>
+Wn     = 0.2;       <span class="comment">% Cutoff frequency for filter</span>
+Rp     = 1.5;       <span class="comment">% Decibels of ripple in the passband</span>
+w      = 128;       <span class="comment">% Number of frequency points to take</span>
+</pre><h2>Continuous design first<a name="2"></a></h2>
+      <p>This is a continuous filter design; we use <tt>cheby1</tt>, but we could also use <tt>ellip</tt>, <tt>yulewalk</tt> or <tt>remez</tt> here:
+      </p><pre class="codeinput">[b1,a1]=cheby1(n-1,Rp,Wn);
+
+[h,w]=freqz(b1,a1,w);   <span class="comment">% Frequency response</span>
+h = abs(h);             <span class="comment">% Magnitude response</span>
+plot(w, h)
+title(<span class="string">'Frequency response using non-integer variables'</span>)
+x = [b1,a1];            <span class="comment">% The design variables</span>
+</pre><img vspace="5" hspace="5" src="dfildemo_01.png"> <h2>Set bounds for filter coefficients<a name="3"></a></h2>
+      <p>We now set bounds on the maximum and minimum values:</p><pre class="codeinput"><span class="keyword">if</span> (any(x &lt; 0))
+<span class="comment">%   If there are negative coefficients - must save room to use a sign bit</span>
+<span class="comment">%   and therefore reduce maxbin</span>
+    maxbin = floor(maxbin/2);
+    vlb = -maxbin * ones(1, 2*n)-1;
+    vub = maxbin * ones(1, 2*n);
+<span class="keyword">else</span>
+<span class="comment">%   otherwise, all positive</span>
+    vlb = zeros(1,2*n);
+    vub = maxbin * ones(1, 2*n);
+<span class="keyword">end</span>
+</pre><h2>Scale coefficients<a name="4"></a></h2>
+      <p>Set the biggest value equal to maxbin and scale other filter coefficients appropriately.</p><pre class="codeinput">[m, mix] = max(abs(x));
+factor =  maxbin/m;
+x =  factor * x;    <span class="comment">% Rescale other filter coefficients</span>
+xorig = x;
+
+xmask = 1:2*n;
+<span class="comment">% Remove the biggest value and the element that controls D.C. Gain</span>
+<span class="comment">% from the list of values that can be changed.</span>
+xmask(mix) = [];
+nx = 2*n;
+</pre><h2>Set optimization criteria<a name="5"></a></h2>
+      <p>Using OPTIMSET, adjust the termination criteria to reasonably high values to promote short running times. Also turn on the
+         display of results at each iteration:
+      </p><pre class="codeinput">options = optimset(<span class="string">'TolX'</span>,0.1,<span class="string">'TolFun'</span>,1e-4,<span class="string">'TolCon'</span>,1e-6,<span class="string">'Display'</span>,<span class="string">'iter'</span>);
+</pre><h2>Minimize the absolute maximum values<a name="6"></a></h2>
+      <p>We need to minimize absolute maximum values, so we set options.MinAbsMax to the number of frequency points:</p><pre class="codeinput"><span class="keyword">if</span> length(w) == 1
+   options = optimset(options,<span class="string">'MinAbsMax'</span>,w);
+<span class="keyword">else</span>
+   options = optimset(options,<span class="string">'MinAbsMax'</span>,length(w));
+<span class="keyword">end</span>
+</pre><h2>Eliminate first value for optimization.<a name="7"></a></h2>
+      <p>Discretize and eliminate first value and perform optimization by calling FMINIMAX:</p><pre class="codeinput">[x, xmask] = elimone(x, xmask, h, w, n, maxbin)
+
+niters = length(xmask);
+disp(sprintf(<span class="string">'Performing %g stages of optimization.\n\n'</span>, niters));
+
+<span class="keyword">for</span> m = 1:niters
+    disp(sprintf(<span class="string">'Stage: %g \n'</span>, m));
+    x(xmask) = fminimax(@filtobj,x(xmask),[],[],[],[],vlb(xmask),vub(xmask), <span class="keyword">...</span>
+                        @filtcon,options,x,xmask,n,h,maxbin);
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+<span class="keyword">end</span>
+</pre><pre class="codeoutput">
+x =
+
+    0.5441    1.6323    1.6323    0.5441   57.1653 -127.0000  108.0000  -33.8267
+
+
+xmask =
+
+     1     2     3     4     5     8
+
+Performing 6 stages of optimization.
+
+
+Stage: 1 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      8     0.00329174                                            
+    1     17      0.0001848            1        0.000184     
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                    34
+                                    35
+Stage: 2 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      7      0.0414182                                            
+    1     15        0.01675            1          0.0165     
+    2     23        0.01544            1        -0.00105    Hessian modified  
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                    23
+                                   159
+Stage: 3 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      6      0.0716961                                            
+    1     13        0.05943            1          0.0594     
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                     4
+                                   156
+Stage: 4 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      5       0.129938                                            
+    1     11        0.04278            1          0.0428     
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                     4
+Stage: 5 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      4      0.0901749                                            
+    1      9        0.03867            1          0.0387     
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                     4
+Stage: 6 
+
+
+                       Max                     Directional 
+ Iter   F-count  {F,constraints}  Step-size     derivative    Procedure 
+    0      3        0.11283                                            
+    1      7        0.05033            1          0.0503     
+    2     11        0.02881            1         -0.0215    Hessian modified twice  
+Optimization terminated: Search direction less than 2*options.TolX
+ and maximum constraint violation is less than options.TolCon.
+Active inequalities (to within options.TolCon = 1e-006):
+  lower      upper     ineqlin   ineqnonlin
+                                     4
+</pre><h2>Check nearest integer values<a name="8"></a></h2>
+      <p>See if nearby values produce a for better filter.</p><pre class="codeinput">xold = x;
+xmask = 1:2*n;
+xmask([n+1, mix]) = [];
+x = x + 0.5;
+<span class="keyword">for</span> i = xmask
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+<span class="keyword">end</span>
+xmask = 1:2*n;
+xmask([n+1, mix]) = [];
+x= x - 0.5;
+<span class="keyword">for</span> i = xmask
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+<span class="keyword">end</span>
+<span class="keyword">if</span> any(abs(x) &gt; maxbin)
+  x = xold;
+<span class="keyword">end</span>
+</pre><h2>Frequency response comparisons<a name="9"></a></h2>
+      <p>We first plot the frequency response of the filter and we compare it to a filter where the coefficients are just rounded up
+         or down:
+      </p><pre class="codeinput">subplot(211)
+bo = x(1:n);
+ao = x(n+1:2*n);
+h2 = abs(freqz(bo,ao,128));
+plot(w,h,w,h2,<span class="string">'o'</span>)
+title(<span class="string">'Optimized filter versus original'</span>)
+
+xround = round(xorig)
+b = xround(1:n);
+a = xround(n+1:2*n);
+h3 = abs(freqz(b,a,128));
+subplot(212)
+plot(w,h,w,h3,<span class="string">'+'</span>)
+title(<span class="string">'Rounded filter versus original'</span>)
+set(gcf,<span class="string">'NextPlot'</span>,<span class="string">'replace'</span>)
+</pre><pre class="codeoutput">
+xround =
+
+     1     2     2     1    57  -127   108   -34
+
+</pre><img vspace="5" hspace="5" src="dfildemo_02.png"> <p class="footer">Copyright 1990-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Minimax optimization
+% We use the Optimization Toolbox to solve a nonlinear filter design 
+% problem. Note that to run this demo you must have the Signal Processing 
+% Toolbox installed.
+
+%   Copyright 1990-2004 The MathWorks, Inc.
+%   $Revision: 1.20.4.2 $  $Date: 2004/04/06 01:10:19 $
+
+%% Set finite precision parameters
+% Consider an example for the design of finite precision filters.  For
+% this, you need to specify not only the filter design parameters such 
+% as the cut-off frequency and number of coefficients, but also how many
+% bits are available since the design is in finite precision.
+nbits  = 8;         % How many bits have we to realize filter 
+maxbin = 2^nbits-1; % Maximum number expressable in nbits bits
+n      = 4;         % Number of coefficients (order of filter plus 1)
+Wn     = 0.2;       % Cutoff frequency for filter
+Rp     = 1.5;       % Decibels of ripple in the passband
+w      = 128;       % Number of frequency points to take 
+
+%% Continuous design first
+% This is a continuous filter design; we use |cheby1|, but we could also
+% use |ellip|, |yulewalk| or |remez| here: 
+[b1,a1]=cheby1(n-1,Rp,Wn); 
+
+[h,w]=freqz(b1,a1,w);   % Frequency response
+h = abs(h);             % Magnitude response
+plot(w, h)
+title('Frequency response using non-integer variables')
+x = [b1,a1];            % The design variables
+
+%% Set bounds for filter coefficients
+% We now set bounds on the maximum and minimum values: 
+
+if (any(x < 0))
+%   If there are negative coefficients - must save room to use a sign bit
+%   and therefore reduce maxbin
+    maxbin = floor(maxbin/2);
+    vlb = -maxbin * ones(1, 2*n)-1;
+    vub = maxbin * ones(1, 2*n); 
+else
+%   otherwise, all positive
+    vlb = zeros(1,2*n); 
+    vub = maxbin * ones(1, 2*n); 
+end
+
+%% Scale coefficients
+% Set the biggest value equal to maxbin and scale other filter coefficients
+% appropriately.
+
+[m, mix] = max(abs(x)); 
+factor =  maxbin/m; 
+x =  factor * x;    % Rescale other filter coefficients
+xorig = x;
+
+xmask = 1:2*n;
+% Remove the biggest value and the element that controls D.C. Gain
+% from the list of values that can be changed. 
+xmask(mix) = [];
+nx = 2*n; 
+
+%% Set optimization criteria
+% Using OPTIMSET, adjust the termination criteria to reasonably high values 
+% to promote short running times. Also turn on the display of results
+% at each iteration:
+
+options = optimset('TolX',0.1,'TolFun',1e-4,'TolCon',1e-6,'Display','iter');
+
+%% Minimize the absolute maximum values
+% We need to minimize absolute maximum values, so we set options.MinAbsMax to
+% the number of frequency points:
+
+if length(w) == 1
+   options = optimset(options,'MinAbsMax',w);
+else
+   options = optimset(options,'MinAbsMax',length(w));
+end
+
+%% Eliminate first value for optimization.
+% Discretize and eliminate first value and perform optimization by calling
+% FMINIMAX:
+[x, xmask] = elimone(x, xmask, h, w, n, maxbin)
+
+niters = length(xmask); 
+disp(sprintf('Performing %g stages of optimization.\n\n', niters));
+
+for m = 1:niters
+    disp(sprintf('Stage: %g \n', m));
+    x(xmask) = fminimax(@filtobj,x(xmask),[],[],[],[],vlb(xmask),vub(xmask), ...
+                        @filtcon,options,x,xmask,n,h,maxbin);
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+end
+
+%% Check nearest integer values
+% See if nearby values produce a for better filter.
+
+xold = x;
+xmask = 1:2*n;
+xmask([n+1, mix]) = [];
+x = x + 0.5; 
+for i = xmask
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+end
+xmask = 1:2*n;
+xmask([n+1, mix]) = [];
+x= x - 0.5;
+for i = xmask
+    [x, xmask] = elimone(x, xmask, h, w, n, maxbin);
+end
+if any(abs(x) > maxbin)
+  x = xold; 
+end
+
+%% Frequency response comparisons
+% We first plot the frequency response of the filter and we compare it to a
+% filter where the coefficients are just rounded up or down:
+
+subplot(211)
+bo = x(1:n); 
+ao = x(n+1:2*n); 
+h2 = abs(freqz(bo,ao,128));
+plot(w,h,w,h2,'o')
+title('Optimized filter versus original')
+
+xround = round(xorig)
+b = xround(1:n); 
+a = xround(n+1:2*n); 
+h3 = abs(freqz(b,a,128));
+subplot(212)
+plot(w,h,w,h3,'+')
+title('Rounded filter versus original')
+set(gcf,'NextPlot','replace')
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

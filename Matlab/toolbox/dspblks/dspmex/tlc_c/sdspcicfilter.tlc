@@ -1,0 +1,303 @@
+%% $Revision: 1.1.6.2 $ 
+%% $Date: 2003/12/06 15:26:30 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: CIC Filter
+%%
+
+%implements sdspcicfilter "C"
+
+%% Function: BlockTypeSetup ==================================================
+%%
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block, "dspciccircbuff_rt")>
+  %<Include_rt_header(block, "dspcicfilter_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% I/O port data types
+    %assign inpDT = FixPt_GetInputDataType(0)
+    %assign outDT = FixPt_GetOutputDataType(0)
+    %assign block = block + inpDT + outDT
+    %%
+    %% I/O port constants
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %assign block   = block + INPORT + OUTPORT
+    %%
+    %% Simulation/runtime parameters for low-latency operation
+    %%
+    %assign IS_MULTI_RATE    = !LibIsSFcnSingleRate(block)
+    %assign IS_MULTI_TASKING = IsModelMultiTasking()
+    %assign block            = block + IS_MULTI_TASKING + IS_MULTI_RATE
+    %%
+    %% I/O Port Dimensions
+    %%
+    %assign inpNumDims   = LibBlockInputSignalNumDimensions(INPORT)
+    %assign inpDims      = LibBlockInputSignalDimensions(INPORT)
+    %assign INP_ROWS     = inpDims[0]
+    %assign INP_COLS     = (inpNumDims == 2) ? inpDims[1] : 1
+    %assign INPORTWIDTH  = INP_ROWS * INP_COLS
+    %assign inpFrameSize = LibBlockInputSignalIsFrameData(INPORT) ? INP_ROWS : 1
+    %assign block        = block + INP_ROWS + INP_COLS + INPORTWIDTH  + inpFrameSize
+    %%
+    %assign outNumDims   = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign outDims      = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign OUT_ROWS     = outDims[0]
+    %assign OUT_COLS     = (outNumDims == 2) ? outDims[1] : 1
+    %assign OUTPORTWIDTH = OUT_ROWS * OUT_COLS
+    %assign outFrameSize = LibBlockOutputSignalIsFrameData(OUTPORT) ? OUT_ROWS : 1
+    %assign block        = block + OUT_ROWS + OUT_COLS + OUTPORTWIDTH + outFrameSize
+    %%
+    %assign inpComplex   = LibBlockInputSignalIsComplex(INPORT)
+    %assign NUM_CHANS    = LibBlockInputSignalIsFrameData(INPORT) ? INP_COLS : INPORTWIDTH
+    %assign NUM_CHANS    = NUM_CHANS * (1+inpComplex)
+    %assign block        = block + NUM_CHANS + inpComplex
+    %%
+    %%
+    %% S-fcn param settings and strings for code comments
+    %%
+    %assign R          = SFcnParamSettings.RsmpFctr
+    %assign M          = SFcnParamSettings.M
+    %assign N          = SFcnParamSettings.N
+    %assign fnlRtShft  = SFcnParamSettings.FnlRtShft
+    %assign phase      = SFcnParamSettings.Phase
+    %assign nCICFrames = SFcnParamSettings.nFrames
+    %assign block      = block + R + M + N + fnlRtShft + phase + nCICFrames
+    %%
+    %assign isDecimator      = SFcnParamSettings.IsDecim
+    %assign isLatency        = SFcnParamSettings.IsLatency
+    %assign block            = block + isDecimator + isLatency
+    %assign decimOrInterpStr = (isDecimator == 1) ? "decimator" : "interpolator"
+    %assign latencyTypeStr   = (isLatency   == 1) ? "Latency"   : "Zero latency"
+    %assign block            = block + decimOrInterpStr + latencyTypeStr
+    %%
+    %assign inpNumBits = SFcnParamSettings.NIBits
+    %assign outNumBits = SFcnParamSettings.NOBits
+    %assign block      = block + inpNumBits + outNumBits
+    %%
+    %assign cicFcnPrefixStr = "MWDSP_CIC"
+    %assign cicFcnDecIntStr = isDecimator ? "Dec" : "Int"
+    %assign cicFcnLatZerStr = isLatency   ? "Lat" : "Zer"
+    %%
+    %if inpNumBits <= 8
+      %assign cicFcnInpBitStr = "08"
+    %elseif inpNumBits <= 16
+      %assign cicFcnInpBitStr = "16"
+    %else
+      %assign cicFcnInpBitStr = "32"
+    %endif
+    %%
+    %if outNumBits <= 8
+      %assign cicFcnOutBitStr = "08"
+    %elseif outNumBits <= 16
+      %assign cicFcnOutBitStr = "16"
+    %else
+      %assign cicFcnOutBitStr = "32"
+    %endif
+    %%
+    %assign block = block + cicFcnPrefixStr + cicFcnDecIntStr + cicFcnLatZerStr
+    %assign block = block + cicFcnInpBitStr + cicFcnOutBitStr
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vectors to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset CIC Filter %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  /* Initialize states for %<latencyTypeStr> %<decimOrInterpStr> filter structure
+   * with %<NUM_CHANS> real channels, filter stages (N): %<N>, diff delay (M): %<M>
+   * Note that all (<= 32-bit) states are stored in int32_T arrays.
+   */
+  int32_T  *cicStatesPtr     = (int32_T  *)(%<LibBlockDWorkAddr(CICStates,    "","",0)>);
+  int32_T  *cmbStatesPtr     = (int32_T  *)(%<LibBlockDWorkAddr(CombStateData,"","",0)>);
+  int cb;
+%if NUM_CHANS > 1
+  const int numIntPerChannel = %<N> * (NUM_INT32_PER_CICCIRCBUFF + 1);
+  int ch;
+%endif
+
+%if isDecimator
+  /* Decimator state memory arrangement (per channel):
+   *   N (length 1) integrator states
+   *   N (length M) circbuff comb states
+   */
+%else
+  /* Interpolator state memory arrangement (per channel):
+   *   N (length M) circbuff comb states
+   *   N (length 1) integrator states
+   */
+%endif
+
+%if NUM_CHANS > 1
+  /* Initialize all (M * N * numberOfChannels) comb states to zero */
+  memset(cmbStatesPtr, 0, (%<M> * %<N> * %<NUM_CHANS> * sizeof(int32_T)));
+%else
+  /* Initialize all (M * N) comb states to zero */
+  memset(cmbStatesPtr, 0, (%<M> * %<N> * sizeof(int32_T)));
+%endif
+
+%if NUM_CHANS > 1
+  /* Loop over all channels */
+  for (ch=0; ch<%<NUM_CHANS>; ch++) {
+%endif
+    %if isDecimator
+      %%
+      %% DECIMATOR    -> integrators first, combs last
+      %%
+      /* Initialize all (N) integrator states to zero */
+%if NUM_CHANS > 1
+      memset((cicStatesPtr + ch * numIntPerChannel), 0, (%<N> * sizeof(int32_T)));
+%else
+      memset(cicStatesPtr, 0, (%<N> * sizeof(int32_T)));
+%endif
+
+      /* Setup N comb state circular buffer headers       */
+      /* (including pointers to N comb state data arrays) */
+      for (cb=0; cb<%<N>; cb++) {
+%if NUM_CHANS > 1
+        MWDSP_CIC_CircBuff *circBuffPtr = (MWDSP_CIC_CircBuff *)(cicStatesPtr + ch * numIntPerChannel + %<N> + cb * NUM_INT32_PER_CICCIRCBUFF);
+%else
+        MWDSP_CIC_CircBuff *circBuffPtr = (MWDSP_CIC_CircBuff *)(cicStatesPtr + %<N> + cb * NUM_INT32_PER_CICCIRCBUFF);
+%endif
+        MWDSP_CICCIRCBUFF_INIT_HEADER(circBuffPtr, sizeof(int32_T), %<M>);
+%if NUM_CHANS > 1
+        circBuffPtr->data = (void *)(cmbStatesPtr + ch*%<M>*%<N> + cb*%<M>);
+%else
+        circBuffPtr->data = (void *)(cmbStatesPtr + cb*%<M>);
+%endif
+      }
+    %else
+      %%
+      %% INTERPOLATOR -> combs first, integrators last
+      %%
+      /* Setup N comb state circular buffer headers       */
+      /* (including pointers to N comb state data arrays) */
+      for (cb=0; cb<%<N>; cb++) {
+%if NUM_CHANS > 1
+        MWDSP_CIC_CircBuff *circBuffPtr = (MWDSP_CIC_CircBuff *)(cicStatesPtr + ch * numIntPerChannel + cb * NUM_INT32_PER_CICCIRCBUFF);
+%else
+        MWDSP_CIC_CircBuff *circBuffPtr = (MWDSP_CIC_CircBuff *)(cicStatesPtr + cb * NUM_INT32_PER_CICCIRCBUFF);
+%endif
+        MWDSP_CICCIRCBUFF_INIT_HEADER(circBuffPtr, sizeof(int32_T), %<M>);
+%if NUM_CHANS > 1
+        circBuffPtr->data = (void *)(cmbStatesPtr + ch*%<M>*%<N> + cb*%<M>);
+%else
+        circBuffPtr->data = (void *)(cmbStatesPtr + cb*%<M>);
+%endif
+      }
+
+      /* Initialize all (N) integrator states to zero */
+%if NUM_CHANS > 1
+      memset((cicStatesPtr + ch * numIntPerChannel + %<N>*NUM_INT32_PER_CICCIRCBUFF), 0, (%<N> * sizeof(int32_T)));
+%else
+      memset((cicStatesPtr + %<N>*NUM_INT32_PER_CICCIRCBUFF), 0, (%<N> * sizeof(int32_T)));
+%endif
+    %endif %% isDecimator
+%if NUM_CHANS > 1
+  }
+%endif
+}
+
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset CIC Filter %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %if inpComplex
+    %assign nChanActual = %<NUM_CHANS/2>
+    %assign ioStride    = 2
+  %else
+    %assign nChanActual = %<NUM_CHANS>
+    %assign ioStride    = 1
+  %endif
+  /*
+   * %<latencyTypeStr> %<decimOrInterpStr> filter structure
+   * R: %<R>, M: %<M>, N: %<N>, Resampler phase: %<phase>
+  %if inpComplex
+   * %<nChanActual> complex channels (or %<NUM_CHANS> real channels)
+  %else
+   * %<nChanActual> real channels
+  %endif
+   * %<nCICFrames> CIC filter frames per channel per function call
+   *
+   * Input:  %<inpNumBits> bits (using %<inpDT.NativeType>)
+   * Output: %<outNumBits> bits (using %<outDT.NativeType>)
+   */
+  const %<inpDT.NativeType> *inpPtr = (const %<inpDT.NativeType> *)(%<LibBlockInputSignalAddr(INPORT,   "", "", 0)>);
+  %<outDT.NativeType>       *outPtr = (%<outDT.NativeType>       *)(%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>);
+  int32_T       *cicStatesPtr       = (int32_T  *)(%<LibBlockDWorkAddr(CICStates,"","",0)>);
+  const int      statesPerChanSize  = %<N> * (1 + NUM_INT32_PER_CICCIRCBUFF);
+  %if isDecimator
+    const int32_T *stgShifts          = %<LibBlockParameterAddr(RtShiftsArray, "", "", 0)>;
+  %endif
+
+  %if inpComplex
+  /* Each complex I/O data channel treated as two separate
+   * channels (i.e. interleaved "I&Q" real and imag samples)
+   */
+  %endif
+  %%
+  %% COMMON CODE FOR REAL PART OR REAL-ONLY DATA
+  %%
+  %<cicFcnPrefixStr>%<cicFcnDecIntStr>%<cicFcnLatZerStr>%<cicFcnInpBitStr>%<cicFcnOutBitStr>(
+    %<R>,              /* R */
+    %<N>,              /* N */
+    %<nChanActual>,    /* number of channels */
+    %<nCICFrames>,     /* number of cic filter frames */
+    inpPtr,            /* input  (real) */
+    outPtr,            /* output (real) */
+    cicStatesPtr,      /* states */
+    statesPerChanSize, /* size of states per channel */
+    %<LibBlockParameterAddr(StgInpWLs,"","",0)>, /* stage word lengths array (stage input/sum/state) */
+    %if isDecimator
+      stgShifts,       /* stage right shifts array (at each stage output)  */
+    %else
+      %<fnlRtShft>,    /* final right shift after last stage (before output) */
+    %endif
+    %<phase>,          /* resampler phase */
+    %<ioStride>);      /* input and output array data stride */
+%if inpComplex
+  %<cicFcnPrefixStr>%<cicFcnDecIntStr>%<cicFcnLatZerStr>%<cicFcnInpBitStr>%<cicFcnOutBitStr>(
+    %<R>,              /* R */
+    %<N>,              /* N */
+    %<nChanActual>,    /* number of channels */
+    %<nCICFrames>,     /* number of cic filter frames */
+    (inpPtr + 1),      /* input  (imaginary part) */
+    (outPtr + 1),      /* output (imaginary part) */
+    (cicStatesPtr + %<nChanActual> * statesPerChanSize), /* states (imaginary part) */
+    statesPerChanSize, /* size of states per channel */
+    %<LibBlockParameterAddr(StgInpWLs,"","",0)>, /* stage word lengths array (stage input/sum/state) */
+    %if isDecimator
+      stgShifts,       /* stage right shifts array (at each stage output)  */
+    %else
+      %<fnlRtShft>,    /* final right shift after last stage (before output) */
+    %endif
+    %<phase>,          /* resampler phase */
+    %<ioStride>);      /* input and output array data stride */
+%endif
+}
+
+%endfunction  %% Outputs
+
+%% [EOF] sdspcicfilter.tlc

@@ -1,0 +1,201 @@
+function code_lcc_make_file(fileNameInfo)
+
+% CODE_LCC_MAKE_FILE(FILENAMEINFO)
+
+%   Copyright 1995-2004 The MathWorks, Inc.
+%   $Revision: 1.11.2.6 $  $Date: 2004/04/15 00:51:18 $
+
+	global gMachineInfo gTargetInfo
+
+	lccRoot = sf('Private','sf_get_component_root','lcc');
+
+	fileName = fullfile(fileNameInfo.targetDirName,fileNameInfo.makeBatchFile);
+   sf_echo_generating('Coder',fileName);
+	file = fopen(fileName,'wt');
+	if file<3
+		construct_coder_error([],sprintf('Failed to create file: %s.',fileName),1);
+	end
+..."$lccRoot$\bin\lccmake" -f $fileNameInfo.lccMakeFile$
+	fclose(file);
+
+	projectInfo.targetDirName = fileNameInfo.targetDirName;
+	projectInfo.handlesSpaces = 1;
+	projectInfo.cc = [lccRoot,'\bin\lcc.exe'];
+	projectInfo.ld = [lccRoot,'\bin\lcclnk.exe'];
+	projectInfo.nameDirective = '-o ';
+	projectInfo.libcmd = [lccRoot,'\bin\lcclib.exe'];
+
+	if gTargetInfo.codingMakeDebug
+		projectInfo.cflags = '-g4 -c -Zp8 -DMATLAB_MEX_FILE -noregistrylookup';
+		projectInfo.ldflags = ['-dll',' -L"',lccRoot,'\lib"'];
+	else
+		projectInfo.cflags = '-c -Zp8 -DMATLAB_MEX_FILE -noregistrylookup';
+		projectInfo.ldflags = ['-s -dll',' -L"',lccRoot,'\lib"'];
+	end
+	projectInfo.libflags = '';
+	
+	projectInfo.makeFileName = fileNameInfo.lccMakeFile;
+
+	projectInfo.includeDirs{1} = [lccRoot,'\include'];
+	projectInfo.includeDirs{end+1} = [fileNameInfo.matlabRoot,'\extern\include'];
+	projectInfo.includeDirs{end+1} = [fileNameInfo.matlabRoot,'\simulink\include'];
+	projectInfo.includeDirs{end+1} = fileNameInfo.sfcMexLibInclude;
+	projectInfo.includeDirs{end+1} = fileNameInfo.sfcDebugLibInclude;
+   if (~isempty(fileNameInfo.dspLibInclude))
+      projectInfo.includeDirs{end+1} = fileNameInfo.dspLibInclude;
+   end
+
+ 	projectInfo.includeDirs = [projectInfo.includeDirs,fileNameInfo.userIncludeDirs];
+	projectInfo.libPath = [lccRoot,'\lib'];
+
+	projectInfo.libraries = {};
+  	if(~gTargetInfo.codingLibrary)
+		projectInfo.libraries = fileNameInfo.linkLibFullPaths;
+		projectInfo.libraries = [projectInfo.libraries,fileNameInfo.userLibraries];
+		if(gTargetInfo.codingSFunction | gTargetInfo.codingMEX)
+			projectInfo.libraries{end+1} = [lccRoot,'\mex\lccdef.def'];
+		   projectInfo.libraries{end+1} = fileNameInfo.sfcDebugLibFile;
+		   projectInfo.libraries{end+1} = fileNameInfo.sfcMexLibFile;
+			projectInfo.libraries{end+1} = [fileNameInfo.matlabRoot,'\extern\lib\win32\lcc\libmex.lib'];
+			projectInfo.libraries{end+1} = [fileNameInfo.matlabRoot,'\extern\lib\win32\lcc\libmx.lib'];
+			projectInfo.libraries{end+1} = [fileNameInfo.matlabRoot,'\extern\lib\win32\lcc\libfixedpoint.lib'];
+			projectInfo.libraries{end+1} = [fileNameInfo.matlabRoot,'\extern\lib\win32\lcc\libut.lib'];
+         if (~isempty(fileNameInfo.dspLibFile))
+            projectInfo.libraries{end+1} = fileNameInfo.dspLibFile;
+         end			
+		end
+	end
+
+	projectInfo.sourceFiles{1} = fileNameInfo.machineSourceFile;
+	if ~gTargetInfo.codingLibrary & gTargetInfo.codingSFunction
+		projectInfo.sourceFiles{end+1} = fileNameInfo.machineRegistryFile;
+	end
+	if ~gTargetInfo.codingLibrary & gTargetInfo.codingMEX
+		projectInfo.sourceFiles{end+1} = fileNameInfo.mexWrapperFile;
+	end
+	projectInfo.sourceFiles = [projectInfo.sourceFiles,fileNameInfo.chartSourceFiles];
+	projectInfo.sourceFiles = [projectInfo.sourceFiles,fileNameInfo.userSources];
+	if(~gTargetInfo.codingLibrary & (gTargetInfo.codingSFunction | gTargetInfo.codingMEX))
+		projectInfo.sourceFiles{end+1} = [lccRoot,'\mex\lccstub.c'];
+	end
+
+	if(gTargetInfo.codingLibrary)
+		projectInfo.codingLibrary = 1;
+		projectInfo.outputFileName = [gMachineInfo.machineName,'_',gMachineInfo.targetName,'.lib'];
+	else
+		projectInfo.codingLibrary = 0;
+		if(gTargetInfo.codingMEX & ~isempty(sf('get',gMachineInfo.target,'target.mexFileName')))
+			projectInfo.outputFileName = [sf('get',gMachineInfo.target,'target.mexFileName'),'.dll'];
+		else
+			projectInfo.outputFileName = [gMachineInfo.machineName,'_',gMachineInfo.targetName,'.dll'];
+		end
+	end
+	projectInfo.preLinkCommand = '';
+	projectInfo.postLinkCommand = '';
+
+	lcc_make_gen(projectInfo);	
+
+function lcc_make_gen(projectInfo)
+
+	lccRoot = sf('Private','sf_get_component_root','lcc');
+
+	fileName = fullfile(projectInfo.targetDirName,projectInfo.makeFileName);
+  sf_echo_generating('Coder',fileName);
+	file = fopen(fileName,'wt');
+	if file<3
+		construct_coder_error([],sprintf('Failed to create file: %s.',fileName),1);
+	end
+
+	if(projectInfo.handlesSpaces)
+		quoteChar = '"';
+	else
+		quoteChar = '';
+	end
+
+	DOLLAR = '$';
+...CC     = $quoteChar$$projectInfo.cc$$quoteChar$
+...LD     = $quoteChar$$projectInfo.ld$$quoteChar$
+...LIBCMD = $quoteChar$$projectInfo.libcmd$$quoteChar$
+...CFLAGS = $projectInfo.cflags$
+...LDFLAGS = $projectInfo.ldflags$
+...LIBFLAGS = $projectInfo.libflags$
+...
+
+	projectInfo.objectFiles = projectInfo.sourceFiles;
+	for i=1:length(projectInfo.objectFiles)
+		sourceFile = projectInfo.objectFiles{i};
+		objectFile = [sourceFile(1:end-1),'obj'];
+		fileSeps = find(objectFile=='\');
+		if(~isempty(fileSeps))
+			objectFile = objectFile(fileSeps(end)+1:end);
+		end
+		projectInfo.objectFiles{i} = objectFile;
+	end
+
+	includeDirString = '';
+	if(length(projectInfo.includeDirs))
+		for i = 1:length(projectInfo.includeDirs)
+			includeDirString	= [includeDirString,' -I',quoteChar,projectInfo.includeDirs{i},quoteChar,' '];
+		end
+	end
+	projectInfo.objectListFile = [projectInfo.makeFileName,'o'];
+	projectInfo.objectListFilePath = fullfile(projectInfo.targetDirName,projectInfo.objectListFile);
+	code_lcc_objlist_file(projectInfo.objectListFilePath,projectInfo.objectFiles,projectInfo.libraries,quoteChar)
+...OBJECTS = \
+	for i= 1:length(projectInfo.objectFiles)
+...	$quoteChar$$projectInfo.objectFiles{i}$$quoteChar$\
+	end
+	for i= 1:length(projectInfo.libraries)
+...	$quoteChar$$projectInfo.libraries{i}$$quoteChar$\
+	end
+...
+...INCLUDE_PATH=$includeDirString$
+... 
+...
+	projectInfo.preLinkCommand = '';
+	projectInfo.postLinkCommand = '';
+
+	if projectInfo.codingLibrary
+...$projectInfo.outputFileName$ : $DOLLAR$(MAKEFILE) $DOLLAR$(OBJECTS)
+		if(~isempty(projectInfo.preLinkCommand))
+...	$projectInfo.preLinkCommand$
+		end
+...	$DOLLAR$(LIBCMD) $DOLLAR$(LIBFLAGS) /OUT:$projectInfo.outputFileName$ *.obj
+		if(~isempty(projectInfo.postLinkCommand))
+...	$projectInfo.postLinkCommand$
+		end
+	else
+...$projectInfo.outputFileName$ : $DOLLAR$(MAKEFILE) $DOLLAR$(OBJECTS)
+		if(~isempty(projectInfo.preLinkCommand))
+...	$projectInfo.preLinkCommand$
+		end
+...	$DOLLAR$(LD) $DOLLAR$(LDFLAGS) $projectInfo.nameDirective$$projectInfo.outputFileName$ @$projectInfo.objectListFile$
+		if(~isempty(projectInfo.postLinkCommand))
+...	$projectInfo.postLinkCommand$
+		end
+	end
+
+	for i=1:length(projectInfo.sourceFiles)
+...$projectInfo.objectFiles{i}$ :	$quoteChar$$projectInfo.sourceFiles{i}$$quoteChar$
+...	$DOLLAR$(CC) $DOLLAR$(CFLAGS) $DOLLAR$(INCLUDE_PATH) $quoteChar$$projectInfo.sourceFiles{i}$$quoteChar$
+	end
+
+	fclose(file);
+
+function code_lcc_objlist_file(objListFile,objectFiles,libraryFiles,quoteChar)
+
+	fileName = objListFile;
+  sf_echo_generating('Coder',fileName);
+	file = fopen(fileName,'wt');
+	if file<3
+		construct_coder_error([],sprintf('Failed to create file: %s.',fileName),1);
+	end
+
+	for i=1:length(objectFiles)
+...$quoteChar$$objectFiles{i}$$quoteChar$
+	end
+	for i=1:length(libraryFiles)
+...$quoteChar$$libraryFiles{i}$$quoteChar$
+	end
+
+	fclose(file);

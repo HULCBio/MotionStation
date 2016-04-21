@@ -1,0 +1,304 @@
+%%
+%% Abstract: Signal Processing Blockset sine wave source block - differential mode code generation
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% $Revision: 1.6.4.6 $ $Date: 2004/04/12 23:09:40 $
+%% $RCSfile: sdspsine2_diff.tlc,v $
+%%
+
+
+%% Function: DiffStart ====================================================
+%function DiffStart(block) Output
+  /* Discrete differential mode (start): */
+  %if SFcnParamSettings.TStart == 0
+    %<Init_Diff_Restart_TimeZero(block, nChans)>
+  %else
+    %<Init_Diff_Catchup(block, nChans)>
+  %endif
+  
+%endfunction
+
+
+%% Function: DiffReEnable ====================================================
+%function DiffReEnable(block) Output
+  /* Discrete differential mode: */
+  %if SFcnParamSettings.ResetState == "Reset"
+    %<Init_Diff_Restart_TimeZero(block, nChans)>
+  %else
+    %<Init_Diff_Catchup(block, nChans)>
+  %endif
+%endfunction
+
+
+%% Function: Differential =====================================================
+%%
+%function Differential(block) Output
+  %assign amp       = Amplitude.Value
+  %assign ampIncr   = LibGetNumberOfElements(amp) > 1
+  %assign ampscalar = LibBlockParameter(Amplitude,  "", "", 0)
+  %assign ampstr    = ampIncr ? ((nSamps>1 || IS_COMPLEX) ? "ampval *" : "*amp++ *") : "%<ampscalar> *"
+  %assign phaseIncr = (SFcnParamSettings.PhaseLt > 1)
+  %assign freqIncr  = (LibBlockParameterSize(Frequency)[0] * LibBlockParameterSize(Frequency)[1])>1
+  %assign istr      = ""
+  %assign dTypeDnCast = (IS_SINGLE) ? "(real32_T)" : ""
+  {
+  %if scalarY
+    %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "","",0)>"
+    %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "","",0)>.re"
+    %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "","",0)>.im"
+  %else
+    %if (nChans > 1) 
+        %if (nSamps == 1)
+           %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>"
+           %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.re"
+           %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.im"
+        %else
+           %<dType> *y = (%<dType> *)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+           %assign Ystr    = "*y++"
+           %assign Ystr_re = "y->re"
+           %assign Ystr_im = "(y++)->im"
+        %endif
+    %else
+       %% Only to be used when nSamps > 1 when nChans == 1
+       %% If nSamps==1, another special case is used that ignores these assignments:
+       %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+       %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.re"
+       %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.im"
+    %endif
+  %endif
+
+  %if !freqIncr && !phaseIncr
+    %% H and Phi are scalar
+    %% This can occur when amplictude is a vector and nChans > 1
+    %assign hlen   = 1
+    %assign philen = 1
+    %%
+    %assign hstr   = "h"
+    %assign phistr = "phi"
+  %else
+    %% H and Phi are vector    
+    %assign hlen      = LibGetNumberOfElements(SFcnParamSettings.H)
+    %assign philen    = LibGetNumberOfElements(SFcnParamSettings.Phi)
+    %% 
+    %assign hstr   = "h[i]"
+    %assign phistr = "phi[i]"
+  %endif
+  %%
+    /* Differential mode: */
+    %%
+    %<Define_H_and_PHI(hlen, philen)>
+    %%
+    %if ampIncr
+      %<dTypeP> *amp = (%<dTypeP> *)%<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+    %endif
+    %%
+    %if nChans > 1
+      %assign istr = "i"
+      int_T i;    
+      for (i = 0; i < %<nChans>; i++) {
+    %endif
+    %%
+    %if ((nSamps > 1 || IS_COMPLEX) && ampIncr)
+	    %<dTypeP> ampval = *amp++;
+    %endif
+    %if (nSamps > 1)
+      int_T j;
+      for (j=0; j < %<nSamps>; j++) {
+    %endif
+	  /* Output */
+	  c%<dTypeP> lastval;
+	  
+	  lastval.re = %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tRealPart>0")>;
+	  lastval.im = %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tImagPart>0")>;
+	  
+          /* Amplitude stability correction (over many repetitions) */
+          {
+            %<dTypeP> ampCorr;
+            %if IS_SINGLE
+              CABS32(lastval,ampCorr);
+            %else
+              CABS(lastval,ampCorr);
+            %endif
+            lastval.re /= ampCorr;
+            lastval.im /= ampCorr;
+          }
+
+          %if IS_COMPLEX
+            %%
+	    %<Ystr_re> = %<dTypeDnCast>(%<ampstr> (%<hstr>.re * CMULT_RE(lastval, %<phistr>) -
+                                %<hstr>.im * CMULT_IM(lastval, %<phistr>) ));
+            %%
+	    %<Ystr_im> = %<dTypeDnCast>(%<ampstr> (%<hstr>.re * CMULT_IM(lastval, %<phistr>) +
+                                %<hstr>.im * CMULT_RE(lastval, %<phistr>) ));
+            %%
+          %else
+            %%
+	    %<Ystr> = %<dTypeDnCast>(%<ampstr> (%<hstr>.re * CMULT_IM(lastval, %<phistr>) +
+                             %<hstr>.im * CMULT_RE(lastval, %<phistr>) ));
+            %%
+          %endif
+
+	  /* Update */
+	  %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tRealPart>0")> = CMULT_RE(lastval, %<hstr>);
+	  %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tImagPart>0")> = CMULT_IM(lastval, %<hstr>);
+	%if nSamps > 1  
+	}
+	%endif
+	%%
+      %if nChans > 1
+      }
+      %endif
+  }
+%endfunction %% Differential
+
+
+
+%% Function: Define_H_and_PHI =================================================
+%%
+%function Define_H_and_PHI(hlen, philen) Output
+     %%
+     %% H and PHI are always complex
+     %%
+     %assign h     = SFcnParamSettings.H
+     %assign astr  = ""
+     %%
+     %if hlen ==1
+       static const c%<dTypeP> h = {%<REAL(h[0])>,%<IMAG(h[0])>};
+     %else
+       static const c%<dTypeP> h[%<hlen>] = {
+	 %foreach i = hlen
+	   %assign astr  = astr + "{%<REAL(h[i])>,%<IMAG(h[i])>}"
+	   %if (i < hlen-1)
+	     %assign astr = astr + ","
+	   %else
+	     %assign astr = astr + "};"
+	   %endif
+	   %<astr>
+	   %assign astr = ""
+	 %endforeach
+     %endif
+     %%
+     %assign phi     = SFcnParamSettings.Phi
+     %assign astr    = ""
+     %%
+     %if philen == 1
+       static const c%<dTypeP> phi = {%<REAL(phi[0])>,%<IMAG(phi[0])>};
+     %else
+       static const c%<dTypeP> phi[%<hlen>] = {
+	 %foreach i = hlen
+	   %assign astr  = astr + "{%<REAL(phi[i])>,%<IMAG(phi[i])>}"
+	   %if (i < philen-1)
+	     %assign astr = astr + ","
+	   %else
+	     %assign astr = astr + "};"
+	   %endif
+	   %<astr>
+	   %assign astr = ""
+	 %endforeach   
+    %endif
+    %%
+%endfunction %% Define_H_and_PHI
+
+
+%% Function: Init_Diff_Restart_TimeZero ================================================
+%%
+%%
+%function Init_Diff_Restart_TimeZero(block, nChans) Output
+  /* Reset to time zero on init */
+  %assign str = (IS_SINGLE) ? "F" : ""
+  %if nChans > 1
+    %% Multiple channels
+    {
+      int i;
+      for(i=0; i < %<nChans>; i++) {
+        %%
+        %assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+        %assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+        %%
+        %<LastRe> = 1.0%<str>;
+        %<LastIm> = 0.0%<str>;
+      }
+    }
+  %else
+    %% ONE channel only
+    %<LibBlockDWork(LastIdx, "", "", "%<tRealPart>0")> = 1.0%<str>;
+    %<LibBlockDWork(LastIdx, "", "", "%<tImagPart>0")> = 0.0%<str>;
+  %endif  
+
+%endfunction  %% Init_Diff_Restart_TimeZero
+
+
+%% Function: Init_Diff_Catchup ================================================
+%%
+%%
+%function Init_Diff_Catchup(block, nChans) Output
+  %%
+  %% Set all "LastIdx" entries to current simulation time
+  %%
+  %assign Ts = LibBlockSampleTime(block)
+  %assign str = (IS_SINGLE) ? "F" : ""
+  %%
+  %% We want the cast to uint32 to always truncate for the samphits because
+  %% LibGetT() will give return a time that is some fraction later than
+  %% the actual time of this task.  (critical in multi-tasking mode)
+  %% We should use %<LibGetTaskTimeFromTID(block)>, but the tid is not
+  %% available to mdlInitialCondidtions.
+  %%
+  /* Catch up to in time: */
+  %if nChans > 1
+    %assign freqIncr  = (SIZE(LibBlockParameter(Frequency,  "", "", 0),0) * SIZE(LibBlockParameter(Frequency,  "", "", 0),1)) > 1
+    %if freqIncr > 0
+      {
+	uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>%<str>) / %<Ts>%<str>);
+	%<dTypeP> pi2t    = (%<dTypeP>)(%<SFcnParamSettings.Pi2> * samphits * %<Ts>%<str>); 
+	int i;
+	for(i=0; i < %<nChans>; i++) {
+	  %<dTypeP> temp = pi2t * %<LibBlockParameter(Frequency,"i","",0)>;
+	  %assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+	  %assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+          %if IS_SINGLE
+	    %<LastRe> = cosf(temp);
+	    %<LastIm> = sinf(temp);
+          %else
+	    %<LastRe> = cos(temp);
+	    %<LastIm> = sin(temp);
+          %endif
+	}	
+      }
+    %else	
+      {
+	uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>%<str>) / %<Ts>%<str>);
+	%<dTypeP> arg = (%<dTypeP>)(%<LibBlockParameter(Frequency, "", "", 0)> * %<SFcnParamSettings.Pi2> * samphits * %<Ts>%<str>);
+        %if IS_SINGLE
+          %<dTypeP> cos_value = cosf(arg);
+          %<dTypeP> sin_value = sinf(arg);
+        %else
+          %<dTypeP> cos_value = cos(arg);
+          %<dTypeP> sin_value = sin(arg);
+        %endif
+	int i;
+	for(i=0; i < %<nChans>; i++) {
+	  %assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+	  %assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+	  %<LastRe> = cos_value;
+	  %<LastIm> = sin_value;
+	}
+      }
+    %endif
+  %else    
+    {
+      uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>%<str>) / %<Ts>%<str>);
+      %<dTypeP> arg = (%<dTypeP>)(%<LibBlockParameter(Frequency, "", "", 0)> * %<SFcnParamSettings.Pi2> * samphits * %<Ts>%<str>);
+      %if IS_SINGLE
+        %<LibBlockDWork(LastIdx, "", "", "%<tRealPart>0")> = cosf(arg);
+        %<LibBlockDWork(LastIdx, "", "", "%<tImagPart>0")> = sinf(arg);
+      %else
+        %<LibBlockDWork(LastIdx, "", "", "%<tRealPart>0")> = cos(arg);
+        %<LibBlockDWork(LastIdx, "", "", "%<tImagPart>0")> = sin(arg);
+      %endif
+    }
+  %endif
+%endfunction  %% Init_Diff_Catchup
+
+
+%% [EOF] sdspsine2_diff.tlc

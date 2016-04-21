@@ -1,0 +1,390 @@
+%% ============================================================================
+%% File : ertmodelarg.tlc
+%%
+%% Abstract:
+%%   This is the system library file for RTW's Embedded-C code format.
+%%
+%% $Revision $
+%% Copyright 1994-2003 The MathWorks, Inc.
+
+%selectfile NULL_FILE
+
+%if EXISTS("_ERT_MODEL_ARG_") == 0
+%assign _ERT_MODEL_ARG_ = 1
+
+
+%% Function: FcnArgIsNeededForERTModel =========================================
+%% Abstract:
+%%   Same as FcnArgIsNeeded, but for root system for ERT multi-instance
+%%   code generation
+%%
+%function FcnArgIsNeededForERTModel(arg) void
+  %if ::BlockFcn == "Unknown"
+    %<LibReportFatalError("Unknown function argument")>
+  %elseif ::BlockFcn == "Output" || ::BlockFcn == "OutputUpdate"
+    %return ISFIELD(arg, "OutputAccessed") || ...
+      ISFIELD(arg, "OutputUpdateAccessed") || ...
+      (CombineOutputUpdateFcns && ISFIELD(arg, "UpdateAccessed"))
+  %elseif ::BlockFcn == "Initialize" || ::BlockFcn == "Start" 
+    %return ISFIELD(arg, "StartAccessed") || ...
+      ISFIELD(arg, "InitializeAccessed") 
+  %else
+    %return ISFIELD(arg, "%<::BlockFcn>Accessed")
+  %endif
+%endfunction
+
+%% Function: SLibModelFcnArgs
+%% Abstrack: 
+%%   Generate model fcn arg list.
+%%
+%% isCallSite = 1, is call site and called from ertmain
+%%            = 2, is call site, not called from ertmain
+%%
+%function SLibModelFcnArgs(type,isCallSite,tid) void
+  %assign recArgs = []
+  %assign rootSystem        = System[NumSystems-1]
+  %assign isRateGrouping    = SLibIsMultiRateAndRateGrouping(rootSystem)
+  %assign calledFromERTMain =  (isCallSite == 2) ? 0 : 1
+  
+  %% NeedsTID is true if rootsystem is multirate 
+  %% and need tid 
+  %assign needsTID = !EXISTS("rootSystem.CurrentTID") ? 0 : ...
+    !LibIsSingleRateSystem(rootSystem) && ...
+    (ISEQUAL(rootSystem.CurrentTID, "") || ...
+    LibSystemFcnNeedsTID(rootSystem,type))
+  %assign needsTID = needsTID || GenerateGRTWrapper
+  %assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+
+  %switch type
+    %case "Initialize"
+      %assign ::BlockFcn = "Registration"
+      %if ZeroExternalMemoryAtStartup
+	%<SLibMarkAllExtIOAccessed()>
+      %endif
+      %% ModelInitializeIsEmpty is computed in ertreg.tlc
+      %if ::ModelInitializeFcnUsesFirstTime
+	%if isCallSite
+	  %assign recArgs = recArgs + "1"
+	%else
+	  %assign recArgs = recArgs + "boolean_T firstTime"
+	%endif
+      %endif
+      %break
+    %case "Output"
+      %assign ::BlockFcn = "Output"
+      %if needsTID
+	%if isCallSite
+	  %assign recArgs = recArgs + "%<tid>"
+	%else
+	  %assign recArgs = recArgs + "%<tTIDType> %<tTID>"
+	%endif
+      %endif
+      %break
+    %case "OutputUpdate"
+      %assign ::BlockFcn = "OutputUpdate"
+      %if needsTID
+	%if isCallSite
+	  %assign recArgs = recArgs + "%<tid>"
+	%else
+	  %assign recArgs = recArgs + "%<tTIDType> %<tTID>"
+	%endif
+      %endif
+      %break  
+    %case "RootUpdate"
+      %assign ::BlockFcn = "RootUpdate"
+      %if needsTID
+        %if isCallSite
+          %assign recArgs = recArgs + "%<tid>"
+        %else
+          %assign recArgs = recArgs + "%<tTIDType> %<tTID>"
+        %endif
+      %endif
+      %if ISEQUAL(rootSystem.CurrentTID, 1) && (NumContStates > 0)
+	%<SLibAddTIDtoAccessTIDList(rootSystem.Interface.RTMArgDef, ...
+	  "RootUpdate", "",[0,1])>
+      %endif
+      %break
+    %case "Update"
+      %assign ::BlockFcn = "Update"
+      %if needsTID
+	%if isCallSite
+	  %assign recArgs = recArgs + "%<tid>"
+	%else
+	  %assign recArgs = recArgs + "%<tTIDType> %<tTID>"
+	%endif
+      %endif
+      %if ISEQUAL(rootSystem.CurrentTID, 1) && (NumContStates > 0)
+	%<SLibAddTIDtoAccessTIDList(rootSystem.Interface.RTMArgDef, ...
+	  "Update", "",[0,1])>
+      %endif
+      %break
+    %case "UpdateContStates"
+      %assign ::BlockFcn = "UpdateContStates"
+      %if needsTID
+        %if isCallSite
+          %assign recArgs = recArgs + "%<tid>"
+        %else
+          %assign recArgs = recArgs + "%<tTIDType> %<tTID>"
+        %endif
+      %endif
+      %break
+    %case "Derivative"
+      %assign ::BlockFcn = "Derivative"
+      %break
+    %case "Terminate"
+      %assign ::BlockFcn = "Terminate"
+      %if MatFileLogging
+	%<LibAccessArg(rootSystem.Interface.RTMArgDef)>
+      %endif
+      %break
+    %default
+      %assign errTxt = "Unknown type: %<type>"
+      %<LibReportFatalError(errTxt)>
+  %endswitch
+
+  %with rootSystem.Interface
+    
+    %if !reqInsts.SimStructInst && FcnArgNeeded(RTMArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<tSimStruct>"
+      %else
+	%assign recArgs = recArgs + "%<tSimStructType> *%<tSimStruct>"
+      %endif
+    %endif
+    %assign deref = calledFromERTMain ? "&" : ""
+    %if !reqInsts.ParamsInst && FcnArgNeeded(PrmArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<deref>%<tParameters>"
+      %else
+	%assign recArgs = recArgs + "%<tParametersType> *%<tParameters>"
+      %endif
+    %endif
+    %if !reqInsts.BlockIOInst && FcnArgNeeded(BlockIOArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<deref>%<tBlockIO>"
+      %else
+	%assign recArgs = recArgs + "%<tBlockIOType> *%<tBlockIO>"
+      %endif
+    %endif
+    %if !reqInsts.DworkInst && FcnArgNeeded(DWorkArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<deref>%<tDWork>"
+      %else
+	%assign recArgs = recArgs + "%<tDWorkType> *%<tDWork>"
+      %endif
+    %endif
+    %if !reqInsts.ContStatesInst && FcnArgNeeded(ContStatesArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<deref>%<tContState>"
+      %else
+	%assign recArgs = recArgs + "%<tContStateType> *%<tContState>"
+      %endif
+    %endif
+    %if !reqInsts.PrevZCStatesInst && FcnArgNeeded(ZCEventArgDef,...
+      rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+	%assign recArgs = recArgs + "%<deref>%<tPrevZCState>"
+      %else
+	%assign recArgs = recArgs + "%<tPrevZCStateType> *%<tPrevZCState>"
+      %endif
+    %endif
+    %if !reqInsts.ExtInpsInst && !LibExternalInputsStructIsEmpty()
+      %if RootIOStructures
+	%if isCallSite
+	  %assign recArgs = recArgs + "%<deref>%<tInput>"
+	%else
+	  %assign recArgs = recArgs + "%<tInputType> *%<tInput>"
+	%endif
+      %else
+	%foreach idx = ExternalInputs.NumExternalInputs 
+	  %assign extInp = ExternalInputs.ExternalInput[idx]
+	  %with extInp
+	    %if extInp.StorageClass != "Auto" || ...
+	      !FcnArgNeeded(extInp,rootSystem.CurrentTID,isRateGrouping)
+	      %continue
+	    %endif
+	    %assign dataTypeId = SLibGetRecordDataTypeId(extInp)
+	    %assign structType = LibIsStructDataType(dataTypeId)
+	    %if isCallSite
+	      %assign addressOf = structType ? deref : ""
+	      %assign recArgs = recArgs + "%<addressOf>%<tInput>%<UQualifier>%<Identifier>"
+	    %else
+	      %assign optStar = structType ? "*" : ""
+	      %assign dataType  = SLibGetRecordDataTypeName(extInp, "")
+	      %if Width > 1
+		%assign recArgs = recArgs + "%<dataType> %<tInput>%<UQualifier>%<Identifier>[%<Width>]"
+	      %else
+		%assign recArgs = recArgs + "%<dataType> %<optStar>%<tInput>%<UQualifier>%<Identifier>"
+	      %endif
+	    %endif
+	  %endwith
+	%endforeach
+      %endif
+    %endif
+    %if !reqInsts.ExtOutputsInst && !LibExternalOutputsStructIsEmpty()
+      %if RootIOStructures
+	%if isCallSite
+	  %assign recArgs = recArgs + "%<deref>%<tOutput>"
+	%else
+	  %assign recArgs = recArgs + "%<tOutputType> *%<tOutput>"
+	%endif
+      %else
+	%foreach idx = ExternalOutputs.NumExternalOutputs
+	  %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+	  %assign sysIdx       = extOut.Block[0]
+	  %assign blkIdx       = extOut.Block[1]
+	  %assign outportBlock = System[sysIdx].Block[blkIdx]
+	  %if SLibExternalOutputIsVirtual(outportBlock) || ...
+	    !FcnArgNeeded(extOut,rootSystem.CurrentTID,isRateGrouping)
+	    %continue
+	  %endif
+	  %with outportBlock
+	    %assign portWidth = LibBlockInputSignalWidth(0)
+	    %assign dataType  = LibBlockInputSignalDataTypeName(0, "")
+	  %endwith
+	  %if isCallSite
+	    %if portWidth > 1
+	      %assign recArgs = recArgs + "%<tOutput>%<YQualifier>%<outportBlock.Identifier>"
+	    %else
+	      %assign recArgs = recArgs + "%<deref>%<tOutput>%<YQualifier>%<outportBlock.Identifier>"
+	    %endif
+	  %else
+	    %if portWidth > 1
+	      %assign recArgs = recArgs + "%<dataType> %<tOutput>%<YQualifier>%<outportBlock.Identifier>[%<portWidth>]"
+	    %else
+	      %assign recArgs = recArgs + "%<dataType> *%<tOutput>%<YQualifier>%<outportBlock.Identifier>"
+	    %endif
+	  %endif
+	%endforeach
+      %endif
+    %endif
+  
+  %endwith
+  
+  %assign ::BlockFcn = "Unknown"
+  
+  %if ISEMPTY(recArgs)
+    %if isCallSite
+      %return ""
+    %else
+      %return "void"
+    %endif
+  %endif
+
+  %foreach idx = SIZE(recArgs,1)
+    %if idx == 0
+      %assign fcnArgs = recArgs[idx]
+    %else
+      %assign fcnArgs = fcnArgs + ", %<recArgs[idx]>"
+    %endif
+  %endforeach
+  
+  %return fcnArgs
+%endfunction
+
+
+%function SLibDeclareModelFcnArgs(useStatic) void
+
+  %if !MultiInstanceERTCode
+    %return ""
+  %endif
+  
+  %assign recArgs = []
+  %assign rootSystem = System[NumSystems-1]
+
+  %assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+
+  %assign static = useStatic ? "static" : ""
+  
+  %openfile tmpFcnBuf
+  %if !reqInsts.SimStructInst && !EmptyRealTimeObject
+    %<static> %<tSimStructType> %<tSimStruct>_;
+    %<static> %<tSimStructType> *%<tSimStruct> = &%<tSimStruct>_; /* Real-time model */
+  %endif
+  %if !reqInsts.ParamsInst && !SLibPrmBufferIsEmpty("SimulinkGlobal", "Instance")
+    %<static> %<tParametersType> %<tParameters> = {
+      %<SLibGetPrmBuffer("SimulinkGlobal", "Instance")>
+    }; /* Modifiable parameters */
+  %endif
+  %if !reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+    %<static> %<tBlockIOType> %<tBlockIO>; /* Observable signals */
+  %endif
+  %if !reqInsts.DworkInst && !LibDWorkInstanceIsEmpty()
+    %<static> %<tDWorkType> %<tDWork>; /* Observable states */
+  %endif
+  %if !reqInsts.ContStatesInst && !LibContStatesInstanceIsEmpty()
+    %<static> %<tContStateType> %<tContState>; /* Observable continuous states */
+  %endif
+  %if !reqInsts.PrevZCStatesInst && !LibPrevZCStatesInstanceIsEmpty()
+    %<static> %<tPrevZCStateType> %<tPrevZCState>; /* Triggered events */
+  %endif
+  %if !reqInsts.ExtInpsInst && !LibExternalInputsInstanceIsEmpty()
+    %if RootIOStructures
+      %<static> %<tInputType> %<tInput>; /* External inputs */
+    %else
+      %foreach idx = ExternalInputs.NumExternalInputs 
+	%assign extInp = ExternalInputs.ExternalInput[idx]
+	%with extInp
+	  %if extInp.StorageClass != "Auto" 
+	    %continue
+	  %endif
+	  %assign dataType  = SLibGetRecordDataTypeName(extInp, "")
+	  %if Width > 1
+	    %<static> %<dataType> %<tInput>%<UQualifier>%<Identifier>[%<Width>]; \
+	  %else
+	    %<static> %<dataType> %<tInput>%<UQualifier>%<Identifier>; \
+	  %endif
+	  /* Root inport: '%<extInp.BlockName>' */
+	%endwith
+      %endforeach
+    %endif
+  %endif
+  %if !reqInsts.ExtOutputsInst && !LibExternalOutputsInstanceIsEmpty()
+    %if RootIOStructures
+      %<static> %<tOutputType> %<tOutput>; /* External outputs */
+    %else
+      %foreach idx = ExternalOutputs.NumExternalOutputs
+	%assign extOut       = ExternalOutputs.ExternalOutput[idx]
+	%assign sysIdx       = extOut.Block[0]
+	%assign blkIdx       = extOut.Block[1]
+	%assign outportBlock = System[sysIdx].Block[blkIdx]
+	%if SLibExternalOutputIsVirtual(outportBlock)
+	  %continue
+	%endif
+	%with outportBlock
+	  %assign portWidth = LibBlockInputSignalWidth(0)
+	  %assign dataType  = LibBlockInputSignalDataTypeName(0, "")
+	%endwith
+	%if portWidth > 1
+	  %<static> %<dataType> %<tOutput>%<YQualifier>%<outportBlock.Identifier>[%<portWidth>]; \
+	%else
+	  %<static> %<dataType> %<tOutput>%<YQualifier>%<outportBlock.Identifier>; \
+	%endif
+	/* Root outport: '%<outportBlock.Name>' */
+      %endforeach
+    %endif
+  %endif
+  %closefile tmpFcnBuf
+  
+  %return tmpFcnBuf
+  
+%endfunction
+
+%function SLibMarkAllExtIOAccessed() void
+  %foreach idx = ExternalInputs.NumExternalInputs 
+    %assign extInp = ExternalInputs.ExternalInput[idx]
+    %<LibAccessArg(extInp)>
+  %endforeach
+  %foreach idx = ExternalOutputs.NumExternalOutputs 
+    %assign extOut = ExternalOutputs.ExternalOutput[idx]
+    %<LibAccessArg(extOut)>
+  %endforeach
+%endfunction
+
+
+%endif %% _ERT_MODEL_ARG_

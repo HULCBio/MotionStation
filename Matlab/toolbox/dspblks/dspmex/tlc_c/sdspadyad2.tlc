@@ -1,0 +1,955 @@
+%% $RCSfile: sdspadyad2.tlc,v $
+%% $Revision: 1.7.4.2 $  $Date: 2004/04/12 23:08:09 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Dyadic analysis filter bank
+%%
+
+%implements sdspadyad2 "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT      = 0
+  %assign INPORTWIDTH = LibDataInputPortWidth(INPORT)
+  %assign IN_COMPLEX  = LibBlockInputSignalIsComplex(INPORT)  
+
+  %% Port info
+  %assign numDims     = LibBlockInputSignalNumDimensions(INPORT)
+  %assign dims        = LibBlockInputSignalDimensions(INPORT)
+  %assign inCols      = (numDims == 2) ? dims[1] : 1
+  %assign inRows      = dims[0]
+
+  %assign FRAMEBASED    = LibBlockInputSignalIsFrameData(INPORT)
+  %assign SAMPLE_BASED  = !FRAMEBASED
+  %assign NUM_CHANS     = FRAMEBASED ? inCols : INPORTWIDTH
+  %assign FRAME         = FRAMEBASED ? inRows : 1
+  
+  %% All outputs are same complexity
+  %assign OUT_COMPLEX     = LibBlockOutputSignalIsComplex(0)
+
+  %assign LP_ROW_COL      = LibBlockParameterSize(LFILT)
+  %assign LP_LENGTH       = LP_ROW_COL[0] * LP_ROW_COL[1]
+  %assign HP_ROW_COL      = LibBlockParameterSize(HFILT)
+  %assign HP_LENGTH       = HP_ROW_COL[0] * HP_ROW_COL[1]
+  %assign LP_ORDER        = LP_LENGTH - 1
+  %assign HP_ORDER        = HP_LENGTH - 1
+  %assign LSTART          = LP_LENGTH - LP_LENGTH / 2
+  %assign HSTART          = HP_LENGTH - HP_LENGTH / 2  
+  %assign FILT_COMPLEX    = LibBlockParameterIsComplex(LFILT)
+  %assign FILT_LEVEL      = 1  %% default
+  
+  %assign TREE            = SFcnParamSettings.TREE
+  %assign ASYMMETRIC      = 1
+  %assign SYMMETRIC       = 2
+
+  %assign NUM_LEVELS      = SFcnParamSettings.LEVELS
+  
+  %if (TREE == ASYMMETRIC)
+    %assign NUM_FILTERS = 2 * NUM_LEVELS
+  %else
+    %assign FILT_LEVEL  = 2
+    %assign NUM_FILTERS = 2
+    %foreach II = NUM_LEVELS-1
+      %assign FILT_LEVEL  = FILT_LEVEL * 2
+      %assign NUM_FILTERS = NUM_FILTERS + FILT_LEVEL
+    %endforeach
+  %endif
+
+  %assign OUTBUFF_SIZE     = LibBlockDWorkWidth(OutBuff) / 2
+  %assign LPBUFFSIZE      = LibBlockDWorkWidth(FiltBuff) / 2
+  
+  %assign DAT_T  = (IN_COMPLEX)   ? "creal_T" : "real_T"
+  %assign FILT_T = (FILT_COMPLEX) ? "creal_T" : "real_T"
+  %assign OUT_T  = (OUT_COMPLEX)  ? "creal_T" : "real_T"
+  
+  %assign block = block + INPORT + INPORTWIDTH + IN_COMPLEX + OUT_COMPLEX + \
+     LP_ORDER + HP_ORDER + LSTART + HSTART + \
+     FILT_COMPLEX + FILT_LEVEL + TREE + ASYMMETRIC + SYMMETRIC + \ 
+     NUM_LEVELS + NUM_CHANS + SAMPLE_BASED + NUM_FILTERS + \
+     OUTBUFF_SIZE + LPBUFFSIZE + DAT_T + FILT_T + OUT_T  
+  
+%endfunction %% BlockInstanceSetup
+
+  
+%% Function: InitializeConditions =============================================
+%%
+%% Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /* Initialize the counters. */
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Set up Filter Coefficients
+    %%
+    {
+    /* Filter coefficients */
+    %assign count   = 0
+    %if (FILT_COMPLEX)
+        static const creal_T *lfilt=%<LibBlockParameterAddr(LFILT, "", "", "0")>;
+        static const creal_T *hfilt=%<LibBlockParameterAddr(HFILT, "", "", "0")>;
+    %else
+        static const real_T  *lfilt=%<LibBlockParameterAddr(LFILT, "", "", "0")>;
+        static const real_T  *hfilt=%<LibBlockParameterAddr(HFILT, "", "", "0")>;
+    %endif
+
+    %<LibBlockPWork("", "", "", NUM_FILTERS)> = (void *)hfilt;
+    %<LibBlockPWork("", "", "", NUM_FILTERS + 1)> = (void *)lfilt;
+
+    /* Initialize pointers to filter coefficients so that they correspond to the
+     * last filter phase.
+     */
+    %if NUM_FILTERS > 1
+      {
+	int_T k = 0;
+	%roll sigIdx1 = [ 0:%<NUM_FILTERS/2 - 1> ], lcv1 = 2, block, "InlineRoller"
+	  %<LibBlockPWork("", "k++", "", 0)> = (void *)(hfilt + %<HSTART>);
+	  %<LibBlockPWork("", "k++", "", 0)> = (void *)(lfilt + %<LSTART>);
+	%endroll  %% FILTERS
+      }
+    %else
+	%<LibBlockPWork("", "", "", 0)> = (void *)(hfilt + %<HSTART>);
+	%<LibBlockPWork("", "", "", 1)> = (void *)(lfilt + %<LSTART>);
+    %endif
+    }
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Compute Latency properties and set counters appropriately
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %assign isSingleRate   = LibIsSFcnSingleRate(block)
+    %assign isMultiTasking = IsModelMultiTasking()
+    %%
+    %if(isSingleRate)
+        /* SingleRate */
+        %assign out_offset = 1
+    %else
+        /* MultiRate */
+        %assign out_offset = 0
+
+        %%
+        %% Possible rewrite of code needed. A simple offset to 
+        %% the pointer index will not give correct behavior. The
+        %% below is true for both Symmetric and Asymmetric cases.   
+        %%
+
+        %if(!isMultiTasking)
+            /* SingleTasking */
+            %%
+            %% SingleTasking will have no latency
+            %% when this portion of code is added.
+            %%
+        %else
+            /* MultiTasking */
+            %%
+            %% MultiTasking will have an initial latency of one simulation step
+            %% when this portion of code is added.
+            %%
+            %<InitOutBuffer(block)>
+            %%
+        %endif
+    %endif
+    %%    
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+    %<LibBlockDWork(I2Idx, "", "", 0)> = 0;
+
+    %if (TREE == ASYMMETRIC)
+        %assign rollVars = ["<dwork>/InIdx", "<dwork>/PhaseIdx", "<dwork>/WrBuff1", "<dwork>/OutIdx"]
+    %else
+        %assign rollVars = ["<dwork>/InIdx", "<dwork>/PhaseIdx"]
+    %endif
+    %%
+    %roll sigIdx1 = [ 0:%<NUM_LEVELS - 1> ], lcv1 = 2, block, "Roller", rollVars
+        %<LibBlockDWork(InIdx, "", lcv1, 0)> = 0;
+	/* Start with the last phase at each level */
+	%<LibBlockDWork(PhaseIdx, "", lcv1, 0)> = 1;
+        %if (TREE == ASYMMETRIC)
+            %<LibBlockDWork(WrBuff1, "", lcv1, 0)> = 1;
+            %<LibBlockDWork(OutIdx, "", lcv1, 0)> = %<out_offset>;
+        %endif
+    %endroll %% Levels   
+    %%
+    %if (TREE == ASYMMETRIC)
+        %<LibBlockDWork(OutIdx, "", "", NUM_LEVELS)> = %<out_offset> ;
+    %else
+        %<LibBlockDWork(OutIdx, "", "", 0)> = %<out_offset> ;
+        %<LibBlockDWork(WrBuff1, "", "", 0)> = 1;
+    %endif
+    %%
+    %assign rollVars = ["<dwork>/MemIdx"]
+    %roll sigIdx1 = [ 0:%<NUM_FILTERS - 1> ], lcv1 = 2, block, "Roller", rollVars
+        %<LibBlockDWork(MemIdx, "", lcv1, 0)> = 0;
+    %endroll
+}
+%endfunction
+
+
+%% Function: InitOutBuffer ==========================================================
+%%
+%function InitOutBuffer(block) Output 
+  %assign outBuffSize = LibBlockDWorkWidth(OutBuff)        
+  /* Initialize Output Buffer */
+  {
+    int_T i;
+    int_T outBuffSize = %<LibBlockDWorkWidth(OutBuff)>;
+
+    for(i=0; i<outBuffSize; i++) {
+      %if LibBlockDWorkIsComplex(OutBuff)
+	  %<LibBlockDWork(OutBuff, "i", "", "%<tRealPart>0")> = 0.0;
+	  %<LibBlockDWork(OutBuff, "i", "", "%<tImagPart>0")> = 0.0;
+      %else
+	  %<LibBlockDWork(OutBuff, "i", "", 0)> = 0.0;
+      %endif
+    }
+  }
+%endfunction  %% InitOutBuffer
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  
+  %<UpdateCode(block, system)>
+  
+  %<OutputsCode(block, system)>
+  
+%endfunction %% Outputs
+
+
+%% Function: UpdateCode ==========================================================
+%%
+%function UpdateCode(block, system) Output 
+  %%
+  %assign FRAME = (SAMPLE_BASED) ? 1 : (INPORTWIDTH / NUM_CHANS)
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /* Update buffers */
+    %<FILT_T> *cffHBase = (%<FILT_T> *) %<LibBlockPWork("", "", "", NUM_FILTERS)>;
+    %<FILT_T> *cffLBase = (%<FILT_T> *) %<LibBlockPWork("", "", "", NUM_FILTERS + 1)>;
+
+    %if !LibIsSFcnSingleRate(block)
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+    %endif
+        %<DAT_T>    *uptr   = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        %if (SAMPLE_BASED)
+        boolean_T   ok = 0;
+        {
+            /* We delay processing until we buffer the minimum number of samples
+             * that are required to generate an entire output frame.
+             */
+            %<OUT_T>    *inBuff = %<LibBlockDWorkAddr(InBuff, "", "", 0)>;
+            int32_T	iIdx    = %<LibBlockDWork(I2Idx, "", "", 0)>;
+            %assign minFrame    = 2
+            %foreach II = NUM_LEVELS-1
+                %assign minFrame = minFrame * 2
+            %endforeach
+
+            %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+                %if (!IN_COMPLEX && FILT_COMPLEX)
+	            (inBuff+iIdx)->re = *uptr++;
+	            (inBuff+iIdx)->im = (real_T) 0.0;
+                %else
+	            *(inBuff+iIdx) = *uptr++;
+                %endif
+                %if (NUM_CHANS > 1)
+	            inBuff += %<minFrame>;
+                %endif
+            %endroll
+            if (++(%<LibBlockDWork(I2Idx, "", "", 0)>) == %<minFrame>) {
+                ok = 1;
+	        %assign FRAME = minFrame
+	        %<LibBlockDWork(I2Idx, "", "", 0)> = 0;
+            }
+        }
+
+        if (ok) {
+	        /* We have enough samples to process */
+        %else
+            {
+        %endif %% SAMPLE_BASED
+        %<OUT_T>    *lpBuff0    = %<LibBlockDWorkAddr(FiltBuff, "", "", 0)>;
+        %<OUT_T>    *mem0       = %<LibBlockDWorkAddr(States, "", "", 0)>;
+        %<OUT_T>    *sums       = %<LibBlockDWorkAddr(PartialSums, "", "", 0)>;
+        %<OUT_T>    *out        = %<LibBlockDWorkAddr(OutBuff, "", "", 0)>;
+
+        %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+            %<OUT_T>    *inBuff     = %<LibBlockDWorkAddr(InBuff, "", "", 0)>;
+            int_T       numSamps    = %<FRAME>;
+            %<OUT_T>    *lpBuff     = lpBuff0;
+            int_T       filtIdx     = 0;
+
+            %if (!SAMPLE_BASED)
+                %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+                    %if (!IN_COMPLEX && FILT_COMPLEX)
+                        inBuff[%<lcv2 == "" ? sigIdx2 : lcv2>].re = *uptr++;
+                        inBuff[%<lcv2 == "" ? sigIdx2 : lcv2>].im = (real_T) 0.0;
+                    %else
+                        inBuff[%<lcv2 == "" ? sigIdx2 : lcv2>] = *uptr++;
+                    %endif
+                %endroll
+            %else
+                %if (NUM_CHANS > 1)
+                    inBuff += %<lcv1 == "" ? sigIdx1 : lcv1> * %<FRAME>;
+                %endif
+            %endif
+
+            %if (TREE == SYMMETRIC)
+                {
+                boolean_T   tinBuff1	= 0;
+                %<OUT_T>    *swap;
+                int_T       j, pIdx=0, iIdx=0, N=1;/* quiet bogus gcc warning */
+                %assign rollVars = ["<dwork>/PhaseIdx", "<dwork>/InIdx"]
+                %roll sigIdx2 = [ 0:%<NUM_LEVELS - 1> ], lcv2 = 1, block, "Roller", rollVars
+                int32_T       *phaseIdx   = %<LibBlockDWorkAddr(PhaseIdx, "", lcv2, 0)>;
+                int32_T       *inIdx      = %<LibBlockDWorkAddr(InIdx, "", lcv2, 0)>;
+                int_T       numSamps2   = numSamps >> 1; /* integer divide by 2 */
+                %<OUT_T>    *iBuff      = inBuff;
+                %<OUT_T>    *oBuff      = lpBuff;
+
+                /* Process N pairs of filters for this level */
+                for (j=0; j < N; j++) {
+                    int32_T   *memIdx = %<LibBlockDWorkAddr(MemIdx, "filtIdx", "", 0)>;
+                    %<FILT_T>  *cffPtr = %<LibBlockPWork("","filtIdx","",0)>;
+                    int32_T   mIdx    = *memIdx;
+                    %<OUT_T> *in      = iBuff;
+                    %<OUT_T> *sum     = sums++;
+                    %<OUT_T> *y0;
+                    int_T i;
+                    int_T oframe = numSamps >> 1; /* integer divide by 2 */
+
+                    pIdx = *phaseIdx;
+                    iIdx = *inIdx;
+
+                    /* Highpass filter*/
+                    %if (NUM_LEVELS > 1)
+                        if (%<lcv2 == "" ? sigIdx2 : lcv2> == %<NUM_LEVELS - 1>) {
+                    %else
+                        {
+                    %endif
+                            oBuff     = out;
+                            out      += (numSamps >> 1); /* integer divide by 2 */
+                            tinBuff1  = %<LibBlockDWork(WrBuff1, "", "", 0)>;
+                    %if (NUM_LEVELS > 1)
+                        }
+                        else {
+                            tinBuff1 = 0;
+                            iIdx = 0;
+                    %endif
+                        }
+                    y0 = oBuff;
+
+                    /* Each channel uses the same filter phase but accesses
+                     * its own state memory and input.
+                     */
+                    for (i=0; i < numSamps; i++) {
+                        /* The pointer to state memory is set dFactor samples past the
+                         * desired location.  This is because the memory pointer is
+                         * pre-decremented in the convolution loops.
+                         */
+                        %<OUT_T> *start = mem0 + mIdx + 1;
+                        %<OUT_T> *mem   = start;
+                        %if (FILT_COMPLEX)
+                            sum->re += CMULT_RE(*in, *cffPtr);
+                            sum->im += CMULT_IM(*in, *cffPtr);
+                            ++cffPtr;
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+                        %elseif (IN_COMPLEX) 
+                            sum->re += in->re * (*cffPtr  );
+                            sum->im += in->im * (*cffPtr++);
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+                        %else
+                            *sum += *in * (*cffPtr++);
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) *sum += *mem * (*cffPtr++);
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) *sum += *mem * (*cffPtr++);
+                        %endif
+
+                        if (++pIdx == 2) {
+                            %<OUT_T> *y = y0 + iIdx;
+                            if (tinBuff1) y += %<OUTBUFF_SIZE>;
+                            *y = *sum;
+                            %if (OUT_COMPLEX)
+                                sum->re = sum->im = 0.0;
+                            %else
+                                *sum = 0.0;
+                            %endif
+                            if (++iIdx == oframe) {
+                                iIdx = 0;
+                                tinBuff1 = !tinBuff1;
+                            }
+                            pIdx = 0;
+                            cffPtr = cffHBase;
+                        }
+                        if (++mIdx == %<HP_ORDER>) mIdx = 0;
+                        *(mem0+mIdx) = *in++;
+                    } /* frame */
+                    if (iIdx == oframe) iIdx = 0;
+                    /*doFilter(S, iBuff, oBuff, (*sums)++, *mem0, numSamps, &pIdx, &mIdx, &iIdx,
+                     &cffRPtr, &cffIPtr, hpOrder, mxGetPr(HFILT_ARG), mxGetPi(HFILT_ARG), &tinBuff1);*/
+                    *(&%<LibBlockPWork("","","",0)> + filtIdx++) = cffPtr;
+                    if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) *(memIdx) = mIdx;
+                    mem0 += %<HP_ORDER>;
+
+                    /* Lowpass Filter accesses the same inputs and has the same phase */
+                    memIdx = %<LibBlockDWorkAddr(MemIdx, "filtIdx", "", 0)>;
+                    pIdx = *phaseIdx;
+                    iIdx = *inIdx;
+                    mIdx = *(memIdx);
+                    cffPtr = %<LibBlockPWork("","filtIdx","",0)>;
+                    %if (NUM_LEVELS > 1)
+                        if (%<lcv2 == "" ? sigIdx2 : lcv2> == %<NUM_LEVELS - 1>) {
+                    %else
+                        {
+                    %endif
+	                    oBuff     = out;
+	                    out      += numSamps2;
+	                    tinBuff1  = %<LibBlockDWork(WrBuff1, "", "", 0)>;
+                    %if (NUM_LEVELS > 1)
+                        }
+                        else {
+                            oBuff   += numSamps2;
+	                        tinBuff1 = 0;
+	                        iIdx     = 0;
+                    %endif
+                        }   
+                    in = iBuff;
+                    y0 = oBuff;
+                    sum = sums++;
+                    for (i=0; i < numSamps; i++) {
+                        %<OUT_T> *start = mem0 + mIdx + 1;
+                        %<OUT_T> *mem   = start;
+                        %if (FILT_COMPLEX)
+                            sum->re += CMULT_RE(*in, *cffPtr);
+                            sum->im += CMULT_IM(*in, *cffPtr);
+                            ++cffPtr;
+                            while ((mem-=2) >= mem0) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+                            mem += %<LP_ORDER + 2>;
+                            while ((mem-=2) >= start) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+                        %elseif (IN_COMPLEX) 
+                            sum->re += in->re * (*cffPtr  );
+                            sum->im += in->im * (*cffPtr++);
+
+                            while ((mem-=2) >= mem0) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+
+                            mem += %<LP_ORDER + 2>;
+
+                            while ((mem-=2) >= start) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+                        %else
+                            *sum += *in * *cffPtr++;
+
+                            while ((mem-=2) >= mem0) *sum += *mem * (*cffPtr++);
+
+                            mem += %<LP_ORDER + 2>;
+
+                            while ((mem-=2) >= start) *sum += *mem * (*cffPtr++);
+                        %endif
+                        if (++pIdx == 2) {
+                            %<OUT_T> *y = y0 + iIdx;
+                            if (tinBuff1) y += %<OUTBUFF_SIZE>;
+                            *y = *sum;
+                            %if (OUT_COMPLEX)
+                                sum->re = 0.0;
+                                sum->im = 0.0;
+                            %else
+                                *sum = 0.0;
+                            %endif
+
+                            if (++iIdx == oframe) {
+                                iIdx = 0;
+                                tinBuff1 = !tinBuff1;
+                            }
+
+                            pIdx   = 0;
+                            cffPtr = cffLBase;
+                        }
+
+                        if (++mIdx == %<LP_ORDER>) mIdx = 0;
+
+                        *(mem0+mIdx) = *in++;
+                    } /* frame */
+
+                    if (iIdx == oframe) iIdx = 0;
+
+                    /*doFilter(S, iBuff, oBuff, (*sums)++, *mem0, numSamps, &pIdx, &mIdx, &iIdx,
+	                 &cffRPtr, &cffIPtr, lpOrder, mxGetPr(LFILT_ARG), mxGetPi(LFILT_ARG), &tinBuff1);*/
+                    *(&%<LibBlockPWork("","","",0)> + filtIdx++) = cffPtr;
+
+                    if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) *(memIdx) = mIdx;
+
+                    mem0  += %<LP_ORDER>;
+                    iBuff += numSamps;
+                    oBuff += numSamps2;
+                }
+
+                %if (NUM_CHANS > 1)
+                    if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) {
+                %endif
+                *phaseIdx = pIdx;
+                *inIdx = iIdx;
+                %if (NUM_CHANS > 1)
+                    }
+                %endif
+
+                N        *= 2;
+                numSamps  = numSamps2;
+                swap      = inBuff;
+                inBuff    = lpBuff;
+                lpBuff    = swap;
+                %endroll  %% LEVELS
+
+                /* Switch output buffers here */
+                %if (NUM_CHANS > 1)
+                    if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) {
+                %endif
+                    %<LibBlockDWork(WrBuff1, "", "", 0)> = !(%<LibBlockDWork(WrBuff1, "", "", 0)>);
+                %if (NUM_CHANS > 1)
+                    }
+                %endif
+                }
+            %else  %% ASYMMETRIC
+                {
+                int_T       pwIdx       = 0;
+                boolean_T   *wrBuff1    = %<LibBlockDWorkAddr(WrBuff1, "", "", 0)>;
+
+                %roll sigIdx2 = [ 0:%<NUM_LEVELS - 1> ], lcv2 = 1, block, "InlineRoller"
+                    int32_T       pIdx        = %<LibBlockDWork(PhaseIdx,"pwIdx","",0)>;
+                    int32_T       iIdx        = %<LibBlockDWork(InIdx,"pwIdx","",0)>;
+                    int32_T       mIdx        = %<LibBlockDWork(MemIdx,"filtIdx","",0)>;
+                    %<FILT_T>  *cffPtr      = %<LibBlockPWork("","filtIdx","",0)>;
+                    boolean_T   tinBuff1    = *wrBuff1;
+                    %<OUT_T>   *in          = inBuff;
+                    %<OUT_T>   *y0          = out;
+                    %<OUT_T>   *sum         = sums++;
+                    %<OUT_T>   *lpout;
+                    boolean_T   sBuff1;
+                    int_T       oframe      = numSamps >> 1; /* integer divide by 2 */
+                    int_T       i;
+
+                    /* Each channel uses the same filter phase but accesses
+                     * its own state memory and input.
+                     */
+                    for (i=0; i < numSamps; i++) {
+                        /* The pointer to state memory is set dFactor samples past the
+                         * desired location.  This is because the memory pointer is
+                         * pre-decremented in the convolution loops.
+                         */
+                        %<OUT_T> *start = mem0 + mIdx + 1;
+                        %<OUT_T> *mem   = start;
+                        %if (FILT_COMPLEX)
+                            sum->re += CMULT_RE(*in, *cffPtr);
+                            sum->im += CMULT_IM(*in, *cffPtr);
+                            cffPtr++;
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+
+                        %elseif (IN_COMPLEX) 
+                            sum->re += in->re * (*cffPtr  );
+                            sum->im += in->im * (*cffPtr++);
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+                        %else
+                            *sum += *in * (*cffPtr++);
+
+                            /* Perform the convolution for this phase (on every dFactor samples)
+                             * until we reach the start of the (linear) state memory */
+                            while ((mem-=2) >= mem0) *sum += *mem * (*cffPtr++);
+
+                            /* wrap the state memory pointer to the next element */
+                            mem += %<HP_ORDER + 2>;
+
+                            /* Finish the convolution for this phase */
+                            while ((mem-=2) >= start) *sum += *mem * (*cffPtr++);
+                        %endif
+
+                        if (++pIdx == 2) {
+                            %<OUT_T> *y = y0 + iIdx;
+                            if (tinBuff1) y += %<OUTBUFF_SIZE>;
+
+                            *y = *sum;
+                            %if (OUT_COMPLEX)
+                                sum->re = 0.0;
+                                sum->im = 0.0;
+                            %else
+                                *sum = 0.0;
+                            %endif
+
+                            if (++iIdx == oframe) {
+                                iIdx     = 0;
+                                tinBuff1 = !tinBuff1;
+                            }
+
+                            pIdx   = 0;
+                            cffPtr = cffHBase;
+                        }
+
+                        if (++mIdx == %<HP_ORDER>) mIdx = 0;
+
+                        *(mem0+mIdx) = *in++;
+                    } /* frame */
+
+                    if (iIdx == oframe) iIdx = 0;
+
+                    sBuff1 = tinBuff1;
+                    
+                    %if (NUM_CHANS > 1)
+                        if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) {
+                    %endif
+                        %<LibBlockDWork(MemIdx,"filtIdx","",0)> = mIdx;
+                    %if (NUM_CHANS > 1)
+                        }
+                    %endif
+
+                    %<LibBlockPWork("","filtIdx++","",0)>= cffPtr;
+                    mem0 += %<HP_ORDER>;
+                    pIdx = %<LibBlockDWork(PhaseIdx,"pwIdx","",0)>;
+                    iIdx = %<LibBlockDWork(InIdx,"pwIdx","",0)>;
+                    mIdx = %<LibBlockDWork(MemIdx,"filtIdx","",0)>;
+                    cffPtr = %<LibBlockPWork("","filtIdx","",0)>;
+
+                    if (%<lcv2 == "" ? sigIdx2 : lcv2> == %<NUM_LEVELS - 1>) {
+                        out      += (numSamps >> 1); /* integer divide by 2 */
+                        tinBuff1  = *wrBuff1;
+                        lpout     = out;
+                    }
+                    else {
+                        tinBuff1 = 0;
+                        lpout = lpBuff;
+                    }
+
+                    in     = inBuff;
+                    y0     = lpout;
+                    sum    = sums++;
+
+                    for (i=0; i < numSamps; i++) {
+                        %<OUT_T> *start = mem0 + mIdx + 1;
+                        %<OUT_T> *mem   = start;
+                        %if (FILT_COMPLEX)
+                            sum->re += CMULT_RE(*in, *cffPtr);
+                            sum->im += CMULT_IM(*in, *cffPtr);
+                            ++cffPtr;
+
+                            while ((mem-=2) >= mem0) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+
+                            mem += %<LP_ORDER + 2>;
+
+                            while ((mem-=2) >= start) {
+                                sum->re += CMULT_RE(*mem, *cffPtr);
+                                sum->im += CMULT_IM(*mem, *cffPtr);
+                                cffPtr++;
+                            }
+
+                        %elseif (IN_COMPLEX) 
+                            sum->re += in->re * (*cffPtr  );
+                            sum->im += in->im * (*cffPtr++);
+
+                            while ((mem-=2) >= mem0) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+
+                            mem += %<LP_ORDER + 2>;
+
+                            while ((mem-=2) >= start) {
+                                sum->re += mem->re * (*cffPtr  );
+                                sum->im += mem->im * (*cffPtr++);
+                            }
+                        %else
+                            *sum += *in * (*cffPtr++);
+                            
+                            while ((mem-=2) >= mem0) *sum += *mem * (*cffPtr++);
+                            
+                            mem += %<LP_ORDER + 2>;
+
+                            while ((mem-=2) >= start) *sum += *mem * (*cffPtr++);
+                        %endif
+                        if (++pIdx == 2) {
+                            %<OUT_T> *y = y0 + iIdx;
+                            if (tinBuff1) y += %<OUTBUFF_SIZE>;
+                            *y = *sum;
+                            %if (OUT_COMPLEX)
+                                sum->re = 0.0;
+                                sum->im = 0.0;
+                            %else
+                                *sum = 0.0;
+                            %endif
+                            if (++iIdx == oframe) {
+                                iIdx = 0;
+                                tinBuff1 = !tinBuff1;
+                            }
+                            pIdx = 0;
+                            cffPtr = cffLBase;
+                        }
+                        if (++mIdx == %<LP_ORDER>) mIdx = 0;
+                        *(mem0+mIdx) = *in++;
+                    } /* frame */
+                    if (iIdx == oframe) iIdx = 0;
+                    %if (NUM_CHANS > 1)
+                        if (%<lcv1 == "" ? sigIdx1 : lcv1> == %<NUM_CHANS - 1>) {
+                    %endif
+                    /* Update the counters and the output buffer selector */
+	            %<LibBlockDWork(PhaseIdx,"pwIdx","",0)> = pIdx;
+	            %<LibBlockDWork(InIdx,"pwIdx","",0)> = iIdx;
+	            %<LibBlockDWork(MemIdx,"filtIdx","",0)> = mIdx;
+	            *wrBuff1 = sBuff1;
+                    %if (NUM_CHANS > 1)
+                        }
+                    %endif
+                    /* Next input frame is the output of the lowpass filter */
+                    *(&%<LibBlockPWork("","","",0)> + filtIdx++) = cffPtr;
+                    inBuff = lpBuff;
+                    if (lpBuff == lpBuff0) {
+                        lpBuff = lpBuff0 + %<LPBUFFSIZE>;
+                    }
+                    else {
+                        lpBuff = lpBuff0;
+                    }
+
+                    pwIdx++;
+                    wrBuff1++;
+
+                    mem0      += %<LP_ORDER>;
+                    numSamps >>= 1; /* integer divide by 2 */
+                    out       += numSamps;
+                %endroll %% LEVELS
+                }
+            %endif  %% SYMMETRIC
+        %endroll  %% CHANNELS
+        }
+    %if !LibIsSFcnSingleRate(block)
+      } /* Sample Hit */
+    %endif
+}
+%endfunction  %% UpdateCode
+
+
+%% Function: OutputsCode ==========================================================
+%%
+%function OutputsCode(block, system) Output
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    %%
+    %if (TREE == ASYMMETRIC)
+        /* The iterative filtering routine has the outputs grouped by channel */
+        %if (SAMPLE_BASED)
+            /* Output ports have width=numChans but different sample times */ 
+            %assign FRAME = 1
+            %foreach II = NUM_LEVELS-1
+	        %assign FRAME = FRAME * 2
+            %endforeach
+            %assign CHAN_SIZE = 2 * FRAME
+	    %<OUT_T> *outPorts[%<NumDataOutputPorts>];
+	    int32_T    *outIdx     = %<LibBlockDWorkAddr(OutIdx, "", "", 0)>;
+	    int_T    offset      = 0;
+	    int_T    frame       = %<FRAME>;
+	    %%
+        %if !LibIsSFcnSingleRate(block)
+	      %assign initStr = ""
+	      %foreach idx = SIZE(OutputPortTIDs,1)
+	        %% Get global TID for each output port:
+	        %assign initStr = initStr + "%<OutputPortTIDs[idx]>" + ...
+		  "%<(idx+1) == SIZE(OutputPortTIDs,1) ? "": ", ">" + ...
+		  "%<(idx+1) % 20 == 0? STRING("\n"): "">"
+	      %endforeach
+	      static const int_T tids[%<SIZE(OutputPortTIDs,1)>] = {%<initStr>};
+	    %endif
+        %foreach II = NumDataOutputPorts
+            outPorts[%<II>] = %<LibBlockOutputSignalAddr(II,"","",0)>;
+        %endforeach
+            %roll sigIdx1 = [ 0:%<NumDataOutputPorts - 1> ], lcv1 = 1, block, "InlineRoller"
+              %if !LibIsSFcnSingleRate(block)
+                %assign tidstr = "tids[%<lcv1 == "" ? sigIdx1 : lcv1>]"
+                %% tidstr is the GLOBAL TID, so use LibIsSampleHit, not LibIsSFcnSampleHit:
+                if (%<LibIsSampleHit(tidstr)>) {
+              %endif
+		%<OUT_T> *yout  = outPorts[%<lcv1 == "" ? sigIdx1 : lcv1>];
+		%<OUT_T> *y     = %<LibBlockDWorkAddr(OutBuff, "", "", 0)> + offset + *outIdx;
+		if (*outIdx >= frame) y += %<OUTBUFF_SIZE> - frame;
+		%roll sigIdx2 = [ 0:%<NUM_CHANS - 1> ], lcv2 = 3, block, "InlineRoller"
+		  *yout++ = *y;
+		  y += %<CHAN_SIZE>;
+		%endroll
+		if (++(*outIdx) == 2*frame) *outIdx = 0;
+              %if !LibIsSFcnSingleRate(block)
+	         }
+	      %endif
+	      ++outIdx;
+	      offset += frame;
+	      if (%<lcv1 == "" ? sigIdx1 : lcv1> < %<NUM_LEVELS - 1>) frame /= 2;
+	    %endroll
+        %else 
+            /* Output ports have the same sample time but different widths */
+            %assign FRAME = LibDataOutputPortWidth(0) / NUM_CHANS
+	    %if !LibIsSFcnSingleRate(block)
+	      if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+	    %endif
+	    %%
+	    %<OUT_T> *outPorts[%<NumDataOutputPorts>];
+	    int32_T    *outIdx      = %<LibBlockDWorkAddr(OutIdx, "", "", 0)>;
+	    int_T    offset       = 0;
+	    int_T    outPortWidth = %<FRAME>;
+        %foreach II = NumDataOutputPorts
+            outPorts[%<II>] = %<LibBlockOutputSignalAddr(II,"","",0)>;
+        %endforeach
+	    %%
+	    %assign CHAN_SIZE = 2 * FRAME
+	    %roll sigIdx1 = [ 0:%<NumDataOutputPorts - 1> ], lcv1 = 1, block, "InlineRoller"
+                    %<OUT_T> *yout  = outPorts[%<lcv1 == "" ? sigIdx1 : lcv1>];
+                    %<OUT_T> *y     = %<LibBlockDWorkAddr(OutBuff, "", "", 0)> + offset;
+                    int_T  i;
+
+                    if (*outIdx > 0) y += %<OUTBUFF_SIZE>;
+                    %roll sigIdx2 = [ 0:%<NUM_CHANS - 1> ], lcv2 = 1, block, "InlineRoller"
+                        for (i=0; i < outPortWidth; i++) *yout++ = *(y + i);
+
+                        y += %<CHAN_SIZE>;
+                    %endroll
+                    if (*outIdx > 0) *outIdx = 0;
+                    else             *outIdx = 1;
+                    
+                    outIdx++;
+                    offset += outPortWidth;
+
+                    if (%<lcv1 == "" ? sigIdx1 : lcv1> < %<NUM_LEVELS - 1>) {
+		      outPortWidth >>= 1; /* integer divide by 2 */
+		    }
+		  %endroll
+	    %if !LibIsSFcnSingleRate(block)
+	      }
+	    %endif
+	  %endif  %% SAMPLE_BASED
+    %else
+        /* Symmetric Tree: all output ports have same sample time and same width.
+         * The iterative filtering routine has the outputs grouped by channel.
+         */
+        %assign FRAME   = LibDataOutputPortWidth(0) / NUM_CHANS
+        %assign CHAN_SIZE = NumDataOutputPorts * FRAME 
+	%if !LibIsSFcnSingleRate(block)
+	  if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) { 
+        %endif
+	  %<OUT_T> *outPorts[%<NumDataOutputPorts>];
+	  int32_T   *outIdx     = %<LibBlockDWorkAddr(OutIdx, "", "", 0)>;
+	  int_T   offset      = 0;
+      %foreach II = NumDataOutputPorts
+          outPorts[%<II>] = %<LibBlockOutputSignalAddr(II,"","",0)>;
+      %endforeach
+	  %roll sigIdx1 = [ 0:%<NumDataOutputPorts - 1> ], lcv1 = 1, block, "InlineRoller"
+                %<OUT_T> *yout  = outPorts[%<lcv1 == "" ? sigIdx1 : lcv1>];
+                %<OUT_T> *y     = %<LibBlockDWorkAddr(OutBuff, "", "", 0)> + offset;
+                if (*outIdx > 0) y += %<OUTBUFF_SIZE>;
+                %roll sigIdx2 = [ 0:%<NUM_CHANS - 1> ], lcv2 = 1, block, "InlineRoller"
+                    %if (SAMPLE_BASED)
+                        *yout++ = *y;
+                        y += %<CHAN_SIZE>;
+                    %else
+                        %roll sigIdx3 = [ 0:%<FRAME - 1> ], lcv3 = 1, block, "InlineRoller"
+                            *yout++ = *y++;
+                        %endroll
+                        y += %<CHAN_SIZE - FRAME>;
+                    %endif
+		%endroll
+                offset += %<FRAME>;
+            %endroll
+            if (*outIdx > 0) *outIdx = 0;
+            else *outIdx = 1;
+          %if !LibIsSFcnSingleRate(block)
+	    }
+	  %endif
+    %endif
+}
+
+%endfunction  %% OutputsCode
+
+%% [EOF] sdspadyad.tlc

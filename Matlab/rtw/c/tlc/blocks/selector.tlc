@@ -1,0 +1,957 @@
+%% 
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Selector block target file
+
+%implements Selector "C"
+
+%include "indexerlib.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%   Set up this block to be expression compliant and allow wide signals
+%%   at the index ports.
+%%
+%function BlockInstanceSetup(block,system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+  %if NumDataInputPorts > 1
+    %<LibBlockInputSignalAllowScalarExpandedExpr(block,1)>
+    %if NumDataInputPorts > 2
+      %<LibBlockInputSignalAllowScalarExpandedExpr(block,2)>
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block output function.
+%function Outputs(block, system) Output
+  %assign selMode = ParamSettings.SelectorMode
+  %%
+  %if (selMode == "MatSel_ExtRows_IntCols") || ...
+    (selMode == "MatSel_ExtRows_AllCols") || ...
+    (selMode == "MatSel_ExtRows_ExtCols")
+    %assign rowPortIdx = ParamSettings.RowPortIdx
+    %<GenerateUpdateWorkAreaCode(block, rowPortIdx, 0)>
+  %endif
+  %%
+  %if (selMode == "MatSel_IntRows_ExtCols") || ...
+    (selMode == "MatSel_AllRows_ExtCols")
+      %assign colPortIdx = ParamSettings.ColPortIdx
+      %<GenerateUpdateWorkAreaCode(block, colPortIdx, 0)>
+  %endif
+  %%
+  %if (selMode == "MatSel_ExtRows_ExtCols")
+      %assign colPortIdx = ParamSettings.ColPortIdx
+      %<GenerateUpdateWorkAreaCode(block, colPortIdx, 1)>
+  %endif
+  %%
+  %switch(selMode)
+    %case "VectSel_ExtEls"
+      %<GenerateVectSel_ExtEls_Code(block,system,"")>
+      %break
+    %case "MatSel_IntRows_IntCols"
+      %<GenerateMatSel_IntRowsIntCols_Code(block,system)>
+      %break
+    %case "MatSel_AllRows_IntCols"
+      %<GenerateMatSel_AllRowsIntCols_Code(block,system)>
+      %break
+    %case "MatSel_ExtRows_IntCols"
+      %<GenerateMatSel_ExtRowsIntCols_Code(block,system)>
+      %break
+    %case "MatSel_IntRows_AllCols"
+      %<GenerateMatSel_IntRowsAllCols_Code(block,system)>
+      %break
+    %case "MatSel_AllRows_AllCols"
+      %<GenerateMatSel_AllRowsAllCols_Code(block,system)>
+      %break
+    %case "MatSel_ExtRows_AllCols"
+      %<GenerateMatSel_ExtRowsAllCols_Code(block,system)>      
+      %break
+    %case "MatSel_IntRows_ExtCols"
+      %<GenerateMatSel_IntRowsExtCols_Code(block,system)>
+      %break
+    %case "MatSel_AllRows_ExtCols"
+      %<GenerateMatSel_AllRowsExtCols_Code(block,system)>
+      %break
+    %case "MatSel_ExtRows_ExtCols"
+      %<GenerateMatSel_ExtRowsExtCols_Code(block,system)>
+      %break      
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Invalid selector mode specified: %<selMode>"
+      %<LibBlockReportError([], errTxt)>
+      %%END_ASSERT
+  %endswitch %% switch(selMode)
+  %%
+%endfunction  %% Outputs
+
+%% Function: OutputsForTID====================================================
+%%
+%% Abstract:
+%%      Since the port-based sample time is only done for VectSel_ExtEls mode
+%%   Rate grouping support is only for VectSel_ExtEls
+%function OutputsForTID(block, system,tid) Output
+  %assign selMode = ParamSettings.SelectorMode
+  %%
+  %if (selMode == "VectSel_ExtEls")
+    %<GenerateVectSel_ExtEls_Code(block,system,tid)>
+  %else
+    %<Outputs(block,system)>
+  %endif
+%endfunction  %% Outputs
+
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return the appropriate reference to the parameter.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+
+  %assign IndexSt  = ParamSettings.IndexIsStartValue
+  %assign str      = (LibBlockIsIndexZeroBased(block))? "" : "-1"
+  
+  %switch retType
+    %case "Signal"
+      %%
+      %assign elPortIdx  = ParamSettings.ElementPortIdx
+      %assign inpDType   = LibBlockInputSignalAliasedThruDataTypeId(1)
+      %if LibBlockOutputSignalWidth(0) >= RollThreshold
+          %assign lcvidx = "%<ucv>"
+      %else
+          %assign lcvidx = "%<idx>"
+      %endif
+      %if inpDType != tSS_INT32
+          %if !IndexSt
+	      %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,ucv,lcv,idx)>)%<str>"
+        %else
+            %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,ucv,"",0)>)%<str>+%<lcvidx>"
+        %endif
+      %else
+          %if !IndexSt
+	      %assign inpIdx = "%<LibBlockInputSignal(1,ucv,lcv,idx)>%<str>"
+        %else
+            %assign inpIdx = "%<LibBlockInputSignal(1,ucv,"",0)>%<str>+%<lcvidx>"
+        %endif
+      %endif
+      %return LibBlockInputSignal(0,inpIdx,"",0)
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+
+%% Function: GenerateVectSel_ExtEls_Code =======================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in vector mode with
+%%      external element indices.
+%function GenerateVectSel_ExtEls_Code(block, system, tid) Output
+  %%
+  %assign elPortIdx   = ParamSettings.ElementPortIdx
+  %assign width       = DataInputPort[elPortIdx].Width
+  %assign widthOut    = DataOutputPort[0].Width
+  %assign rollRegion  = [0:%<widthOut-1>]
+  %assign rollRegionI = [0:%<width-1>]
+  %assign inpDType    = LibBlockInputSignalAliasedThruDataTypeId(1)
+ 
+  %assign str     = (LibBlockIsIndexZeroBased(block))? "" : "-1"
+  %assign IndexSt = ParamSettings.IndexIsStartValue
+  %assign useMemcpy = 0     %%memcpy can be used when index is a starting value
+  %with block
+    %% If the block TID is constant then we do not need to do anything
+    %% and the block is reported as NOT having PortBasedSampleTimes in the
+    %% model.rtw file (due to the order of the if checks in 
+    %% rtwgen_block.cpp::WriteBlockTidInfo) so the LibBlockPortSampleTime 
+    %% call below will cause a fatal error
+    %if (TYPE(TID) == "String" || TYPE(TID) == "Identifier") && TID == "constant"
+      %return
+    %endif
+    %assign allportTsEqual = 0
+    %if PortBasedSampleTimes == "no" || LibPortBasedSampleTimeBlockIsTriggered(block)
+      %assign allportTsEqual = 1
+    %else 
+      %assign InTs0  = LibBlockPortSampleTime("InputPortIdx0")
+      %assign InTs1  = LibBlockPortSampleTime("InputPortIdx1")
+      %assign OutTs0 = LibBlockPortSampleTime("OutputPortIdx0")
+      
+      %if ((TYPE(InTs0) == TYPE(InTs1)) && (TYPE(InTs0) == TYPE(OutTs0)))
+    	%if (( InTs0 == InTs1) && (InTs0 == OutTs0))
+	      %assign allportTsEqual = 1
+        %endif
+      %endif
+    %endif
+    
+    %if (widthOut >= RollThreshold && IndexSt)
+      %%use memcpy when there are more elements in the index as starting value case
+      %<GenerateMemcpyCode(block, system, allportTsEqual, inpDType, str, widthOut)>
+    %else
+      %if allportTsEqual
+        %assign rollVars   = ["u1","y0"]
+        %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+          %if inpDType != tSS_INT32
+            %if !IndexSt
+              %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"",lcv,idx)>)%<str>"
+            %else
+              %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"","",0)>)%<str>+%<idx>"
+            %endif
+          %else 
+            %if !IndexSt
+              %assign inpIdx = "%<LibBlockInputSignal(1,"",lcv,idx)>%<str>"
+            %else
+              %assign inpIdx = "%<LibBlockInputSignal(1,"","",0)>%<str>+%<idx>"
+            %endif
+          %endif
+          %<LibBlockOutputSignal(0,"",lcv,idx)> = ...
+            %<LibBlockInputSignal(0,inpIdx,"",0)>;
+        %endroll
+      %else %% port-based
+        %assign rollVars   = ["u1","y0","IWork"]
+        %assign genInTs1Code = 0
+        %if TYPE(InTs1) == "Number" 
+          %assign genInTs1Code = 1
+        %elseif InTs1 != "constant"
+          %assign genInTs1Code = 1
+        %endif
+            
+        %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(system)
+            
+        %if genInTs1Code
+	  %<FcnGenerateTidGuardOpenCode(LibBlockPortSampleTime("InputPortIdx1"))>
+	  %if !isRateGrouping || ISEQUAL(tid, InTs1)
+	    /* write index into work vector */
+	    %roll idx = rollRegionI, lcv = RollThreshold, block, "Roller", rollVars
+	      %assign inpIdx = LibBlockIWork(IWork,"",lcv,idx)
+	      %if inpDType != tSS_INT32
+		%<inpIdx> = (int32_T)(%<LibBlockInputSignal(1,"",lcv,idx)>)%<str>;
+	      %else
+		%<inpIdx> = %<LibBlockInputSignal(1,"",lcv,idx)>%<str>;
+	      %endif
+	    %endroll
+	  %endif
+          %<FcnGenerateTidGuardCloseCode(LibBlockPortSampleTime("InputPortIdx1"))>
+        %endif
+        
+        %assign InTs0 = ISEQUAL(InTs0,"constant") ? -2 : InTs0
+	%<FcnGenerateTidGuardOpenCode(LibBlockPortSampleTime("OutputPortIdx0"))>
+	%if !isRateGrouping || ISEQUAL(tid, InTs0) 
+	  %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	    %if genInTs1Code
+	      %if !IndexSt
+		%assign inpIdx = LibBlockIWork(IWork,"",lcv,idx)
+	      %else
+		%assign inpIdx = LibBlockIWork(IWork,"","",0)
+	      %endif
+	    %else
+	      %if inpDType != tSS_INT32
+		%if !IndexSt
+		  %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"",lcv,idx)>)%<str>"
+		%else
+		  %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"","",0)>)%<str>+%<idx>"
+		%endif
+	      %else 
+		%if !IndexSt
+		  %assign inpIdx = "%<LibBlockInputSignal(1,"",lcv,idx)>%<str>"
+		%else
+		  %assign inpIdx = "%<LibBlockInputSignal(1,"","",0)>%<str>+%<idx>"
+		%endif
+	      %endif
+	    %endif
+	    /* output the correct element of input 0 */
+	    %<LibBlockOutputSignal(0,"",lcv,idx)> = ...
+	      %<LibBlockInputSignal(0,inpIdx,"",0)>;
+	  %endroll
+	%endif
+        %<FcnGenerateTidGuardCloseCode(LibBlockPortSampleTime("OutputPortIdx0"))>
+      %endif
+    %endif
+  %endwith    
+%endfunction  %% GenerateVectSel_ExtEls_Code
+
+
+%% Function: GenerateMatSel_IntRowsIntCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      internal row and column indices.
+%function GenerateMatSel_IntRowsIntCols_Code(block, system) Output
+  %%
+  %assign iDims     = LibBlockInputSignalDimensions(0)
+  %assign oDims     = LibBlockOutputSignalDimensions(0)
+  %assign nInRows   = iDims[0]
+  %assign nInCols   = iDims[1]
+  %assign nOutRows  = oDims[0]
+  %assign nOutCols  = oDims[1]
+  %assign rows      = ParamSettings.Rows
+  %assign cols      = ParamSettings.Columns
+  %assign rowVName  = "rowIndices"
+  %assign colVName  = "colIndices"
+  %assign rowsRoll  = (nOutRows >= RollThreshold)
+  %assign colsRoll  = (nOutCols >= RollThreshold)
+  %assign rollVars1 = ["u0","y0"]
+  %assign rollVars2 = (colsRoll) ? [] : rollVars1
+  %assign IndexSt   = ParamSettings.IndexIsStartValue
+
+  %assign base = (LibBlockIsIndexZeroBased(block))? 0 : 1
+  
+  {
+    %if !IndexSt
+      %if rowsRoll
+        %<GenerateStaticConstDecl(rowVName,nOutRows,rows,base)>
+      %endif
+      %if colsRoll
+        %<GenerateStaticConstDecl(colVName,nOutCols,cols,base)>
+      %endif
+    \
+      %assign rowRollReg = [0:%<nOutRows-1>]
+      %assign colRollReg = [0:%<nOutCols-1>]
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+      %if colsRoll && rowsRoll
+        %assign rowVidx = "[%<lcvR>]"
+        %assign colVidx = "[%<lcvC>]"
+        %assign inpStr  = ...
+          "(%<nInRows>*%<colVName>%<colVidx>)+%<rowVName>%<rowVidx>"
+      %elseif colsRoll
+        %assign colVidx = "[%<lcvC>]"
+        %assign rowOffset = rows[rIdx]-base
+        %assign inpStr = "(%<nInRows>*%<colVName>%<colVidx>)+%<rowOffset>"
+      %elseif rowsRoll
+        %assign rowVidx = "[%<lcvR>]"
+        %assign colOffset = nInRows * (cols[cIdx]-base)
+        %assign inpStr = "%<colOffset>+%<rowVName>%<rowVidx>"
+      %else
+        %assign rcOffset = (nInRows * (cols[cIdx]-base))+(rows[rIdx]-base)
+        %assign inpStr = "%<rcOffset>"
+      %endif
+      %%
+      %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                           lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+      %endroll
+    %endroll
+  %else %%IndexSt
+    %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+    byte_T *ui = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+    byte_T *yi = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+    int32_T outRowSize = %<nOutRows>*%<elmSize>;
+    %if nOutCols != 1 %%no loop if only one col in output
+    int32_T inRowSize = %<nInRows>*%<elmSize>;
+    int32_T i;
+    %endif
+
+    %assign offset = rows[0] - base + (cols[0] - base) * nInRows
+    ui += %<offset> * %<elmSize>;
+    %if nOutCols != 1
+    for (i=0; i < %<nOutCols>; i++) {
+    %endif
+        memcpy(yi, ui, outRowSize);
+    %if nOutCols != 1
+        ui += inRowSize;
+        yi += outRowSize;
+    }
+    %endif
+  %endif
+  }
+%endfunction  %% GenerateMatSel_IntRowsIntCols_Code
+
+
+%% Function: GenerateMatSel_AllRowsIntCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode - 
+%%      all rows + internal column indices
+%function GenerateMatSel_AllRowsIntCols_Code(block, system) Output
+  %%
+  %assign iDims     = LibBlockInputSignalDimensions(0)
+  %assign oDims     = LibBlockOutputSignalDimensions(0)
+  %assign nInRows   = iDims[0]
+  %assign nInCols   = iDims[1]
+  %assign nOutRows  = oDims[0]
+  %assign nOutCols  = oDims[1]
+  %assign cols      = ParamSettings.Columns
+  %assign colVName  = "colIndices"
+  %assign rowsRoll  = (nOutRows >= RollThreshold)
+  %assign colsRoll  = (nOutCols >= RollThreshold)
+  %assign rollVars1 = ["u0","y0"]
+  %assign rollVars2 = (colsRoll) ? [] : rollVars1
+  %assign IndexSt   = ParamSettings.IndexIsStartValue
+
+  %assign base = (LibBlockIsIndexZeroBased(block))? 0 : 1
+  
+  {
+    %if !IndexSt
+        %if colsRoll
+          %<GenerateStaticConstDecl(colVName,nOutCols,cols,base)>
+        %endif
+      \
+        %assign rowRollReg = [0:%<nOutRows-1>]
+        %assign colRollReg = [0:%<nOutCols-1>] 
+        %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+          %%
+          %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+        %if colsRoll && rowsRoll
+          %assign colVidx = "[%<lcvC>]"
+          %assign inpStr = "(%<nInRows>*%<colVName>%<colVidx>)+%<lcvR>"
+        %elseif colsRoll
+          %assign colVidx = "[%<lcvC>]"
+          %assign inpStr = "(%<nInRows>*%<colVName>%<colVidx>)+%<rIdx>"
+        %elseif rowsRoll
+          %assign colOffset = nInRows * (cols[cIdx]-base)
+          %assign inpStr = "%<colOffset>+%<lcvR>"
+        %else
+          %assign rcOffset = (nInRows * (cols[cIdx]-base))+rIdx
+          %assign inpStr = "%<rcOffset>"
+        %endif
+        %%
+        %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                             lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+          %endroll
+        %endroll
+    %else %%IndexSt
+        %assign colOffset = nOutRows * (cols[0]-base)
+        int8_T *ui        = (int8_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+        int32_T  elmSize  = sizeof(%<LibBlockInputSignalDataTypeName(0, "")>);
+
+        ui += %<colOffset> * elmSize;
+        memcpy(%<LibBlockOutputSignalAddr(0,"","",0)>, ui, \
+                        %<LibBlockOutputSignalWidth(0)>*elmSize);
+    %endif
+  }
+%endfunction  %% GenerateMatSel_AllRowsIntCols_Code
+
+
+%% Function: GenerateMatSel_IntRowsAllCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      internal row indices + all cols
+%function GenerateMatSel_IntRowsAllCols_Code(block, system) Output
+  %%
+  %assign iDims     = LibBlockInputSignalDimensions(0)
+  %assign oDims     = LibBlockOutputSignalDimensions(0)
+  %assign nInRows   = iDims[0]
+  %assign nInCols   = iDims[1]
+  %assign nOutRows  = oDims[0]
+  %assign nOutCols  = oDims[1]
+  %assign rows      = ParamSettings.Rows
+  %assign rowVName  = "rowIndices"
+  %assign rowsRoll  = (nOutRows >= RollThreshold)
+  %assign colsRoll  = (nOutCols >= RollThreshold)
+  %assign rollVars1 = ["u0","y0"]
+  %assign rollVars2 = (colsRoll) ? [] : rollVars1
+  %assign IndexSt   = ParamSettings.IndexIsStartValue
+
+  %assign base = (LibBlockIsIndexZeroBased(block))? 0 : 1
+  
+  {
+    %if !IndexSt
+        %if rowsRoll
+          %<GenerateStaticConstDecl(rowVName,nOutRows,rows,base)>
+        %endif
+      \
+        %assign rowRollReg = [0:%<nOutRows-1>]
+        %assign colRollReg = [0:%<nOutCols-1>] 
+        %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+          %%
+          %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+        %if colsRoll && rowsRoll
+          %assign rowVidx = "[%<lcvR>]"
+          %assign inpStr = "(%<nInRows>*%<lcvC>)+%<rowVName>%<rowVidx>"
+        %elseif colsRoll
+          %assign rowOffset = rows[rIdx]-base
+          %assign inpStr = "(%<nInRows>*%<lcvC>)+%<rowOffset>"
+        %elseif rowsRoll
+          %assign rowVidx = "[%<lcvR>]"
+          %assign colOffset = nInRows * cIdx
+          %assign inpStr = "%<colOffset>+%<rowVName>%<rowVidx>"
+        %else
+          %assign rcOffset = (nInRows * cIdx)+(rows[rIdx]-base)
+          %assign inpStr = "%<rcOffset>"
+        %endif
+        %%
+        %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                             lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+          %endroll
+        %endroll
+    %else
+        %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+        byte_T *ui     = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+        byte_T *yi     = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+        int32_T outRowSize = %<nOutRows>*%<elmSize>;
+        %if nOutCols != 1 %%no loop if only one col in output
+        int32_T inRowSize = %<nInRows>*%<elmSize>;
+        int32_T i;
+        %endif
+
+        %assign rowst = %<rows[0]> - %<base>
+        %if rowst != 0
+            ui += %<rowst> * %<elmSize>;
+        %endif
+        %if nOutCols != 1
+        for (i=0; i < %<nOutCols>; i++) {
+        %endif
+            memcpy(yi, ui, outRowSize);
+        %if nOutCols != 1
+            ui += inRowSize;
+            yi += outRowSize;
+        }
+        %endif
+    %endif
+  }
+%endfunction  %% GenerateMatSel_IntRowsAllCols_Code
+
+
+%% Function: GenerateMatSel_AllRowsAllCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      all rows + all cols
+%function GenerateMatSel_AllRowsAllCols_Code(block, system) Output
+  %%
+  %assign width      = LibBlockInputSignalWidth(0)
+  %assign rollReg    = [0:%<width-1>]
+  %assign rollVars   = ["u0","y0"]
+  %roll eIdx = rollReg, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %<LibBlockOutputSignal(0,"",lcv,eIdx)> = ...
+      %<LibBlockInputSignal(0,"",lcv,eIdx)>;
+  %endroll
+%endfunction  %% GenerateMatSel_AllRowsAllCols_Code
+
+
+%% Function: GenerateMatSel_ExtRowsIntCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      external row indices + internal column indices.
+%function GenerateMatSel_ExtRowsIntCols_Code(block, system) Output
+  %%
+  %assign iDims     = LibBlockInputSignalDimensions(0)
+  %assign oDims     = LibBlockOutputSignalDimensions(0)
+  %assign nInRows   = iDims[0]
+  %assign nInCols   = iDims[1]
+  %assign nOutRows  = oDims[0]
+  %assign nOutCols  = oDims[1]
+  %assign cols      = ParamSettings.Columns
+  %assign colVName  = "colIndices"
+  %assign rowsRoll  = (nOutRows >= RollThreshold)
+  %assign colsRoll  = (nOutCols >= RollThreshold)
+  %assign rollVars1 = (rowsRoll) ? ["u0","y0","<dwork>/DWORK1"] : ...
+                      ["u0","y0"]
+  %assign rollVars2 = (colsRoll) ? [] : ["u0","y0","<dwork>/DWORK1"]
+
+  %assign base      = (LibBlockIsIndexZeroBased(block))? 0 : 1
+  %assign IndexSt   = ParamSettings.IndexIsStartValue
+  
+  {
+    %if !IndexSt
+      %if colsRoll
+        %<GenerateStaticConstDecl(colVName,nOutCols,cols,base)>
+      %endif
+    \
+      %assign rowRollReg = [0:%<nOutRows-1>]
+      %assign colRollReg = [0:%<nOutCols-1>] 
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+      %if colsRoll
+        %assign colVidx = "[%<lcvC>]"
+        %assign inpStr = ...
+          "(%<nInRows>*%<colVName>%<colVidx>)+%<IndexerGetDwork(block,0,lcvR,rIdx)>"
+      %else
+        %assign colOffset = nInRows * (cols[cIdx]-base)
+        %assign inpStr = "%<colOffset>+%<IndexerGetDwork(block,0,lcvR,rIdx)>"
+      %endif
+      %%
+      %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                           lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+        %endroll
+      %endroll
+    %else
+      %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+      byte_T *ui = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+      byte_T *yi = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+      int32_T outRowSize = %<nOutRows>*%<elmSize>;
+      %if nOutCols != 1 %%no loop if only one col in output
+      int32_T inRowSize = %<nInRows>*%<elmSize>;
+      int32_T i;
+      %endif
+
+      %assign coloffset = (cols[0] - base) * nInRows
+      ui += (%<coloffset> + %<IndexerGetDwork(block,0,"",0)>) * %<elmSize>;
+      %if nOutCols != 1
+      for (i=0; i < %<nOutCols>; i++) {
+      %endif
+          memcpy(yi, ui, outRowSize);
+      %if nOutCols != 1
+          ui += inRowSize;
+          yi += outRowSize;
+      }
+      %endif
+    %endif
+  }
+%endfunction  %% GenerateMatSel_ExtRowsIntCols_Code
+
+
+%% Function: GenerateMatSel_ExtRowsAllCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      external row indice + all columns.
+%function GenerateMatSel_ExtRowsAllCols_Code(block, system) Output
+  %%
+  %assign iDims      = LibBlockInputSignalDimensions(0)
+  %assign oDims      = LibBlockOutputSignalDimensions(0)
+  %assign nInRows    = iDims[0]
+  %assign nInCols    = iDims[1]
+  %assign nOutRows   = oDims[0]
+  %assign nOutCols   = oDims[1]
+  %assign rowRollReg = [0:%<nOutRows-1>]
+  %assign colRollReg = [0:%<nOutCols-1>] 
+  %assign rowsRoll   = (nOutRows >= RollThreshold)
+  %assign colsRoll   = (nOutCols >= RollThreshold)
+  %assign rollVars1  = (rowsRoll) ? ["u0","y0","<dwork>/DWORK1"] : ...
+                       ["u0","y0"]
+  %assign rollVars2  = (colsRoll) ? [] : ["u0","y0","<dwork>/DWORK1"]
+  %assign IndexSt    = ParamSettings.IndexIsStartValue
+  %%
+  %if !IndexSt
+      %%
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+          %%
+          %if colsRoll
+        %assign inpStr = ...
+          "(%<nInRows>*%<lcvC>)+%<IndexerGetDwork(block,0,lcvR,rIdx)>"
+          %else
+        %assign colOffset = nInRows * cIdx
+        %assign inpStr = "%<colOffset>+%<IndexerGetDwork(block,0,lcvR,rIdx)>"
+          %endif
+          %%
+          %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                             lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+        %endroll
+      %endroll
+  %else
+  {
+      %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+      byte_T *ui     = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+      byte_T *yi     = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+      int32_T outRowSize = %<nOutRows>*%<elmSize>;
+      %if nOutCols != 1 %%no loop if only one col in output
+          int32_T inRowSize = %<nInRows>*%<elmSize>;
+          int32_T i;
+      %endif
+
+      ui += %<IndexerGetDwork(block,0,"",0)> * %<elmSize>;
+      %if nOutCols != 1
+      for (i=0; i < %<nOutCols>; i++) {
+      %endif
+          memcpy(yi, ui, outRowSize);
+      %if nOutCols != 1
+          ui += inRowSize;
+          yi += outRowSize;
+      }
+      %endif
+  }
+  %endif
+%endfunction  %% GenerateMatSel_ExtRowsAllCols_Code
+
+
+%% Function: GenerateMatSel_ExtRowsExtCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      external row and column indices.
+%function GenerateMatSel_ExtRowsExtCols_Code(block, system) Output
+  %%
+  %assign iDims      = LibBlockInputSignalDimensions(0)
+  %assign oDims      = LibBlockOutputSignalDimensions(0)
+  %assign nInRows    = iDims[0]
+  %assign nInCols    = iDims[1]
+  %assign nOutRows   = oDims[0]
+  %assign nOutCols   = oDims[1]
+  %assign rowRollReg = [0:%<nOutRows-1>]
+  %assign colRollReg = [0:%<nOutCols-1>] 
+  %assign rowsRoll   = (nOutRows >= RollThreshold)
+  %assign colsRoll   = (nOutCols >= RollThreshold)
+  %assign rollVars1  = (colsRoll && rowsRoll) ? ...
+                       ["u0","y0","<dwork>/DWORK1","<dwork>/DWORK2"] : ...
+		       ["u0","y0","<dwork>/DWORK2"]
+  %assign rollVars2  = (colsRoll) ? [] : ["u0","y0","<dwork>/DWORK1"]
+  %assign IndexSt    = ParamSettings.IndexIsStartValue
+  %%
+  %if !IndexSt
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+          %assign rowDW  = IndexerGetDwork(block,0,lcvR,rIdx)
+          %assign colDW  = IndexerGetDwork(block,1,lcvC,cIdx)
+          %assign inpStr = "(%<nInRows>*%<colDW>)+%<rowDW>"
+          %%
+          %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                             lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+        %endroll
+      %endroll
+  %else
+  {
+      %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+      byte_T *ui = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+      byte_T *yi = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+      int32_T outRowSize = %<nOutRows>*%<elmSize>;
+      %if nOutCols != 1 %%no loop if only one col in output
+      int32_T inRowSize = %<nInRows>*%<elmSize>;
+      int32_T i;
+      %endif
+
+      %assign coloffset = "%<IndexerGetDwork(block,1,"",0)>*%<nInRows>"
+      ui += (%<coloffset> + %<IndexerGetDwork(block,0,"",0)>) * %<elmSize>;
+      %if nOutCols != 1
+      for (i=0; i < %<nOutCols>; i++) {
+      %endif
+          memcpy(yi, ui, outRowSize);
+      %if nOutCols != 1
+          ui += inRowSize;
+          yi += outRowSize;
+      }
+      %endif
+  }
+  %endif
+%endfunction  %% GenerateMatSel_ExtRowsExtCols_Code
+
+
+%% Function: GenerateMatSel_IntRowsExtCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      internal row indices + external column indices.
+%function GenerateMatSel_IntRowsExtCols_Code(block, system) Output
+  %%
+  %assign iDims      = LibBlockInputSignalDimensions(0)
+  %assign oDims      = LibBlockOutputSignalDimensions(0)
+  %assign nInRows    = iDims[0]
+  %assign nInCols    = iDims[1]
+  %assign nOutRows   = oDims[0]
+  %assign nOutCols   = oDims[1]
+  %assign rows       = ParamSettings.Rows
+  %assign rowVName   = "rowIndices"
+  %assign rowsRoll   = (nOutRows >= RollThreshold)
+  %assign colsRoll   = (nOutCols >= RollThreshold)
+  %assign rollVars1  = ["u0","y0","<dwork>/DWORK1"]
+  %assign rollVars2  = (colsRoll) ? [] : ["u0","y0"]
+  %assign base       = (LibBlockIsIndexZeroBased(block))? 0 : 1
+  %assign IndexSt    = ParamSettings.IndexIsStartValue
+  
+  {
+    %if !IndexSt
+      %if rowsRoll
+        %<GenerateStaticConstDecl(rowVName,nOutRows,rows,base)>
+      %endif
+    \
+      %assign rowRollReg = [0:%<nOutRows-1>]
+      %assign colRollReg = [0:%<nOutCols-1>] 
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+      %if rowsRoll
+        %assign rowVidx = "[%<lcvR>]"
+        %assign colDW   = IndexerGetDwork(block,0,lcvC,cIdx)
+        %assign inpStr  = "(%<nInRows>*%<colDW>)+%<rowVName>%<rowVidx>"
+      %else
+        %assign colDW     = IndexerGetDwork(block,0,lcvC,cIdx)
+        %assign rowOffset = rows[rIdx]-base
+        %assign inpStr    = "(%<nInRows>*%<colDW>)+%<rowOffset>"
+      %endif
+      %%
+      %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                           lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+        %endroll
+      %endroll
+    %else
+      %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+      byte_T *ui = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+      byte_T *yi = (byte_T *) %<LibBlockOutputSignalAddr(0,"","",0)>;
+      int32_T outRowSize = %<nOutRows>*%<elmSize>;
+      %if nOutCols != 1 %%no loop if only one col in output
+      int32_T inRowSize = %<nInRows>*%<elmSize>;
+      int32_T i;
+      %endif
+
+      %assign rowoffset = rows[0] - base
+      %assign coloffset = "%<IndexerGetDwork(block,0,"",0)> * %<nInRows>"
+      ui += (%<rowoffset> + %<coloffset>) * %<elmSize>;
+      %if nOutCols != 1
+      for (i=0; i < %<nOutCols>; i++) {
+      %endif
+          memcpy(yi, ui, outRowSize);
+      %if nOutCols != 1
+          ui += inRowSize;
+          yi += outRowSize;
+      }
+      %endif
+    %endif
+  }
+%endfunction  %% GenerateMatSel_IntRowsExtCols_Code
+
+
+%% Function: GenerateMatSel_AllRowsExtCols_Code ================================
+%%
+%% Abstract:
+%%      Generates code segment for selector block in matrix mode -
+%%      all rows + external column indices.
+%function GenerateMatSel_AllRowsExtCols_Code(block, system) Output
+  %%
+  %assign iDims      = LibBlockInputSignalDimensions(0)
+  %assign oDims      = LibBlockOutputSignalDimensions(0)
+  %assign nInRows    = iDims[0]
+  %assign nInCols    = iDims[1]
+  %assign nOutRows   = oDims[0]
+  %assign nOutCols   = oDims[1]
+  %assign rowsRoll   = (nOutRows >= RollThreshold)
+  %assign colsRoll   = (nOutCols >= RollThreshold)
+  %assign rollVars1  = ["u0","y0","<dwork>/DWORK1"]
+  %assign rollVars2  = (colsRoll) ? [] : ["u0","y0"]
+  %assign rowRollReg = [0:%<nOutRows-1>]
+  %assign colRollReg = [0:%<nOutCols-1>] 
+  %assign IndexSt    = ParamSettings.IndexIsStartValue
+  %%
+  %if !IndexSt
+      %roll cIdx = colRollReg, lcvC = RollThreshold, block, "Roller", rollVars1
+        %%
+        %roll rIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rollVars2
+          %%
+          %if rowsRoll
+        %assign colDW  = IndexerGetDwork(block,0,lcvC,cIdx)
+        %assign inpStr = "(%<nInRows>*%<colDW>)+%<lcvR>"
+          %else
+        %assign colDW  = IndexerGetDwork(block,0,lcvC,cIdx)
+        %assign inpStr = "(%<nInRows>*%<colDW>)+%<rIdx>"
+          %endif
+          %%
+          %<GenerateOutputLine(block,nOutRows,nOutCols,rollVars1,lcvR,rIdx,...
+                             lcvC,cIdx,rowsRoll,colsRoll,inpStr)>
+        %endroll
+      %endroll
+  %else %%IndexSt
+  {
+      byte_T *ui      = (byte_T *) %<LibBlockInputSignalAddr(0,"","",0)>;
+      %assign elmSize = "sizeof(%<LibBlockInputSignalDataTypeName(0, """")>)"
+
+      ui += %<nOutRows> * %<IndexerGetDwork(block,0,"",0)> * %<elmSize>;
+      memcpy(%<LibBlockOutputSignalAddr(0,"","",0)>, ui, \
+                      %<LibBlockOutputSignalWidth(0)>*%<elmSize>);
+  }
+  %endif
+%endfunction  %% GenerateMatSel_AllRowsExtCols_Code
+
+
+%% Function: GenerateOutputLine ================================================
+%%
+%% Abstract:
+%%      Generates the line of code that produces the block output.
+%function GenerateOutputLine(block,nOutRows,nOutCols,rollVars,lcvR,rIdx, ...
+  lcvC,cIdx,rowsRoll,colsRoll,inpStr) Output
+  %%
+  %if !rowsRoll && !colsRoll
+    %assign outStr = "%<(nOutRows*cIdx)+rIdx>"
+    %<LibBlockOutputSignal(0,outStr,"",0)> = ...
+      %<LibBlockInputSignal(0,inpStr,"",0)>;
+  %else
+    %if lcvR != ""
+      %assign ucvR   = (rIdx != 0)? "%<lcvR>+%<rIdx>": lcvR
+      %assign rIdx   = 0
+    %else
+      %assign ucvR   = ""
+    %endif
+    %if lcvC != ""
+      %assign ucvC   = (cIdx != 0)? "%<lcvC>+%<cIdx>": lcvC
+      %assign cIdx   = 0
+    %else
+      %assign ucvC   = ""
+    %endif
+    %assign   outStr = SLibGet2DArrayIndexer(0,nOutRows,ucvR,"",rIdx,...
+      nOutCols,ucvC,"",cIdx)
+    %if outStr == ""
+      %<LibBlockOutputSignal(0,outStr,"",0)> = ...
+        %<rollVars[0]>[%<inpStr>];
+    %else 
+      %<rollVars[1]>%<outStr> = %<rollVars[0]>[%<inpStr>];
+    %endif
+  %endif
+%endfunction  %% GenerateOutputLine
+
+%% Function: GenerateOutputLine ================================================
+%%
+%% Abstract:
+%%      Generates the line of code that produces the block output for the case
+%% when index is starting value and when memcpy can be used
+%function GenerateMemcpyCode(block, system, allportTsEqual, inpDType, str, widthOut) Output
+  %if allportTsEqual
+      %if inpDType != tSS_INT32
+        %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"","",0)>)%<str>"
+      %else 
+        %assign inpIdx = "%<LibBlockInputSignal(1,"","",0)>%<str>"
+      %endif
+        memcpy(%<LibBlockOutputSignalAddr(0,"","",0)>,     \
+           %<LibBlockInputSignalAddr(0,inpIdx,"",0)>,            \
+           %<widthOut>*sizeof(%<LibBlockInputSignalDataTypeName(0, "")>));
+  %else %% port-based
+    %assign rollVars   = ["u1","y0","IWork"]
+    %assign genInTs1Code = 0
+    %if TYPE(InTs1) == "Number" 
+      %assign genInTs1Code = 1
+    %elseif InTs1 != "constant"
+      %assign genInTs1Code = 1
+    %endif
+        
+    %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(system)
+        
+    %if genInTs1Code
+      %<FcnGenerateTidGuardOpenCode(LibBlockPortSampleTime("InputPortIdx1"))>
+      %if !isRateGrouping || ISEQUAL(tid, InTs1)
+	/* write index into work vector */
+	%roll idx = rollRegionI, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign inpIdx = LibBlockIWork(IWork,"",lcv,idx)
+	  %if inpDType != tSS_INT32
+	    %<inpIdx> = (int32_T)(%<LibBlockInputSignal(1,"",lcv,idx)>)%<str>;
+	  %else
+	    %<inpIdx> = %<LibBlockInputSignal(1,"",lcv,idx)>%<str>;
+	  %endif
+	%endroll
+      %endif
+      %<FcnGenerateTidGuardCloseCode(LibBlockPortSampleTime("InputPortIdx1"))>
+    %endif
+    
+    %assign InTs0 = ISEQUAL(InTs0,"constant") ? -2 : InTs0
+    %<FcnGenerateTidGuardOpenCode(LibBlockPortSampleTime("OutputPortIdx0"))>
+    %if !isRateGrouping || ISEQUAL(tid, InTs0) 
+      %if genInTs1Code
+	%assign inpIdx = LibBlockIWork(IWork,"","",0)
+      %else
+	%if inpDType != tSS_INT32
+	  %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"","",0)>)%<str>"
+	%else 
+	  %assign inpIdx = "%<LibBlockInputSignal(1,"","",0)>%<str>"
+	%endif
+      %endif
+      %assign inpIdx = "(int32_T)(%<LibBlockInputSignal(1,"","",0)>)%<str>"
+      memcpy(%<LibBlockInputSignalAddr(0,inpIdx,"",0)>,     \
+      %<LibBlockOutputSignalAddr(0,"","",0)>,            \
+      %<widthOut>*sizeof(%<LibBlockInputSignalDataTypeName(0, "")>));
+    %endif
+    %<FcnGenerateTidGuardCloseCode(LibBlockPortSampleTime("OutputPortIdx0"))>
+  %endif
+%endfunction  %% GenerateOutputLine
+

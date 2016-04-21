@@ -1,0 +1,140 @@
+%% $Revision: 1.11 $ 
+%% $RCSfile: sunbuffc.tlc,v $
+%% $Date: 2002/04/14 21:03:58 $
+%%
+%% Don Orofino, 09-Jul-97
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sunbuffc.c
+%%
+
+%implements "sunbuffc" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Num_Chans")>
+  %%
+  %<LibDefineRWork(block, "circ_buf", RWork[0])>
+  %%
+  %<LibDefinePWork(block, "OUTBUF_PTR", 1)>
+  %<LibDefinePWork(block, "INBUF_PTR",  1)>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the RWork vector (Buffer) to the initial values specified.
+%%      Note that the IWork is memset to zero in the registration function,
+%%      however we need to initialize it to zero again here, because this block
+%%      might be used inside an enabled subsystem that resets on disable.
+%%
+%function InitializeConditions(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+%assign N = LibDataInputPortWidth(0)
+%if N == 1
+/* (Unbuffering a scalar input - no initialization required) */
+%else
+{
+      real_T *circBuf = &%<LibBlockRWork(circ_buf, "", "", 0)>;
+      real_T *outBuf  = circBuf + %<N>;
+      int_T   i1;
+
+      %<LibBlockPWork(INBUF_PTR,  "", "", 0)> = (void *)circBuf;
+      %<LibBlockPWork(OUTBUF_PTR, "", "", 0)> = (void *)outBuf;
+
+      for(i1 = 0; i1 < %<N>; i1++) {
+         *outBuf++ = 0.0;
+      }
+}
+%endif
+
+%endfunction  %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+%assign N = LibDataInputPortWidth(0)
+%assign nchans = CAST("Number",LibBlockParameterValue(Num_Chans, 0))
+%assign buffer_width = N / nchans
+
+%if N == 1
+    %% Scalar input signal and single channel:
+    if (%<LibIsSFcnSampleHit(0)>) {
+       %<LibBlockOutputSignal(0, "", "", 0)> = %<LibBlockInputSignal(0, "", "", 0)>;
+    }
+%else
+    %% Vector input signal:
+    {
+	if (%<LibIsSFcnSampleHit(0)>) {
+	    /* Output the current sample: */
+	    real_T *buf     = &%<LibBlockRWork(circ_buf, "", "", 0)>;
+	    real_T *outBuf  = %<LibBlockPWork(OUTBUF_PTR, "", "", 0)>;
+	    %%
+	    %% Check for single-column unbuffering:
+	    %%
+	    %if nchans == 1
+	    %% One channel (a vector) of data:
+		%<LibBlockOutputSignal(0, "", "", 0)> = *outBuf++;
+		if (outBuf == buf + %<2*N>) {
+	    	    outBuf = buf;
+		}
+	    %else
+	    %%  Multiple channels (a matrix) of data:
+	    {
+    		real_T *p    = outBuf++;
+		int_T   kcnt = %<nchans>;
+		
+		while (kcnt-- > 0) {
+		    %if buffer_width == 1
+	    		%<LibBlockOutputSignal(0, "", "", 0)> = *p++;		        
+		    %else
+	    		%<LibBlockOutputSignal(0, "", "", 0)> = *p;
+	    		p += %<buffer_width>;
+		    %endif
+		}
+		if (outBuf == buf + %<buffer_width>) {
+		    outBuf = buf + %<N>;  /* wrap circular buffer */
+		} else if (outBuf == buf + %<N + buffer_width>) {
+	    	    outBuf = buf;
+		}
+	    }
+	    %endif
+	    
+	    %<LibBlockPWork(OUTBUF_PTR, "", "", 0)> = (void *)outBuf;
+	}
+
+	if (%<LibIsSFcnSampleHit(1)>) {
+	    /* Store the next input vector: */
+	    real_T *inBuf  = %<LibBlockPWork(INBUF_PTR, "", "", 0)>;
+
+	    %assign rollVars = ["U"]
+	    %roll sigIdx = RollRegions, lcv = RollThreshold, block,...
+                           "Roller", rollVars
+	      *inBuf++ = %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+	    %endroll
+
+	    {
+		real_T *buf = &%<LibBlockRWork(circ_buf, "", "", 0)>;
+		if (inBuf == buf + %<2*N>) {
+		    inBuf = buf;  /* wrap circular buffer */
+		}
+	    }
+	    %<LibBlockPWork(INBUF_PTR, "", "", 0)> = (void *)inBuf;
+	}
+    }
+%endif
+
+%endfunction %% Outputs
+
+%% EOF: sunbuffc.tlc

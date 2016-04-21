@@ -1,0 +1,254 @@
+%% $RCSfile: sdspbiquad.tlc,v $
+%% $Revision: 1.13 $ 
+%% $Date: 2002/04/14 21:02:01 $
+%%
+%% Dale Shpak
+%% July 22, 1998
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract:Cascaded second-order sections filter.
+%%
+
+%implements sdspbiquad "C"
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+    %assign INPORT          = 0
+    %assign CONTIG          = IsInputPortContiguous(block,INPORT)
+    %% We do not support discontiguous inputs
+    %if (!CONTIG)
+	%<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_STATES      = LibBlockDWorkWidth(States)
+    %assign NUM_IC          = SIZE(SFcnParamSettings.IC, 1)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign FILT_COMPLEX    = TYPE(SFcnParamSettings.SOS[0]) == "Complex"
+    %assign IC_COMPLEX      = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (FILT_COMPLEX || DATA_COMPLEX)
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %assign STATESperCHAN   = NUM_STATES / NUM_CHANS
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /*
+    * Initialize the state buffers with initial conditions.
+    * There is one extra memory element for each channel that is set
+    * to zero.  It simplifies the filtering algorithm.
+    */
+    %if (NUM_IC > 1)
+        %if (IC_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,%<IMAG(SFcnParamSettings.IC[NUM_IC-1])>}};
+        %elseif (IS_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,0.0},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,0.0}};
+        %else
+            const real_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                %<SFcnParamSettings.IC[Idx]>,
+            %endforeach
+            %<SFcnParamSettings.IC[NUM_IC-1]>};
+        %endif
+    %endif
+    %if (IS_COMPLEX)
+        %assign STATE_T     = CAST("String", "creal_T")
+    %else
+        %assign STATE_T     = CAST("String", "real_T")
+    %endif
+    %<STATE_T> *states = %<LibBlockDWorkAddr(States, "", "", 0)>;
+
+    %if (NUM_IC == 0)
+        %if (IS_COMPLEX)
+            const creal_T zero  = {(real_T)0.0, (real_T)0.0};
+            %assign ZERO        = CAST("String", "zero")
+        %else
+            %assign ZERO        = CAST("String", "(real_T) 0.0")
+        %endif
+        int_T j;
+        for (j=0; j < %<NUM_STATES>; j++) *states++ = %<ZERO>;
+    %elseif (NUM_IC == 1)
+        /* Single initial condition */
+        %if (IS_COMPLEX)
+            const creal_T ic  = {%<REAL(SFcnParamSettings.IC[0])>,%<IMAG(SFcnParamSettings.IC[0])>};
+        %endif
+        int_T j;
+        %if (IS_COMPLEX)
+            for (j=0; j < %<NUM_STATES>; j++) *states++ = ic;
+        %else
+            for (j=0; j < %<NUM_STATES>; j++) *states++ = %<SFcnParamSettings.IC[0]>;
+        %endif
+    %elseif (NUM_IC == STATESperCHAN)
+        int_T i, j;
+        /* Same IC's for all channels: */
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<STATE_T>  *icp = ic;
+            for (j=0; j < %<STATESperCHAN>; j++) *states++ = *icp++;
+        }
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume 2*numSections rows and numCHANS columns
+         */
+        int_T j;
+        const %<STATE_T> *icp = ic;
+
+        for (j=0; j < %<NUM_STATES>; j++) *states++ = *icp++;
+    %endif %% Number of ICs
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign INPORT          = 0
+    %assign OUTPORT         = 0
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_STATES      = LibBlockDWorkWidth(States)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign FILT_COMPLEX    = TYPE(SFcnParamSettings.SOS[0]) == "Complex"
+    %assign NUM_COEFFS      = SIZE(SFcnParamSettings.SOS, 1)
+    %assign NUM_SOS         = NUM_COEFFS / 5
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (FILT_COMPLEX || DATA_COMPLEX)
+    %if (IS_COMPLEX)
+        %assign OUT_T       = CAST("String", "creal_T")
+    %else
+        %assign OUT_T       = CAST("String", "real_T")
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = CAST("String", "creal_T")
+    %else
+        %assign DAT_T       = CAST("String", "real_T")
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = CAST("String", "creal_T")
+    %else
+        %assign FIL_T       = CAST("String", "real_T")
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %endif
+    %%
+{
+    %if (FILT_COMPLEX)
+        const creal_T coeffs[%<NUM_COEFFS>] = {
+        %assign count = 0
+        %foreach Idx2 = NUM_SOS
+            %assign astr = ""
+            %foreach Idx = 5
+                %assign astr = astr + "{%<REAL(SFcnParamSettings.SOS[count])>,%<IMAG(SFcnParamSettings.SOS[count])>}"
+                %assign count = count + 1
+                %if (count < NUM_COEFFS)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach
+            %<astr>
+        %endforeach
+    %else
+        const real_T coeffs[%<NUM_COEFFS>] = {
+        %assign count = 0
+        %foreach Idx2 = NUM_SOS
+            %assign astr = ""
+            %foreach Idx = 5
+                %assign astr = astr + "%<REAL(SFcnParamSettings.SOS[count])>"
+                %assign count = count + 1
+                %if (count < NUM_COEFFS)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach
+            %<astr>
+        %endforeach
+    %endif
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    %<DAT_T>    *uptr   = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<OUT_T>    *mem0   = %<LibBlockDWorkAddr(States, "", "", 0)>;
+    %<OUT_T>    *y      = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>;
+
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+            %<OUT_T> *mem = mem0;
+            const %<FIL_T> *c = coeffs;
+            %<OUT_T> out;
+            %if (FILT_COMPLEX && !DATA_COMPLEX)
+                %<OUT_T> in;
+                in.re = *uptr++;
+                in.im = 0.0;
+            %else
+                %<OUT_T> in = *uptr++;
+            %endif
+
+            mem = mem0; /* Get start of states for this channel */
+            %roll sigIdx3 = [ 0:%<NUM_SOS - 1> ], lcv3 = 2, block, "InlineRoller"
+                %if (FILT_COMPLEX)
+                    out.re = mem->re + CMULT_RE(in, *c);
+                    out.im = mem->im + CMULT_IM(in, *c);
+                    ++c;
+
+                    mem->re     = (mem+1)->re + CMULT_RE(in, *c) - CMULT_RE(out, *(c+2));
+                    mem->im     = (mem+1)->im + CMULT_IM(in, *c) - CMULT_IM(out, *(c+2));
+                    ++mem;
+
+                    mem->re     = CMULT_RE(in, *(c+1)) - CMULT_RE(out, *(c+3));
+                    (mem++)->im = CMULT_IM(in, *(c+1)) - CMULT_IM(out, *(c+3));
+                %else  %% Real filter
+                    %if (DATA_COMPLEX)
+                        out.re = mem->re + in.re * *c;
+                        out.im = mem->im + in.im * *c++;
+
+                        mem->re     = (mem+1)->re + in.re * *c - out.re * *(c+2);
+                        mem->im     = (mem+1)->im + in.im * *c - out.im * *(c+2);
+                        ++mem;
+
+                        mem->re     = in.re * *(c+1) - out.re * *(c+3);
+                        (mem++)->im = in.im * *(c+1) - out.im * *(c+3);
+                    %else %% Real filter, real data
+                        out = *mem + in * *c++;
+
+                        *mem   = *(mem+1) + in * *c     - out * *(c+2);
+                        ++mem;
+
+                        *mem++ =            in * *(c+1) - out * *(c+3);
+                    %endif
+                %endif
+                %if (NUM_SOS > 1)
+                    in = out;
+                    c += 4;
+                %endif
+            %endroll %% Sections
+            *y++ = out;
+        %endroll %% Frame
+        %if (NUM_CHANS > 1)
+            /* Move to the state memory for the next channel */
+            mem0 += %<NUM_SOS * 2>;
+        %endif
+    %endroll %% Channel
+}	
+%endfunction  %% Outputs
+
+%% [EOF] sdspbiquad.tlc
+

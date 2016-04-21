@@ -1,0 +1,2079 @@
+%% 
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Product block target file.
+
+%implements Product "C"
+
+%% Function: BlockTypeSetup ====================================================
+%% Abstract:
+%%      Have mdlhdr.tlc include rtlibsrc.h
+%%
+%function BlockTypeSetup(block, system) void
+  %assign ::CompiledModel.IncludeLibsrc = 1
+
+%endfunction
+
+%% Function: BlockClassicInstanceSetup ================================================
+%% Abstract:
+%%      Cache Matrix Multiplication code for non fixpt mode
+%%
+%function BlockClassicInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+%% Function: BlockFixptInstanceSetup ===============================================
+%% Abstract:
+%% 	Pre-code generation work for fixpt mode
+%%
+%function BlockFixptInstanceSetup(block, system) void
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>\
+    %%
+    %% Currently, do not support
+    %%   o multi-chunk math
+    %%   o input bias non-zero
+    %%   0 output bias non-zero
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% Turn off expression folding if bits per long is less than
+    %% 32 as assumed in the simulink code for the product block
+    %% this is conservative, but the case where bits per long is less
+    %% than 32 bits seems very rare.
+    %%
+    %if IntegerSizes.LongNumBits >= 32
+      %%
+      %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+      %%
+    %endif
+%endfunction
+
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%% 	Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %<BlockFixptInstanceSetup(block, system)>
+  %else
+    %<BlockClassicInstanceSetup(block, system)>
+  %endif
+%endfunction
+
+%% Function: StartClassic=======================================================
+%% Abstract:
+%%      Initialize the identity matrix (DWork4) if the block is configured
+%%      as a matrix multiplication/inversion where the last data input port
+%%      has a matrix inversion operator specified.
+%%
+%function StartClassic(block, system) Output
+  %if ParamSettings.Multiplication == "Matrix(*)"
+    %if ParamSettings.OneInputMultiply == "no"
+      %% The following tlc code assumes the identity matrix has same 
+      %% dimensionality of first matrix operation.  If this assumption changes
+      %% in the future, the dimensionality must be calculated 
+      %% (square-root of size of dwork) or written to .rtw file
+      %assign inputs = ParamSettings.Inputs
+      %assign inputsSize = SIZE(inputs)
+      %if inputs[inputsSize[1]-1] == "/"
+        %assign dwIdx = 3   %% %<SLibMatrixOperand(-4)>
+        %assign dwork = DWork[dwIdx]
+        %assign dworkAddr = LibBlockDWorkAddr(dwork, "", "", 0)
+        %assign width = LibBlockDWorkWidth(dwork)
+	%assign dTypeId = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	/* Create Identify Matrix for Block: %<Name> */
+        {
+	  int_T i;
+	%if dTypeId == tSS_DOUBLE
+	  real_T *dWork = %<dworkAddr>;
+        %else
+	  real32_T *dWork = %<dworkAddr>;
+	%endif
+          for (i = 0; i < %<width>; i++) {
+            *dWork++ = 0.0;
+          }
+          %assign dims = ParamSettings.Dimensions[0]
+          %assign matrixWidth = dims[0]*dims[0]
+          dWork = %<dworkAddr>;
+          while( dWork < %<dworkAddr>+%<matrixWidth>){
+            *dWork = 1;
+            dWork += %<dims[0]+1>;
+          }
+        }
+      %endif
+    %endif
+  %endif
+%endfunction %% Start
+
+%% Function: Start ==============================================================
+%% Abstract:
+%%      Initialize the identity matrix (DWork4) if the block is configured
+%%      as a matrix multiplication/inversion where the last data input port
+%%      has a matrix inversion operator specified.
+%%
+%function Start(block, system) Output
+  %if block.InFixptMode
+    %%
+  %else
+    %<StartClassic(block, system)>
+  %endif
+%endfunction
+
+
+%% Function: OutputsFixpt ==========================================================
+%% Abstract:
+%%   Output function for fixpt mode
+%%   This block can operate in an element by element vector product/division
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied/divided to
+%%   produce a scalar output.
+%%
+%function OutputsFixpt(block, system) Output
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %if doFracCorrection != "CORRECTION_NO"
+      %%
+      %assign y0RadixDT.FracSlope = 1.0
+      %assign y0RadixDT.Bias      = 0.0
+      %%
+      %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+        %%
+        %copyrecord y0CorrectionDT y0RadixDT
+        %%
+        %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+      %endif
+    %endif
+    %%
+    %% create RadixOnly version of first Input Data Type
+    %%
+    %assign uiDT = FixPt_GetInputDataType(0)
+    %%
+    %copyrecord uiRadixDT uiDT
+    %%
+    %if doFracCorrection != "CORRECTION_NO"
+      %%
+      %assign uiRadixDT.FracSlope = 1.0
+      %assign uiRadixDT.Bias      = 0.0
+    %endif
+    %%
+    %copyrecord u0RadixDT uiDT
+    %%
+    %if doFracCorrection != "CORRECTION_NO"
+      %%
+      %assign u0RadixDT.FracSlope = 1.0
+      %assign u0RadixDT.Bias      = 0.0
+    %endif
+    %%
+    %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+        %%
+        %if FixPtMulDivStr[0] == "*"
+            %%
+            %assign u0RadixDT.FixedExp = u0RadixDT.FixedExp + iFixExpCorrection
+        %else
+            %assign u0RadixDT.FixedExp = u0RadixDT.FixedExp - iFixExpCorrection
+        %endif
+    %endif
+    %%
+    %% create header comment
+    %%
+    /* %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+     *
+    %%
+    %% the output to be created
+    %%
+    %if LibDataOutputPortWidth(0) > 1
+        %assign opstr = "*  y[i] ="
+    %else
+        %assign opstr = "*  y ="
+    %endif
+    %%
+    %% handle case of multiple input ports
+    %%
+    %if LibBlockNumInputPorts(block) > 1
+        %%
+        %% handle each input port
+        %%
+        %foreach ipIdx = LibBlockNumInputPorts(block)
+            %%
+            %% get mul or div symbol for current input
+            %%
+            %assign mulDiv = FixPtMulDivStr[ipIdx]
+            %%
+            %% special treatment of first input
+            %%
+            %if ipIdx == 0
+                %%
+                %% only reciprocal cause op symbol
+                %%  mul puts out no op for first input
+                %%
+                %if mulDiv == "/"
+                    %assign opstr = opstr + " 1 /"
+                %endif
+            %%
+            %% handle inputs after first
+            %%
+            %else
+                %if mulDiv == "/"
+                    %assign opstr = opstr + " /"
+                %else
+                    %assign opstr = opstr + " *"
+                %endif
+            %endif
+            %%
+            %% handle wide inputs
+            %%
+            %if LibDataInputPortWidth(ipIdx) > 1
+                %%
+                %assign opstr = opstr + " u" + STRING(ipIdx) + "[i]"
+            %%
+            %% handle scalar inputs
+            %%
+            %else
+                %%
+                %assign opstr = opstr + " u" + STRING(ipIdx)
+            %endif
+        %endforeach
+        %%
+        %% width of signal
+        %%
+        %if LibDataOutputPortWidth(0) > 1
+            %assign opstr = opstr + "    i = 0 to "+STRING(LibDataOutputPortWidth(0)-1)
+        %endif
+    %%
+    %% handle case of single input ports
+    %%
+    %else
+        %%
+        %% get mul or div symbol for the input port
+        %%
+        %assign mulDiv = FixPtMulDivStr[0]
+        %%
+        %% handle division
+        %%
+        %if mulDiv == "/"
+            %%
+            %% handle case of only one input scalar
+            %%
+            %if LibDataInputPortWidth(0) == 1
+                %%
+                %assign opstr = opstr + " 1 / u0"
+            %%
+            %% handle case less five or more scalars on input port
+            %%
+            %elseif LibDataInputPortWidth(0) >= 5
+                %%
+                %assign opstr = opstr + " 1 / u0[0] / u0[1] / ... / u0["
+                %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+            %%
+            %% handle case less than five scalars on input port
+            %%
+            %else
+                %%
+                %assign opstr = opstr + " 1"
+                %%
+                %% handle each scalar
+                %%
+                %foreach i = LibDataInputPortWidth(0)
+                    %%
+                    %assign opstr = opstr + " / u0[" + STRING(i) + "]"
+                %endforeach
+            %endif
+        %%
+        %% handle multiplication
+        %%
+        %else
+            %%
+            %% handle case of only one input scalar
+            %%
+            %if LibDataInputPortWidth(0) == 1
+                %%
+                %assign opstr = opstr + "1 * u0   (Trivial Product!)"
+            %%
+            %% handle case more than five scalars on input port
+            %%
+            %elseif LibDataInputPortWidth(0) >= 5
+                %%
+                %assign opstr = opstr + "u0[0] * u0[1] * ... * u0["
+                %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+            %%
+            %% handle case less than five scalars on input port
+            %%
+            %else
+                %%
+                %% handle each scalar
+                %%
+                %foreach i = LibDataInputPortWidth(0)
+                    %%
+                    %if i == 0
+                    %%
+                        %assign opstr = opstr + " u0[0]"
+                    %else
+                        %assign opstr = opstr + " * u0[" + STRING(i) + "]"
+                    %endif
+                %endforeach
+            %endif
+        %endif
+    %endif
+    %%
+    %% spit out operation string
+    %%
+    %<opstr>
+    *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+     */
+    %if Multiplication == "Element-wise(.*)"
+      %%
+      %% put guts in temp file and keep track if
+      %% temp variables are needed
+      %%
+      %assign needTemp1 = 0
+      %assign needTemp2 = 0
+      %%
+      %assign tmp1Label = "yTemp1"
+      %assign tmp2Label = "yTemp2"
+      %%
+      %openfile gutsOfBlock
+      %%
+      %%  Handle case of multiple input port
+      %%  element by element vector product/division
+      %%
+      %if LibBlockNumInputPorts(block) > 1
+	%%
+	%% get first two mul or div symbols
+	%%
+	%assign mulDiv0 = FixPtMulDivStr[0]
+	%assign mulDiv1 = FixPtMulDivStr[1]
+	%%
+	%% Roll around signal width (Note: a curly brace is opened and closed
+	%% by the loop roller.  Therefore, if the block is not going to roll
+	%% we need to open and close them ourselves).
+	%%
+        %assign rollVars = ["U", "Y"]
+	%%
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %if lcv == "" && sigIdx != 0
+	    %% blank line for formating
+		
+	  %endif
+	  %%
+	  %% create RadixOnly version of second Input Data Type
+	  %%
+	  %assign uiIsComplex = LibBlockInputSignalIsComplex(1)
+	  %%
+	  %assign uiDT = FixPt_GetInputDataType(1)
+	  %%
+	  %<FixPt_MergeRecordDominantSource(uiRadixDT,uiDT)>\
+	  %%
+          %if doFracCorrection != "CORRECTION_NO"
+            %%
+            %assign uiRadixDT.FracSlope = 1.0
+            %assign uiRadixDT.Bias      = 0.0
+          %endif
+	  %%
+	  %% keep track of when the imaginary part of y0 is no longer
+	  %% DEFINITELY equal to zero.
+	  %%   For example, suppose there are six input ports, the first five
+	  %% are real, and the sixth is complex.  Complex operations
+	  %% are unnecessary until the very last step.  Keeping track
+	  %% that imag(y0) is definitely zero facilitates optimizing out complex
+	  %% operations until they are truly necessary.
+	  %%
+	  %assign y0ImagStillZero = 1
+	  %%
+	  %assign reSigIdx = tRealPart + STRING(sigIdx)
+	  %assign imSigIdx = tImagPart + STRING(sigIdx)
+	  %%
+	  %% Get first input
+	  %%
+	  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	  %if u0IsComplex
+	    %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Get second input
+	  %%
+	  %assign uiReLabel = LibBlockInputSignal(1, "", lcv, reSigIdx)
+	  %if uiIsComplex
+	    %assign uiImLabel = LibBlockInputSignal(1, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Get output
+	  %%
+	  %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+	  %if y0IsComplex
+	    %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Handle case of multiplication of first two terms
+	  %%
+	  %if (mulDiv0 == "*") && (mulDiv1 == "*")
+	    %if y0IsComplex
+	      %if u0IsComplex
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %assign needTemp1 = 1
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %else %% u0IsReal
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	  %elseif (mulDiv0 == "*") && (mulDiv1 == "/")
+	    %if y0IsComplex
+	      %%
+	      %% the sfunction prohibits the divisor from being complex so
+	      %% ui is definitely real for this case
+	      %%
+	      %if u0IsComplex
+		%%
+		%assign y0ImagStillZero = 0
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  u0ReLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+		%<FixPt_Division(y0ImLabel,y0RadixDT,...
+		  u0ImLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+	      %else %% u0IsReal
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  u0ReLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	  %else  %%if (mulDiv0 == "/")
+	    %if y0IsComplex
+	      %%
+	      %% the sfunction prohibits the divisor from being complex so
+	      %% u0 is definitely real for this case
+	      %%
+	      %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	      %if mulDiv1 == "*"
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %% y0Re is used as input in two calculations so
+		  %% it is crucial that assignment to y0Re
+		  %% come second
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %else
+		%%
+		%% the sfunction prohibits the divisor from being complex so
+		%% ui is definitely real for this case
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	      %if mulDiv1 == "*"
+		%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %else
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %endif
+	  %endif
+	  %%
+	  %% handle each input port AFTER the first two
+	  %%
+	  %foreach ipIdx = (LibBlockNumInputPorts(block)-2)
+	    %%
+	    %% get mul or div symbol
+	    %%
+	    %assign mulDiv = FixPtMulDivStr[ipIdx+2]
+	    %%
+	    %% create RadixOnly version of ith Input Data Type
+	    %%
+	    %assign uiIsComplex = LibBlockInputSignalIsComplex(ipIdx+2)
+	    %%
+	    %assign uiDT = FixPt_GetInputDataType(ipIdx+2)
+	    %%
+	    %<FixPt_MergeRecordDominantSource(uiRadixDT,uiDT)>\
+	    %%
+            %if doFracCorrection != "CORRECTION_NO"
+              %%
+              %assign uiRadixDT.FracSlope = 1.0
+              %assign uiRadixDT.Bias      = 0.0
+            %endif
+	    %%
+	    %assign uiReLabel = LibBlockInputSignal(ipIdx+2, "", lcv, reSigIdx)
+	    %if uiIsComplex
+	      %assign uiImLabel = LibBlockInputSignal(ipIdx+2, "", lcv, imSigIdx)
+	    %endif
+	    %%
+	    %% Handle multiplication of ith terms
+	    %%
+	    %if y0IsComplex
+	      %if mulDiv == "*"
+		%if y0ImagStillZero
+		  %if uiIsComplex
+		    %%
+		    %assign y0ImagStillZero = 0
+		    %%
+		    %% y0Re is used as input in two calculations so
+		    %% it is crucial that assignment to y0Re
+		    %% come second
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %else %% uiIsReal
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %endif
+		%else %% y0ImagNotZero
+		  %if uiIsComplex
+		    %%
+		    %assign needTemp1 = 1
+		    %assign needTemp2 = 1
+		    %%
+		    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %% y0Re is used as input in two calculations so
+		    %% it is crucial that assignment to y0Re
+		    %% come second
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		      tmp2Label,y0RadixDT,...
+		      FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		      tmp1Label,y0RadixDT,...
+		      FixPtSaturationMode)>\
+		    %%
+		  %else %% uiIsReal
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %endif
+		%endif
+	      %else %% division
+		%if y0ImagStillZero
+		  %%
+		  %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% y0ImagNotZero
+		  %%
+		  %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Division(y0ImLabel,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %endif
+	    %else %% output is real
+	      %if mulDiv == "*"
+		%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %else
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %endif
+	  %endforeach
+	  %%
+	  %%  handle fractional slope adjustment if necessary
+	  %%
+	  %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	    %%
+	    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	      y0ReLabel,y0RadixDT,...
+	      STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	%endroll
+	%%
+	%% case of single input port "collapsed"
+	%% to form scalar output
+      %else
+	%%
+	%% get mul or div symbol for the input port
+	%%
+	%assign mulDiv = FixPtMulDivStr[0]
+	%%
+	%assign u0ReLabel = LibBlockInputSignal(0, "", "", "re0")
+	%if y0IsComplex
+	  %assign u0ImLabel = LibBlockInputSignal(0, "", "", "im0")
+	%endif
+	%%
+	%% Get output
+	%%
+	%assign y0ReLabel = LibBlockOutputSignal(0, "", "", "re0")
+	%if y0IsComplex
+	  %assign y0ImLabel = LibBlockOutputSignal(0, "", "", "im0")
+	%endif
+	%%
+        %% handle division
+        %%
+	%if mulDiv == "/"
+	  %%
+	  %% the sfunction prohibits the divisor from being complex so
+	  %% u0 is definitely real for this case, hence y0 must be real too
+	  %%
+	  %% handle first scalar
+	  %%
+	  %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	  %% handle remaining scalars
+	  %%
+	  %if LibDataInputPortWidth(0) > 1
+	    %%
+	    %% Roll around input
+	    %%
+	    %assign rollVars = ["U"]
+	    %%
+	    %% remove first input because it has already been
+	    %% handled by reciprocal
+	    %%
+	    %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+	    %%
+	    %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	      %%
+	      %assign reSigIdx = tRealPart + STRING(sigIdx)
+	      %assign imSigIdx = tImagPart + STRING(sigIdx)
+	      %%
+	      %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	      %%
+	      %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		y0ReLabel,y0RadixDT,...
+		u0ReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endroll
+	  %endif
+	  %%
+	  %% handle multiplication
+	  %%
+	%else
+	  %%
+	  %% handle trivial case of single scalar input
+	  %%
+	  %if LibDataInputPortWidth(0) == 1
+	    %%
+	    %%   block is just doing a cast, no mul or div
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0RadixDT,...
+	      u0ReLabel,u0RadixDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	    %if y0IsComplex
+	      %%
+	      %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	    %endif
+	  %else
+	    %%
+	    %% Get second input
+	    %%
+	    %assign uiReLabel = LibBlockInputSignal(0, "", "", "re1")
+	    %if y0IsComplex
+	      %assign uiImLabel = LibBlockInputSignal(0, "", "", "im1")
+	    %endif
+	    %%
+	    %% handle first two scalars
+	    %%
+	    %if y0IsComplex
+	      %%
+	      %assign needTemp1 = 1
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		uiImLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		tmp1Label,y0RadixDT,...
+		FixPtSaturationMode)>\
+	      %%
+	      %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiImLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		tmp1Label,y0RadixDT,...
+		FixPtSaturationMode)>\
+	      %%
+	    %else
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	    %%
+	    %% handle remaining scalars
+	    %%
+	    %if LibDataInputPortWidth(0) > 2
+	      %%
+	      %% Roll around input
+	      %%
+	      %assign rollVars = ["U"]
+	      %%
+	      %% remove first and second input because they have already been
+	      %% handled by "direct" multiply above
+	      %%
+	      %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+	      %assign reducedRollRegions = LibRemoveRollRegions(reducedRollRegions,1)
+	      %%
+	      %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+		%%
+		%assign reSigIdx = tRealPart + STRING(sigIdx)
+		%assign imSigIdx = tImagPart + STRING(sigIdx)
+		%%
+		%if y0IsComplex
+		  %%
+		  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+		  %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+		  %%
+		  %assign needTemp1 = 1
+		  %assign needTemp2 = 1
+		  %%
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    u0ImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %% y0Re is used as input in two calculations so
+		  %% it is crucial that assignment to y0Re
+		  %% come second
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		    tmp2Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		%else
+		  %%
+		  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+		%%
+	      %endroll
+	    %endif
+	  %endif
+	%endif
+	%%
+	%%  handle fractional slope adjustment if necessary
+	%%
+	%if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	  %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    y0ReLabel,y0RadixDT,...
+	    STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	%endif
+      %endif   %% Number of input ports
+      %%
+      %closefile gutsOfBlock
+      %%
+      %% declare temp vars if needed
+      %%
+      %if needTemp1
+	{
+	  %<y0DT.NativeType> %<tmp1Label>;
+	  %if needTemp2
+	    %<y0DT.NativeType> %<tmp2Label>;
+	  %endif
+	  
+	  %%
+	  %<gutsOfBlock>\
+	}
+      %else
+	%<gutsOfBlock>\
+      %endif
+      %%
+      %% blank line for formating
+      
+    %else
+      %% Matrix Multiplication Code
+      %% Need to perform In1 *In2 = temp
+      %% And then do temp = temp*In3, Out = temp* In(last)
+      %% Temp in this case will be a matrix.
+      %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+      %assign temp1Label = "temp1Array"
+      %assign temp2Label = "temp2Array"
+      %assign yLabelAddr = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign In1LabelAddr = LibBlockInputSignalAddr(0, "", "", 0)
+      %assign In1DT = FixPt_GetInputDataType(0)
+      %% Temp1 - Odd Mults
+      %% Temp2 - Even Mults
+      %% Analyse dims to get max size of
+      %% temp1 and temp2
+      %if LibBlockNumInputPorts(block) != 1
+	%assign MaxN1 = 0
+	%assign MaxN2 = 0
+	%assign MaxM = MultDimensions1[0]
+	%foreach ipIdx = LibBlockNumInputPorts(block)-2
+	  %assign dimsLabel = MultDimensions%<ipIdx+1>
+	  %if ipIdx % 2 == 0
+	    %% if ipIdx is even then it 
+	    %% corresponds to odd Multiplication
+	    %assign tempMaxN1 = dimsLabel[2]
+	    %if tempMaxN1 >= MaxN1
+	      %assign MaxN1 = tempMaxN1
+	    %endif
+	  %else
+	    %%
+	    %% temparray2, even multiplication
+	    %%
+	    %assign tempMaxN2 = dimsLabel[2]
+	    %if tempMaxN2 >= MaxN2
+	      %assign MaxN2 = tempMaxN2
+	    %endif
+	  %endif
+	%endforeach
+      %endif
+      %if y0IsComplex  
+	%% Output is Complex
+	%% This check is sufficient
+	%% because the output is set to complex
+	%% if one of the inputs is complex even if the final result
+	%% is real.
+	%assign cPrefix = "c"
+	%if LibBlockNumInputPorts(block) == 1
+	    {
+	    int iOut;
+	    %assign dimsOnePort = MultDimensionsOneInputPort
+	    for(iOut = 0; iOut < %<dimsOnePort[0]*dimsOnePort[1]>; iOut ++)
+	    {
+	      %assign ytempLabelRe = "(%<yLabelAddr>)[iOut].re"
+	      %assign ytempLabelIm = "(%<yLabelAddr>)[iOut].im"
+	      %assign In1tempLabelRe = "(%<In1LabelAddr>)[iOut].re"
+	      %assign In1tempLabelIm = "(%<In1LabelAddr>)[iOut].im"
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabelRe,y0RadixDT,In1tempLabelRe,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabelIm,y0RadixDT,In1tempLabelIm,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	    }
+	    }
+	%else  
+	  %foreach ipIdx = LibBlockNumInputPorts(block)
+	    %if ipIdx == 0 %% Input 1
+	      %assign In1IsComplex   = LibBlockInputSignalIsComplex(0)
+	      %assign In2IsComplex   = LibBlockInputSignalIsComplex(1)
+	      %assign In2DT = FixPt_GetInputDataType(1)
+	      %assign dims = MultDimensions1
+	      %% Allocate a temp array to store the first product
+	      %if LibBlockNumInputPorts(block) > 2
+		{
+		%assign arraySizetemp1 = MaxM * MaxN1 
+		%<cPrefix>%<y0DT.NativeType> %<temp1Label>[%<arraySizetemp1>];
+		%if LibBlockNumInputPorts(block) > 3
+		  %assign arraySizetemp2 = MaxM * MaxN2 
+		  %<cPrefix>%<y0DT.NativeType> %<temp2Label>[%<arraySizetemp2>];
+		%endif
+	      %endif
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(1, "", "", 0)
+	      %if LibBlockNumInputPorts(block) == 2
+		%<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],In1IsComplex, In2IsComplex)>\
+	      %else
+		%<FixPt_ComplexMatrixMultiply(temp1Label,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],In1IsComplex, In2IsComplex)>\
+	      %endif
+	      %%
+	      %% No action is necessary for ipIdx ==1. Handled in case 0
+	      %%
+	    %elseif ipIdx > 1
+	      %assign In1IsComplex = "1"
+	      %% Multiply the next input with the working value of the output
+	      %assign dims = MultDimensions%<ipIdx>
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(ipIdx, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(ipIdx)
+	      %assign In2IsComplex   = LibBlockInputSignalIsComplex(ipIdx)
+	      %if ipIdx % 2 == 0
+		%assign MulOutTempLabel = "%<temp2Label>"		
+		%assign MulInTempLabel = "%<temp1Label>"		
+	      %else
+		%assign MulOutTempLabel = "%<temp1Label>"		
+		%assign MulInTempLabel = "%<temp2Label>"		
+	      %endif
+	      %if ipIdx == LibBlockNumInputPorts(block)-1
+		  %<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1], In1IsComplex, In2IsComplex)>\
+		  }
+	      %else
+		  %<FixPt_ComplexMatrixMultiply(MulOutTempLabel,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1], In1IsComplex, In2IsComplex)>\
+	      %endif
+	    %endif %% if ipIdx !=1
+	  %endforeach
+	%endif %%if NumInputPorts == 1
+      %else
+	%% Output is real
+	 %if LibBlockNumInputPorts(block) == 1
+	    {
+	    int iOut;
+	    %assign dimsOnePort = MultDimensionsOneInputPort
+	    for(iOut = 0; iOut < %<dimsOnePort[0]*dimsOnePort[1]>; iOut ++)
+	    {
+	      %assign ytempLabel = "(%<yLabelAddr>)[iOut]"
+	      %assign In1tempLabel = "(%<In1LabelAddr>)[iOut]"
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabel,y0RadixDT,In1tempLabel,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	    }
+	    }
+	 %else
+	    %% Now that we have identified the two biggest indices
+	    %% we assign storage space for the two temp arrays
+	  %foreach ipIdx = LibBlockNumInputPorts(block)
+	    %if ipIdx == 0 %% Input 1
+	      %assign dims = MultDimensions1
+	      %% Allocate a temp array to store the first product
+	      %if LibBlockNumInputPorts(block) > 2
+		{
+		%assign arraySizetemp1 = MaxM * MaxN1
+		%<y0DT.NativeType> %<temp1Label>[%<arraySizetemp1>];
+		%if LibBlockNumInputPorts(block) > 3
+		  %assign arraySizetemp2 = MaxM * MaxN2
+		  %<y0DT.NativeType> %<temp2Label>[%<arraySizetemp2>];
+		%endif
+	      %endif
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(1, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(1)
+	      %if LibBlockNumInputPorts(block) == 2
+		%<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %else
+		%<FixPt_MatrixMultiply(temp1Label,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %endif
+	    %elseif ipIdx > 1
+	      %% Multiply the next input with the working value of the output
+	      %assign dims = MultDimensions%<ipIdx>
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(ipIdx, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(ipIdx)
+	      %if ipIdx % 2 == 0
+		%assign MulOutTempLabel = "%<temp2Label>"		
+		%assign MulInTempLabel = "%<temp1Label>"		
+	      %else
+		%assign MulOutTempLabel = "%<temp1Label>"		
+		%assign MulInTempLabel = "%<temp2Label>"		
+	      %endif
+	      %if ipIdx == LibBlockNumInputPorts(block)-1
+		  %<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+		  }
+	      %else
+		  %<FixPt_MatrixMultiply(MulOutTempLabel,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %endif
+	    %endif   %% ipIdx != 1
+	  %endforeach
+	 %endif
+      %endif
+    %endif
+    %% blank line for formatting
+    
+%endfunction
+
+
+%% Function: OutputsClassic ==========================================================
+%% Abstract:
+%%      How this block operates depends on whether it has a single input or
+%%      multiple inputs.  For the single input case, it produces a scalar
+%%      output consisting of the product of the elements of the input vector.
+%%      For the multi-input case, it behaves as the dual of the "sum" block.
+%%      Thus each port can be labeled as a multiply (*) or a divide (/).
+%%      Each element of the output vector is then composed of the product
+%%      or reciprocal of each corresponding input element.
+%%
+%%      The inputs can be of any type except boolean and may be complex.
+%function OutputsClassic(block, system) Output
+  %if ParamSettings.Multiplication == "Element-wise(.*)"
+    %assign doSaturate = SLibHandleSaturateOnOverflow(block)
+    %%
+    %assign outputIsComplex = LibBlockOutputSignalIsComplex(0)
+    %if (!outputIsComplex)
+      %if (LibBlockNumInputPorts(block) == 1)
+	%<RealVectorProduct(block, system, doSaturate)>\
+      %else
+	%<RealParallelProduct(block, system, doSaturate)>\
+      %endif
+    %else
+      %if (LibBlockNumInputPorts(block) == 1)
+	%<ComplexVectorProduct(block, system, doSaturate)>\
+      %else
+	%<ComplexParallelProduct(block, system, doSaturate)>\
+      %endif
+    %endif
+  %else
+    %if ParamSettings.OneInputMultiply == "no"
+      {
+      %% Perform matrix multiplication
+      %assign ops = ParamSettings.OperandComplexity
+      %assign opsSize = SIZE(ops)
+      %assign operators = ParamSettings.Operators
+      %assign numMulSteps = opsSize[1]
+      %assign Dims = ParamSettings.Dimensions
+      %%
+      %assign dimsLength = numMulSteps * 3
+      %%
+      static const int dims[%<dimsLength>] = { \
+      %foreach matOp = numMulSteps
+	%assign dims = Dims[matOp]
+	 %<dims[0]>, %<dims[1]>, %<dims[2]> \
+	%if matOp != (numMulSteps-1)
+	  , \
+	%endif
+      %endforeach
+      };
+      %%
+      %assign allPortReal = TLC_TRUE
+      %assign allPortComplex = TLC_TRUE
+      %%
+      %foreach iIdx = NumDataInputPorts
+	%%
+	%if LibBlockInputSignalIsComplex(iIdx)
+	  %assign allPortReal = TLC_FALSE
+	%else
+	  %assign allPortComplex = TLC_FALSE
+	%endif
+	%%
+      %endforeach
+      %%
+      %assign dTypeId = LibBlockOutputSignalAliasedThruDataTypeId(0)
+      %assign dType   = [%<LibGetDataTypeNameFromId(dTypeId)>, ...
+	%<LibGetDataTypeComplexNameFromId(dTypeId)>]
+      %if dTypeId == tSS_DOUBLE
+	%assign fcnNameType = "_Dbl"
+      %else
+	%assign fcnNameType = "_Sgl"
+      %endif
+      %foreach matOp = numMulSteps
+	%assign fcnName = "%<ops[matOp]>%<fcnNameType>"
+	%assign operand = ParamSettings.Operands[matOp]
+	%assign complexity = ParamSettings.Complexities[matOp]
+	%%
+	%assign y = SLibMatrixOperand(block, operand[0])
+	%assign a = SLibMatrixOperand(block, operand[1])
+	%assign b = SLibMatrixOperand(block, operand[2])
+	%% We do not need cast if
+	%%  1. all port are real, OR
+	%%  2. all port complex and it is not dwork
+	%%
+	%% We need cast if
+	%%   1. it is dwork and not all port real, OR
+	%%   2. numeric type is heterogeneous
+	%%
+	%if allPortReal || (operand[0] >= 0 && allPortComplex)
+	  %assign dTy = ""
+	%else 
+	  %% DWORK needs cast	  
+	  %assign dTy = "(%<dType[complexity[0]]>*)"
+	%endif
+	%%  
+	%if allPortReal || (operand[1] >= 0 && allPortComplex)
+	  %if operand[1] > 0
+	    %% inputs
+	    %assign inTypeName = LibBlockInputSignalDataTypeName(operand[1]-1, "")
+	    %%
+	    %if inTypeName == dType[complexity[1]]
+	      %%
+	      %assign portObj = FcnGetInputPortRecord(operand[1]-1)
+	      %assign sigRec  = SLibGetSourceRecord(portObj, 0)
+	      %%
+	      %if sigRec.Invariant != "yes"
+		%assign dTa = ""
+	      %else 
+		%assign dTa = "(%<dType[complexity[1]]>*)"
+	      %endif
+	    %else
+	      %assign dTa = "(%<dType[complexity[1]]>*)"
+	    %endif
+	  %else
+	    %% output or dwork
+	    %assign dTa = ""
+	  %endif
+	  %%
+	%else 
+	  %% DWORK and not all real input needs cast	  
+	  %assign dTa = "(%<dType[complexity[1]]>*)"
+	%endif
+	%%
+	%if allPortReal || (operand[2] >= 0 && allPortComplex)
+	  %%
+	  %if operand[2] > 0
+	    %% input could be invariant
+	    %assign portObj = FcnGetInputPortRecord(operand[2]-1)
+	    %assign sigRec  = SLibGetSourceRecord(portObj, 0)
+	    %%
+	    %if sigRec.Invariant != "yes"
+	      %assign dTb = ""
+	    %else 
+	      %assign dTb = "(%<dType[complexity[1]]>*)"
+	    %endif
+	  %else
+	    %% output or dwork
+	    %assign dTb = ""
+	  %endif
+	%else 
+	  %% DWORK needs cast
+	  %assign dTb = "(%<dType[complexity[2]]>*)"
+	%endif
+	%%
+	%assign curIdxForDims = matOp * 3
+	%%
+	%if operators[matOp] == "*"
+	  rt_MatMult%<fcnName>(%<dTy>%<y>, %<dTa>%<a>, 
+	  %<dTb>%<b>, &dims[%<curIdxForDims>]);
+	%else
+	  %assign divBufs = ParamSettings.DivisionBuffers
+	  %assign lu  = SLibMatrixOperand(block, divBufs[0])
+	  %assign piv = SLibMatrixOperand(block, divBufs[1])
+	  %assign x   = SLibMatrixOperand(block, divBufs[2])
+	  %% DWORK needs cast
+	  %assign dTlu = "(%<dType[complexity[1]]>*)"
+	  %assign dTx  = "(%<dType[complexity[0]]>*)"
+	  rt_MatDiv%<fcnName>(%<dTy>%<y>, %<dTa>%<a>, %<dTb>%<b>,
+	  %<dTlu>%<lu>, %<piv>, %<dTx>%<x>, &dims[%<curIdxForDims>]);
+	%endif
+	%%
+      %endforeach
+      }
+    %else
+      %% Input is direct feedthrough to output
+      %% Copy input to output unless buffer is re-used
+      %assign u0 = LibBlockInputSignalAddr(0, "", "", 0)
+      %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+      %assign width = DataInputPort[0].Width
+      %if (%<LibBlockInputSignalBufferDstPort(0)> == 0)
+	%if (ShowEliminatedStatements)
+	  #if 0
+	  /* Buffer Reuse Active; Following statement(s) unnecessary */
+	  (void) memcpy (%<y>, %<u0>, %<width> * sizeof (%<inputDataType>));
+	  #endif
+	%endif
+      %else
+	(void) memcpy (%<y>, %<u0>, %<width> * sizeof (%<inputDataType>));
+      %endif
+    %endif
+  %endif
+  
+%endfunction
+
+
+%% Function: Outputs ===============================================
+%% Abstract:
+%% 	Output function
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %%default is to call OutputsFixpt(block, system)
+    %with CompiledModel
+      %assign funcName = "%<productOutputsFixptFunc>"
+      %assign typeName = "%<productOutputsFixptType>"
+    %endwith
+    %<GENERATE_TYPE(block,funcName,typeName,system)>
+  %else
+    %<OutputsClassic(block, system)>
+  %endif
+%endfunction
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %if block.InFixptMode
+	%%
+	%%   only support case of multiply
+	%%   only support case of all data types fixpt or integer
+	%%   only support case of identical signed-ness
+	%%
+	%% create RadixOnly version of output Data Type
+	%%
+	%assign y0DT = FixPt_GetOutputDataType(0)
+	%%
+	%copyrecord y0RadixDT y0DT
+	%%
+        %if doFracCorrection != "CORRECTION_NO"
+          %%
+          %assign y0RadixDT.FracSlope = 1.0
+          %assign y0RadixDT.Bias      = 0.0
+        %endif
+	%%
+	%if LibBlockNumInputPorts(block) == 1
+	  %%
+	  %% collapse case, 
+	  %%   only support case where input has 2 elements
+	  %%
+	  %assign uLeftLabel = LibBlockInputSignal(0,"","",0)
+	  %%
+	  %assign uRghtLabel = LibBlockInputSignal(0,"","",1)
+	  %%
+	  %assign u0DT  = FixPt_GetInputDataType(0)
+	  %%
+	  %copyrecord uLeftDT u0DT
+	  %%
+          %if doFracCorrection != "CORRECTION_NO"
+            %%
+            %assign uLeftDT.FracSlope = 1.0
+            %assign uLeftDT.Bias      = 0.0
+          %endif
+	  %%
+	  %assign uRghtDT  = uLeftDT
+	  %%
+	%else
+	  %%
+	  %% multiple inputs case
+	  %%   only support case of two input ports
+	  %%
+	  %assign uLeftLabel = LibBlockInputSignal(0,ucv,lcv,idx)
+	  %%
+	  %assign uRghtLabel = LibBlockInputSignal(1,ucv,lcv,idx)
+	  %%
+	  %assign u0DT  = FixPt_GetInputDataType(0)
+	  %%
+	  %copyrecord uLeftDT u0DT
+	  %%
+          %if doFracCorrection != "CORRECTION_NO"
+            %%
+            %assign uLeftDT.FracSlope = 1.0
+            %assign uLeftDT.Bias      = 0.0
+          %endif
+	  %%
+	  %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+	    %%
+	    %assign uLeftDT.FixedExp = uLeftDT.FixedExp + iFixExpCorrection
+	  %endif
+	  %%
+	  %assign u1DT  = FixPt_GetInputDataType(1)
+	  %%
+	  %copyrecord uRghtDT u1DT
+	  %%
+          %if doFracCorrection != "CORRECTION_NO"
+            %%
+            %assign uRghtDT.FracSlope = 1.0
+            %assign uRghtDT.Bias      = 0.0
+          %endif
+	  %%
+	%endif
+	%%
+	%assign outExpr = FixPt_Multiply_Expr(y0RadixDT,uLeftLabel,uLeftDT,uRghtLabel,uRghtDT)
+        %%
+	%return outExpr
+      %else
+	%if ParamSettings.Multiplication == "Element-wise(.*)" && ...
+	  ParamSettings.SaturateOnOverflow == "NeededButOff"
+	  %<SLibCacheOverflowWarning(block)>
+	%endif
+	%assign Ops = ParamSettings.Inputs
+	%assign u = LibBlockInputSignal(0,ucv,lcv,idx)
+	
+	%if Ops[0] == "*"
+	  %assign outstr = ""
+	%else
+	  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	  %assign one = SLibGetFormattedValueFromId(outputDataType, 1)
+	  %assign outstr = "%<one> / "
+	%endif
+	
+	%assign outstr = outstr + u
+	%foreach pidx = LibBlockNumInputPorts(block) - 1
+	  %assign ipIdx = pidx + 1
+	  %assign u = LibBlockInputSignal(ipIdx,ucv,lcv,idx)
+	  %assign outstr = outstr + " %<Ops[ipIdx]> " + u
+	%endforeach
+	
+	%return "(%<outstr>)"
+      %endif
+    %default
+      %%START_ASSERT
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+
+%% Function: RealVectorProduct ================================================
+%% Abstract:
+%%       Generates code for doing a vector multiply (or divide) for a real
+%%       signal of width >= 1 (for all data types).
+%% Synopsis:
+%%       RealVectorProduct(block, system, doSaturate)
+%%         block - block record
+%%         system - system record
+%%         doSaturate - Saturation flag for integer inputs
+%function RealVectorProduct(block, system, doSaturate) Output
+  %% Block is configured as a vector multiplier (1 input port)
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign y = LibBlockOutputSignal(0, "", "", 0)
+  %assign u = LibBlockInputSignal(0, "", "", 0)
+  %assign Ops = ParamSettings.Inputs
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %assign one = SLibGetFormattedValueFromId(outputDataType, 1)
+  %if (!doSaturate)
+    %if Ops[0] == "/"
+      %assign outstr = "%<one> / ("
+    %else
+      %assign outstr = ""
+    %endif
+    %assign outstr = outstr + "%<u>"
+    %if LibBlockInputSignalWidth(0) > 1
+      %assign rollVars = ["U"]
+      %assign rollRegions1 = LibGetRollRegions1(RollRegions)
+      %foreach elt = LibBlockInputSignalWidth(0) - 1
+	%assign u = LibBlockInputSignal (0, "", "", elt+1)
+	%assign outstr = outstr + " * " + "\n%<u>"
+      %endforeach
+    %endif
+    %if Ops[0] == "/"
+      %assign outstr = outstr + " )"
+    %endif
+    %<y> = %<outstr>;
+  %else
+    %if LibBlockInputSignalWidth(0) == 1
+      %if Ops[0] == "*"
+        %if (y == u && ShowEliminatedStatements == 1)
+          %%START_ASSERT
+          /* %<y> = %<u>; */
+          %%END_ASSERT
+        %elseif (y != u)
+          %<y> = %<u>;
+        %endif
+      %else
+        %<RealDivide("%<one>", u, y, doSaturate)>\
+      %endif
+    %else
+      %assign outputDTname = LibBlockOutputSignalDataTypeName(0, "")
+      {
+      %<outputDTname> output = %<u>;
+      \
+        %assign rollVars = ["U"]
+        %assign rollRegions1 = LibGetRollRegions1(RollRegions)
+        %roll sigIdx = rollRegions1, lcv = RollThreshold, block, "Roller", rollVars
+          %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+          %<RealMultiply("output", u, "output", doSaturate)>\
+        %endroll
+        %if Ops[0] == "*"
+          %<y> = output;
+        %else
+          %<RealDivide("%<one>", "output", y, doSaturate)>\
+        %endif
+      }
+    %endif
+  %endif
+%endfunction
+
+%% Function: RealParallelProduct ==============================================
+%% Abstract:
+%%       Generates code for doing a parallel multiply (or divide) for real
+%%       signals of width >= 1 (for all data types).
+%% Synopsis:
+%%       RealParallelProduct(block, system, doSaturate)
+%%         block - block record
+%%         system - system record
+%%         doSaturate - Saturation flag for integer inputs
+%function RealParallelProduct (block, system, doSaturate) Output
+  %% Block is configured as a parallel multiplier (n input ports, n > 1)
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "")
+  %assign Ops = ParamSettings.Inputs
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %assign one = SLibGetFormattedValueFromId(outputDataType, 1)
+  %if (!doSaturate)
+    %%
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %%
+      %if Ops[0] == "*"
+        %assign outstr = ""
+      %else
+        %assign outstr = "%<one> / "
+      %endif
+      %%
+      %assign outstr = outstr + "%<u>"
+      %foreach port = LibBlockNumInputPorts(block) - 1
+        %assign ip = port + 1
+	%assign u = LibBlockInputSignal(ip, "", lcv, sigIdx)
+        %if (Ops[ip] == "*") 
+          %assign outstr = outstr + " * " + u
+        %else
+          %assign outstr = outstr + " / " + u
+        %endif
+      %endforeach
+      %%
+      %<y> = %<outstr>;
+    %endroll
+  %else
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %assign u = LibBlockInputSignal (0, "", lcv, sigIdx)
+      %% Note that we must use the temporary variable 'output' for the
+      %% cases that we have buffer reuse.
+      %% To see why, consider the case that you have two input ports
+      %% and the buffer of the second port is reused.  If y
+      %% is assigned the value of port 1, it will overwrite the value
+      %% in port two (the shared buffer) thus destroying the information
+      %% before it is used.
+      {
+      %if (Ops[0] == "*")
+        %<outputDTname> output = %<u>;
+      %else
+        %<outputDTname> output = %<RealDivideInitial("%<one>", u, doSaturate)>;
+      %endif
+      %%
+      \
+        %<FcnEmulateResultForDSP32(outputDataType,"output")>\
+        %foreach port = LibBlockNumInputPorts(block) - 1
+          %assign ip = port + 1
+          %assign u = LibBlockInputSignal (ip, "", lcv, sigIdx)
+          %if (Ops[ip] == "*") 
+            %<RealMultiply("output", u, "output", doSaturate)>\
+          %else
+            %<RealDivide("output", u, "output", doSaturate)>\
+          %endif
+        %endforeach
+        %<y> = output;
+      }
+    %endroll
+  %endif
+%endfunction
+
+%% Function: RealDivide ========================================================
+%% Abstract:
+%%       Generates code (for a divide) that stands by it self.
+%%       Takes into account data types and the doSaturate flag.
+%% Synopsis:
+%%       RealDivide (a, b, output, doSaturate)
+%%       where
+%%       a - the numerator,
+%%       b - the denominator.
+%%       output - output variable
+%%       doSaturate - Saturation flag for integer inputs
+%%       a, b, and output are all assumed to be non-empty strings.
+%%
+%%       %<RealDivide(a,b,"x")>\
+%%       would result in
+%%       x = (%<a>)/(%<b>) when the output data type is a floating point or
+%%                          the doSaturate flag is not set.
+%%       x = SaturateDivide_<DT>(a,b) when the output data type is an integer
+%%                          and the doSaturate flag is set.
+%%       For C:
+%%         If a == output,
+%%         generated code is
+%%         %<output> = %<output> / %<b>;
+%function RealDivide (a, b, output, doSaturate) Output
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %if (!doSaturate)
+    %% No overflow checking
+    %if (output == a)
+      %<output> = %<output> / %<b>;
+    %else
+      %<output> = (%<a>) / (%<b>);
+    %endif
+  %else
+    %<output> = SaturateDivide_%<outputDTname> (%<a>, %<b>);
+  %endif
+%endfunction
+
+%% Function: RealDivideInitial ===============================================
+%% Abstract:
+%%       Generates code (for a divide) that can be assigned to a variable.
+%%       Takes into account data types and the doSaturate flag.
+%%       This function is meant for use of variable initialization/declaration
+%%       i.e.
+%%       one could declare
+%%       real_T x = %<RealDivideInitial(a,b, doSaturate)>;
+%% Synopsis:
+%%       RealDivideInitial (a, b, doSaturate)
+%%       where
+%%       a - the numerator,
+%%       b - the denominator.
+%%       doSaturate - Saturation flag for integer inputs
+%%       a and b are assumed to be non-empty strings.
+%%
+%%       x = %<RealDivideInitial(a,b, doSaturate)>;
+%%       would result in
+%%       x = (%<a>)/(%<b>) when the output data type is a floating point or
+%%                          the doSaturate flag is not set.
+%%       x = SaturateDivide_<DT>(a,b) when the output data type is an integer
+%%                          and the doSaturate flag is set.
+%function RealDivideInitial (a, b, doSaturate) Output
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %if (!doSaturate)
+    %% No overflow checking
+    (%<a>) / (%<b>)\
+  %else
+    SaturateDivide_%<outputDTname> (%<a>, %<b>)\
+  %endif
+%endfunction
+
+%% Function: ComplexVectorProduct =============================================
+%% Abstract:
+%%       Generates code for doing a vector multiply (or divide) for a complex
+%%       signal of width >= 1 (for all data types).
+%% Synopsis:
+%%       ComplexVectorProduct(block, system, doSaturate)
+%%         block - block record
+%%         system - system record
+%%         doSaturate - Saturation flag for integer inputs
+%function ComplexVectorProduct (block, system, doSaturate) Output
+  %% Block is configured as a vector multiplier (1 input port)
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign y = LibBlockOutputSignal(0, "", "", 0)
+  %assign u = LibBlockInputSignal(0, "", "", 0)
+  %assign Ops = ParamSettings.Inputs
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)  
+  %if LibBlockInputSignalWidth(0) == 1
+    %if Ops[0] == "*"
+      %if (y == u && ShowEliminatedStatements == 1)
+        %%START_ASSERT
+        /* %<y> = %<u>; */
+        %%END_ASSERT
+      %elseif (y != u)
+        %<y> = %<u>;
+      %endif
+    %else
+      %assign ur = LibBlockInputSignal (0, "", "", "%<tRealPart>0")      
+      %assign ui = LibBlockInputSignal (0, "", "", "%<tImagPart>0")
+      %assign yr = LibBlockOutputSignal(0, "", "", "%<tRealPart>0")
+      %assign yi = LibBlockOutputSignal(0, "", "", "%<tImagPart>0")
+      %%
+      %<ComplexReciprocal(ur, ui, yr, yi, doSaturate)>\
+    %endif
+  %else
+    %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "")
+    %assign outputDTnameRe = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")
+    {
+    %<outputDTname> output = %<u>;
+    %%
+    \
+      %assign rollVars = ["U"]
+      %assign rollRegions1 = LibGetRollRegions1(RollRegions)
+      %roll sigIdx = rollRegions1, lcv = RollThreshold, block, "Roller", rollVars
+        %assign ur = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+        %assign ui = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")   
+        %<ComplexMultiply("output.re", "output.im", ur, ui, "output.re", "output.im", doSaturate, 1)>\
+      %endroll
+      %if Ops[0] == "*"
+        %<y> = output;
+      %else
+        %assign yr = LibBlockOutputSignal(0, "", "", "%<tRealPart>0")
+        %assign yi = LibBlockOutputSignal(0, "", "", "%<tImagPart>0")
+        %<ComplexReciprocal("output.re", "output.im", yr, yi, doSaturate)>\
+      %endif
+    }
+  %endif
+%endfunction
+
+%% Function: ComplexParallelProduct ===========================================
+%% Abstract:
+%%       Generates code for doing a parallel multiply (or divide) for complex
+%%       signals of width >= 1 (for all data types).
+%% Synopsis:
+%%       ComplexParallelProduct(block, system, doSaturate)
+%%         block - block record
+%%         system - system record
+%%         doSaturate - Saturation flag for integer inputs
+%function ComplexParallelProduct (block, system, doSaturate) Output
+  %% Block is configured as a parallel multiplier (n input ports, n > 1)
+  %assign rollVars = ["U", "Y"]
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "")
+  %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(...
+    LibBlockOutputSignalDataTypeId(0))
+  %assign Ops = ParamSettings.Inputs
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  {
+  %<outputDTname> output;
+  %%
+  \
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %assign u = LibBlockInputSignal (0, "", lcv, sigIdx)    
+    %assign ur = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+    %assign ui = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")       
+    %if Ops[0] == "*"
+      %if (ui != "")
+        output = %<u>;
+      %else
+        output.re = %<ur>;
+        output.im = %<zero>;
+      %endif
+    %else
+      %<ComplexReciprocal (ur, ui, "output.re", "output.im", doSaturate)>\
+    %endif
+    %foreach port = LibBlockNumInputPorts(block) - 1
+      %assign ip = port + 1
+      %assign ur = LibBlockInputSignal(ip, "", lcv, "%<tRealPart>%<sigIdx>")
+      %assign ui = LibBlockInputSignal(ip, "", lcv, "%<tImagPart>%<sigIdx>")    
+      %if (Ops[ip] == "*") 
+        %<ComplexMultiply("output.re", "output.im", ur, ui, "output.re", "output.im", doSaturate, 1)>\
+      %else
+        %<ComplexDivide("output.re", "output.im", ur, ui, "output.re", "output.im", doSaturate)>\
+      %endif
+    %endforeach
+    %<y> = output;
+  %endroll
+  }
+%endfunction
+
+%% Function: ComplexReciprocal ================================================
+%% Abstract:
+%%       Generates code to output the reciprocal of a complex number.
+%% Synopsis:
+%%       ComplexReciprocal (re, im, output_re, output_im, doSaturate)
+%%         results in:
+%%           output_re + i*output_im <-- 1/(re + i * im)
+%%
+%%         re - Real part of complex number
+%%         im - Imaginary part of complex number
+%%         output_re - Real part of complex number which will hold result
+%%         output_im - Imaginary part of complex number which will hold result
+%%         doSaturate - Saturation flag for integer inputs
+%%
+%%         re, im may be empty strings.  In these cases, they are treated as
+%%         if they are equal to zero.
+%function ComplexReciprocal (re, im, output_re, output_im, doSaturate) Output
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign outputDTnameRe  = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")  
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %assign one = SLibGetFormattedValueFromId(outputDataType, 1)  
+  %switch (outputDataType)
+    %case (tSS_DOUBLE)
+    %case (tSS_SINGLE)
+      %if (ISEQUAL(im, ""))
+        %<output_re> = %<one>/(%<re>);
+        %<output_im> = %<zero>;
+      %else
+        if (%<im> == %<zero>) {
+          %<output_re> = %<one>/(%<re>);
+          %<output_im> = %<zero>;
+        } else {
+          {
+          %<outputDTnameRe> s = \
+            (%<outputDTnameRe>)(fabs((real_T)%<re>) + fabs((real_T)%<im>));
+          %<outputDTnameRe> ars = %<one>/s;
+          %<outputDTnameRe> brs = %<re>/s;
+          %<outputDTnameRe> bis = %<im>/s;
+          %<outputDTnameRe> d   = (brs * brs + bis * bis);
+          \
+            %<output_re> = (ars * brs)/d;
+            %<output_im> = (%<zero> - (ars * bis))/d;
+          }
+        }
+      %endif
+      %break
+    %case (tSS_INT8)
+    %case (tSS_INT16)
+    %case (tSS_INT32)
+    %case (tSS_UINT8)
+    %case (tSS_UINT16)
+    %case (tSS_UINT32)
+      %if (ISEQUAL(im, ""))
+        %<RealDivide ("%<one>", re, output_re, doSaturate)>\
+        %<output_im> = %<zero>;
+      %else
+        if (%<im> == %<zero>) {
+          %<RealDivide ("%<one>", re, output_re, doSaturate)>\
+          %<output_im> = %<zero>;
+        } else {
+          {
+            %<outputDTnameRe> d;
+          \
+            %% d = a*a + b*b
+            %if (!doSaturate)
+              d = %<re> * %<re> + %<im> * %<im>;
+            %else
+              {
+              %<outputDTnameRe> tmp1;
+              %<outputDTnameRe> tmp2;         
+              \
+                tmp1 = SaturateProduct_%<outputDTnameRe> (%<re>, %<re>);
+                tmp2 = SaturateProduct_%<outputDTnameRe> (%<im>, %<im>);
+                %<SLibSumWithSaturate (outputDataType, "+", "d", "tmp1", "tmp2", "")>\
+              }
+            %endif
+            %<RealDivide (re, "d", output_re, doSaturate)>\
+            %if (outputDataType == tSS_INT8 || ...
+                outputDataType == tSS_INT16 || ...
+                outputDataType == tSS_INT32)
+              %% Note:
+              %% 1) The division MUST be done before the negation since
+              %% this is the order of operations within Simulink.
+              %% 2) RealDivideInitial takes care of generating appropriate code
+              %% depending on the doSaturate flag.
+              %% 3) The quantity %<im>/d can never be MIN_int_(8|16|32) and so does
+              %% not require any saturation code for the negation.
+              %% Here's why:
+              %% Let the input be a+b*i.  Then, the output is
+              %%    a/(a^2+b^2) - b*i/(a^2+b^2)
+              %% Saturation code is required only if the quantity
+              %% b/(a^2+b^2) can take on the value MIN_int_*
+              %% which in turn requires that (a^2+b^2) must be 1 and b must be MIN_int_*
+              %% These two conditions cannot be satisfied simultaneously.  Hence, no
+              %% saturation code is required for the negation.
+              %<output_im> = - %<RealDivideInitial (im, "d", doSaturate)>;
+	      %<FcnEmulateResultForDSP32(outputDataType,output_im)>\
+            %else
+              %% If an unsigned data type, then the imaginary part of the output is
+              %% always 0 (by definition).
+              %<output_im> = %<zero>;
+            %endif
+          }
+        }
+      %endif
+      %break
+    %default
+      %%START_ASSERT
+      %assign errTxt = "Invalid data type specified, " ...
+        "%<LibGetDataTypeNameFromId(outputDataType)>."
+      %<LibBlockReportError([], errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+%% Function: ComplexDivide ====================================================
+%% Abstract:
+%%       Generates code to divide two complex numbers.
+%% Synopsis:
+%%       ComplexDivide (a, b, c, d, output_re, output_im, doSaturate)
+%%         results in:
+%%         output_re + i*output_im <-- (a + i*b)/(c + i * d)
+%%
+%%         a - Real part of numerator
+%%         b - Imaginary part of numerator
+%%         c - Real part of denominator
+%%         d - Imaginary part of denominator
+%%         output_re - Real part of complex number which will hold result
+%%         output_im - Imaginary part of complex number which will hold result
+%%         doSaturate - Saturation flag for integer inputs
+%function ComplexDivide (a, b, c, d, output_re, output_im, doSaturate) Output
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "")
+  %assign outputDTnameRe = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %%
+  %switch (outputDataType)
+    %case (tSS_DOUBLE)
+    %case (tSS_SINGLE)
+      %if (ISEQUAL(d, ""))
+        %<RealDivide(a, c, output_re, doSaturate)>\
+        %<RealDivide(b, c, output_im, doSaturate)>\
+      %else
+        %% Neither c nor d is null.  Use standard MATLAB algorithm.
+        if (%<d> == %<zero>) {
+          %<RealDivide (a, c, output_re, doSaturate)>\
+          %<RealDivide (b, c, output_im, doSaturate)>\
+        } else {
+          {
+          %<outputDTnameRe> s = \
+          (%<outputDTnameRe>)(fabs((real_T)%<c>) + fabs((real_T)%<d>));
+          %<outputDTnameRe> ars = (%<a>)/s;
+          %<outputDTnameRe> ais = (%<b>)/s;      
+          %<outputDTnameRe> brs = (%<c>)/s;
+          %<outputDTnameRe> bis = (%<d>)/s;
+          %<outputDTnameRe> d   = (brs * brs + bis * bis);
+          \  
+            %<output_re> = (ars * brs + ais * bis)/d;
+            %<output_im> = (ais * brs - ars * bis)/d;
+          }
+        }
+      %endif
+      %break
+    %case (tSS_INT8)
+    %case (tSS_INT16)
+    %case (tSS_INT32)
+    %case (tSS_UINT8)
+    %case (tSS_UINT16)
+    %case (tSS_UINT32)
+      %if (ISEQUAL(d, ""))
+        %<RealDivide (a, c, output_re, doSaturate)>\
+        %<RealDivide (b, c, output_im, doSaturate)>\
+      %else
+        %% All numerator and denominator coefficients are non-null
+        %% d = c*c + d*d
+        if (%<d> == %<zero>) {
+          %<RealDivide (a, c, output_re, doSaturate)>\
+          %<RealDivide (b, c, output_im, doSaturate)>\
+        } else {
+          {
+          %<outputDTnameRe> d;
+          \
+            %% Compute the denominator
+            %if (!doSaturate)
+              d = %<c> * %<c> + %<d> * %<d>;
+            %else
+              {
+              %<outputDTnameRe> tmp1;
+              %<outputDTnameRe> tmp2;
+              \
+                %<RealMultiply(c, c, "tmp1", doSaturate)>\
+                %<RealMultiply(d, d, "tmp2", doSaturate)>\
+                %<SLibSumWithSaturate(outputDataType, "+", "d", "tmp1", "tmp2", "")>\
+              }
+            %endif
+            %%
+            %if (doSaturate)
+              {
+              %% tmp = (a+bi)*(c-di) = (a*c + b*d) + (b*c - a*d)
+              %<outputDTname> tmp;
+              %<outputDTnameRe> tmp1;
+              %<outputDTnameRe> tmp2;     
+              \
+                tmp1 = SaturateProduct_%<outputDTnameRe> (%<a>, %<c>);
+                tmp2 = SaturateProduct_%<outputDTnameRe> (%<b>, %<d>);
+                %<SLibSumWithSaturate(outputDataType, "+", "tmp.re", "tmp1", "tmp2", "")>\
+
+                tmp1 = SaturateProduct_%<outputDTnameRe> (%<b>, %<c>);
+                tmp2 = SaturateProduct_%<outputDTnameRe> (%<a>, %<d>);
+                %<SLibSumWithSaturate(outputDataType, "-", "tmp.im", "tmp1", "tmp2", "")>\
+
+                %<RealDivide ("tmp.re", "d", output_re, doSaturate)>\
+                %<RealDivide ("tmp.im", "d", output_im, doSaturate)>\
+              }
+            %else
+	      %if (output_re == a)
+		{
+		%<outputDTnameRe>  tmp = %<output_re>;
+		\
+		tmp = (%<a> * %<c> + %<b> * %<d>)/d;
+		%<output_im> = (%<b> * %<c> - %<a> * %<d>)/d;
+		%<output_re> = tmp;
+		}
+	      %else
+                %%START_ASSERT
+		%<output_re> = (%<a> * %<c> + %<b> * %<d>)/d;
+		%<output_im> = (%<b> * %<c> - %<a> * %<d>)/d;
+                %%END_ASSERT
+	      %endif
+            %endif
+          }
+        }
+      %endif
+      %break
+    %default
+      %%START_ASSERT
+      %assign errTxt = "Invalid data type specified, " ...
+        "%<LibGetDataTypeNameFromId(outputDataType)>."
+      %<LibBlockReportError([], errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+%% [EOF] product.tlc

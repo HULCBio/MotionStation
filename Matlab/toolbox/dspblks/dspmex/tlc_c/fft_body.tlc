@@ -1,0 +1,1846 @@
+%%
+%% Abstract: TLC code generation template
+%%           for DSP Blockset FFT block.
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $RCSfile: fft_body.tlc,v $
+%% $Revision: 1.1.6.2 $ $Date: 2004/04/12 23:08:00 $
+
+
+%% Function: getRadixAbbrev ==================================================
+%%
+%function getRadixAbbrev(block) void
+
+    %return "R" + STRING(radix)
+
+%endfunction %% getRadixAbbrev
+
+
+%% Function: isTableMode =====================================================
+%%
+%function isTableMode(block) void
+
+    %return (compMode == "TableMemory") || (compMode=="TableSpeed")
+
+%endfunction %% isTableMode
+
+
+%% Function: getCompModeAbbrev ===============================================
+%%
+%function getCompModeAbbrev(block) void
+
+    %switch block.compMode
+    %case "TrigFcn"
+        %return "TRIG_"
+    %case "TableMemory"
+        %return "TBLM_"
+    %case "TableSpeed"
+        %return "TBLS_"
+    %default
+        %return "<UnknownCompModeAbbrev>"
+    %endswitch
+
+%endfunction %% getCompModeAbbrev
+
+
+%% Function: getBRAbbrev =====================================================
+%%
+%function getBRAbbrev(block) void
+
+    %return bitRev ? "BR_" : ""
+
+%endfunction %% getBRAbbrev
+
+
+%% Function: getInputTypeAbbrev ==============================================
+%%
+%function getInputTypeAbbrev(block,cplx) void
+
+    %switch inDTypeId
+    %case tSS_DOUBLE
+        %return cplx ? "Z" : "D"
+    %case tSS_SINGLE
+        %return cplx ? "C" : "R"
+    %default
+        %return "<UnknownTypeAbbrev>"
+    %endswitch
+
+%endfunction %% getInputTypeAbbrev
+
+
+%% Function: getOutputTypeAbbrev ==============================================
+%%
+%function getOutputTypeAbbrev(block,cplx) void
+
+    %switch outDTypeId
+    %case tSS_DOUBLE
+        %return cplx ? "Z" : "D"
+    %case tSS_SINGLE
+        %return cplx ? "C" : "R"
+    %default
+        %return "<UnknownTypeAbbrev>"
+    %endswitch
+
+%endfunction %% getOutputTypeAbbrev
+
+
+%% Function: get_FFT_fcnName =================================================
+%% Abstract:
+%%    Return the name of the FFT function as a string
+%%    Ex. 1 - Radix-2, DIT, memory-optimized table lookup,
+%%                          double-precision complex inputs
+%%            function name = "R2DIT_TBLM_Z"
+%%
+%%    Ex. 2 - Radix-2, DIF, trig-based, single-precision real inputs
+%%            function name = "R2DIF_TRIG_R"
+%%
+%function get_FFT_fcnName(block,FFTtype) void
+
+    %% FFTtype should be "DIF" or "DIT"
+
+    %assign RadixAbbrev = getRadixAbbrev(block)
+    %assign compAbbrev  = getCompModeAbbrev(block)
+
+    %% The core FFT functions always take in complex data, even if the input
+    %% to the block is real.  A preprocessing step (interleaving, etc) makes
+    %% it complex.  Thus, we force the type abbreviation to be complex when
+    %% generating the FFT name:
+    %%
+    %assign typeAbbrev = getInputTypeAbbrev(block,1)
+
+    %assign fftName = "MWDSP_" + RadixAbbrev + FFTtype + "_" + compAbbrev + typeAbbrev
+    %return fftName
+
+%endfunction %% get_FFT_fcnName
+
+%% Function: get_FFT_fcnArgsAlongR =================================================
+%% Abstract:
+%%      Generates arguments for calls to FFT function
+%%      Only for use with complex-input FFTs or IFFTs
+%%
+%function get_FFT_fcnArgsAlongR(block,outPtr) void
+
+    %% Some arguments in the list depend on CompMode
+
+    %assign nChans   = STRING(nChans)
+    %assign twidStepAlongR = SFcnParamSettings.ARTwiddleStep
+
+    %assign args = outPtr + ", " + STRING(1) +  ", " + nChans + ", " + nChans + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStepAlongR>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_FFT_fcnArgsAlongR
+
+
+
+%% Function: get_FFT_fcnArgs =================================================
+%% Abstract:
+%%      Generates arguments for calls to FFT function
+%%      Only for use with complex-input FFTs or IFFTs
+%%
+%function get_FFT_fcnArgs(block) void
+
+    %% Some arguments in the list depend on CompMode
+
+    %assign outPtr   = LibBlockOutputSignalAddr(0,"","",0)
+    %assign nRows    = STRING(nRows)
+    %assign nChans   = STRING(nChans)
+    %assign fftLen   = nRows
+    %assign twidStep = SFcnParamSettings.TwiddleStep  %% until global optimization is performed
+    %assign args = outPtr + ", " + nChans + ", " + nRows + ", " + fftLen + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStep>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_FFT_fcnArgs
+
+
+%% Function: getFFTFcnCallComment ============================================
+%%
+%function getFFTFcnCallComment(block,FFTtype) void
+
+    %assign ifftstr = isInverse? "I":""
+    %assign str = " /* Radix-" + STRING(radix) + " %<FFTtype> " + ifftstr + "FFT using "
+    %assign str = str + compMode + " twiddle computation */"
+    %return str
+    
+%endfunction %% getFFTFcnCallComment
+
+
+%% Function: get_FFT_fcnCallAlongR =================================================
+%% Abstract:
+%%      Generates standard call to FFT function
+%%      Only for use with complex-input FFTs
+%%
+%function get_FFT_fcnCallAlongR(block, ptr) void
+
+    %% The choice of algorithm we use in dsp_fft_sim.c is
+    %% always DIF for bit-rev outputs and DIT for linear outputs.
+    %%
+    %% The choice of algorithm we use in dsp_ifft_sim.c is
+    %% always DIT.
+    %%
+    %if isInverse    %% Inverse FFT
+        %assign FFTtype = "DIT"
+    %else            %% Forward FFT
+        %assign FFTtype = bitRev ? "DIF" : "DIT"
+    %endif
+    %assign fcnName = get_FFT_fcnName(block,FFTtype)
+    %assign argList = get_FFT_fcnArgsAlongR(block,ptr)
+    %assign fcnCall = fcnName + "(" + argList + ");"
+
+    %return fcnCall
+
+%endfunction %% get_FFT_fcnCallAlongR
+
+
+%% Function: get_FFT_fcnCall =================================================
+%% Abstract:
+%%      Generates standard call to FFT function
+%%      Only for use with complex-input FFTs
+%%
+%function get_FFT_fcnCall(block) void
+
+    %% The choice of algorithm we use in dsp_fft_sim.c is
+    %% always DIF for bit-rev outputs and DIT for linear outputs.
+    %%
+    %% The choice of algorithm we use in dsp_ifft_sim.c is
+    %% always DIT.
+    %%
+    %if isInverse    %% Inverse FFT
+        %assign FFTtype = "DIT"
+    %else            %% Forward FFT
+        %assign FFTtype = bitRev ? "DIF" : "DIT"
+    %endif
+    %assign fcnName = get_FFT_fcnName(block,FFTtype)
+    %assign argList = get_FFT_fcnArgs(block)
+    %assign fcnCall = fcnName + "(" + argList + ");"
+
+    %return getFFTFcnCallComment(block,FFTtype) + "\n" + fcnCall
+
+%endfunction %% get_FFT_fcnCall
+
+
+%% Function: get_R2BR_fcnName ================================================
+%% Abstract:
+%%    Get the name of the appropriate bit-reverse reordering
+%%    function, according to the data type of the input, and
+%%    depending on whether we're doing in-place or out-of-place
+%%    data copies.
+%%
+%function get_R2BR_fcnName(block, isOOP) void
+    %assign intype  = getInputTypeAbbrev(block,inCplx)
+    %assign outtype = getOutputTypeAbbrev(block,outCplx)
+    %if intype == outtype
+        %%
+        %% isOOP: is out-of-place algorithm
+        %%
+        %assign str = "MWDSP_R2BR_" + intype  + (isOOP ? "_OOP" : "")
+    %else
+        %% Can't be in-place since in and out types don't match
+        %assign str = "MWDSP_R2BR_" + intype + outtype + "_OOP"
+    %endif
+    %return str
+
+%endfunction %% get_R2BR_fcnName
+
+
+%% Function: copy_inputs_if_needed ===========================================
+%% Abstract:
+%%     Copy input data, if needed
+%%
+%%     For real data, we copy the (purely real) inputs to the real
+%%     part of the complex output array.
+%%
+%function copy_inputs_if_needed(block) Output
+    %% IN-PLACE may be granted if input and output data types match
+    %if !inplace
+      %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+    %endif
+%endfunction %% copy_inputs_if_needed
+
+
+%% Function: copy_and_BR =====================================================
+%%
+%function copy_and_BR(block) Output
+    %%
+    %% Copy input data, if needed, and perform bit-reverse re-ordering
+    %%
+    %assign outAddr    = "%<LibBlockOutputSignalAddr(0,"","",0)>, "
+    %assign inAddr     = inplace ? "" : "(const %<inDTypeName> *)%<LibBlockInputSignalAddr(0,"","",0)>, "
+    %assign commentStr = inplace ? "In-place" : "Out-of-place"
+    %%
+    %<get_R2BR_fcnName(block,!inplace)>(%<outAddr> %<inAddr> ...
+               %<nChans>, %<nRows>, %<nRows>);  /* %<commentStr> bit-reverse reordering */
+    %%
+%endfunction %% copy_and_BR
+
+
+%% Function: copy_and_BR_as_needed
+%%
+%function copy_and_BR_as_needed(block) Output
+    %% If the FFT outputs in bit-reverse order, we do NOT perform
+    %% bit-reverse on the input data.  Instead, we do a copy (if
+    %% needed at all), then choose an FFT with linear-input and
+    %% bit-rev output.
+    %%
+    %% We do just the opposite for linear order: we perform the
+    %% bit-reversal prior to the FFT (and along with a copy if
+    %% needed), then choose an FFT that expects bit-rev input and
+    %% outputs linear in order.
+    %% 
+    %%
+    %% If the IFFT input is in bit-reversed order, we do NOT perform
+    %% bit-reverse on the input data.  Instead, we do a copy (if
+    %% needed at all), then choose an IFFT with bit-reversed input and
+    %% linear output.
+    %%
+    %% If the input is in linear order, we perform the
+    %% bit-reversal prior to the IFFT (and along with a copy if
+    %% needed), then choose an IFFT that expects bit-rev input and
+    %% outputs linear in order.
+    %% 
+    %%
+    %if bitRev
+        %<copy_inputs_if_needed(block)>\
+    %else
+        %<copy_and_BR(block)>\
+    %endif
+    %%
+%endfunction %% copy_and_BR_as_needed
+
+%% Function: normalize_by_N
+%%
+%function normalize_by_N(block) Output
+    %assign outtype = getOutputTypeAbbrev(block,outCplx)
+    %if (outtype == "Z") || (outtype == "D")
+        %assign scaletype="D"
+    %else
+        %assign scaletype="R"
+    %endif
+    %assign fcn_name = "MWDSP_ScaleData_" + scaletype + outtype
+
+    %assign outPtr  = LibBlockOutputSignalAddr(0,"","",0)
+    %assign nElems  = nRows * nChans
+    %assign nElems  = STRING(nElems)
+    %assign nRows   = STRING(nRows)
+    %assign nChans  = STRING(nChans)
+    %assign args = "(" + outPtr + ", " + nElems + ", 1.0/" + nRows + ");"
+    %return fcn_name + args
+%endfunction %% normalize_by_N
+
+%% Function: normalize_by_N
+%%
+%function normalize_by_MN(block) Output
+    %assign outtype = getOutputTypeAbbrev(block,outCplx)
+    %if (outtype == "Z") || (outtype == "D")
+        %assign scaletype="D"
+    %else
+        %assign scaletype="R"
+    %endif
+    %assign fcn_name = "MWDSP_ScaleData_" + scaletype + outtype
+
+    %assign outPtr  = LibBlockOutputSignalAddr(0,"","",0)
+    %assign nElems  = nRows * nChans
+    %assign nElems  = STRING(nElems)
+    %assign nRows   = STRING(nRows)
+    %assign nChans  = STRING(nChans)
+    %assign args = "(" + outPtr + ", " + nElems + ", 1.0/" + nElems + ");"
+    %return fcn_name + args
+%endfunction %% normalize_by_MN
+
+%% Function: get_interleave_fcnName ==========================================
+%%
+%function get_interleave_fcnName(block) void
+
+    %% It turns out that for linear order, we should use the bit-reverse
+    %% (BR_) version of the function, and vice-versa.  See dsp_fft_sim.c
+    %% for function implementations.
+
+    %assign str = "MWDSP_FFTInterleave_" + (bitRev ? "" : "BR_") + getInputTypeAbbrev(block,inCplx)
+    %return str
+
+%endfunction %% get_interleave_fcnName
+
+
+%% Function: get_interleave_fcnArgs ==========================================
+%% Abstract:
+%%      Generates arguments for calls to real-interleave function
+%%
+%function get_interleave_fcnArgs(block) void
+
+    %assign outPtr = LibBlockOutputSignalAddr(0,"","",0)
+    %assign inPtr  = LibBlockInputSignalAddr(0,"","",0)
+    %assign nRows  = STRING(nRows)
+    %assign nChans = STRING(nChans)
+
+    %assign args = outPtr + ", " + inPtr + ", " + nChans + ", " + nRows
+    %return args
+
+%endfunction %% get_interleave_fcnArgs
+
+
+%% Function: interleave_real_inputs ==========================================
+%%
+%function interleave_real_inputs(block) Output
+    %%
+    /* Interleave data to prepare for real-data algorithms: */
+    %<get_interleave_fcnName(block)>(%<get_interleave_fcnArgs(block)>);
+    %%
+%endfunction %% interleave_real_inputs
+
+
+%% Function: get_DblSig_FFT_fcnArgs =================================================
+%% Abstract:
+%%      Generates arguments for calls to double-signal FFT function
+%%
+%function get_DblSig_FFT_fcnArgs(block) void
+
+    %assign outPtr   = LibBlockOutputSignalAddr(0,"","",0)
+    %assign chans    = STRING(nChans/2)  %% half as many channels
+    %assign rows     = STRING(nRows*2)   %% twice the stride
+    %assign fftLen   = STRING(nRows)     %% same FFT length, however
+    %assign twidStep = SFcnParamSettings.TwiddleStep         %% until global optimization is performed
+
+    %assign args = outPtr + ", " + chans + ", " + rows + ", " + fftLen + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStep>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_DblSig_FFT_fcnArgs
+
+
+%% Function: get_DblSig_FFT_fcnCall ==========================================
+%%
+%function get_DblSig_FFT_fcnCall(block, FFTtype) void
+
+    %assign fcnName = get_FFT_fcnName(block,FFTtype)
+    %assign argList = get_DblSig_FFT_fcnArgs(block)
+    %assign fcnCall = fcnName + "(" + argList + ");"
+    %return fcnCall + getFFTFcnCallComment(block,FFTtype)
+
+%endfunction %% get_DblSig_FFT_fcnCall
+
+
+%% Function: get_FFThelper_DblSig_fcnCall ==============================================
+%%
+%function get_FFThelper_DblSig_fcnCall(block) void
+
+    %assign outPtr = LibBlockOutputSignalAddr(0,"","",0)
+    %assign chans  = STRING(nChans)
+    %assign rows   = STRING(nRows)
+    %assign str    = "MWDSP_DblSig_" ...
+                   + getBRAbbrev(block) ...
+                   + getOutputTypeAbbrev(block,1) ...
+                   + "(" + outPtr + ", " + chans + ", " + rows + ");"
+    %return str
+
+%endfunction %% get_FFThelper_DblSig_fcnCall
+
+
+%% Function: get_DblSig_IFFT_fcnArgs =================================================
+%% Abstract:
+%%      Generates arguments for calls to double-signal IFFT function
+%%
+%function get_DblSig_IFFT_fcnArgs(block) void
+
+    %assign outPtr   = "(" + (outCplx? "" : "c") + outDTypeName + " *)" ...
+                     + LibBlockOutputSignalAddr(0,"","",0)
+    %assign chans    = STRING(nChans/2)  %% half as many channels
+    %assign rows     = STRING(nRows)
+    %assign fftLen   = STRING(nRows)
+    %assign twidStep = SFcnParamSettings.TwiddleStep         %% until global optimization is performed
+
+    %assign args = outPtr + ", " + chans + ", " + rows + ", " + fftLen + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStep>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_DblSig_IFFT_fcnArgs
+
+
+%% Function: get_DblSig_IFFT_fcnCall ==========================================
+%%
+%function get_DblSig_IFFT_fcnCall(block, FFTtype) void
+
+    %assign fcnName = get_FFT_fcnName(block,"DIT")
+    %assign argList = get_DblSig_IFFT_fcnArgs(block)
+    %assign fcnCall = fcnName + "(" + argList + ");"
+    %return fcnCall + getFFTFcnCallComment(block,"DIT")
+
+%endfunction %% get_DblSig_IFFT_fcnCall
+
+
+%% Function: get_IFFThelper_DblSig_fcnCall ==============================================
+%%
+%function get_IFFThelper_DblSig_fcnCall(block) void
+
+    %assign inPtr   = LibBlockInputSignalAddr(0,"","",0)
+    %assign outPtr  = "(" + (outCplx? "" : "c") + outDTypeName + " *)" ...
+                    + LibBlockOutputSignalAddr(0,"","",0)
+    %assign intype  = getInputTypeAbbrev(block, inCplx)
+    %assign outtype = (intype == "Z" || intype == "D")? "Z":"C"
+    %assign chans   = STRING(nChans)
+    %assign rows    = STRING(nRows)
+    %assign str     = "MWDSP_Ifft_AddCSSignals_" ...
+                    + intype ...
+                    + "_" ...
+                    + outtype ...
+                    + (bitRev ? "" : "br") ...
+					+ ((intype == outtype)? "_OOP" :  "_Oop") ...
+                    + "(" + outPtr + ", " + inPtr + ", " + chans + ", " + rows + ");"
+    %return str
+                    %% xxx + ((intype == outtype)? "" :  "_Oop") ...
+
+%endfunction %% get_IFFThelper_DblSig_fcnCall
+
+
+%% Function: get_IFFThelper_Deinterleave_fcnCall ==============================================
+%%
+%function get_IFFThelper_Deinterleave_fcnCall(block) void
+
+    %assign Ptr    = get_DblLen_varName(block)  %% Point to last column of output matrix
+    %assign chans  = STRING(nChans/2)
+    %assign rows   = STRING(2*nRows)
+    %assign str    = "MWDSP_Ifft_Deinterleave_" ...
+                   + ((inDTypeId ==  tSS_DOUBLE)? "D_D_Inp((real_T *)" : "R_R_Inp((real32_T *)") ...
+                   + LibBlockOutputSignalAddr(0,"","",0) + ", "  ...
+                   + chans + ", " + rows ...
+                   + ((inDTypeId ==  tSS_DOUBLE) ...
+                      ? ", (real_T *)%<LibBlockDWorkAddr(WKSPACE, "", "", "0")> );"  ...
+                      : ", (real32_T *)%<LibBlockDWorkAddr(WKSPACE, "", "", "0")> );")
+    %return str
+
+%endfunction %% get_IFFThelper_Deinterleaave_fcnCall
+
+
+%% Function: get_DblLen_varName ==============================================
+%% Abstract:
+%%    Return name of local variable used to define a pointer
+%%    to the last column of the input matrix
+%%
+%function get_DblLen_varName(block) void
+
+    %return "lastCol"
+
+%endfunction %% get_DblLen_varName
+
+
+%% Function: setup_DblLen_ptr ================================================
+%% Abstract:
+%%    Declare and initialize a pointer to the last row of the input matrix
+%%
+%function setup_DblLen_ptr(block) void
+
+    %if isInverse
+        %assign inPtr = LibBlockInputSignalAddr(0,"","",nRows*(nChans-1))
+        %assign str = "const " + inDTypeName + " *" + get_DblLen_varName(block) + "In = %<inPtr>;  /* Point to last column of input */"
+        %assign outPtr = LibBlockOutputSignalAddr(0,"","",nRows*(nChans-1))
+        %assign str = str + "\n" + outDTypeName + " *" + get_DblLen_varName(block) + "Out = %<outPtr>;  /* Point to last column of output */"
+    %else
+        %assign outPtr = LibBlockOutputSignalAddr(0,"","",nRows*(nChans-1))
+        %assign str = outDTypeName + " *" + get_DblLen_varName(block) + " = %<outPtr>;  /* Point to last column of input */"
+    %endif
+
+    %return str
+
+%endfunction %% setup_DblLen_ptr
+
+
+%% Function: get_DblLen_FFT_fcnArgs =================================================
+%% Abstract:
+%%      Generates arguments for calls to double-length FFT function
+%%
+%function get_DblLen_FFT_fcnArgs(block) void
+
+    %assign outPtr   = get_DblLen_varName(block)  %% Point to last column of output matrix
+    %assign chans    = STRING(1)         %% only one channel to process (odd column)
+    %assign rows     = STRING(nRows)     %% stride is same as usual
+    %assign fftLen   = STRING(nRows/2)   %% half-length FFT length, however
+    %assign twidStep = 2*SFcnParamSettings.TwiddleStep         %% until global optimization is performed
+
+    %assign args = outPtr + ", " + chans + ", " + rows + ", " + fftLen + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStep>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_DblLen_FFT_fcnArgs
+
+
+%% Function: get_DblLen_FFT_fcnCall ==========================================
+%%
+%function get_DblLen_FFT_fcnCall(block, FFTtype) void
+
+    %% If nRows==2, we are taking a nRows/2 = length-1 FFT on the data
+    %% This is just a waste of time!  Skip the FFT unless nRows>2.
+    %% NOTE: Inputs with nRows=1 never make it here to begin with.
+    %%
+    %if nRows>2
+        %assign fcnName = get_FFT_fcnName(block,FFTtype)
+        %assign argList = get_DblLen_FFT_fcnArgs(block)
+        %assign fcnCall = fcnName + "(" + argList + ");"
+        %return fcnCall + getFFTFcnCallComment(block,FFTtype)
+    %else
+        %return "/* Suppressing length-1 FFT call */"
+    %endif
+
+%endfunction %% get_DblLen_FFT_fcnCall
+
+
+%% Function: DblSig_CompModeAbbrev
+%%
+%function DblSig_CompModeAbbrev(block) void
+
+    %return isTableMode(block) ? "TBL_" : "TRIG_"
+
+%endfunction %% DblSig_CompModeAbbrev
+
+
+%% Function: get_DblLen_fcnCall ==============================================
+%%
+%function get_DblLen_fcnCall(block) Output
+%%
+    %assign outPtr = get_DblLen_varName(block)  %% Point to last column of output matrix
+    %assign rows   = STRING(nRows)
+    %if bitRev
+        %assign str  = "MWDSP_R2BR_" ...
+                     + getOutputTypeAbbrev(block,1) ...
+                     + "(" + outPtr + ", 1," + rows + ", " + rows + "/2);"
+        %<str>
+    %endif
+    %assign str      = "MWDSP_DblLen_" ...
+                     + DblSig_CompModeAbbrev(block) ...
+                     + getOutputTypeAbbrev(block,1) ...
+                     + "(" + outPtr + ", " + rows
+    %assign twidStep = SFcnParamSettings.TwiddleStep     %% until global optimization is performed
+    %if isTableMode(block)
+        %assign str = str + ", " + LibBlockParameterAddr(TwiddleTable,"","",0) ...
+                    + ", " + "%<twidStep>"
+    %endif
+    %assign str = str + ");"
+    %<str>
+    %if bitRev
+        %assign str = "MWDSP_R2BR_" ...
+                    + getOutputTypeAbbrev(block,1) ...
+                    + "(" + outPtr + ", 1," + rows + ", " + rows + ");"
+        %<str>
+    %endif
+%%
+%endfunction %% get_DblLen_fcnCall
+
+
+%% Function: real_signal_FFT
+%%
+%function real_signal_FFT(block) Output
+    %%
+    %% The FFT type for both the dbl-signal and dbl-length algorithm
+    %% depends directly on whether the block output is in linear or
+    %% bit-reverse order:
+    %%
+    %assign fftType = bitRev ? "DIF" : "DIT"
+    %%
+    %if nChans > 1
+        %assign pairs   = CAST("Number", FEVAL("floor", nChans/2))
+        %assign pairStr = (pairs > 1) ...
+                        ? "%<pairs> signal pairs" : "signal pair"
+        /* Apply double-signal FFT pre-processing to first %<pairStr> in matrix: */
+        %<get_DblSig_FFT_fcnCall(block, fftType)>
+        %<get_FFThelper_DblSig_fcnCall(block)>
+    %endif
+    %%
+    %assign remChan = FEVAL("rem",nChans,2)
+    %assign isOdd   = (remChan==1)
+    %if isOdd
+        %assign singleStr = (nChans==1) ? "single" : "last"
+        /* Apply half-length algorithm to %<singleStr> real signal: */
+        {
+            %<setup_DblLen_ptr(block)>
+            %<get_DblLen_FFT_fcnCall(block, fftType)>
+            %<get_DblLen_fcnCall(block)>
+        }
+    %endif
+    %%
+%endfunction %% real_signal_FFT
+
+
+%% Function: get_DblLen_IFFT_fcnArgs =================================================
+%% Abstract:
+%%      Generates arguments for calls to double-length FFT function
+%%
+%function get_DblLen_IFFT_fcnArgs(block) void
+
+    %assign outPtr   = get_DblLen_varName(block)  %% Point to last column of output matrix
+    %assign chans    = STRING(1)         %% only one channel to process (odd column)
+    %assign rows     = STRING(nRows/2)
+    %assign twidStep = 2*SFcnParamSettings.TwiddleStep         %% until global optimization is performed
+
+    %assign args    = "(c" + outDTypeName + " *)" + outPtr + "Out, " + chans + ", " ...
+                    + rows + ", " + rows + ", "
+
+    %if isTableMode(block)
+        %assign args = args ...
+                     + LibBlockParameterAddr(TwiddleTable,"","",0) + ", " ...
+                     + "%<twidStep>" + ", "
+    %endif
+
+    %assign args = args + STRING(isInverse)
+    %return args
+
+%endfunction %% get_DblLen_IFFT_fcnArgs
+
+
+%% Function: get_DblLen_IFFT_fcnCall ==========================================
+%%
+%function get_DblLen_IFFT_fcnCall(block, FFTtype) void
+
+    %% If nRows==2, we are taking a nRows/2 = length-1 FFT on the data
+    %% This is just a waste of time!  Skip the IFFT unless nRows>2.
+    %% NOTE: Inputs with nRows=1 never make it here to begin with.
+    %%
+    %if nRows>2
+        %assign fcnName = get_FFT_fcnName(block,FFTtype)
+        %assign argList = get_DblLen_IFFT_fcnArgs(block)
+        %assign fcnCall = fcnName + "(" + argList + ");"
+        %return fcnCall + getFFTFcnCallComment(block,FFTtype)
+    %else
+        %return "/* Suppressing length-1 FFT call */"
+    %endif
+
+%endfunction %% get_DblLen_IFFT_fcnCall
+
+
+%% Function: get_IFFThelper_DblLen_fcnCall ==============================================
+%%
+%function get_IFFThelper_DblLen_fcnCall(block) void
+
+    %assign Ptr      = get_DblLen_varName(block)  %% Point to last column of output matrix
+    %assign rows     = STRING(nRows)
+    %assign str      = "MWDSP_Ifft_DblLen_" ...
+                     + DblSig_CompModeAbbrev(block) ...
+                     + getInputTypeAbbrev(block,inCplx) ...
+                     + (bitRev? "br_" : "_") ...
+                     + getOutputTypeAbbrev(block,1) ...
+                     + "br_Oop"  ...
+                     + "(" +"(" + (outCplx? "" : "c") + outDTypeName + " *)" ...
+                     + Ptr + "Out, " + Ptr + "In, " + rows
+    %assign twidStep = SFcnParamSettings.TwiddleStep     %% until global optimization is performed
+
+    %if isTableMode(block)
+        %assign str = str ...
+                    +  ", " + LibBlockParameterAddr(TwiddleTable,"","",0) ...
+                    +  ", " + "%<twidStep>"
+    %endif
+
+    %assign str = str +");"
+    %return str
+
+%endfunction %% get_IFFThelper_DblLen_fcnCall
+
+
+%% Function: conj_sym_IFFT
+%%
+%function conj_sym_IFFT(block) Output
+    %%
+    %assign fftType = "DIT"
+    %%
+    %if nChans > 1
+        %assign pairs   = CAST("Number", FEVAL("floor", nChans/2))
+        %assign pairStr = (pairs > 1) ...
+                        ? "%<pairs> signal pairs" : "signal pair"
+        /* Apply double-signal IFFT pre-processing to first %<pairStr> in matrix: */
+        %<get_IFFThelper_DblSig_fcnCall(block)>
+        %<get_DblSig_IFFT_fcnCall(block, fftType)>
+        %<get_IFFThelper_Deinterleave_fcnCall(block)>
+    %endif
+    %%
+    %assign remChan = FEVAL("rem",nChans,2)
+    %assign isOdd   = (remChan==1)
+    %if isOdd
+        %assign singleStr = (nChans==1) ? "single" : "last"
+        /* Apply half-length algorithm to %<singleStr> real signal: */
+        {
+            %<setup_DblLen_ptr(block)>
+            %<get_IFFThelper_DblLen_fcnCall(block)>
+            %<get_DblLen_IFFT_fcnCall(block, fftType)>
+        }
+    %endif
+    %%
+%endfunction %% conj_sym_IFFT
+
+
+%% Function: generateMainComment =============================================
+%%
+%function generateMainComment() void
+
+    %assign str = "/* "
+    %assign str = str + (inCplx ? "Complex" : "Real")
+    %assign str = str + " input, "
+
+    %if (isInverse)
+        %assign str = str + (outCplx ? "complex" : "real")
+        %assign str = str + " output,"
+    %endif
+
+    %if is2dfft
+        %assign str = str + "%<nRows> rows, %<nChans> columns, "
+    %else
+        %assign str = str + "%<nChans> channels, %<nRows> rows, "
+    %endif
+
+    %assign orderStr = bitRev ? "bit-reverse" : "linear"
+    %assign str = str + "%<orderStr> output order"
+    %assign str = str + " */"
+
+    %return str
+
+%endfunction %% getMatrixSizeComment
+
+%function Perform2DOptCplx(block) Output
+    /* Copy rows into scratch space (as a column), perform FFT, put back the result as a row */
+    %assign cplxdtype =   getInputTypeAbbrev(block,1)
+	%if isInverse
+      %if (inCplx)
+        %assign str = cplxdtype
+	  %else
+	    %assign str = (inDTypeId == tSS_SINGLE) ? "RC" : "DZ"
+	  %endif
+	%else
+		%assign str = cplxdtype
+	%endif
+    int_T i,j = %<nRows/2>;
+    MWDSP_CopyRowAsColBR_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,0);
+    /* Perform FFT on the first row (which is now copied into scratch space as a column) */
+    %<get_FFT_fcnCallAlongR(block, work)>\
+    MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,0);
+    /* Handle all the remaining rows. When copying back the scratch space as a row, place it in such 
+     * a way that it is bit-reversed along rows
+     */
+    for (i = 1; i < %<nRows-1>; i++) {
+        if (i <= j) {
+            if (i < j) {
+                MWDSP_CopyRowAsColBR_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,i);
+                MWDSP_CopyRowAsColBR_%<str>(%<work1>,%<u>,%<nChans>,%<nRows>,j);
+                /* perform FFT */
+                %<get_FFT_fcnCallAlongR(block,work)>\
+                %<get_FFT_fcnCallAlongR(block,work1)>\
+                MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,j);
+                MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work1>,%<nChans>,%<nRows>,i);
+            } else {
+                MWDSP_CopyRowAsColBR_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,i);
+                /* perform FFT*/
+                %<get_FFT_fcnCallAlongR(block,work)>\
+                MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,i);
+            }
+        }
+        {
+            int_T bit=%<nRows>;
+            do { bit>>=1; j^=bit; } while (!(j & bit));
+        }
+    }    
+    MWDSP_CopyRowAsColBR_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,%<nRows-1>);
+    /* Perform FFT on the last row (which is now copied into scratch space as a column) */
+    %<get_FFT_fcnCallAlongR(block,work)>\
+    MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,%<nRows-1>);
+
+    /* Perform FFT along columns. */
+    %<get_FFT_fcnCall(block)>\  
+%endfunction %% Perform2DOptCplx
+
+%function Perform2DOptReal(block) Output
+    int_T rowIdx,bit = %<nRows>,j=0;
+    /* Copy first 2 rows from input to scratch and interleave them in bit-reversed format as columns */
+    %assign cplxdtype =   getInputTypeAbbrev(block,1)
+    MWDSP_copyAdjRowsIntColBR_%<cplxdtype>(%<work>, %<u>, %<nChans>, %<nRows>,0);
+    /* Perform FFT */
+    %<get_FFT_fcnCallAlongR(block,work)>
+    MWDSP_DblSig_%<cplxdtype>(    %<work>, 2, %<nChans>);
+    MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,j);
+    do {bit>>=1;j^=bit;} while (!(j & bit));
+    MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work1>,%<nChans>,%<nRows>,j);
+    /* Perform FFT for remaining rows using optimization for real input data */
+    for (rowIdx = 2; rowIdx < %<nRows>; rowIdx+=2) {
+        MWDSP_copyAdjRowsIntColBR_%<cplxdtype>(%<work>, %<u>, %<nChans>, %<nRows>,rowIdx);
+        /* Perform FFT */
+        %<get_FFT_fcnCallAlongR(block,work)>\
+        MWDSP_DblSig_%<cplxdtype>(    %<work>, 2,   %<nChans>);
+        bit = %<nRows>;
+        do {bit>>=1;j^=bit;} while (!(j & bit));
+        MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,j);
+        bit = %<nRows>;
+        do {bit>>=1;j^=bit;} while (!(j & bit));
+        MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work1>,%<nChans>,%<nRows>,j);
+    }
+    /* Perform FFT along columns, note that they we already bit-reversed them above. */
+    %<get_FFT_fcnCall(block)>\      
+%endfunction %% Perform2DOptReal
+
+%function Perform2DOptBRReal(block) Output
+    %assign cplxdtype =   getInputTypeAbbrev(block,1)
+    int_T rowIdx;
+    /* Copy 2 rows at a time into scratch space, such that we interleave them 
+     * and convert them into columns, perform FFT on it , convert it into 2 signals
+     * and copy the 2 signals back as rows 
+     */
+     for (rowIdx = 0; rowIdx < %<nRows>; rowIdx+=2) {
+        /* Copy 2 adjacent rows from input to scratch and interleave them as columns */
+        MWDSP_copyAdjRowsIntCol_%<cplxdtype>(%<work>, %<u>, %<nChans>, %<nRows>,rowIdx);
+        /* Perform FFT */
+        %<get_FFT_fcnCallAlongR(block,work)>
+        MWDSP_DblSig_BR_%<cplxdtype>(    %<work>, 2, %<nChans>);
+        MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,rowIdx);
+        MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work1>,%<nChans>,%<nRows>,rowIdx+1);
+    }
+    /* Perform FFT along columns */
+    %<get_FFT_fcnCall(block)>\      
+%endfunction %% Perform2DOptBRReal
+
+
+%function handle2DFFT(block) Output
+  %assign cplxdtype =   getInputTypeAbbrev(block,1)
+  %if ((nRows>1) && (nChans>1) && !bitRev && (inCplx || (!inCplx && (%<nRows> <= %<nChans>)))) 
+	%% In this case, we first do FFT along rows and then along columns for non bit-reversed output. 
+	{
+	%if inCplx
+		%<Perform2DOptCplx(block)>
+	%else
+		%<Perform2DOptReal(block)>
+	%endif
+	}
+  %elseif ((nRows>1) && (nChans>1) && bitRev && (inCplx || (!inCplx && (%<nRows> <= %<nChans>))))
+	%% In this case, we first do FFT along rows and then along columns for bit-reversed output. 
+	{
+	%if inCplx
+		%<Perform2DOptBRCplx(block)>\
+	%else
+		%<Perform2DOptBRReal(block)>\
+	%endif
+	}
+  %else
+    /* Perform FFT along columns */
+	%if inCplx
+	  %<copy_and_BR_as_needed(block)>\
+	  %<get_FFT_fcnCall(block)>\
+	%else
+	  %<interleave_real_inputs(block)>\
+	  %<real_signal_FFT(block)>
+	%endif
+    %if ((nRows>1) && (nChans>1)) 
+    {
+        /* Perform FFT along rows
+         * Copy rows from output into scratch (as a column) one at a time, 
+         * do FFT, put back the result at output 
+         */
+        int_T rowIdx;
+        for (rowIdx = 0; rowIdx < %<nRows>; rowIdx++) {
+            %if bitRev
+                /* Copy Row (Non-contiguous memory) as a column (contiguous memory) */
+                MWDSP_CopyRowAsCol_%<cplxdtype>(%<LibBlockDWorkAddr(COPYWKSPACE, "", "", "0")>, ...
+                                   %<LibBlockOutputSignalAddr(0,"","",0)>, ...
+                                   %<nChans>, %<nRows>, rowIdx);
+
+            %else
+                /* Copy Row (Non-contiguous memory) as a column (contiguous memory)
+                 * Simultaneously also do bit reversal
+                 */
+                MWDSP_CopyRowAsColBR_%<cplxdtype>(%<LibBlockDWorkAddr(COPYWKSPACE, "", "", "0")>, ...
+                                        %<LibBlockOutputSignalAddr(0,"","",0)>, ...
+                                        %<nChans>, %<nRows>, rowIdx);
+            %endif
+            %<get_FFT_fcnCallAlongR(block,work)>\
+            /* Copy Column (Contiguous memory) back as a row (non-contiguous memory) at output */
+            MWDSP_CopyColAsRow_%<cplxdtype>(%<LibBlockOutputSignalAddr(0,"","",0)>, ...
+                               %<LibBlockDWorkAddr(COPYWKSPACE, "", "", "0")>, ...
+                               %<nChans>, %<nRows>,rowIdx);
+        }
+    }
+    %endif
+  %endif
+%endfunction %% handle2DFFT
+
+%function Perform2DOptBRCplx(block) Output
+    /* Stage 1:- First perform FFT along rows. 
+     * Copy each row from either input space(if out of place) or output space (if in place)into scratch space
+     * as a column. Perform FFT on it. Copy it back as a row in the output space. 
+     */
+    %assign cplxdtype =   getInputTypeAbbrev(block,1)
+    %if (inCplx)
+	  %assign str = cplxdtype
+	%else
+	  %assign str = (inDTypeId == tSS_SINGLE) ? "RC" : "DZ"
+	%endif
+    int_T rowIdx;
+    for (rowIdx = 0; rowIdx < %<nRows>; rowIdx++) {
+        MWDSP_CopyRowAsCol_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,rowIdx);
+	    %<get_FFT_fcnCallAlongR(block, work)>\
+        MWDSP_CopyColAsRow_%<cplxdtype>(%<y>,%<work>,%<nChans>,%<nRows>,rowIdx);
+    }
+    /* Stage 2:- Perform FFT along columns, note that they are already bit-reversed. */
+    %<get_FFT_fcnCall(block)>\      
+%endfunction %% Perform2DOptBRCplx
+
+
+%function Perform2DIFFT_CS(block) Output
+	/* In this case, input is conjugate symmetric, but output is real */
+	/* Stage 1:- First perform IFFT along rows. 
+	 * Copy each row as a bit-reversed column in a scratch space, perform IFFT, and put the result
+	 * back in such a position so that it is bit-reversed for the next stage IFFT along columns.
+	 */
+    %assign cplxdtype =   getInputTypeAbbrev(block,1)
+    %assign copycs    =   LibBlockOutputSignalAddr(1,"","",0)
+	%assign str1      = (inDTypeId == tSS_SINGLE) ? "C" : "Z"
+%%	%assign str2      = (inDTypeId == tSS_SINGLE) ? "R" : "D"
+%%  %assign twidPtr   = LibBlockParameterAddr(TwiddleTable,"","",0)
+%%    %assign twidStep  = SFcnParamSettings.TwiddleStep
+%%    %assign space     = (inDTypeId ==  tSS_DOUBLE) ? (real_T *)%<LibBlockDWorkAddr(WKSPACE, "", "", "0")> :(real32_T *)%<LibBlockDWorkAddr(WKSPACE, "", "", "0")> 
+    %assign space     = LibBlockDWorkAddr(WKSPACE, "", "", "0")
+	%assign isbr      = bitRev ?  "" : "br"
+	%assign isBR      = bitRev ?  "" : "BR"
+    %if (inCplx)
+	  %assign str = cplxdtype
+	%else
+	  %assign str = (inDTypeId == tSS_SINGLE) ? "RC" : "DZ"
+	%endif
+	int_T rowIdx;
+	for (rowIdx = 0; rowIdx < %<nRows>; rowIdx++) {
+	    MWDSP_CopyRowAsCol%<isBR>_%<str>(%<work>,%<u>,%<nChans>,%<nRows>,rowIdx);
+	    %<get_FFT_fcnCallAlongR(block, work)>\
+	    MWDSP_CopyColAsRow_%<cplxdtype>(%<copycs>,%<work>,%<nChans>,%<nRows>,rowIdx);
+	}
+
+    %assign outPtr  = "(" + (outCplx? "" : "c") + outDTypeName + " *)" ...
+                    + LibBlockOutputSignalAddr(0,"","",0)
+
+	/* Stage 2: Perform FFT along columns. */
+	MWDSP_Ifft_AddCSSignals_%<str1>_%<str1>%<isbr>_OOP(%<outPtr>,%<copycs>, %<nChans>, %<nRows>);
+	%<get_DblSig_IFFT_fcnCall(block, "DIT")>
+%%	%<get_FFT_fcnName(block,"DIT")>(%<y>, %<nChans/2>, %<nRows>, %<nRows>, %<twidPtr>, %<twidStep>, 1);
+    %<get_IFFThelper_Deinterleave_fcnCall(block)>
+%%	MWDSP_Ifft_Deinterleave_%<str2>_%<str2>_Inp(%<y>,  %<nChans/2>, %<2*nRows>, %<space>);
+
+
+
+%endfunction %% Perform2DIFFT_CS
+
+
+%function handle2DIFFT(block) Output
+  %if bitRev
+  {
+    %if outCplx
+		%<Perform2DOptBRCplx(block)>\
+	%else
+		%<Perform2DIFFT_CS(block)>\
+	%endif
+  }
+  %else
+  {
+    %if outCplx
+		%<Perform2DOptCplx(block)>\
+	%else
+		%<Perform2DIFFT_CS(block)>\
+	%endif
+  }
+  %endif
+  %if isNormalized
+    %<normalize_by_MN(block)>
+%%    MWDSP_ScaleData_DZ(args->outPtr, args->nChans * args->nRows, 1.0 / (args->nRows*args->nChans));
+  %endif
+%endfunction %% handle2DIFFT
+
+%function FltPtCodeGen(block) Output
+  %if (is2dfft && (nChans>1))
+	%if isInverse
+	  %<handle2DIFFT(block)>\
+	%else
+	  %<handle2DFFT(block)>\
+	%endif
+  %else
+	  %if isInverse      %% Inverse FFT
+		%if isConjSym
+		  %<conj_sym_IFFT(block)>
+		%else
+		  %<copy_and_BR_as_needed(block)>\
+		  %<get_FFT_fcnCall(block)>\
+		%endif
+		%if isNormalized
+		  %<normalize_by_N(block)>
+		%endif
+	  %else              %% Forward FFT
+		%if inCplx
+		  %% Input to block is complex
+		  %%
+		  %<copy_and_BR_as_needed(block)>\
+		  %<get_FFT_fcnCall(block)>\
+		  %%
+		%else
+		  %% Input to block is real
+		  %%
+		  %<interleave_real_inputs(block)>\
+		  %<real_signal_FFT(block)>
+		%endif
+	  %endif
+  %endif
+%endfunction
+
+%% Function: copyRowAsColBR
+%%
+%function copyRowAsColBR(block, rowIdx) Output
+    %%
+    %assign indxLabel = "indx"
+    %assign jndxLabel = "j"      
+    %assign inLabel_re = LibBlockOutputSignal(0, indxLabel, "", "%<tRealPart>0")
+    %assign inLabel_im = LibBlockOutputSignal(0, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel_re = LibBlockDWork(COPYWKSPACE, jndxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockDWork(COPYWKSPACE, jndxLabel, "", "%<tImagPart>0")
+    int_T j=0, i=0,indx=rowIdx;
+    for (;i<%<nChans - 1>; i++) {
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      {
+        int_T bit = %<nChans>;
+        do { bit>>=1; j^=bit; } while (!(j & bit));
+      }
+      indx += %<nRows>;
+    }
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %%
+%endfunction %% copyRowAsColBR
+
+%function FixPtR2BRCopy(block) Output
+  { /* Bit reverse scramble and copy from input buffer to output */
+    %if nChans > 1
+      %assign indxLabel = "i + offset"
+      %assign jndxLabel = "j + offset"
+      int_T nChans = %<nChans>;
+      int_T offset = 0;
+      while (nChans--) {
+    %else
+      %assign indxLabel = "i"
+      %assign jndxLabel = "j"      
+    %endif
+%%
+    %assign inLabel_re = LibBlockInputSignal(INPORT, indxLabel, "", "%<tRealPart>0")
+    %if inCplx
+      %assign inLabel_im = LibBlockInputSignal(INPORT, indxLabel, "", "%<tImagPart>0")
+    %endif
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, jndxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, jndxLabel, "", "%<tImagPart>0")
+%%
+    int_T j=0, i=0;
+    for (;i<%<nRows - 1>; i++) {
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %if inCplx
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %else
+        %<outLabel_im> = 0;
+      %endif
+      {
+        int_T bit = %<nRows>;
+        do { bit>>=1; j^=bit; } while (!(j & bit));
+      }
+    }
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %if inCplx
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %else
+      %<outLabel_im> = 0;
+    %endif
+    %if nChans > 1
+      offset += %<nRows>;
+    }
+    %endif
+  }
+%endfunction
+
+%function FixPtR2BRIFFTCopy(block) Output
+  { /* Bit reverse scramble and copy the time-reversed input (to use FFT for IFFT) */
+    %if nChans > 1
+      %assign startIndx = "offset"
+      %assign lastIndx  = "1+offset"
+      %assign indxLabel = "i2 + offset"
+      %assign jndxLabel = "j + offset"
+      int_T nChans = %<nChans>;
+      int_T offset = 0;
+      while (nChans--) {
+    %else
+      %assign startIndx = "0"
+      %assign lastIndx  = "1"
+      %assign indxLabel = "i2"
+      %assign jndxLabel = "j"      
+    %endif
+%%
+    %assign inLabel_re = LibBlockInputSignal(INPORT, startIndx, "", "%<tRealPart>0")
+    %if inCplx
+      %assign inLabel_im = LibBlockInputSignal(INPORT, startIndx, "", "%<tImagPart>0")
+    %endif
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, startIndx, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, startIndx, "", "%<tImagPart>0")
+%%
+    int_T j=%<nRows / 2>, i, i2;
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %if inCplx
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %else
+        %<outLabel_im> = 0;
+      %endif
+%%
+    %assign inLabel_re = LibBlockInputSignal(INPORT, indxLabel, "", "%<tRealPart>0")
+    %if inCplx
+      %assign inLabel_im = LibBlockInputSignal(INPORT, indxLabel, "", "%<tImagPart>0")
+    %endif
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, jndxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, jndxLabel, "", "%<tImagPart>0")
+%%
+    for (i=1;i<%<nRows - 1>; i++) {
+      i2 = %<nRows> - i;
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %if inCplx
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %else
+        %<outLabel_im> = 0;
+      %endif
+      {
+        int_T bit = %<nRows>;
+        do { bit>>=1; j^=bit; } while (!(j & bit));
+      }
+    }
+    %assign inLabel_re = LibBlockInputSignal(INPORT, lastIndx, "", "%<tRealPart>0")
+    %if inCplx
+      %assign inLabel_im = LibBlockInputSignal(INPORT, lastIndx, "", "%<tImagPart>0")
+    %endif
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %if inCplx
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %else
+      %<outLabel_im> = 0;
+    %endif
+    %if nChans > 1
+      offset += %<nRows>;
+    }
+    %endif
+  }
+%endfunction
+
+%function FixPtDITFFT(block,alongR, twidStep) Output
+{ /* Decimation in time FFT */
+  %assign nChansArg = alongR ? 1 : nChans
+  %assign nRowsArg  = alongR ? nChans : nRows
+  %assign isScaled = isNormalized
+  %assign jndxLabelRe    = "j+" + STRING(%<MAX(nRows,nChans)/4>)
+  %if isInverse
+    %assign jndxLabelIm = "j"
+  %else
+    %assign jndxLabelIm = "j+" + STRING(%<MAX(nRows,nChans)/2>)
+  %endif
+  %assign sineDT       =  DSPFixPt_GetParameterDataType(TwiddleTable)
+  %assign sineTable    = LibBlockParameter(TwiddleTable,jndxLabelRe,"",0)
+  %assign sineTable2nd = LibBlockParameter(TwiddleTable,jndxLabelIm,"",0)
+  %assign accDT  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+  %% Create copy of data type record to facilitate shifting out bits later
+  %% By creating DT2 to have one more fractional bit, we can write
+  %% from ACC back onto ACC and get rid of a bit with FixPt infrastructure
+  %copyrecord accDT2 accDT
+  %assign accDT2.FixedExp = %<accDT.FixedExp - 1>
+  %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+  %assign accLabel = "accum"
+  %assign prodLabel    = "prod"
+  %<accDT.Name> %<accLabel>;
+  %<prodDT.Name> %<prodLabel>;
+  %<outDT.ComplexName> ctemp, ctemp2;
+  %assign ctempLabel_re    = "ctemp.re"
+  %assign ctempLabel_im    = "ctemp.im"
+  %assign ctempLabel2_re    = "ctemp2.re"
+  %assign ctempLabel2_im    = "ctemp2.im"
+  %if nChansArg > 1
+    %assign indxLabel    = "i + offset"
+    %assign indxLabel2nd = "i+1 + offset"
+    int_T nChansArg = %<nChansArg>, offset = 0;
+    while (nChansArg--) {
+  %else
+    %assign indxLabel    = "i"
+    %assign indxLabel2nd = "i+1"
+  %endif
+  %if alongR
+    %assign outLabel_re = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tImagPart>0")
+  %else
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tImagPart>0")
+  %endif
+  int_T i;
+  /* Remove trivial multiplies for first stage */
+  for (i=0; i<%<nRowsArg - 1>; i+=2) {
+    /* CTEMP = y[i] - y[i+1]; */
+    %% acc  = y[i].re
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc -= y[i+1].re
+    %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% ctemp.re = acc
+    %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc  = y[i].im
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc -= y[i+1].im
+    %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% ctemp.im = acc
+    %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    /* y[i] = y[i] + y[i+1]; */
+    %% acc  = y[i].re
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc += y[i+1].re
+    %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% y[i].re = acc
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc  = y[i].im
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc += y[i+1].im
+    %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% y[i].im = acc
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    /* y[i+1] = CTEMP; */
+    %% y[i+1].re = ctemp.re
+    %% y[i+1].im = ctemp.im
+    %<outLabel2nd_re> = %<ctempLabel_re>;
+    %<outLabel2nd_im> = %<ctempLabel_im>;
+  }
+  %% Remaining butterflies
+  %if nChansArg > 1
+    %assign indxLabel    = "i1 + offset"
+    %assign indxLabel2nd = "i2 + offset"
+  %else
+    %assign indxLabel    = "i1"
+    %assign indxLabel2nd = "i2"
+  %endif
+  %if alongR
+    %assign outLabel_re = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tImagPart>0")
+  %else
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tImagPart>0")
+  %endif
+  {
+    int_T idelta=2;
+    int_T k = %<nRowsArg / 4>;
+    int_T kratio = %<twidStep*nRowsArg/4>; 
+    while (k > 0) {
+      int_T istart = 0;
+      int_T i2;
+      int_T j=kratio;
+      int_T i1=istart;
+      /* Remove trivial multiplies for first butterfly in remaining stages */
+      for (i=0; i<k; i++) {
+        i2 = i1 + idelta;
+        /* CTEMP = y[0] - y[idelta]; */
+        %% acc  = y[0].re
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc -= y[idelta]
+        %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% ctemp.re = acc
+        %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc  = y[0].im
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc -= y[idelta].im
+        %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% ctemp.im = acc
+        %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        /* y[0] = y[0] + y[idelta]; */
+        %% acc  = y[0].re
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc += y[idelta]
+        %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% y[0].re = acc
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc  = y[0].im
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc += y[idelta].im
+        %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% y[0].im = acc
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        /* y[idelta] = CTEMP */
+        %% y[idelta].re = ctemp.re
+        %% y[idelta].im = ctemp.im
+        %<outLabel2nd_re> = %<ctempLabel_re>;
+        %<outLabel2nd_im> = %<ctempLabel_im>;
+        i1 += (idelta<<1);
+      }
+      istart++;
+      for (; j<%<twidStep*nRowsArg/2>; j+= kratio) {
+        int_T i1=istart;
+        for (i=0; i<k; i++) {
+          i2 = i1 + idelta;
+          /* Compute ctemp = W * y[i2] */
+          %% PROD = .re * .re
+          %<FixPt_Multiply(prodLabel, prodDT, outLabel2nd_re, outDT, sineTable, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC  = PROD
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% PROD = .im * .im
+          %<FixPt_Multiply(prodLabel, prodDT, outLabel2nd_im, outDT, sineTable2nd, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC -= PROD (ACC contains intermediate y[i2].re)
+          %<FixPt_AccumNeg_Easy(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+          %% ctemp.re = ACC
+          %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% PROD = .re * .im
+          %<FixPt_Multiply(prodLabel, prodDT, outLabel2nd_re, outDT, sineTable2nd, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC  = PROD
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% PROD = .im * .re
+          %<FixPt_Multiply(prodLabel, prodDT, outLabel2nd_im, outDT, sineTable, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC += PROD (ACC contains intermediate y[i2].im)
+          %<FixPt_AccumPos_Easy(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ctemp.im = ACC
+          %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          /* Compute ctemp2 = y[i1] + ctemp */
+          %% ACC       = y[i1].re
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC      += ctemp.re
+          %<FixPt_AccumPos_Easy(accLabel, accDT, ctempLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %if isScaled
+            %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+          %endif      
+          %% ctemp2.re = ACC
+          %<FixPt_Fix2FixAlwaysOutput(ctempLabel2_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC       = y[i1].im
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC      += ctemp.im
+          %<FixPt_AccumPos_Easy(accLabel, accDT, ctempLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %if isScaled
+            %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+          %endif      
+          %% ctemp2.im = ACC
+          %<FixPt_Fix2FixAlwaysOutput(ctempLabel2_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          /* Compute y[i2] = y[i1] - ctemp */
+          %% ACC       = y[i1].re
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC      -= ctemp.re
+          %<FixPt_AccumNeg_Easy(accLabel, accDT, ctempLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+          %if isScaled
+            %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+          %endif      
+          %% y[i2].re  = ACC
+          %<FixPt_Fix2FixAlwaysOutput(outLabel2nd_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC       = y[i1].im
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% ACC      -= ctemp.im
+          %<FixPt_AccumNeg_Easy(accLabel, accDT, ctempLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+          %if isScaled
+            %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+          %endif      
+          %% y[i2].im  = ACC
+          %<FixPt_Fix2FixAlwaysOutput(outLabel2nd_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+          %% y[i1] = ctemp2
+          /* y[i1] = ctemp2 */
+          %<outLabel_re> = %<ctempLabel2_re>;
+          %<outLabel_im> = %<ctempLabel2_im>;
+          i1 += (idelta<<1);
+        }
+        istart++;
+      }
+      idelta <<= 1;
+      k >>= 1;
+      kratio>>=1;
+    }
+  }
+  %if nChansArg > 1
+      offset += %<nRowsArg>;
+    }
+  %endif
+}
+%endfunction %% FixPtDITFFT
+
+%function FixPtDIFFFT(block,alongR, twidStep) Output
+{ /* Decimation in frequency FFT */
+  %assign nChansArg = alongR ? 1 : nChans
+  %assign nRowsArg  = alongR ? nChans : nRows
+  %assign isScaled = isNormalized
+  %assign tblIndxLabelRe    = "tableIdx+" + STRING(%<MAX(nRows,nChans)/4>)
+  %if isInverse
+    %assign tblIndxLabelIm = "tableIdx"
+  %else
+    %assign tblIndxLabelIm    = "tableIdx+" + STRING(%<MAX(nRows,nChans)/2>)
+  %endif
+  %assign sineDT =  DSPFixPt_GetParameterDataType(TwiddleTable)
+  %assign sineTable    = LibBlockParameter(TwiddleTable,tblIndxLabelRe,"",0)
+  %assign sineTable2nd = LibBlockParameter(TwiddleTable,tblIndxLabelIm,"",0)
+  %assign accDT  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+  %assign accDT  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+  %% Create copy of data type record to facilitate shifting out bits later
+  %% By creating DT2 to have one more fractional bit, we can write
+  %% from ACC back onto ACC and get rid of a bit with FixPt infrastructure
+  %copyrecord accDT2 accDT
+  %assign accDT2.FixedExp = %<accDT.FixedExp - 1>
+  %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+  %assign accLabel = "accum"
+  %assign prodLabel    = "prod"
+  %<accDT.Name> %<accLabel>;
+  %<prodDT.Name> %<prodLabel>;
+  %<outDT.ComplexName> ctemp;
+  %assign ctempLabel_re    = "ctemp.re"
+  %assign ctempLabel_im    = "ctemp.im"
+  %if nChansArg > 1
+    int_T nChansArg = %<nChansArg>, offset = 0;
+    while (nChansArg--) {
+    %assign indxLabel    = "i+offset"
+    %assign indxLabel2nd = "i+n2+offset"
+  %else
+    %assign indxLabel    = "i"
+    %assign indxLabel2nd = "i+n2"
+  %endif
+  %if alongR
+    %assign outLabel_re = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tImagPart>0")
+  %else
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tImagPart>0")
+  %endif
+  int_T i;
+  int_T n2 = %<nRowsArg>, k=%<twidStep>;%% used to be k = 1
+  /* Do all but last stage */
+  for (; k<%<twidStep*nRowsArg/2>; k<<=1) { %% extra twidstep introduced. 
+    int_T n1 = n2;
+    int_T tableIdx = k;
+    int_T j=1;
+    n2 >>= 1;
+    %%::: Break out j=0 iteration
+    /* Remove trivial multiplies from each stage */
+    for (i=0; i<%<nRowsArg>; i+=n1) {
+      /* ACC = y[i]; ACC -= y[i+n2]; ctemp = ACC; */
+      %% acc       = y[i].re
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc      -= y[i+n2].re
+      %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+      %if isScaled
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+      %endif      
+      %% ctemp.re  = ACC
+      %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc       = y[i].im
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc      -= y[i+n2].im
+      %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+      %if isScaled
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+      %endif      
+      %% ctemp.im  = ACC
+      %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      /* ACC = y[i]; ACC += y[i+n2]; y[i] = ACC */
+      %% acc       = y[i].re
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc      += y[i+n2].re
+      %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+      %if isScaled
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+      %endif      
+      %% y[i].re  = ACC
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc       = y[i].im
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      %% acc      += y[i+n2].im
+      %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+      %if isScaled
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+      %endif      
+      %% y[i].im  = ACC
+      %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      /* y[i+n2] = ctemp; */
+      %<outLabel2nd_re> = %<ctempLabel_re>;
+      %<outLabel2nd_im> = %<ctempLabel_im>;
+    }
+    for (; j<n2; j++) {
+      for (i=j; i<%<nRowsArg>; i+=n1) {
+        /* ACC = y[i]; ACC -= y[i+n2]; ctemp = ACC; */
+        %% acc       = y[i].re
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc      -= y{i+n2].re
+        %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% ctemp.re  = ACC
+        %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc       = y[i].im
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc      -= y{i+n2].im
+        %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% ctemp.im  = ACC
+        %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        /* ACC = y[i]; ACC += y[i+n2]; y[i] = ACC */
+        %% acc       = y[i].re
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc      += y{i+n2].re
+        %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% y[i].re  = ACC
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc       = y[i].im
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc      += y{i+n2].im
+        %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %if isScaled
+          %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+        %endif      
+        %% y[i].im  = ACC
+        %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        /* y[i+n2] = temp * W; */
+        %% prod = temp.re * W.re
+        %<FixPt_Multiply(prodLabel, prodDT, ctempLabel_re, outDT, sineTable, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc  = prod
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% prod = temp.im * W.im
+        %<FixPt_Multiply(prodLabel, prodDT, ctempLabel_im, outDT, sineTable2nd, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc -= prod
+        %<FixPt_AccumNeg_Easy(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %% y[i+n2].re = acc
+        %<FixPt_Fix2FixAlwaysOutput(outLabel2nd_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% prod = temp.re * W.im
+        %<FixPt_Multiply(prodLabel, prodDT, ctempLabel_re, outDT, sineTable2nd, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc  = prod
+        %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% prod = temp.im * W.re
+        %<FixPt_Multiply(prodLabel, prodDT, ctempLabel_im, outDT, sineTable, sineDT, FixPtRoundingMode, FixPtSaturationMode)>\
+        %% acc += prod
+        %<FixPt_AccumPos_Easy(accLabel, accDT, prodLabel, prodDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+        %% y[i+n2].im = acc
+        %<FixPt_Fix2FixAlwaysOutput(outLabel2nd_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+      }
+      tableIdx += k;
+    }
+  }
+  %if nChansArg > 1
+    %assign indxLabel    = "i+offset"
+    %assign indxLabel2nd = "i+1+offset"
+  %else
+    %assign indxLabel    = "i"
+    %assign indxLabel2nd = "i+1"
+  %endif
+  %if alongR
+    %assign outLabel_re = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockDWork(COPYWKSPACE, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockDWork(COPYWKSPACE, indxLabel2nd, "", "%<tImagPart>0")
+  %else
+    %assign outLabel_re = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tRealPart>0")
+    %assign outLabel_im = LibBlockOutputSignal(OUTPORT, indxLabel, "", "%<tImagPart>0")
+    %assign outLabel2nd_re = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tRealPart>0")
+    %assign outLabel2nd_im = LibBlockOutputSignal(OUTPORT, indxLabel2nd, "", "%<tImagPart>0")
+  %endif
+  /* Last stage (with trivial multiplies removed) */
+  for (i=0; i<%<nRowsArg-1>; i+=2) {
+    /* ACC  = y[i]; ACC -= y[i+1]; temp = ACC; */
+    %% acc       = y[i].re
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc      -= y[i+1].re
+    %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% ctemp.re  = ACC
+    %<FixPt_Fix2FixAlwaysOutput(ctempLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc       = y[i].im
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc      -= y{i+1].im
+    %<FixPt_AccumNeg_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% ctemp.im  = ACC
+    %<FixPt_Fix2FixAlwaysOutput(ctempLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    /* ACC  = y[i]; ACC += y[i+1]; y[i] = ACC; */
+    %% acc       = y[i].re
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc      += y{i+1].re
+    %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_re, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% y[i].re  = ACC
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc       = y[i].im
+    %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, outLabel_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    %% acc      += y{i+1].im
+    %<FixPt_AccumPos_Easy(accLabel, accDT, outLabel2nd_im, outDT, FixPtRoundingMode, FixPtSaturationMode)>\    
+    %if isScaled
+      %<FixPt_Fix2FixAlwaysOutput(accLabel, accDT, accLabel, accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif      
+    %% y[i].im  = ACC
+    %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, accLabel, accDT, FixPtRoundingMode, FixPtSaturationMode)>\
+    /* y[i+1] = temp; */
+    %<outLabel2nd_re> = %<ctempLabel_re>;
+    %<outLabel2nd_im> = %<ctempLabel_im>;
+  }
+  %if nChansArg > 1
+      offset += %<nRowsArg>;
+    }
+  %endif
+}
+%endfunction %% FixPtDIFFFT
+
+%function FixPtCodeGen(block) Output
+  %% In place disallowed, and output is always in order.
+  %% Bit reverse scramble first, then DIT FFT.
+  %assign twidStepAlongC  = SFcnParamSettings.TwiddleStep
+  %if is2dfft
+    %assign twidStepAlongR  = SFcnParamSettings.ARTwiddleStep 
+  %endif
+  %if isInverse %% IFFT
+    %if bitRev
+      %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>\
+    %else
+      %<FixPtR2BRCopy(block)>\
+    %endif
+    %<FixPtDITFFT(block,0,twidStepAlongC)>
+  %else         %% FFT
+    %if bitRev
+      %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>\
+      %<FixPtDIFFFT(block,0,twidStepAlongC)>\
+    %else
+      %<FixPtR2BRCopy(block)>\
+      %<FixPtDITFFT(block,0,twidStepAlongC)>
+    %endif
+    %if is2dfft
+    {
+        /* Perform FFT along rows*/
+        /* Copy rows from output into DWork (as a column) one at a time, 
+         * do FFT on each row, put back the FFTed result at output location 
+         */
+        %assign DTYPE_STR = LibBlockOutputSignalDataTypeName(0,"%<tRealPart>")
+        int_T rowIdx;
+        for (rowIdx = 0; rowIdx < %<nRows>; rowIdx++) {
+            %if bitRev
+                /* Copy Row (Non-contiguous memory) as a column (contiguous memory) */
+                MWDSP_CopyRowAsCol((byte_T *)%<LibBlockDWorkAddr(COPYWKSPACE, "", "", "0")>, ...
+                                   (byte_T *)%<LibBlockOutputSignalAddr(0,"","",0)>, ...
+                                   %<nChans>, %<nRows>, rowIdx, 2*sizeof(%<DTYPE_STR>));
+            %else
+            {
+                /* Copy Row (Non-contiguous memory) as a column (contiguous memory)
+                 * Simultaneously also do bit reversal
+                 */
+                %assign indxLabel = "indx"
+                %assign jndxLabel = "j"      
+                %assign inLabel_re = LibBlockOutputSignal(0, indxLabel, "", "%<tRealPart>0")
+                %assign inLabel_im = LibBlockOutputSignal(0, indxLabel, "", "%<tImagPart>0")
+                %assign outLabel_re = LibBlockDWork(COPYWKSPACE, jndxLabel, "", "%<tRealPart>0")
+                %assign outLabel_im = LibBlockDWork(COPYWKSPACE, jndxLabel, "", "%<tImagPart>0")
+                int_T j=0, i=0,indx=rowIdx;
+                for (;i<%<nChans - 1>; i++) {
+                  %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+                  %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+                  {
+                    int_T bit = %<nChans>;
+                    do { bit>>=1; j^=bit; } while (!(j & bit));
+                  }
+                  indx += %<nRows>;
+                }
+                %<FixPt_Fix2FixAlwaysOutput(outLabel_re, outDT, inLabel_re, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+                %<FixPt_Fix2FixAlwaysOutput(outLabel_im, outDT, inLabel_im, inDT, FixPtRoundingMode, FixPtSaturationMode)>\
+            }
+            %%    %<copyRowAsColBR(block, rowIdx)>\
+            %endif
+            %if bitRev
+              %<FixPtDIFFFT(block,1,twidStepAlongR)>\
+            %else
+              %<FixPtDITFFT(block,1,twidStepAlongR)>\
+            %endif
+            /* Copy Column (Contiguous memory) back as a row (non-contiguous memory) at output */
+            MWDSP_CopyColAsRow((byte_T *)%<LibBlockOutputSignalAddr(0,"","",0)>, ...
+                               (byte_T *)%<LibBlockDWorkAddr(COPYWKSPACE, "", "", "0")>, ...
+                               %<nChans>, %<nRows>,rowIdx, 2*sizeof(%<DTYPE_STR>));
+        }
+    }
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: Outputs =========================================================
+%%
+%function CommonOutputs(block, system) Output
+    %%
+    /* DSP Blockset FFT (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %<generateMainComment()>
+    %if inScalar
+        %<copy_inputs_if_needed(block)>\
+    %else
+      %if FixPt_DataTypeIsFloat(inDT)
+        %% FLOATING POINT CODE GENERATION
+        %<FltPtCodeGen(block)>
+      %else
+        %% FIXED POINT CODE GENERATION
+        %<FixPtCodeGen(block)>
+      %endif
+    %endif
+
+%endfunction %% Outputs
+
+%% [EOF] fft_body.tlc

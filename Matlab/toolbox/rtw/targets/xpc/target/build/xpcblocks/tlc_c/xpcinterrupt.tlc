@@ -1,0 +1,76 @@
+%%
+%% $Revision: 1.7 $
+%%
+%% Abstract:
+%%      TLC file for xPC Target Asynchronous Interrupt Block.
+%%
+%% Copyright 1996-2002 The MathWorks, Inc.
+
+%implements "xpcinterrupt" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      Find all the function-call subsystems that are attached to the
+%%      interrupt block and hook-in the necessary code for each routine.
+%%      This function
+%%
+%%      o Redefine the number of formal arguments of each function-call
+%%        subsystem connected to the interrupt block to be one.  This is
+%%        done by placing a #define in model.h.  This is needed since VxWorks
+%%        only allows one argument to a ISR.
+%%      o Connect each ISR in the model's start function.
+%%      o Enable each ISR at the bottom of the model's start function.
+%%      o Disable each ISR in the model's terminate function.
+%%      o Lock-out interrupts in the ISR's critical code section if the
+%%        ISR is configured as non-preemptive.
+%%      o Save floating point context in the ISR's critical code section
+
+%function BlockInstanceSetup(block, system) void
+  %if !EXISTS("xPCNumInterruptBlocks")
+    %foreach loopIdx = NumSFunctionNameCounts
+      %if "%<SFunctionNameCount[loopIdx].Name>" == "xpcinterrupt"
+        %assign ::xPCNumInterruptBlocks  = SFunctionNameCount[loopIdx].Count
+        %assign ::xPCInterruptBlocksSeen = 0
+      %endif
+    %endforeach
+    %if !EXISTS("xPCNumInterruptBlocks") /% Still doesn't exist %/
+      %exit Serious error: No blocks of type xpcinterrupt found.
+    %endif
+    %% Do the stuff that needs to be done one time only.
+    %<xPCIRQDoOnce()>
+  %endif
+
+  %% Need to find the downstream function-call subsystems.  There is
+  %% only one output port on the interrupt s-function.
+  %% Simulink will have already verified that, if connected at all,
+  %% it is a function-call subsystem and that it is the only destination.
+  %% The remaining test is whether the destination has other function-call
+  %% sources besides this Interrupt block which is not allowed since the
+  %% Interrupt block installs it as an ISR.
+  %% That test can done by checking ssBlock.ControlInputPort.Width.
+  %if "%<SFcnSystemOutputCall.BlockToCall>" != "unconnected"
+    %assign ssSysIdx = SFcnSystemOutputCall.BlockToCall[0]
+    %assign ssBlkIdx = SFcnSystemOutputCall.BlockToCall[1]
+    %assign ssBlock  = CompiledModel.System[ssSysIdx].Block[ssBlkIdx]
+
+    %% Check to see if this is a direct connection
+    %if (ssBlock.ControlInputPort.Width != 1)
+      %assign errTxt = "The xPC Target Interrupt block '%<block.Name>' " ...
+        "outputs must be directly connected to one function-call subsystem. " ...
+        "The destination function-call subsystem block '%<ssBlock.Name>' " ...
+        "has other inputs."
+      %exit RTW Fatal: %<errTxt>
+    %endif
+    %% Assume it is a subsystem block(Simulink checked for a f-c subsys already).
+    %assign isrSystem = LibGetFcnCallISR(ssBlock, 0, 0)
+
+    %<xPCGenerateIRQCode(SFcnParamSettings, isrSystem)>
+    %else
+      %assign wrnTxt = "No code will be generated for ISR %<IRQ> " ...
+        "since it is not connected to anything."
+      %warning %<wrnTxt>
+    %endif
+
+  %endfunction
+
+%% [EOF] xpcinterrupt.tlc

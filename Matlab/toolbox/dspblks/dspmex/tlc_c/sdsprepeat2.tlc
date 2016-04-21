@@ -1,0 +1,304 @@
+%% $RCSfile: sdsprepeat2.tlc,v $
+%% $Revision: 1.6.4.2 $ $Date: 2004/04/12 23:09:36 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Repeat input samples N times. 
+%%           Output rate is N times the input rate.
+
+%implements sdsprepeat2 "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign OUTPORT = 0
+  %assign INPORT  = 0
+  %%
+  %assign inWidth  = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign outWidth     = CAST("Number",LibDataOutputPortWidth(OUTPORT))
+  %%
+  %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+  %assign dims    = LibBlockInputSignalDimensions(INPORT)
+  %assign COLS    = (numDims == 2) ? dims[1] : 1
+  %assign ROWS    = dims[0]
+  %%
+  %assign frame   = LibBlockInputSignalIsFrameData(INPORT)
+  %assign nChans  = frame ? COLS : inWidth
+  %%
+  %assign SamplesPerInputFrame  = CAST("Number", inWidth  / nChans)
+  %assign SamplesPerOutputFrame = CAST("Number", outWidth / nChans)
+  %assign cplx_in  = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign dtype_in = LibBlockInputSignalDataTypeName(INPORT, "%<tRealPart>")
+  %assign bytesPerElementStr = (cplx_in) \
+                             ? "(2 * sizeof(%<dtype_in>))" \
+                             : "sizeof(%<dtype_in>)"
+  %%
+  %assign isSingleRate   = LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+  %assign N        = CAST("Number",SFcnParamSettings.REPEAT[0])
+  %assign block   = block + OUTPORT + INPORT +  inWidth + outWidth + nChans +cplx_in \
+                  + SamplesPerInputFrame +SamplesPerOutputFrame+ \
+                  bytesPerElementStr + isSingleRate + isMultiTasking + N
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Repeat (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign IC_dims        = IC.Dimensions
+  %assign IC_rows        = IC_dims[0]
+  %assign IC_cols        = IC_dims[1]
+  %assign numIC          = IC_rows * IC_cols
+  %%
+  %% NOTE:  REPEAT_CNT and ITERATION_CNT DWorks are needed all the time.  
+  %%        Swap Buffer is only needed in Multi-rate,Multi-tasking mode
+  %%
+  /* Reset counters */
+  %<LibBlockDWork(REPEAT_CNT     ,"", "", 0)> = 0;
+  %<LibBlockDWork(ITERATION_CNT ,"", "", 0)> = 0;
+  %%
+  %if (!isSingleRate && isMultiTasking) 
+  {
+    %%
+    byte_T *inBuf   = (byte_T *)(%<LibBlockDWorkAddr(Buffer, "", "", 0)>);
+    %assign pICs    = "(const byte_T *)" + LibBlockParameterAddr(IC, "", "", 0)
+    %%
+    %<LibBlockDWork(SwapBuff  ,"", "", 0)> = false;
+    %%
+    %if (numIC == 1)
+      /* Scalar Expansion */
+      MWDSP_CopyScalarICs(inBuf, %<pICs>, %<inWidth>, %<bytesPerElementStr>); /* Scalar IC */
+    %elseif (numICs == SamplesPerInputFrame)
+      /* Vector ICs, same vector for all channels */
+      MWDSP_CopyVectorICs(%<inBuf>, %<pICs>, %<nChans>, (%<SamplesPerInputFrame> * %<bytesPerElementStr>)); /* Vector ICs */
+    %elseif (numICs == outportNumElems)
+      /* Matrix ICs */
+      MWDSP_CopyMatrixICs(%<inBuf>, %<pICs>, %<inWidth>, %<bytesPerElementStr>); /* Matrix ICs */
+    %else
+      /* ERROR!  Invalid number of ICs. */
+      %error "Number of ICs is not valid."
+    %endif
+    %%
+    %<LibBlockPWork(InBuf,"","",0)> = %<LibBlockDWorkAddr(Buffer,"","", 0)> + %<inWidth>*(1+%<cplx_in>);
+  }
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Repeat (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %% Latency Case:
+    %%
+    %% NOTE:
+    %%  "Input_repeat_cnt" keeps track how many times an input element has been repeated
+    %%  "Iteration_cnt" keeps track how many elements in the current buffer have been 
+    %%      repeated N times. When each element has been repeated N times, 
+    %%      then set the flag to swap buffers. 
+    %%  "swapBuff" keeps track on when to swap buffers.
+    %%
+    %%
+    %if (!isSingleRate && isMultiTasking)
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) 
+        {
+            %<outputmmCode(block)>
+        }
+    %else 
+        %% No Latency: 
+        %% Not Multi-rate && Multi-tasking
+        %% 
+        %% NOTE:
+        %%  "Input_repeat_cnt" keeps track how many times an input element has been repeated
+        %%  "Iteration_cnt" keeps track how many elements in the current buffer have been 
+        %%      repeated N times. When each element has been repeated N times, 
+        %%      then set the flag to swap buffers. 
+        %%  "swapBuff" keeps track on when to swap buffers.
+        %%
+        %%
+        /* Not multi-rate and Multitasking mode */
+        %if !isSingleRate
+            if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) 
+        %endif
+        {     
+            byte_T *y    = (byte_T *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>);
+            byte_T *uptr = (byte_T *)(%<LibBlockInputSignalAddr(INPORT,"","",0)>);
+            int_T     Input_repeat_cnt;
+	    int_T     Iteration_cnt;
+	    int_T   n; 
+	    for (n=0; n<%<nChans>; n++) {
+	        /* Point to next channel: */
+                %assign uptrUpdate = (SamplesPerInputFrame==1) ? "uptr+=%<bytesPerElementStr>" : "uptr += (%<SamplesPerInputFrame>*%<bytesPerElementStr>)"
+                if (n!=0) %<uptrUpdate>;
+	        %%
+	        /* Reset the counters */
+	        Input_repeat_cnt = %<LibBlockDWork(REPEAT_CNT,"", "", 0)>;
+	        Iteration_cnt = %<LibBlockDWork(ITERATION_CNT,"", "", 0)>;
+	        %%
+	        %if SamplesPerOutputFrame > 1
+	        {
+	            int_T k;
+	            for (k=0; k < %<SamplesPerOutputFrame>; k++) {
+	        %endif
+                        memcpy(y,uptr + Iteration_cnt*%<bytesPerElementStr>,%<bytesPerElementStr>);
+                        y+=%<bytesPerElementStr>;
+		        if (++Input_repeat_cnt == %<N>) {
+                            Input_repeat_cnt = 0;
+		            %if SamplesPerInputFrame > 1
+		            if (++Iteration_cnt == %<SamplesPerInputFrame>) Iteration_cnt = 0;
+		            %endif
+		        }
+                        %if SamplesPerOutputFrame > 1
+	            } %% ends for loop
+	        }     %% ends SamplesPerOutputFrame loop
+	        %endif
+                %%
+            } %% end for nChans
+            %%
+            /* Update counters */
+            %<LibBlockDWork(ITERATION_CNT,"", "", 0)> = Iteration_cnt;
+            %<LibBlockDWork(REPEAT_CNT,"", "", 0)>     = Input_repeat_cnt;
+        }
+    %endif
+    
+    %% The "update" code for multirate+multitasking:
+    %%
+    %if (!isSingleRate && isMultiTasking)
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) 
+        {
+            %<inputmmCode(block)>
+        }
+    %endif
+%endfunction
+
+
+%% Function: OutputsForTID =====================================================
+%% This function is called only in multi-rate, multi-tasking ert mode
+%function OutputsForTID(block, system, tid) Output
+  /* Signal Processing Blockset Repeat (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    {
+        %<inputmmCode(block)>
+    }
+    %endif
+    %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0")>)
+    {
+        %<outputmmCode(block)>
+    }
+    %endif
+}
+%endfunction %% OutputsForTID
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: outputmmCode ====================================================
+%%
+%function outputmmCode(block) Output
+    /* MultiRate and MultiTasking mode */
+    byte_T *y = (byte_T *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>);
+    byte_T *outBuf   = (byte_T *)(%<LibBlockDWorkAddr(Buffer, "", "", 0)>);
+    boolean_T  swapBuff = false;   /* Initialize local flag for swapping buffers */
+    int32_T      Input_repeat_cnt;
+    int32_T      Iteration_cnt;
+                           
+    if (%<LibBlockDWork(SwapBuff,"", "", 0)>) {
+      %assign outBufUpdate = (inWidth == 1) ? "outBuf+= %<bytesPerElementStr>" : "outBuf += (%<inWidth> * %<bytesPerElementStr>)"
+          %<outBufUpdate>;	 /* Point to bottom buffer */
+    }       
+    %if nChans > 1
+        {
+        int_T   n;    
+        for (n=0; n<%<nChans>; n++) {
+            %%
+          /* Point to next channel: */
+              %if (SamplesPerInputFrame == 1)
+            byte_T *out = outBuf + n*%<bytesPerElementStr>;
+              %else
+                byte_T *out = outBuf + n*(%<SamplesPerInputFrame>*%<bytesPerElementStr>);
+              %endif
+    %endif
+    %%
+    /* Reset the counters */
+    Input_repeat_cnt = %<LibBlockDWork(REPEAT_CNT,"", "", 0)>;
+    Iteration_cnt    = %<LibBlockDWork(ITERATION_CNT,"", "", 0)>;
+    %%
+    %if SamplesPerOutputFrame > 1
+        {
+            int_T k;
+            for (k=0; k < %<SamplesPerOutputFrame>; k++) {
+        %endif
+                %assign out_str = (nChans > 1) ? "(out + Iteration_cnt*%<bytesPerElementStr>)" : "(outBuf + Iteration_cnt*%<bytesPerElementStr>)" 
+                    memcpy(y, %<out_str>, %<bytesPerElementStr>);
+                    y += %<bytesPerElementStr>;
+                    if (++Input_repeat_cnt == %<N>) {
+                        Input_repeat_cnt = 0;
+                        %if SamplesPerInputFrame > 1
+                        if (++Iteration_cnt == %<SamplesPerInputFrame>) {
+                            Iteration_cnt = 0;
+                        swapBuff = true;
+                    }
+                    %else
+                        swapBuff = true;
+                    %endif
+                }
+            %if SamplesPerOutputFrame > 1
+            } %% ends for loop
+            }     %% ends SamplesPerOutputFrame loop
+        %endif
+            %%
+            %if nChans > 1
+            } %% end for nChans 
+        } %% end for loop
+        %endif
+        %%
+        /* Update counters */
+        %<LibBlockDWork(REPEAT_CNT,"", "", 0)>     = Input_repeat_cnt;
+        %<LibBlockDWork(ITERATION_CNT,"", "", 0)> = Iteration_cnt;
+
+        if (swapBuff) {
+        %<LibBlockDWork(SwapBuff,"", "", 0)> = !%<LibBlockDWork(SwapBuff,"", "", 0)>;
+        }
+%endfunction %% outputmmCode
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: inputmmCode ====================================================
+%%
+%function inputmmCode(block) Output
+    byte_T *inBuf = (byte_T *)%<LibBlockPWork(InBuf,"","", 0)>;
+    byte_T *u     = (byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    %if inWidth == 1
+        memcpy(inBuf,u,%<bytesPerElementStr>);
+        inBuf  += %<bytesPerElementStr>;
+    %else  
+        memcpy(inBuf,u,%<inWidth>*%<bytesPerElementStr>);
+        inBuf  += (%<inWidth>*%<bytesPerElementStr>);
+    %endif
+    {
+        byte_T *aBuf =  (byte_T *)%<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+        if (inBuf == (aBuf + (2*%<inWidth>*%<bytesPerElementStr>))) {
+            inBuf = aBuf;
+        }    
+    }
+    %<LibBlockPWork(InBuf,"","",0)>  = inBuf;
+%endfunction %% inputmmCode
+
+
+
+%% [EOF] sdsprepeat2.tlc

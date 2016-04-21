@@ -1,0 +1,243 @@
+%% sdspvfdly2.tlc
+%% Abstract: TLC for Signal Processing Blockset Variable Fractional Delay block (sdspvfdly2)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.21.4.3 $ $Date: 2004/04/12 23:10:09 $
+
+%implements sdspvfdly2 "C"
+
+%include "dsplib.tlc"
+%include "dsp_ic.tlc"
+
+%% function : BlockInstanceSetup===========================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+    %assign INPORT    = 0
+    %assign OUTPORT   = 0
+    %assign DELAYPORT = 1
+    %assign nChans    = %<SFcnParamSettings.ICs_nChans>
+    %assign nSamps    = %<SFcnParamSettings.nSamps>
+    %assign maxDelay  = %<SFcnParamSettings.maxDelay>
+    %assign buflen    = %<SFcnParamSettings.bufLen>
+    %assign delayLen  = %<SFcnParamSettings.delayLen>
+	%assign filtlen	  = %<SFcnParamSettings.FILTER_LEN>
+	%assign nphases	  = %<SFcnParamSettings.NUM_PHASES>
+    %assign dtype_in  = LibBlockInputSignalDataTypeName(INPORT,"%<tRealPart>")
+    %assign dtype     = LibBlockInputSignalDataTypeName(INPORT,"")
+    %assign mode = %<SFcnParamSettings.Mode>
+
+    %assign block   = block + INPORT + OUTPORT + DELAYPORT + nChans + nSamps ...
+                            + maxDelay + buflen + delayLen + filtlen + nphases ...
+                            + dtype_in + dtype + mode
+                        
+    %% Setup the initial condition handler:
+    %%
+    %<CopyICsInstanceSetup(block)>
+
+%endfunction %%BlockInstanceSetup 
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspvfdly2_rt")>
+    %<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+    %% Need to initialize the DWork space. 
+    %%
+    {
+        int32_T *buffoff = %<LibBlockDWorkAddr(BUFF_OFFSET, "", "", "")>;
+        int_T hlen     = %<SFcnParamSettings.FILTER_LEN>/2;
+        *buffoff       = %<SFcnParamSettings.maxDelay> + hlen - 1;
+    }
+    %<getCopyICsFcnName(block)>(\
+                               (byte_T *)%<LibBlockDWorkAddr(ICs_dworkRef, "", "", 0)>,\
+                               (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)>,\
+    %if ICs_CopyFcnIndex == 0
+                               %<ICs_nChans>*%<ICs_dWorkRows>,\
+    %else
+                               %<ICs_nChans>,\
+                               %<ICs_dWorkRows>,\
+    %endif
+                               %<ICs_bytesPerElementStr>\
+    %if  ICs_CopyFcnIndex == 2
+                               , %<ICs_dataPortWidth>\
+    %endif
+                               );
+    %%
+%endfunction  %% InitializeConditions
+
+
+%% Function: getVfdlyFcnName ==================================================
+%% Abstract:
+%%   Produces fcn names according to the following convention:
+%%
+%% R = single,
+%% C = single complex
+%% D = Double
+%% Z = Double complex
+%%
+%% Examples:
+%%     MWDSP_Vfdly_Lin_D  - double-precision, real data=type,    linear interpolation mode
+%%     MWDSP_Vfdly_FIR_C  - single-precision, complex data-type, FIR interpolation mode. 
+%%
+%% NOTE: Inputs are either both single or both double.
+%%       No cross-type support is provided.
+%%
+%function getVfdlyLinFcnName() void
+    %%
+    %if (dtype == "real32_T")
+        %assign suffix = "R"
+    %elseif (dtype == "real_T")
+        %assign suffix = "D"
+    %elseif (dtype == "creal32_T")
+        %assign suffix = "C"
+    %elseif (dtype == "creal_T")
+        %assign suffix = "Z"
+    %else
+        %error "Data type not handled."
+    %endif   
+    %% 
+%return "MWDSP_Vfdly_Lin_" + suffix
+%endfunction %% getVfdlyFcnName
+
+
+%function getVfdlyFIRFcnName() void
+    %%
+    %if (dtype == "real32_T")
+        %assign suffix = "R"
+    %elseif (dtype == "real_T")
+        %assign suffix = "D"
+    %elseif (dtype == "creal32_T")
+        %assign suffix = "C"
+    %elseif (dtype == "creal_T")
+        %assign suffix = "Z"
+    %else
+        %error "Data type not handled."
+    %endif 
+    %%   
+%return "MWDSP_Vfdly_FIR_" + suffix
+%endfunction %% getVfdlyFIRFcnName
+
+%function getVfdlyClipFcnName() void
+    %%
+    %if (dtype_in == "real32_T")
+        %assign suffix = "R"
+    %elseif (dtype_in == "real_T")
+        %assign suffix = "D"
+    %else
+        %error "Data type not handled."
+    %endif 
+    %%   
+%return "MWDSP_Vfdly_Clip_" + suffix
+%endfunction %% getVfdlyClipFcnName
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset Interp (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+  %assign str1 = (dtype_in == "real32_T") ? "F" : ""
+    {
+  %if (%<SFcnParamSettings.isLinearMode> == 0)
+    const %<dtype_in> *filtptr = %<LibBlockParameterAddr(FilterArgs,"","",0)>;
+  %endif
+    const %<dtype> *uptr    = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<dtype>    *yptr    = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>; 
+    int32_T *buffoff = %<LibBlockDWorkAddr(BUFF_OFFSET, "", "", "")>;
+    %<dtype>    *buff    = %<LibBlockDWorkAddr(BUFF, "", "", "")>;
+    %%
+   %if nChans > 1
+    int_T  chans = %<nChans>;
+   %else
+    int_T buffstart = *buffoff;
+   %endif
+   %if (nSamps > 1) && (nChans == 1)
+    int_T samps = %<nSamps>;
+   %elseif (nSamps > 1)
+    int_T samps;
+   %endif
+  %if mode == 0
+    %<dtype_in> t = %<LibBlockInputSignal(DELAYPORT,"i","",0)>;
+    int_T ti;
+    %<dtype_in> frac;
+    t = CLIP(t,0.0%<str1>, (%<dtype_in>)%<maxDelay>);
+    ti = (int_T)t;
+    frac = t - ti;
+  %else
+    int_T i = 0;
+  %endif
+    %%
+    %if nChans > 1
+      while(chans--) {
+        int_T buffstart = *buffoff;
+    %endif
+      %if mode == 2
+        %<dtype_in> t  = %<LibBlockInputSignal(DELAYPORT,"i++","",0)>; 
+          int_T ti;
+          %<dtype_in> frac;
+          t = CLIP(t,0.0%<str1>, (%<dtype_in>)%<maxDelay>);
+          ti = (int_T)t;
+      %endif
+      %%
+      %if nSamps > 1
+        %if nChans > 1
+          samps     = %<nSamps>;
+        %endif
+          while (samps--) {
+      %endif 
+          %if mode == 1
+            %<dtype_in> t = %<LibBlockInputSignal(DELAYPORT,"i++","",0)>; 
+            int_T ti;
+            %<dtype_in> frac;
+            t = CLIP(t,0.0%<str1>, (%<dtype_in>)%<maxDelay>);
+            ti = (int_T)t;
+          %endif
+          %%
+          %if ((mode == 1) || (mode == 2))
+            frac = t - ti;
+          %endif
+            if (++buffstart == %<buflen>) buffstart = 0;
+            *(buff + buffstart) = *uptr++;
+
+          %if (%<SFcnParamSettings.isLinearMode> == 0)
+            /* Check if we need to use linear interp: */
+            if (ti < %<filtlen/2> - 1) {
+                %<getVfdlyLinFcnName()>(buff ,%<buflen> ,&yptr ,ti ,buffstart ,frac);
+            } else {
+                /* FIR interpolation mode */
+                %<getVfdlyFIRFcnName()>(filtptr, %<filtlen>, %<nphases> ,buff, %<buflen> ,&yptr ,ti,buffstart ,frac);
+            }
+          %else
+            /* Linear Interpolation Mode */
+                %<getVfdlyLinFcnName()>(buff ,%<buflen> ,&yptr ,ti ,buffstart ,frac);
+          %endif
+      %%
+      %if nSamps > 1
+      }
+      %endif
+        buff += %<buflen>;
+      %if mode == 1
+       %if SFcnParamSettings.delayLen == nSamps
+        i -= %<delayLen>;
+       %endif
+      %endif
+    %if nChans > 1
+    }
+    %endif
+     *buffoff  += %<nSamps>;
+     while (*buffoff >= %<buflen>) *buffoff -= %<buflen>;
+    %%
+    }
+%endfunction %% Outputs
+
+%% [EOF: sdspvfdly2.tlc]

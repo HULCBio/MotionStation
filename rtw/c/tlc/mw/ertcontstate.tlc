@@ -1,0 +1,736 @@
+%% ============================================================================
+%% File : ertcontstate.tlc
+%% $Revision: 1.1.6.5 $
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_ERT_CONT_STATE_") == 0
+%assign _ERT_CONT_STATE_ = 1
+
+%function FcnCreateAndInitializeSolverData()
+  %assign addr = IsMultiInsatnceERTOrModelReference() ? "" : "&"
+   
+  %openfile buff
+  %assert !IsModelReferenceTarget() %% Not supported yet
+  %<FcnDumpSolverInfoObjectCreation()>\
+  %<RTMSolverSet("SimTimeStep", "MAJOR_TIME_STEP")>;
+  %if NumContStates > 0
+    %if ISEQUAL(Solver, "ode1")
+      %<RTMGet("IntgData")>.f[0] = %<RTMGet("OdeF")>[0];
+    %elseif ISEQUAL(Solver, "ode2")
+      %<RTMGet("IntgData")>.y = %<RTMGet("OdeY")>;
+      %<RTMGet("IntgData")>.f[0] = %<RTMGet("OdeF")>[0];
+      %<RTMGet("IntgData")>.f[1] = %<RTMGet("OdeF")>[1];
+    %elseif ISEQUAL(Solver, "ode3")
+      %<RTMGet("IntgData")>.y = %<RTMGet("OdeY")>;
+      %<RTMGet("IntgData")>.f[0] = %<RTMGet("OdeF")>[0];
+      %<RTMGet("IntgData")>.f[1] = %<RTMGet("OdeF")>[1];
+      %<RTMGet("IntgData")>.f[2] = %<RTMGet("OdeF")>[2];
+    %elseif ISEQUAL(Solver, "ode4")
+      %<RTMGet("IntgData")>.y = %<RTMGet("OdeY")>;
+      %<RTMGet("IntgData")>.f[0] = %<RTMGet("OdeF")>[0];
+      %<RTMGet("IntgData")>.f[1] = %<RTMGet("OdeF")>[1];
+      %<RTMGet("IntgData")>.f[2] = %<RTMGet("OdeF")>[2];
+      %<RTMGet("IntgData")>.f[3] = %<RTMGet("OdeF")>[3];
+    %elseif ISEQUAL(Solver, "ode5")
+      %<RTMGet("IntgData")>.y = %<RTMGet("OdeY")>;
+      %<RTMGet("IntgData")>.f[0] = %<RTMGet("OdeF")>[0];
+      %<RTMGet("IntgData")>.f[1] = %<RTMGet("OdeF")>[1];
+      %<RTMGet("IntgData")>.f[2] = %<RTMGet("OdeF")>[2];
+      %<RTMGet("IntgData")>.f[3] = %<RTMGet("OdeF")>[3];
+      %<RTMGet("IntgData")>.f[4] = %<RTMGet("OdeF")>[4];
+      %<RTMGet("IntgData")>.f[5] = %<RTMGet("OdeF")>[5];
+    %elseif ISEQUAL(Solver, "ode14x")
+      %<RTMGet("IntgData")>.x0      = %<RTMGet("OdeX0")>;
+      %<RTMGet("IntgData")>.f0      = %<RTMGet("OdeF0")>;
+      %<RTMGet("IntgData")>.x1start = %<RTMGet("OdeX1START")>;
+      %<RTMGet("IntgData")>.f1      = %<RTMGet("OdeF1")>;
+      %<RTMGet("IntgData")>.Delta   = %<RTMGet("OdeDELTA")>;
+      %<RTMGet("IntgData")>.E       = %<RTMGet("OdeE")>;
+      %<RTMGet("IntgData")>.fac     = %<RTMGet("OdeFAC")>;
+
+      /* initialize */
+      {
+        int_T i;     
+	real_T *f =  %<RTMGet("IntgData")>.fac;
+        for(i = 0; i < (int_T)(sizeof(%<RTMGet("OdeFAC")>)/sizeof(real_T)); i++) {
+	  f[i] = 1.5e-8;
+        }
+      }
+
+      %<RTMGet("IntgData")>.DFDX    = %<RTMGet("OdeDFDX")>;
+      %<RTMGet("IntgData")>.W       = %<RTMGet("OdeW")>;
+      %<RTMGet("IntgData")>.pivots  = %<RTMGet("OdePIVOTS")>;
+
+      %<RTMSolverSet("SolverExtrapolationOrder", "%<FixedStepOpts.ExtrapolationOrder>")>;
+      %<RTMSolverSet("SolverNumberNewtonIterations", "%<FixedStepOpts.NumberNewtonIterations>")>;
+
+    %endif
+    %assign x = "(real_T *) %<addr>%<tContState>"
+    %<RTMSet("ContStates", x)>;
+    rtsiSetSolverData(%<RTMGetSolverInfo()>, (void *)&%<RTMGet("IntgData")>);
+    rtsiSetSolverName(%<RTMGetSolverInfo()>,"%<Solver>");
+    %if NumChildSFunctions
+      %assign solverInfo = "%<RTMGetSolverInfo()>"
+      %<RTMSet("RTWSolverInfoPtr", solverInfo)>;
+    %endif
+  %endif
+  %closefile buff
+  %return buff
+%endfunction
+
+
+
+%% Function: SLibDumpSolverCode ================================================
+%% Abstract:
+%%   Dumps the solver code for selected solver.
+%%
+%function SLibDumpSolverCode() Output
+
+  %assert  (!IsModelReferenceTarget())
+  
+  %% SLibModelFcnArgs depends on side-effects of rootSystem.CurrentTID
+  %assign saveCurrentTID = rootSystem.CurrentTID
+  %if SLibIsRateGrouping() 
+    %assign rootSystem.CurrentTID = 0
+  %else
+    %assign rootSystem.CurrentTID = ""
+  %endif
+
+  %openfile buff
+  %if (ModelHasProjections == "yes")
+    %% put projection code here
+    %<SLibGetBodyProjectionFcnCache(rootSystem)>
+  %endif
+
+  %assign reuseArgs = SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")
+  %if ISEQUAL(reuseArgs,"void")
+    %assign reuseArgs = ""
+  %else
+    %assign reuseArgs = ", " + reuseArgs
+  %endif
+  %openfile invokeOutput
+  %assign tid = SLibIsRateGrouping() ? "0" : ""
+  %if CombineOutputUpdateFcns
+    %<Name>_step%<tid>(%<SLibModelFcnArgs("UpdateContStates",2,0)>);
+  %else
+    %<Name>_output%<tid>(%<SLibModelFcnArgs("Output",2,0)>);
+  %endif
+  %closefile invokeOutput
+  
+  %if ISEQUAL(Solver, "ode1")
+    
+    /* This function updates continuous states using the ODE1 fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>)
+    {
+      time_T    tnew  = rtsiGetSolverStopTime(si);
+      time_T    h     = rtsiGetStepSize(si);
+      real_T    *x    = rtsiGetContStates(si);
+      ODE1_IntgData  *id   = rtsiGetSolverData(si);
+      real_T    *f0   = id->f[0];
+      int_T     i;
+      
+      int_T     nXc   = %<NumContStates>;
+      
+      rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+      
+      rtsiSetdX(si, f0);
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      rtsiSetT(si, tnew);
+      
+      for (i = 0; i < nXc; i++) {
+	*x += h * f0[i];
+	x++;
+      }
+
+      %if (ModelHasProjections == "yes")
+	%<invokeOutput>\
+	%<Name>_projection();
+      %endif
+      
+      rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+    
+  %elseif ISEQUAL(Solver, "ode2")
+    
+    /* This function updates continuous states using the ODE2 fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>) 
+    {
+      time_T    tnew  = rtsiGetSolverStopTime(si);
+      time_T    h     = rtsiGetStepSize(si);
+      real_T    *x    = rtsiGetContStates(si);
+      ODE2_IntgData  *id   = rtsiGetSolverData(si);
+      real_T    *y    = id->y;
+      real_T    *f0   = id->f[0];
+      real_T    *f1   = id->f[1];
+      real_T    temp;
+      int_T     i;
+      
+      int_T     nXc   = %<NumContStates>;
+      
+      rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+      
+      /* Save the state values at time t in y, we'll use x as ynew. */
+      (void)memcpy(y, x, nXc*sizeof(real_T));
+      
+      /* Assumes that rtsiSetT and ModelOutputs are up-to-date */
+      /* f0 = f(t,y) */
+      rtsiSetdX(si, f0);
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f1 = f(t + h, y + h*f0) */
+      for (i = 0; i < nXc; i++) x[i] = y[i] + (h*f0[i]);
+      rtsiSetT(si, tnew);
+      rtsiSetdX(si, f1);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* tnew = t + h
+      ynew = y + (h/2)*(f0 + f1) */
+      temp = 0.5*h;
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + temp*(f0[i] + f1[i]);
+      }
+      
+      %if (ModelHasProjections == "yes")
+        %<invokeOutput>\
+	%<Name>_projection();
+      %endif
+      
+      rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+  %elseif ISEQUAL(Solver, "ode3")
+    
+    /* This function updates continuous states using the ODE3 fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>) 
+    {
+      time_T    t     = rtsiGetT(si);
+      time_T    tnew  = rtsiGetSolverStopTime(si);
+      time_T    h     = rtsiGetStepSize(si);
+      real_T    *x    = rtsiGetContStates(si);
+      ODE3_IntgData  *id   = rtsiGetSolverData(si);
+      real_T    *y    = id->y;
+      real_T    *f0   = id->f[0];
+      real_T    *f1   = id->f[1];
+      real_T    *f2   = id->f[2];
+      real_T    hB[3];
+      int_T     i;
+      
+      int_T     nXc   = %<NumContStates>;
+      
+      rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+      
+      /* Save the state values at time t in y, we'll use x as ynew. */
+      (void)memcpy(y, x, nXc*sizeof(real_T));
+      
+      /* Assumes that rtsiSetT and ModelOutputs are up-to-date */
+      /* f0 = f(t,y) */
+      rtsiSetdX(si, f0);
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,2) = feval(odefile, t + hA(1), y + f*hB(:,1), args(:)(*)); */
+      hB[0] = h * rt_ODE3_B[0][0];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0]);
+      }
+      rtsiSetT(si, t + h*rt_ODE3_A[0]);
+      rtsiSetdX(si, f1);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,3) = feval(odefile, t + hA(2), y + f*hB(:,2), args(:)(*)); */
+      for (i = 0; i <= 1; i++) hB[i] = h * rt_ODE3_B[1][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1]);
+      }
+      rtsiSetT(si, t + h*rt_ODE3_A[1]);
+      rtsiSetdX(si, f2);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* tnew = t + hA(3);
+      ynew = y + f*hB(:,3); */
+      for (i = 0; i <= 2; i++) hB[i] = h * rt_ODE3_B[2][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1] + f2[i]*hB[2]);
+      }
+      rtsiSetT(si, tnew);
+      
+      %if (ModelHasProjections == "yes")
+        %<invokeOutput>\
+	%<Name>_projection();
+      %endif
+      
+      rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+  %elseif ISEQUAL(Solver, "ode4")
+    
+    /* This function updates continuous states using the ODE4 fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>) 
+    {
+      time_T    t     = rtsiGetT(si);
+      time_T    tnew  = rtsiGetSolverStopTime(si);
+      time_T    h     = rtsiGetStepSize(si);
+      real_T    *x    = rtsiGetContStates(si);
+      ODE4_IntgData  *id   = rtsiGetSolverData(si);
+      real_T    *y    = id->y;
+      real_T    *f0   = id->f[0];
+      real_T    *f1   = id->f[1];
+      real_T    *f2   = id->f[2];
+      real_T    *f3   = id->f[3];
+      real_T    temp;
+      int_T     i;
+      
+      int_T     nXc   = %<NumContStates>;
+      
+      rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+      
+      /* Save the state values at time t in y, we'll use x as ynew. */
+      (void)memcpy(y, x, nXc*sizeof(real_T));
+      
+      /* Assumes that rtsiSetT and ModelOutputs are up-to-date */
+      /* f0 = f(t,y) */
+      rtsiSetdX(si, f0);
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f1 = f(t + (h/2), y + (h/2)*f0) */
+      temp = 0.5 * h;
+      for (i = 0; i < nXc; i++) x[i] = y[i] + (temp*f0[i]);
+      rtsiSetT(si, t + temp);
+      rtsiSetdX(si, f1);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f2 = f(t + (h/2), y + (h/2)*f1) */
+      for (i = 0; i < nXc; i++) x[i] = y[i] + (temp*f1[i]);
+      rtsiSetdX(si, f2);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f3 = f(t + h, y + h*f2) */
+      for (i = 0; i < nXc; i++) x[i] = y[i] + (h*f2[i]);
+      rtsiSetT(si, tnew);
+      rtsiSetdX(si, f3);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+
+      /* tnew = t + h
+      ynew = y + (h/6)*(f0 + 2*f1 + 2*f2 + 2*f3) */
+      temp = h / 6.0;
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + temp*(f0[i] + 2.0*f1[i] + 2.0*f2[i] + f3[i]);
+      }
+      
+      %if (ModelHasProjections == "yes")
+        %<invokeOutput>\
+	%<Name>_projection();
+      %endif
+      
+      rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+  %elseif ISEQUAL(Solver, "ode5")
+    
+    /* This function updates continuous states using the ODE5 fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>) 
+    {
+      time_T    t     = rtsiGetT(si);
+      time_T    tnew  = rtsiGetSolverStopTime(si);
+      time_T    h     = rtsiGetStepSize(si);
+      real_T    *x    = rtsiGetContStates(si);
+      ODE5_IntgData  *id   = rtsiGetSolverData(si);
+      real_T    *y    = id->y;
+      real_T    *f0   = id->f[0];
+      real_T    *f1   = id->f[1];
+      real_T    *f2   = id->f[2];
+      real_T    *f3   = id->f[3];
+      real_T    *f4   = id->f[4];
+      real_T    *f5   = id->f[5];
+      real_T    hB[6];
+      int_T     i;
+      
+      int_T     nXc   = %<NumContStates>;
+      
+      rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+      
+      /* Save the state values at time t in y, we'll use x as ynew. */
+      (void)memcpy(y, x, nXc*sizeof(real_T));
+      
+      /* Assumes that rtsiSetT and ModelOutputs are up-to-date */
+      /* f0 = f(t,y) */
+      rtsiSetdX(si, f0);
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,2) = feval(odefile, t + hA(1), y + f*hB(:,1), args(:)(*)); */
+      hB[0] = h * rt_ODE5_B[0][0];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0]);
+      }
+      rtsiSetT(si, t + h*rt_ODE5_A[0]);
+      rtsiSetdX(si, f1);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,3) = feval(odefile, t + hA(2), y + f*hB(:,2), args(:)(*)); */
+      for (i = 0; i <= 1; i++) hB[i] = h * rt_ODE5_B[1][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1]);
+      }
+      rtsiSetT(si, t + h*rt_ODE5_A[1]);
+      rtsiSetdX(si, f2);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,4) = feval(odefile, t + hA(3), y + f*hB(:,3), args(:)(*)); */
+      for (i = 0; i <= 2; i++) hB[i] = h * rt_ODE5_B[2][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1] + f2[i]*hB[2]);
+      }
+      rtsiSetT(si, t + h*rt_ODE5_A[2]);
+      rtsiSetdX(si, f3);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,5) = feval(odefile, t + hA(4), y + f*hB(:,4), args(:)(*)); */
+      for (i = 0; i <= 3; i++) hB[i] = h * rt_ODE5_B[3][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1] + f2[i]*hB[2] +
+	f3[i]*hB[3]);
+      }
+      rtsiSetT(si, t + h*rt_ODE5_A[3]);
+      rtsiSetdX(si, f4);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* f(:,6) = feval(odefile, t + hA(5), y + f*hB(:,5), args(:)(*)); */
+      for (i = 0; i <= 4; i++) hB[i] = h * rt_ODE5_B[4][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1] + f2[i]*hB[2] +
+	f3[i]*hB[3] + f4[i]*hB[4]);
+      }
+      rtsiSetT(si, tnew);
+      rtsiSetdX(si, f5);
+      %<invokeOutput>\
+      %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+      
+      /* tnew = t + hA(6);
+      ynew = y + f*hB(:,6); */
+      for (i = 0; i <= 5; i++) hB[i] = h * rt_ODE5_B[5][i];
+      for (i = 0; i < nXc; i++) {
+	x[i] = y[i] + (f0[i]*hB[0] + f1[i]*hB[1] + f2[i]*hB[2] +
+	f3[i]*hB[3] + f4[i]*hB[4] + f5[i]*hB[5]);
+      }
+      
+      %if (ModelHasProjections == "yes")
+        %<invokeOutput>\
+	%<Name>_projection();
+      %endif
+      
+      rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+
+  %elseif ISEQUAL(Solver, "ode14x")
+
+    %assign reuseArgsNumjac = SLibModelFcnArgs("UpdateContStates",TLC_FALSE,"")
+    %if ISEQUAL(reuseArgsNumjac,"void")
+      %assign reuseArgsNumjac = ""
+      %assign reuseArgsNumjacCall = ""
+    %else
+      %assign reuseArgsNumjac = ", " + reuseArgsNumjac
+      %assign reuseArgsNumjacCall = ", " + SLibModelFcnArgs("UpdateContStates",2,0)	
+    %endif
+    
+    /* Simplified version of numjac.cpp, for use with RTW. */
+    void local_numjac(RTWSolverInfo   *si,\ 
+		      real_T          *y,\
+	              const real_T    *Fty,\
+	              real_T	      *fac,\
+		      real_T          *dFdy \
+			%<reuseArgsNumjac>)\
+    {		
+      /* constants */
+      real_T THRESH = 1e-6;
+      real_T EPS    = 2.2e-16;  /* utGetEps(); */
+      real_T BL     = pow(EPS, 0.75);
+      real_T BU     = pow(EPS, 0.25);
+      real_T FACMIN = pow(EPS, 0.78);
+      real_T FACMAX = 0.1;
+
+      int_T     nx  = %<NumContStates>;
+
+      real_T    *x = rtsiGetContStates(si);
+      real_T    del;
+      real_T    difmax;
+      real_T    FdelRowmax;
+      real_T    temp;
+      real_T    Fdiff;
+      real_T    maybe;
+      real_T    xscale;
+      real_T    fscale;
+      real_T    *p;
+      int_T     rowmax;
+      int_T     i,j;
+
+      if (x != y) (void)memcpy(x,y,nx*sizeof(real_T));
+
+      for (p = dFdy, j = 0; j < nx; j++, p += nx) {
+
+          /* Select an increment del for a difference approximation to
+             column j of dFdy.  The vector fac accounts for experience
+             gained in previous calls to numjac. */
+          xscale = fabs(x[j]);
+          if (xscale < THRESH) xscale = THRESH;
+	  temp = (x[j] + fac[j]*xscale); 
+          del  = temp  - y[j];
+          while (del == 0.0) {
+              if (fac[j] < FACMAX) {
+                  fac[j] *= 100.0;
+                  if (fac[j] > FACMAX) fac[j] = FACMAX;
+		  temp = (x[j] + fac[j]*xscale); 
+                  del  = temp  - x[j];
+              } else {
+                  del = THRESH; /* thresh is nonzero */
+                  break;
+              }
+          }
+          /* Keep del pointing into region. */
+          if (Fty[j] >= 0.0) del = fabs(del);
+          else del = -fabs(del);
+
+          /* Form a difference approximation to column j of dFdy. */
+          temp = x[j];
+          x[j] += del;
+
+	  rtsiSetdX(si,p);
+   	  %<invokeOutput>\
+          %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+
+          x[j] = temp;
+          difmax = 0.0;
+          rowmax = 0;
+          FdelRowmax = p[0];
+          temp = 1.0 / del;
+          for (i = 0; i < nx; i++) {
+              Fdiff = p[i] - Fty[i];
+              maybe = fabs(Fdiff);
+              if (maybe > difmax) {
+                  difmax = maybe;
+                  rowmax = i;
+                  FdelRowmax = p[i];
+              }
+              p[i] = temp * Fdiff;
+          }
+
+          /* Adjust fac for next call to numjac. */
+          if (((FdelRowmax != 0.0) && (Fty[rowmax] != 0.0)) || (difmax == 0.0)) {
+              fscale = fabs(FdelRowmax);
+              if (fscale < fabs(Fty[rowmax])) fscale = fabs(Fty[rowmax]);
+ 
+	      if (difmax <= BL*fscale) {
+                  /* The difference is small, so increase the increment. */
+                  fac[j] *= 10.0;
+                  if (fac[j] > FACMAX) fac[j] = FACMAX;
+
+              } else if (difmax > BU*fscale) {
+                  /* The difference is large, so reduce the increment. */
+                  fac[j] *= 0.1;
+                  if (fac[j] < FACMIN) fac[j] = FACMIN;
+
+              }
+          }
+      }
+ 
+    } /* end local_numjac */
+
+    /* This function updates continuous states using the ODE14x fixed-step
+    * solver algorithm
+    */
+    static void rt_ertODEUpdateContinuousStates(RTWSolverInfo *si %<reuseArgs>) 
+    {
+        time_T    t0         = rtsiGetT(si);
+        time_T    t1         = t0;
+        time_T    h          = rtsiGetStepSize(si);
+    	real_T    *x1        = rtsiGetContStates(si);
+	int_T     order      = rtsiGetSolverExtrapolationOrder(si);
+    	int_T     numIter    = rtsiGetSolverNumberNewtonIterations(si);
+
+    	ODE14X_IntgData  *id = rtsiGetSolverData(si);
+    	real_T    *x0        = id->x0;
+    	real_T    *f0        = id->f0;
+    	real_T    *x1start   = id->x1start;
+    	real_T    *f1        = id->f1;
+    	real_T    *Delta     = id->Delta;
+    	real_T    *E         = id->E;
+    	real_T    *fac       = id->fac;
+    	real_T    *dfdx      = id->DFDX;
+    	real_T    *W         = id->W;
+    	int_T     *pivots    = id->pivots;
+    	int_T     *N         = &(rt_ODE14x_N[0]);
+
+    	int_T     i,j,k,iter;
+
+	int_T     nx         = %<NumContStates>;
+
+	rtsiSetSimTimeStep(si,MINOR_TIME_STEP);
+
+    	/* Save the state values at time t in y, we'll use x as ynew. */
+    	(void)memcpy(x0, x1, nx*sizeof(real_T));
+
+    	/* Assumes that rtsiSetT and ModelOutputs are up-to-date */
+    	/* f0 = f(t,y) */
+    	rtsiSetdX(si, f0);
+     	%<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+
+    	local_numjac(si,x0,f0,fac,dfdx %<reuseArgsNumjacCall>);
+
+    	for (j = 0; j < order; j++) {
+	
+	    real_T *p;
+	    real_T hN = h/N[j];
+	
+	    /* Get the iteration matrix and solution at t0 */
+
+	    /* [L,U] = lu(I - hN*J) */
+            (void) memcpy(W, dfdx, nx*nx*sizeof(real_T));
+            for (p = W, i = 0; i < nx*nx; i++, p++) *p *= (-hN);
+            for (p = W, i = 0; i < nx; i++, p += (nx+1)) *p += 1.0;
+  	    rt_lu_real(W,nx,pivots);
+
+	    /* First Newton's iteration at t0. */
+	    /* rhs = hN*f0 */
+	    for (i = 0; i < nx; i++) Delta[i] = hN*f0[i];
+  	    /* Delta = (U \ (L \ rhs)) */
+	    rt_ForwardSubstitutionRR_Dbl(W,Delta,f1,nx,1,pivots,1);
+	    rt_BackwardSubstitutionRR_Dbl(W+nx*nx-1,f1+nx-1,Delta,nx,1,0);
+
+	    /* ytmp = y0 + Delta */
+	    (void)memcpy(x1, x0, nx*sizeof(real_T));            
+	    for (i = 0; i < nx; i++) x1[i] += Delta[i];
+
+	    /* Additional Newton's iterations, if desired. 
+   	       for iter = 2:NewtIter
+	         rhs = (yn - ytmp) + hN*feval(odefun,tn,ytmp,extraArgs{:});
+	         Delta = ( U \ ( L \ rhs ) );
+	         ytmp = ytmp + Delta;
+	       end  
+            */
+  	    rtsiSetT(si, t0);
+	    rtsiSetdX(si, f1);
+	    for (iter = 1; iter < numIter; iter++) {
+
+	         %<invokeOutput>\
+      	         %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+	         for (i = 0; i < nx; i++) Delta[i] = (x0[i]-x1[i]) + hN*f1[i];
+
+	         rt_ForwardSubstitutionRR_Dbl(W,Delta,f1,nx,1,pivots,1);
+	         rt_BackwardSubstitutionRR_Dbl(W+nx*nx-1,f1+nx-1,Delta,nx,1,0);
+
+	         for (i = 0; i < nx; i++) x1[i] += Delta[i];
+	    }
+
+  	    /* Subintegration of N(j) steps for extrapolation 
+	       ttmp = t0;
+  	       for i = 2:N(j)
+  	         ttmp = ttmp + hN
+	         ytmp0 = ytmp;
+                 for iter = 1:NewtIter
+                    rhs = (ytmp0 - ytmp) + hN*feval(odefun,ttmp,ytmp,extraArgs{:});
+                    Delta = ( U \ ( L \ rhs ) );
+                    ytmp = ytmp + Delta;
+                 end
+	      end 
+ 	    */
+	    for (k = 1; k < N[j]; k++) {
+	        t1 = t0 + k*hN;
+	        (void)memcpy(x1start, x1, nx*sizeof(real_T));
+	        rtsiSetT(si, t1);
+	        rtsiSetdX(si, f1);
+	        for (iter = 0; iter < numIter; iter++) {
+		
+                    %<invokeOutput>\
+                    %<Name>_derivatives(%<SLibModelFcnArgs("Derivative",2,"")>);
+ 
+		    if (iter == 0) {
+		        for (i = 0; i < nx; i++) Delta[i] = hN*f1[i];
+		    } else {
+		        for (i = 0; i < nx; i++) Delta[i] = (x1start[i]-x1[i]) + hN*f1[i];
+		    }
+		
+		    rt_ForwardSubstitutionRR_Dbl(W,Delta,f1,nx,1,pivots,1);
+		    rt_BackwardSubstitutionRR_Dbl(W+nx*nx-1,f1+nx-1,Delta,nx,1,0);
+	
+		    for (i = 0; i < nx; i++) x1[i] += Delta[i];
+	        }   
+	    }
+
+	    /* Extrapolate to order j
+	       E(:,j) = ytmp
+	       for k = j:-1:2
+                 coef = N(k-1)/(N(j) - N(k-1))
+                 E(:,k-1) = E(:,k) + coef*( E(:,k) - E(:,k-1) )
+	       end 
+ 	    */
+	    (void)memcpy( &(E[nx*j]), x1, nx*sizeof(real_T));
+	    for (k = j; k > 0; k--) {
+	        real_T coef = (real_T)(N[k-1]) / (N[j]-N[k-1]);
+
+		for (i = 0; i < nx; i++) {
+		    x1[i] = E[nx*k+i] + coef*(E[nx*k+i] - E[nx*(k-1)+i]);
+	        }
+
+	        (void)memcpy( &(E[nx*(k-1)]), x1, nx*sizeof(real_T));
+	    }
+        }
+
+        /* x1 = E(:,1); */
+        (void)memcpy(x1, E, nx*sizeof(real_T));
+
+        /* t1 = t0 + h; */
+        rtsiSetT(si,rtsiGetSolverStopTime(si));
+
+      	%if (ModelHasProjections == "yes")
+          %<invokeOutput>\
+	  %<Name>_projection();
+	%endif
+      
+        rtsiSetSimTimeStep(si,MAJOR_TIME_STEP);
+    }
+  %endif
+  %closefile buff
+  
+  %assign baseFile = GetBaseFile("SystemBody")
+  %<SLibSetModelFileAttribute(baseFile, "Functions", buff)>
+  
+  %%
+  %% Restore rootSystem.CurrentTID
+  %assign rootSystem.CurrentTID = saveCurrentTID
+%endfunction
+
+%% Function: SLibGenIntgSubStruct ==============================================
+%% Abstract:
+%%   Generate the substructure in the real-time model rtM.ModelData.Intg
+%%
+%function SLibGenERTIntgSubStruct() void
+
+  %openfile retVal
+  struct {
+      real_T *y;
+      real_T *f[2];
+  } \
+  %closefile retVal
+  %return retVal  
+%endfunction
+
+
+%endif %% _ERT_CONT_STATES_
+
+%% [EOF] ertcontstate.tlc

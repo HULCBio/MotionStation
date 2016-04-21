@@ -1,0 +1,329 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Unit delay block target file.
+%%
+%implements UnitDelay "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %% Don't need to cast output expression since it is simply a
+  %% reference to the state
+  %<LibBlockSetIntegerDowncastUnnecessary(block)>
+
+  %% set expression folding compliance
+  %<LibBlockSetIsExpressionCompliant(block)>
+
+  %% cache whether or not state and output initialization is required
+  %% for the scalar expanded case
+  %<SLibSetSkipInitializationFlag(system,block,X0)>
+%endfunction
+
+
+%% Function: Start ============================================================
+%%
+%function Start(block, system) Output
+  %if !block.SkipInitialization
+    %% If possible, avoid re-initializing the block outputs to
+    %% zero since they are initialized to zero in the model's registration
+    %% function.
+    %% Set the output to the state.
+    %if LibBlockOutputSignalIsInBlockIO(0)
+      %openfile tmpBuffer
+      %assign icIsComplex = LibBlockParameterIsComplex(X0)
+      %assign yIsComplex  = LibBlockOutputSignalIsComplex(0)
+      %assign x0i = SLibGetFormattedValueFromId(LibBlockParameterDataTypeId(X0),0)
+      %%
+      %assign rollVars = ["P", "Y"]
+      %assign rollRegion = [0:%<LibBlockOutputSignalWidth(0)-1>]
+      %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	%if SLibXBInitRequired(system, block, X0, "", lcv, idx)
+	  %%
+	  %assign yr  = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<idx>")
+	  %assign x0r = LibBlockParameter(X0, "", lcv, "%<tRealPart>%<idx>")
+	  %<yr> = %<x0r>;
+	  %if (yIsComplex)
+	    %assign yi  = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<idx>")
+	    %if (icIsComplex)
+	      %assign x0i = LibBlockParameter(X0, "", lcv, "%<tImagPart>%<idx>")
+	    %endif
+	    %<yi> = %<x0i>;
+	  %endif
+	%endif
+      %endroll
+      %closefile tmpBuffer
+      %if (!WHITE_SPACE(tmpBuffer))
+	/* %<Type> Block: %<Name> */
+	%<tmpBuffer>\
+	
+      %endif
+    %endif
+  %endif
+%endfunction %% Start
+
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%   Set X[i] = IC[i], and optionally set the output also to the IC if the
+%%   output signal is accessible in the mdlStart function scope.
+%%
+%function InitializeConditions(block, system) Output
+  %if !block.SkipInitialization
+    %openfile tmpBuffer
+    %assign rollRegion = [0:%<LibBlockDWorkWidth(DSTATE)-1>]
+    %assign rollVars   = ["DWork", "P"]
+    %%
+    %assign inputDataType = LibBlockInputSignalDataTypeId(0)
+    %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %% If possible, avoid re-initializing the states to
+      %% zero since they are initialized to zero in the model's registration
+      %% function.
+      %%
+      %if SLibXBInitRequired(system, block, X0, "", lcv, idx)
+	%% Set the real and imaginary part of the state to the initial value.
+	%assign xr = LibBlockDWork(DWork, "", lcv, "%<tRealPart>%<idx>")
+	%assign rhs = LibBlockParameter(X0, "", lcv, "%<tRealPart>%<idx>")
+	%<xr> = %<rhs>;
+	%if LibBlockOutputSignalIsComplex(0)
+	  %assign xi = LibBlockDWork(DWork, "", lcv, "%<tImagPart>%<idx>")
+	  %if LibBlockParameterIsComplex(X0)
+	    %assign rhs = LibBlockParameter(X0, "", lcv, "%<tImagPart>%<idx>")
+	  %else
+	    %assign rhs = ...
+	      SLibGetFormattedValueFromId(LibBlockParameterDataTypeId(X0), 0)
+	  %endif
+	  %<xi> = %<rhs>;
+	%endif
+      %endif
+    %endroll
+    %closefile tmpBuffer
+    %if !WHITE_SPACE(tmpBuffer)
+      /* %<Type> Block: %<Name> */
+      %<tmpBuffer>\
+      
+    %endif
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Update ============================================================
+%% Abstract:
+%%      X[i] = U[i]
+%%
+%function Update(block, system) Output
+  %if ParamSettings.AccumType == "0"
+    /* %<Type> Block: %<Name> */
+    %if LibBlockInputSignalIsFrameData(0)
+      %% Write frame update code here
+      %assign InputPortDims = LibBlockInputSignalDimensions(0)
+      %assign ChanSize = InputPortDims[0]
+      %assign nChans   = InputPortDims[1]
+      %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+      %assign inAddr = LibBlockInputSignalAddr(0,"","",0)
+      %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+      %assign statePtr = "pDWork"
+      %assign DWorkdt = LibBlockDWorkDataTypeName(DWork,"")
+      %assign inPtr = "pIn"
+      %assign Indt = LibBlockInputSignalDataTypeName(0,"")
+      %if nChans == 1
+	memcpy(%<stateAddr>, %<inAddr> + %<ChanSize-1>, %<bytesPerSignal>);
+      %else
+	{
+	  int iChan;
+	  %<DWorkdt> *%<statePtr> = %<stateAddr>;
+	  %<Indt> *%<inPtr> = %<inAddr> + %<ChanSize-1>;
+	  
+	  for(iChan=0; iChan < %<nChans>; iChan++)
+	  {
+	    memcpy(%<statePtr>, %<inPtr>, %<bytesPerSignal>);
+	    %<statePtr> ++;
+	    %<inPtr> += %<ChanSize>;
+	  }
+	}
+      %endif
+    %else 
+      %assign rollVars = ["U", "DWork"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign u = LibBlockInputSignal(0, "", lcv, idx)
+	%assign x = LibBlockDWork(DWork, "", lcv, idx)
+	%<x> = %<u>;
+      %endroll
+      
+    %endif
+  %endif
+%endfunction %% Update
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      Y[i] = X[i]
+%%
+%function Outputs(block, system) Output
+  %<FcnCacheBlockComment(block)>\
+  %if ParamSettings.AccumType == "0"
+    %if LibBlockInputSignalIsFrameData(0)
+      %openfile outBuffer
+      %assign InputPortDims = LibBlockInputSignalDimensions(0)
+      %assign ChanSize = InputPortDims[0]
+      %assign nChans   = InputPortDims[1]
+      %assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+      %assign outAddr = LibBlockOutputSignalAddr(0,"","",0)
+      %assign inAddr = LibBlockInputSignalAddr(0,"","",0)
+      %assign outName = LibBlockOutputSignal(0,"","",0)
+      %assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+      %assign DWorkdt = LibBlockDWorkDataTypeName(DWork,"")
+      %assign indt = LibBlockInputSignalDataTypeName(0,"")
+      %assign outdt = LibBlockOutputSignalDataTypeName(0,"")
+      %assign statePtr = "pDWork"
+      %assign inPtr = "pIn"
+      %assign outPtr = "pOut"
+      {
+	%if nChans == 1
+	  %<outdt> *pOut = %<outAddr>;
+	  memcpy(%<outPtr>, %<stateAddr>, %<bytesPerSignal>);
+	  %<outPtr> ++;
+	  memcpy(%<outPtr> , %<inAddr> , %<ChanSize-1> * %<bytesPerSignal>);
+	%else
+	  int iChan;
+	  %<DWorkdt> *pDWork = %<stateAddr>;
+	  %<indt> *pIn = %<inAddr>;
+	  %<outdt> *pOut = %<outAddr>;
+	  
+	  for(iChan = 0; iChan < %<nChans>; iChan++)
+	  {
+	    memcpy(%<outPtr>, %<statePtr>, %<bytesPerSignal>);
+	    %<statePtr> ++;
+	    %<outPtr> ++;
+	    
+	    memcpy(%<outPtr> , %<inPtr> , %<ChanSize-1> * %<bytesPerSignal>);
+	    %<outPtr> += %<ChanSize-1>;
+	    
+	    %<inPtr> += %<ChanSize>;
+	  }
+	%endif
+      }
+      %closefile outBuffer
+      %return outBuffer
+    %else %% Non-Frame Data
+      %%
+      %% This may be a rate transition block (special sample hit)
+      %%
+      %assign isRateTransitionBlock = LibIsRateTransitionBlock(system, block)
+      %%
+      %% Output
+      %%
+      %if isRateTransitionBlock
+	if (%<LibIsSpecialSampleHit(SampleTimeIdx, TID)>) {
+      %endif
+      %% Don't allow memcpy on ALPHA because of compiler bug
+      %assign numOutputs = LibDataOutputPortWidth(0)
+      %if !block.InFixptMode || numOutputs <= 2  || FixedPointComputer == "ALPHA"
+	%assign rollVars   = ["Y", "DWork"]
+	%assign rollRegion = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+	  %<y> = %<LibBlockDWork(DWork, "", lcv, idx)>;
+	%endroll
+      %else %% We are in FixptMode
+	%% Here we use memcpy because we are in FixPt mode
+	%% the advantage of using memcpy is code size, speed may or may
+	%% not increase
+	%%
+	%assign outAddr = LibBlockOutputSignalAddr(0,"","",0)
+	%assign stateAddr = LibBlockDWorkAddr(block.DWork,"", "", 0)
+	%%
+	%assign bytesPerSignal = "sizeof(" + STRING(LibBlockInputSignalDataTypeName(0, "")) + ")"
+	%%
+	%% memcpy is OK because input was required to be contiguous
+	%%
+	memcpy(%<outAddr>,%<stateAddr>,%<numOutputs>*%<bytesPerSignal>);
+      %endif
+      %if isRateTransitionBlock
+	}
+      %endif
+    %endif
+  %else
+    %assign doSaturate = 0
+    %if ParamSettings.SaturateAccumOnOverflow == "Needed"
+      %assign doSaturate = 1
+    %elseif ParamSettings.SaturateAccumOnOverflow == "NeededButOff"
+      %<SLibCacheOverflowWarning(block)>\
+    %endif
+    %assign sign = ParamSettings.AccumType
+    %assign y = LibBlockOutputSignal(0, "", "", 0)
+    %assign x = LibBlockDWork(DWork,"","",0)
+    %assign accumVal = LibBlockInputSignal(0,"","",0)
+    %if doSaturate
+      %% explicit software saturation
+      %assign dtIdx  = LibBlockOutputSignalDataTypeId(0)
+      %assign dtName = LibBlockOutputSignalDataTypeName(0, "%<tRealPart>")
+      {
+      %<dtName> tmpVar = %<x>;
+      \
+      %<SLibSumWithSaturate(dtIdx, sign, x, "tmpVar", accumVal, "")>\
+      }
+      %<y> = %<x>;
+    %else
+      %% wrap or whatever the cpu does (some chips saturate in hw)
+      %if ParamSettings.UnityAccum =="yes"
+	%<x>%<sign=="+"?"++":"--">;
+      %else
+	%<x> %<sign>= %<accumVal>;
+      %endif
+      %<y> = %<x>;
+    %endif
+  %endif
+  
+%endfunction %% Outputs
+
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return the appropriate reference to the parameter.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %<FcnCacheBlockComment(block)>
+      %assign x = LibBlockDWork(DWork,ucv,lcv,idx)
+      %if ParamSettings.AccumType == "0"
+	%return "(%<x>)"
+      %else
+	%%START_ASSERT
+	%assign errTxt = "Accumulator mode does not support expressions"
+	%<LibBlockReportError(block,errTxt)>
+	%%END_ASSERT
+      %endif
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+
+
+
+%% Function: FcnCacheBlockComment ==============================================
+%% Abstract:
+%%
+%function FcnCacheBlockComment(block) void
+  %if ParamSettings.AccumType != "0"
+    %openfile commentBuf
+    *   Operating as an accumulator
+    %closefile commentBuf
+    %<LibCacheBlockComment(block, commentBuf)>
+  %endif
+%endfunction
+
+%% [EOF] delay.tlc

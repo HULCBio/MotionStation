@@ -1,0 +1,256 @@
+%%
+%% File    : scomawgnchan2.tlc
+%% Abstract: TLC file for Communications Blockset AWGN Channel block 
+%%           (scomawgnchan2.c)
+%%
+%% Copyright 1996-2004 The MathWorks, Inc.
+%% $Revision: 1.1.4.1 $ $Date: 2004/04/20 23:15:42 $
+
+%implements "scomawgnchan2" "C"
+
+%% Function: BlockTypeSetup ===================================================
+%function BlockTypeSetup(block, system) void
+    %%
+    %% Include headers for the actual code
+    %%
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%		Setup the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %% Port Indexes
+    %assign SIG_INPORT  = 0
+    %assign NOIS_INPORT = 1
+    %assign VAR_INPORT  = 2
+    %assign SIG_OUTPORT = 0
+    
+    %% Determination of input dimensions
+    %assign NUM_DIMS_INP = LibBlockInputSignalNumDimensions(SIG_INPORT)
+    %assign DIMS_INP     = LibBlockInputSignalDimensions(SIG_INPORT)
+    %assign WIDTH_INP    = LibBlockInputSignalWidth(SIG_INPORT)
+    %assign FB_INP       = LibBlockInputSignalIsFrameData(SIG_INPORT)
+    %assign NCHANS   = (FB_INP) ? DIMS_INP[1] : WIDTH_INP
+    %assign NSAMPS   = WIDTH_INP/NCHANS 
+
+    %% Block Mode
+    %assign MODE = SFcnParamSettings.mode
+
+    /* Pass these assignments to the block */
+    %assign block = block + SIG_INPORT + NOIS_INPORT + VAR_INPORT + SIG_OUTPORT
+    %assign block = block + NCHANS + NSAMPS + MODE
+%endfunction %% BlockInstanceSetup
+
+
+%% function: Start ==========================================================
+%%
+%% Abstract
+%%   Update the DWork Parameter for calculation of the standard deviation
+%%   parameter.
+%function Start(block, system) Output
+    /* %<Type> Block: %<Name> */
+    %%
+    %assign Ts = LibBlockSampleTime(block)
+    {
+      %% DWORK parameter address
+      real_T *stdDev = %<LibBlockDWorkAddr(STDDEV, "", "", 0)>;
+
+        %if ISEQUAL(MODE, 1)
+            %% Eb/No mode
+            %assign bits  = SFcnParamSettings.bitspersymbol
+            %assign sBits = SIZE(bits, 1)
+            %openfile genBits
+              %assign temp = %<GENERATE_FORMATTED_VALUE(bits, "")>
+            %closefile genBits
+            real_T pBits[] = %<genBits>;
+            
+            %assign symPer   = SFcnParamSettings.symbolperiod
+            %assign sSymPer = SIZE(symPer, 1)
+            %openfile genSymPer
+              %assign temp = %<GENERATE_FORMATTED_VALUE(symPer, "")>
+            %closefile genSymPer
+            real_T pSymPer[] = %<genSymPer>;
+            
+            %assign prmRollVars = ["P"]
+            %roll prmIdx = [0:%<NCHANS-1>], lcv1 = 1, block, "Roller", prmRollVars
+
+                %assign ebno = LibBlockParameter(EBNO, "", lcv1, prmIdx)
+                %assign spow = LibBlockParameter(SPOW, "", lcv1, prmIdx)
+    
+                %% Check for scalar vs Vector for indexing
+                %if ISEQUAL(sBits, 1)
+                    %assign idxBits = 0
+                %else
+                    %assign idxBits = lcv1
+                %endif
+
+                %% Check for scalar vs Vector for indexing
+                %if ISEQUAL(sSymPer, 1)
+                    %assign idxSymPer = 0
+                %else
+                    %assign idxSymPer = lcv1
+                %endif
+
+                real_T esno     = %<ebno> + 10.0 * log10(pBits[%<idxBits>]);
+                stdDev[%<lcv1>] = sqrt(  (%<spow> * pSymPer[%<idxSymPer>]) / 
+                    ( (%<Ts/NSAMPS>) * pow(10.0, esno/10.0) )  );
+    
+            %endroll
+        %elseif ISEQUAL(MODE, 2)
+            %% Es/No mode
+            %assign symPer   = SFcnParamSettings.symbolperiod
+            %assign sSymPer = SIZE(symPer, 1)
+            %openfile genSymPer
+            %assign temp = %<GENERATE_FORMATTED_VALUE(symPer, "")>
+            %closefile genSymPer
+            real_T pSymPer[] = %<genSymPer>;
+            
+            %assign prmRollVars = ["P"]
+            %roll prmIdx = [0:%<NCHANS-1>], lcv1 = 1, block, "Roller", prmRollVars
+
+                %% Check for scalar vs Vector for indexing
+                %if ISEQUAL(sSymPer, 1)
+                    %assign idxSymPer = 0
+                %else
+                    %assign idxSymPer = lcv1
+                %endif
+
+                %assign esno = LibBlockParameter(ESNO, "", lcv1, prmIdx)
+                %assign spow = LibBlockParameter(SPOW, "", lcv1, prmIdx)
+
+                stdDev[%<lcv1>] = sqrt(  (%<spow> * pSymPer[%<idxSymPer>]) / 
+                    ( (%<Ts/NSAMPS>) * pow(10.0, %<esno>/10.0) )  );
+
+            %endroll
+        %elseif ISEQUAL(MODE, 3)
+            %% SNR mode 
+            %assign prmRollVars = ["P"]
+            %roll prmIdx = [0:%<NCHANS-1>], lcv1 = 1, block, "Roller", prmRollVars
+    
+                %assign snr  = LibBlockParameter(SNR,  "", lcv1, prmIdx)
+                %assign spow = LibBlockParameter(SPOW, "", lcv1, prmIdx)
+                
+                stdDev[%<lcv1>] = sqrt( %<spow> / pow(10.0, %<snr>/10.0) );
+            %endroll
+        %elseif ISEQUAL(MODE, 4)
+            %% Variance from Mask mode
+            %assign prmRollVars = ["P"]
+            %roll prmIdx = [0:%<NCHANS-1>], lcv1 = 1, block, "Roller", prmRollVars
+            
+                %assign var  = LibBlockParameter(VAR,  "", lcv1, prmIdx)
+                stdDev[%<lcv1>] = sqrt(%<var>); 
+            %endroll
+        %endif
+    }
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    /* %<Type> Block: %<Name> */
+    %%
+    %assign INP_COMP = LibBlockInputSignalIsComplex(SIG_INPORT)
+    %assign DATA_T  = (INP_COMP) ? "creal_T" : "real_T"
+    %%
+    {
+    int_T i, j;      
+
+    %% Input/Output signals
+    %<DATA_T> *xptr   = %<LibBlockInputSignalAddr(SIG_INPORT, "", "", 0)>;
+    %<DATA_T> *nptr   = %<LibBlockInputSignalAddr(NOIS_INPORT, "", "", 0)>;
+    %<DATA_T> *yptr   = %<LibBlockOutputSignalAddr(SIG_OUTPORT, "", "", 0)>;
+
+    %% DWORK parameter address
+    real_T *stdDev   = %<LibBlockDWorkAddr(STDDEV, "", "", 0)>;
+        
+    %if INP_COMP
+        %% Dynamic AWGN Channel for COMPLEX inputs
+        %if ISEQUAL(MODE, 1) || ISEQUAL(MODE, 2) || ISEQUAL(MODE, 3) || ISEQUAL(MODE, 4)
+            %% 1 - Eb/No mode, 2 - Es/No mode, 3 - SNR mode, 4 - Var from Mask mode
+                        
+            for (j = 0; j < %<NCHANS>; j++) 
+            {
+                /* Add noise to signal for each sample */            
+                for (i = 0; i < %<NSAMPS>; i++) 
+                {
+                  yptr->re = xptr->re + (*stdDev) * (nptr->re);
+                  yptr->im = xptr->im + (*stdDev) * (nptr->im);
+                  yptr++;
+                  xptr++;
+                  nptr++;
+                }
+                stdDev++;
+            }
+
+        %elseif ISEQUAL(MODE, 5)
+            %% 5 - Variance from Port mode
+            %assign WIDTH_VAR_INP = LibBlockInputSignalWidth(VAR_INPORT)
+            
+            real_T *var_ptr = %<LibBlockInputSignalAddr(VAR_INPORT, "", "", 0)>;
+
+            for (j = 0; j < %<WIDTH_VAR_INP>; j++) 
+            {
+                real_T std = sqrt(*var_ptr++);
+                  
+                /* Add noise to signal for each sample */            
+                for (i = 0; i < %<NSAMPS>; i++) 
+                {
+                  yptr->re = xptr->re + std * (nptr->re);
+                  yptr->im = xptr->im + std * (nptr->im);
+                  yptr++;
+                  xptr++;
+                  nptr++;
+                }
+            }
+        %endif   
+                        
+    %else 
+        %% Dynamic AWGN Channel for REAL inputs            
+        %if ISEQUAL(MODE, 1) || ISEQUAL(MODE, 2)
+            %% 1 - Eb/No mode, 2 - Es/No mode
+
+            for (j = 0; j < %<NCHANS>; j++) 
+            {
+                /* Add noise to signal for each sample */            
+                for (i = 0; i < %<NSAMPS>; i++)
+                  *yptr++ = (*xptr++) + (*stdDev)*(*nptr++)/sqrt(2.0);
+                stdDev++;
+            }            
+                    
+        %elseif ISEQUAL(MODE, 3) || ISEQUAL(MODE, 4)
+            %% 3 - SNR mode, 4 - Variance from Mask mode
+
+            for (j = 0; j < %<NCHANS>; j++) 
+            {
+                /* Add noise to signal for each sample */            
+                for (i = 0; i < %<NSAMPS>; i++)
+                  *yptr++ = (*xptr++) + (*stdDev)*(*nptr++);
+                stdDev++;
+            }
+            
+        %elseif ISEQUAL(MODE, 5)
+          %% 5 - Variance from port mode
+          %assign WIDTH_VAR_INP = LibBlockInputSignalWidth(VAR_INPORT)
+          
+          real_T *var_ptr   = %<LibBlockInputSignalAddr(VAR_INPORT, "", "", 0)>;
+
+          for (j = 0; j < %<WIDTH_VAR_INP>; j++) 
+          {
+            real_T std = sqrt(*var_ptr++);
+                
+            /* Add noise to signal for each sample */            
+            for (i = 0; i < %<NSAMPS>; i++)
+                *yptr++ = (*xptr++) + std*(*nptr++);
+          }
+
+        %endif   %% end if isequal(mode,...)
+
+    %endif %% end if INP_COMP
+    }
+%endfunction
+
+%% [EOF]

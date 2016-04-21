@@ -1,0 +1,581 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Dongzhe Yang, 11-12-2002
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Bias block target file
+
+%implements Bias "C"
+
+
+%% Function: BiasIsLEZero ==============================================
+%% Abstract:
+%%   
+%%
+%function BiasIsIntGEZero(bias) Output
+  %%
+  %if FixPt_IsZeroNumericOrString(bias)
+    %return (1 == 1)
+  %else 
+    %if TYPE(bias) == "String"
+      %if bias[0] == "(" || bias[0] == "[" || bias[0] == "{"
+	%if bias[1] == "-"
+	  %return (0)
+	%elseif bias[1] == "+"
+	  %return (1)
+	%else
+	  %return (2)
+	%endif
+      %else
+	%if bias[0] == "-"
+	  %return (0)
+	%elseif bias[0] == "+"
+	  %return (1)
+	%else
+	  %return (2)
+	%endif
+      %endif
+    %else
+      %if bias >= 0
+	%return (1)
+      %elseif bias < 0
+	%return (0)
+      %else
+	%return (2)
+      %endif
+    %endif
+  %endif
+  %%  
+%endfunction
+
+%% Function: BiasUnsignedIntSaturate ==============================================
+%% Abstract:
+%%   
+%%
+%function BiasUnsignedIntSaturate(tmpY, u, y, dTypeId) Output
+  %assign dTypeThruId =  LibGetDataTypeIdAliasedThruToFromId(dTypeId)
+  if (%<tmpY> < %<u>) {
+    %<y> = %<LibMaxIntValue(dTypeThruId)>;
+  } else {
+    %<y> = %<tmpY>;
+  }
+%endfunction
+
+%% Function: BiasSignedIntSaturate ==============================================
+%% Abstract:
+%%   
+%%
+%function BiasSignedIntSaturate(tmpY, u, bias, y, dTypeId, biasKnown) Output
+  %%
+  %assign dTypeThruId =  LibGetDataTypeIdAliasedThruToFromId(dTypeId)
+  %assign zero = SLibGetFormattedValueFromId(dTypeThruId, 0)
+  %%
+  %assign biasGEzero = BiasIsIntGEZero(bias)
+  %if biasKnown && ( biasGEzero != 2)
+    %if biasGEzero == 1
+      if (%<tmpY> < %<u>) {
+	%<y> = %<LibMaxIntValue(dTypeThruId)>;
+      } else {
+	%<y> = %<tmpY>;
+      }
+    %elseif biasGEzero == 0
+      if ( %<tmpY> > %<u> ) {
+	%<y> = %<LibMinIntValue(dTypeThruId)>;
+      } else {
+	%<y> = %<tmpY>;
+      }
+    %endif
+  %else  
+    if (%<bias> >= %<zero>) {
+      if (%<tmpY> < %<u>) {
+	%<y> = %<LibMaxIntValue(dTypeThruId)>;
+      } else {
+	%<y> = %<tmpY>;
+      }
+    } else {
+      if ( %<tmpY> > %<u> ) {
+	%<y> = %<LibMinIntValue(dTypeThruId)>;
+      } else {
+	%<y> = %<tmpY>;
+      }
+    }
+  %endif
+%endfunction
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%
+%function FixptOutputs(block, system) Output
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %assign dTypeThruId = FixPt_GetOutputDataTypeId(0)
+  %%
+  %% create Bias Free version of output Data Type
+  %%
+  %copyrecord y0NoBiasDT y0DT
+  %%
+  %assign y0NoBiasDT.Bias = 0.0
+  %%
+  %assign y0Ground = SLibGetGroundValueFromId(dTypeThruId)
+  %%
+  %assign biasIsComplex = LibBlockParameterIsComplex(Bias)
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %assign biasSize = LibBlockParameterSize(Bias)
+  %assign outputWidth = LibBlockOutputSignalWidth(0)
+  %%
+  %% Roll around signal width
+  %%
+  %if !LibBlockInputSignalIsFrameData(0)
+    %assign rollVars = ["U", "Y", "P"]
+  %else
+    %assign rollVars = ["U", "Y"]
+  %endif
+  %%
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign reSigIdx = tRealPart + STRING(sigIdx)
+    %assign imSigIdx = tImagPart + STRING(sigIdx)
+    %%
+    %% Get input
+    %%
+    %assign u = LibBlockInputSignal(0, "", lcv, reSigIdx)
+    %%
+    %% Get output
+    %%
+    %assign y = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+    %%
+    %if !LibBlockInputSignalIsFrameData(0)
+      %%
+      %assign biasRe = LibBlockParameter(Bias, "", lcv, reSigIdx)
+      %%
+      %if biasIsComplex
+	%assign biasIm = LibBlockParameter(Bias, "", lcv, imSigIdx)
+      %endif
+      %%
+    %else
+      %%
+      %assign frameDims = LibBlockInputSignalDimensions(0)
+      %%
+      %if outputWidth >= RollThreshold
+	%%
+	%% sigChName is defined as an index for parameter Bias in 
+	%% frame mode
+	%%
+	%assign sigChName = "rtBiasIdx"
+	%if biasSize[1] > 1
+	  int_T %<sigChName> = %<lcv> /  %<frameDims[0]>; /* signal channel */
+	  %assign bias = LibBlockParameter(Bias, sigChName, "", "")
+	%else 
+	  %assign bias = LibBlockParameter(Bias, "0", "", "")
+	%endif
+	%%
+	%if biasIsComplex
+	  %assign biasRe = "%<bias>.re"
+	  %assign biasIm = "%<bias>.im"
+	%else
+	  %assign biasRe = bias
+	%endif
+	%%
+      %else
+	%assign biasCh = sigIdx / frameDims[0]
+	%if biasIsComplex
+	  %assign reBiasCh = tRealPart + STRING(biasCh)
+	  %assign imBiasCh = tImagPart + STRING(biasCh)
+	  %assign biasRe = LibBlockParameter(Bias, "", "", reBiasCh)
+	  %assign biasIm = LibBlockParameter(Bias, "", "", imBiasCh)
+	%else
+	  %assign biasRe = LibBlockParameter(Bias, "", "", biasCh)
+	%endif
+      %endif
+    %endif
+    %%
+    %if !SLibBlockParameterIsTunable(Bias)
+      %if (biasSize[0] == 1 && biasSize[1] == 1 && FixPt_IsZeroNumericOrString(biasRe))
+	%assign biasReIgnored = 1
+      %elseif (outputWidth < RollThreshold && FixPt_IsZeroNumericOrString(biasRe))
+	%assign biasReIgnored = 1
+      %else
+	%assign biasReIgnored = 0
+      %endif
+    %else 
+      %assign biasReIgnored = 0
+    %endif
+    %%
+    %if biasReIgnored == 1
+      %<y> = %<u>;
+    %else
+      %<y> = %<biasRe>;
+      %<FixPt_AccumPos(y, y0NoBiasDT,...
+	u, y0NoBiasDT,...
+	FixPtSaturationMode)>\
+    %endif
+    %%
+    %if y0IsComplex
+      %%
+      %assign yIm = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+      %%
+      %if u0IsComplex 
+	%assign uIm = LibBlockInputSignal(0, "", lcv, imSigIdx)
+      %endif
+      %%
+      %if !u0IsComplex
+	%<yIm> = %<biasIm>;
+      %elseif !biasIsComplex
+	%<yIm> = %<uIm>;
+      %else
+	%if !SLibBlockParameterIsTunable(Bias)
+	  %if (biasSize[0] == 1 && biasSize[1] == 1 && FixPt_IsZeroNumericOrString(biasIm))
+	    %assign biasImIgnored = 1
+	  %elseif (outputWidth < RollThreshold && FixPt_IsZeroNumericOrString(biasIm))
+	    %assign biasImIgnored = 1
+	  %else
+	    %assign biasImIgnored = 0
+	  %endif
+	%else
+	  %assign biasImIgnored = 0
+	%endif
+	%%
+	%if biasImIgnored == 1
+	  %<yIm> = %<uIm>;
+	%else
+	  %<yIm> = %<biasIm>;
+	  %<FixPt_AccumPos(yIm, y0NoBiasDT,...
+	    uIm, y0NoBiasDT,...
+	    FixPtSaturationMode)>\
+	%endif
+	%%
+      %endif
+    %endif
+  %endroll 
+    %%
+%endfunction
+
+%% Function: ClassicOutputs ==========================================================
+%% Abstract:
+%%      Output y = u + bias
+%%
+%function ClassicOutputs(block, system) Output
+  %%
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %assign dTypeNameRe = LibBlockOutputSignalDataTypeName(0, tRealPart)
+  %%
+  %assign dTypeId   = LibBlockOutputSignalDataTypeId(0)
+  %%
+  %assign doSaturate = SLibHandleSaturateOnOverflow(block)
+  %%
+  %assign biasSize = LibBlockParameterSize(Bias)  
+  %%
+  %assign biasIsComplex = LibBlockParameterIsComplex(Bias)
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+  %%
+  %assign outputWidth = LibBlockOutputSignalWidth(0)
+  %%
+  %if !LibBlockInputSignalIsFrameData(0)
+    %%
+    %assign rollVars = ["U", "Y", "P"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+  %endif
+  %%
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign reSigIdx = tRealPart + STRING(sigIdx)
+    %assign imSigIdx = tImagPart + STRING(sigIdx)
+    %%
+    %assign u = LibBlockInputSignal(0, "", lcv, reSigIdx)
+    %%
+    %assign y = LibBlockOutputSignal(0, "", lcv,reSigIdx)
+    %%
+    %if !LibBlockInputSignalIsFrameData(0)
+      %%
+      %assign biasRe = LibBlockParameter(Bias, "", lcv, reSigIdx)
+      %%
+      %if biasIsComplex
+	%assign biasIm = LibBlockParameter(Bias, "", lcv, imSigIdx)
+      %endif
+      %%
+    %else
+      %%
+      %assign frameDims = LibBlockInputSignalDimensions(0)
+      %%
+      %if outputWidth >= RollThreshold
+	%%
+	%% sigChName is defined as an index for parameter Bias in 
+	%% frame mode
+	%%
+	%assign sigChName = "rtBiasIdx"
+	%if biasSize[1] > 1
+	  int_T %<sigChName> = %<lcv> /  %<frameDims[0]>; /* signal channel */
+	  %assign bias = LibBlockParameter(Bias, sigChName, "", "")
+	%else 
+	  %assign bias = LibBlockParameter(Bias, "0", "", "")
+	%endif
+	%%
+	%if biasIsComplex
+	  %assign biasRe = "%<bias>.re"
+	  %assign biasIm = "%<bias>.im"
+	%else
+	  %assign biasRe = bias
+	%endif
+	%%
+      %else
+	%assign biasCh = sigIdx / frameDims[0]
+	%if biasIsComplex
+	  %assign reBiasCh = tRealPart + STRING(biasCh)
+	  %assign imBiasCh = tImagPart + STRING(biasCh)
+	  %assign biasRe = LibBlockParameter(Bias, "", "", reBiasCh)
+	  %assign biasIm = LibBlockParameter(Bias, "", "", imBiasCh)
+	%else
+	  %assign biasRe = LibBlockParameter(Bias, "", "", biasCh)
+	%endif
+      %endif
+    %endif
+    %%
+    %if !SLibBlockParameterIsTunable(Bias) && \
+      ((biasSize[0] == 1 && biasSize[1] == 1) || (outputWidth < RollThreshold))
+      %%
+      %assign biasReKnown = 1
+      %assign volatileReLabel = "volatile"
+      %%
+      %if FixPt_IsZeroNumericOrString(biasRe)
+	%%
+	%assign biasReIgnored = 1
+	%%
+      %else
+	%%
+	%assign biasReIgnored = 0
+	%%
+      %endif
+      %%
+    %else
+      %%
+      %assign biasReIgnored = 0
+      %assign biasReKnown = 0
+      %assign volatileReLabel = ""
+      %%
+    %endif
+    %%
+    %if biasIsComplex
+      %%
+      %if !SLibBlockParameterIsTunable(Bias) && \
+	((biasSize[0] == 1 && biasSize[1] == 1) || (outputWidth < RollThreshold))
+	%%
+	%assign biasImKnown = 1
+	%assign volatileImLabel = "volatile"
+	%%
+	%if FixPt_IsZeroNumericOrString(biasIm)
+	  %%
+	  %assign biasImIgnored = 1
+	  %%
+	%else
+	  %%
+	  %assign biasImIgnored = 0
+	  %%
+	%endif
+	%%
+      %else
+	%%
+	%assign biasImIgnored = 0
+	%assign biasImKnown = 0
+	%assign volatileImLabel = ""
+	%%
+      %endif
+      %%
+    %endif
+    
+    %%      
+    %if !doSaturate
+      %%
+      %if biasReIgnored == 1
+	%<y> = %<u>;
+      %else
+	%<y> = %<biasRe> + %<u>;
+      %endif
+      %%
+      %if y0IsComplex
+	%%
+	%assign yIm = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	%%
+	%if u0IsComplex 
+	  %assign uIm = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	%endif
+	%%
+	%if !u0IsComplex
+	  %<yIm> = %<biasIm>;
+	%elseif !biasIsComplex
+	  %<yIm> = %<uIm>;
+	%else
+	  %%
+	  %if biasImIgnored == 1
+	    %<yIm> = %<uIm>;
+	  %else
+	    %<yIm> = %<biasIm> + %<uIm>;
+	  %endif
+	%endif
+      %endif
+    %else
+      %% do saturation
+      %if biasReIgnored != 1 || (biasIsComplex && biasImIgnored != 1)
+      {
+      %endif
+      %if !y0IsComplex
+	%if biasReIgnored == 1
+	  %<y> = %<u>;
+	%else
+	  %%
+	  %<volatileReLabel> %<dTypeName> rtTmpY = %<biasRe> + %<u>;
+	  %%
+	  %if SLibIsSignedFromId(dTypeId)
+	    %<BiasSignedIntSaturate("rtTmpY", u, biasRe, y, dTypeId, biasReKnown)>
+	  %else 
+	    %<BiasUnsignedIntSaturate("rtTmpY", u, y, dTypeId)>
+	  %endif
+	  %%
+	%endif
+	%%
+      %else
+	%if biasReIgnored != 1 
+	  %if (biasIsComplex && biasImIgnored != 1 && u0IsComplex)
+	    %<volatileReLabel> %<dTypeName> rtTmpY;
+	    %%
+	    %assign yTmpReLabel = "rtTmpY.re"
+	    %assign yTmpImLabel = "rtTmpY.im"
+	  %else
+	    %<volatileReLabel> %<dTypeNameRe> rtTmpYRe;
+	    %assign yTmpReLabel = "rtTmpYRe"
+	  %endif
+	%else
+	  %if (biasIsComplex && biasImIgnored != 1 && u0IsComplex)
+	    %<volatileImLabel> %<dTypeNameRe> rtTmpYIm;
+	    %assign yTmpImLabel = "rtTmpYIm"
+	  %endif
+	%endif
+	%if biasReIgnored == 1 
+	  %<y> = %<u>;
+	%else
+	  %%
+	  %<yTmpReLabel> = %<biasRe> + %<u>;
+	  %%
+	  %if SLibIsSignedFromId(dTypeId)
+	    %<BiasSignedIntSaturate(yTmpReLabel, u, biasRe, y, dTypeId, biasReKnown)>
+	  %else 
+	    %<BiasUnsignedIntSaturate(yTmpReLabel, u, y, dTypeId)>
+	  %endif
+	%endif
+	%%
+	%assign yIm = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	%%
+	%if u0IsComplex
+	  %assign uIm = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	%endif
+	%%
+	%if !u0IsComplex
+	  %<yIm> = %<biasIm>;
+	%elseif !biasIsComplex
+	  %<yIm> = %<uIm>;
+	%else
+	  %if biasImIgnored == 1
+	    %<yIm> = %<uIm>;
+	  %else
+	    %%
+	    %<yTmpImLabel> = %<biasIm> + %<uIm>;
+	    %%
+	    %if SLibIsSignedFromId(dTypeId)
+	      %<BiasSignedIntSaturate(yTmpImLabel, uIm, biasIm, yIm, dTypeId, biasImKnown)>
+	    %else 
+	      %<BiasUnsignedIntSaturate(yTmpImLabel, uIm, yIm, dTypeId)>
+	    %endif
+	  %endif
+	%endif
+      %endif
+      %if biasReIgnored != 1 || (biasIsComplex && biasImIgnored != 1)
+      }
+      %endif
+    %endif
+    %%
+  %endroll
+  %%
+%endfunction
+
+
+%% Functions: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %return FixptOutputs(block, system)
+  %else
+    %return ClassicOutputs(block, system)
+  %endif
+%endfunction
+
+%% Functions: BlockOutputSignal ==========================================================
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %%
+  %switch retType
+    %case "Signal"
+      %%
+      %assign dTypeNameRe = LibBlockOutputSignalDataTypeName(0, tRealPart)
+      %%
+      %if FcnBiasIsSimpleValue(Bias,0)
+	%return "(%<LibBlockInputSignal(0,ucv,lcv,idx)>)"
+      %else
+	%assign b = LibBlockParameter(Bias,ucv,lcv,idx)
+	%return "((%<dTypeNameRe>)(%<LibBlockInputSignal(0,ucv,lcv,idx)> + %<b>))"
+      %endif
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+  %%
+%endfunction
+
+%% Function: FcnBiasIsSimpleValue =============================================
+%% Abstract:
+%%   Return TLC true when the bias parameter has the following 
+%%   characteristics:
+%%
+%%   - real
+%%   - scalar
+%%   - nontunable
+%%   - value is Value
+%%
+%function FcnBiasIsSimpleValue(Bias,Value) void
+  %assign krv = LibPrepParameter(Bias)
+  %if ISEQUAL(krv,Value) && ISEQUAL(SIZE(krv),[1,1]) && \
+     !SLibBlockParameterIsTunable(Bias) && \
+     !LibBlockParameterIsComplex(Bias)
+    %return (1==1)
+  %else
+    %return (0==1)
+  %endif
+%endfunction
+
+%% [EOF] bias.tlc

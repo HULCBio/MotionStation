@@ -1,0 +1,168 @@
+%% ============================================================================
+%% $Revision: 1.1.6.9 $
+%% $Date: 2004/04/14 23:48:29 $
+%%
+%% Abstract:
+%%   This system file contains helper functions to create an 
+%% S-Function wrapper for any target.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+
+%if EXISTS("_MODELREFINTERFACE_") == 0
+%assign _MODELREFINTERFACE_ = 1
+
+%% Function: GenAndCacheModelReferenceInterfaceInMatFile  =====================
+%% Abstract:
+%%     Cache model reference interface in the mat file
+%function GenAndCacheModelReferenceInterfaceInMatFile() void
+  %assert IsModelReferenceTarget()
+  %with CompiledModel  
+    %% mdlRTW: no code is generated. this information is cached in binfo.mat
+    %assign rootIdx    = NumSystems-1
+    %assign sysIdx     = NumSystems-2
+    %assign thisSystem = System[sysIdx]
+    %assign interface  = thisSystem.Interface
+    %assign fileName   = SLibGetSystemOutputFileBaseName(System[NumSystems-2])
+    
+    %with interface
+      
+      %createrecord blkInterface { Name  "%<Name>"}
+      
+      %if SLibSingleTasking()
+	%addtorecord blkInterface SingleTasking 1
+      %else
+	%addtorecord blkInterface SingleTasking 0
+      %endif
+      
+      %addtorecord blkInterface Tid01Eq %<Tid01Eq>
+      
+      %if SLibIsRateGrouping()
+	%addtorecord blkInterface RateGrouped 1
+      %else
+	%addtorecord blkInterface RateGrouped 0
+      %endif
+      
+      %assign numInputs  = ExternalInputs.NumExternalInputs
+      %assign numOutputs = ExternalOutputs.NumExternalOutputs
+  
+      %assert(%<numInputs> >= %<NumCanonicalInputArgDefs>)
+      %assert(%<numOutputs> >= %<NumCanonicalOutputArgDefs>)
+      
+      %addtorecord blkInterface NumInputs %<numInputs>
+      %addtorecord blkInterface NumOutputs %<numOutputs>
+      %addtorecord blkInterface OkToMultiInstance %<OkToMultiInstanceModelref>
+      
+      %assign needTime = ModelRefNeedsLocalAbsoluteTime() || ...
+        CompiledModel.ModelRefUsesLocalAbsoluteTime
+      %addtorecord blkInterface NeedsLocalAbsoluteTime %<needTime>
+      
+      %addtorecord blkInterface NonFiniteInfo [%<NeedRealInf>, %<NeedRealMinusInf>, %<NeedRealNaN>] 
+      %addtorecord blkInterface FileName "%<fileName>"
+
+      %addtorecord blkInterface xDataType    "rtX%<FcnGetSystemIdentifier(sysIdx)>"
+      %addtorecord blkInterface xDotDataType "rtXdot%<FcnGetSystemIdentifier(sysIdx)>"
+      %addtorecord blkInterface xDisDataType "rtXdis%<FcnGetSystemIdentifier(sysIdx)>"
+      
+      %if IsModelReferenceForASimstructBasedTarget()
+	%addtorecord blkInterface StopReqAccessed "0"
+      %else
+	%addtorecord blkInterface StopReqAccessed "%<RTMStopReqAccessed()>"
+      %endif
+      
+      
+      %% Non-inlined s-function
+      %assign hasNonInlinedSfcn = RTMNonInlinedSFcnsIsReqFcn() || ...
+	CompiledModel.ModelBlocksHaveNonInlinedSfcns
+      %addtorecord blkInterface HasNonInlinedSfcn %<hasNonInlinedSfcn>
+
+      %% clock Tick
+      %assign  clockTicksReq = CreateZeroVector(NumSynchronousSampleTimes)
+      %foreach tidIdx = NumSynchronousSampleTimes
+	%assign clockTicksReq[tidIdx] = ClockTickForTIDIsReqFcn(tidIdx)
+      %endforeach
+      %addtorecord blkInterface ClockTicksReq  %<clockTicksReq>
+      
+      %% Long clock Tick
+      %assign  longClockTicksReq = CreateZeroVector(NumSynchronousSampleTimes)
+      %foreach tidIdx = NumSynchronousSampleTimes
+	%assign longClockTicksReq[tidIdx] = LongClockTickForTIDIsReqFcn(tidIdx)
+      %endforeach
+      %addtorecord blkInterface LongClockTicksReq  %<longClockTicksReq>
+      
+      %addtorecord blkInterface RequireMultiRateSampleHits %<ERTPerTaskSampleHitsIsReqFcn()>
+      
+      %% Rate interactions
+      %addtorecord blkInterface ActualRateInteraction  %<CompiledModel.ActualMultiRateSampleHits>
+      
+      %% FirstInitCond flag
+      %addtorecord blkInterface FirstInitConditionReq %<SLibGetIsFirstInitCondAccessed()>
+      
+      %addtorecord blkInterface  DisallowSampleTimeInheritance %<MdlRefDisallowSampleTimeInheritance()>
+      
+      %assign mr = SLibIsMultiRateAndRateGrouping(thisSystem)
+      
+      %% The following functions must be implemented in future: 
+      %%   DisableFcn? Whatelse  
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Initialize", "", blkInterface)>
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Start", "", blkInterface)>
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Enable", "", blkInterface)>
+      
+      %% Write out the arguments for the registration function, this
+      %% will be called from the parent registration function.
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Registration", "", blkInterface)>
+      
+      %assign mr = SLibIsMultiRateAndRateGrouping(thisSystem)
+      
+      %if mr 
+	%foreach tid = NumSynchronousSampleTimes
+	  %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Output", tid, blkInterface)>
+	%endforeach
+      %else
+	%assign tid = ""
+	%<FcnAppendToBlockInterface(sysIdx, rootIdx, "Output", tid, blkInterface)>
+      %endif
+      %%
+      %if mr 
+	%foreach tid = NumSynchronousSampleTimes
+	  %<FcnAppendToBlockInterface(sysIdx, rootIdx, "OutputUpdate", tid, blkInterface)>
+	%endforeach
+      %else
+	%assign tid = ""
+	%<FcnAppendToBlockInterface(sysIdx, rootIdx,"OutputUpdate",tid, blkInterface)>
+      %endif 
+      %%
+      %if mr 
+	%foreach tid = NumSynchronousSampleTimes
+	  %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Update",tid, blkInterface)>
+	%endforeach
+      %else
+	%assign tid = ""
+	%<FcnAppendToBlockInterface(sysIdx, rootIdx, "Update", tid, blkInterface)>
+      %endif 
+      
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Projection", "", blkInterface)>
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "ZeroCrossing", "", blkInterface)>
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Derivative", "", blkInterface)>
+      %<FcnAppendToBlockInterface(sysIdx, rootIdx, "Terminate", "", blkInterface)>
+      
+      %% Add IgnoreCustomStorageClasses (needed for checking GlobalParamsChecksum)
+      %addtorecord blkInterface IgnoreCustomStorageClasses %<IgnoreCustomStorageClasses>
+
+      %% Add GlobalParamInfo
+      %with ModelParameters
+	%createrecord globalParamInfo { \
+	  VarList  "%<GlobalParamsList>"; \
+	  Checksum "%<GlobalParamsChecksum>" \
+	}
+      %endwith %% ModelParameters
+      %addtorecord blkInterface GlobalParamInfo %<globalParamInfo>
+      
+    %endwith %% interface
+  %endwith %% CompiledModel
+  
+  %<CacheModelrefInterfaceInMatInfoFile(Name, blkInterface)>
+%endfunction
+
+%endif %% _MODELREFINTERFACE_
+%% [EOF] modelrefinterface.tlc

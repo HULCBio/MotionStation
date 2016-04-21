@@ -1,0 +1,422 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Murali Yeddanapudi, 03-Feb-1997
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Dead Zone block target file
+
+%implements DeadZone "C"
+
+%% Function: FcnThriftIfReal =================================================
+%% Abstract:
+%%      This utility removes unnecessary subtraction of zero
+%%
+%function FcnThriftIfReal(input) void
+  %if TYPE(input) == "Real"
+    %if input < 0.0
+      %assign answer = "+ %<-input>"
+    %elseif input == 0.0
+      %assign answer = ""
+    %else
+      %assign answer = "- %<input>"
+    %endif
+  %else
+    %assign answer = "- %<input>"
+  %endif
+  %return answer
+%endfunction
+
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%
+%function FixptOutputs(block, system) Output
+    %%
+    %% data type info is not needed because the input and the saturation
+    %% data use the same data type and scaling, therefore comparison with
+    %% the stored integers is equivalent to comparison with the real world
+    %% values.
+    %%
+    %% determine if input buffer is identical to output buffer
+    %%
+    %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+    %%
+    %assign nameForComment = "Dead Zone Block"
+    %%
+    %% Get output data type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create Bias Free version of output Data Type
+    %%
+    %copyrecord y0NoBiasDT y0DT
+    %%
+    %assign y0NoBiasDT.Bias = 0.0
+    %%
+    %assign id = FixPt_GetOutputDataTypeId(0)
+    %assign y0Ground = SLibGetGroundValueFromId(id)
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point %<nameForComment>: %<MaskBlockName>
+     *
+    %%
+    %% add comments about fixed point parameters
+    %%
+    * Upper Limit parameter uses the same data type and scaling as Output0
+    * Lower Limit parameter uses the same data type and scaling as Output0
+    */
+    {
+      %assign inLineHi = 0
+      %assign inLineLo = 0
+      %assign HiLim    = UpperValue
+      %assign LoLim    = LowerValue
+      %%
+      %if FixPt_ParameterCouldBeInlined(HiLim,"","",0)
+	%assign inLineHi = 1     
+      %endif
+      %%
+      %if FixPt_ParameterCouldBeInlined(LoLim,"","",0)
+	%assign inLineLo = 1     
+      %endif
+      %%
+      %if inLineLo || inLineHi
+	%%
+	%assign y0DT = FixPt_GetOutputDataType(0)
+	%%
+	%assign y0IsFloat = FixPt_DataTypeIsFloat(y0DT)
+	%%
+	%assign rBits  = y0DT.RequiredBits
+	%assign isSign = y0DT.IsSigned
+	%%
+	%if y0IsFloat
+	  %assign maxQ = rtInf
+	  %assign minQ = rtMinusInf
+	%elseif isSign
+	  %assign maxQ = FixPt_Pow2(rBits-1)
+	  %assign minQ = -1.0*maxQ
+	  %assign maxQ = maxQ - 1.0
+	%else
+	  %assign maxQ = FixPt_Pow2(rBits  )-1.0
+	  %assign minQ = 0.0
+	%endif
+	%%
+	%% make sure they are treated as Real
+	%%
+	%assign maxQ = CAST("Real",maxQ)
+	%assign minQ = CAST("Real",minQ)
+	%%
+      %endif
+      %%
+      %% Roll around signal width
+      %%
+      %% %assign rollVars = ["U", "Y"]
+      %%
+      %assign rollVars = ["U", "Y", "P"]
+      %%
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% Get input
+	%%
+	%assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %%
+        %% Get output
+        %%
+        %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+        %%
+	%%
+	%% Get HiLim
+	%%
+	%assign needHiCheck = 1
+	%%
+	%if inLineHi && FixPt_ParameterCouldBeInlined(HiLim, "", lcv, sigIdx)
+	  %assign hiLimValue = CAST("Real",LibBlockParameterValue(HiLim, sigIdx))
+	  %%
+	  %if hiLimValue >= maxQ
+	    %assign needHiCheck = 0
+	    /* hi limit check not needed */
+	  %endif 
+	%endif
+	%if needHiCheck
+	  %assign hiLimLabel = LibBlockParameter(HiLim, "", lcv, sigIdx)
+	%endif
+	%%
+	%% Get LoLim
+	%%
+	%assign needLoCheck = 1
+	%%
+	%if inLineLo && FixPt_ParameterCouldBeInlined(LoLim, "", lcv, sigIdx)
+	  %assign loLimValue = CAST("Real",LibBlockParameterValue(LoLim, sigIdx))
+	  %%
+	  %if loLimValue <= minQ
+	    %assign needLoCheck = 0
+	    /* lo limit check not needed */
+	  %endif 
+	%endif
+	%if needLoCheck
+	  %assign loLimLabel = LibBlockParameter(LoLim, "", lcv, sigIdx)
+	%endif
+	%assign loLimLabel = LibBlockParameter(LoLim, "", lcv, sigIdx)
+	%%
+	%% gen code
+	%%
+	%%
+	%if needHiCheck 
+	  if ( %<u0Label> > %<hiLimLabel> )
+	  {
+	    %if (uDestPort != 0)
+	      %<y0Label> = %<u0Label>;
+	    %endif
+	    %%
+	    %<FixPt_AccumNeg(y0Label,    y0NoBiasDT,...
+	      hiLimLabel, y0NoBiasDT,...
+	      FixPtSaturationMode)>\
+	    %%
+	    %if y0DT.Bias != 0.0
+	      %%
+	      %<FixPt_AccumPos(y0Label,  y0NoBiasDT,...
+		y0Ground, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %endif                                  
+	  }
+	%endif
+	%if needLoCheck
+	  %if needHiCheck
+	    else \
+	  %endif
+	  if ( %<u0Label> < %<loLimLabel> )
+	  {
+	    %if (uDestPort != 0)
+	      %<y0Label> = %<u0Label>;
+	    %endif
+	    %%
+	    %<FixPt_AccumNeg(y0Label,    y0NoBiasDT,...
+	      loLimLabel, y0NoBiasDT,...
+	      FixPtSaturationMode)>\
+	    %%
+	    %if y0DT.Bias != 0.0
+	      %%
+	      %<FixPt_AccumPos(y0Label,  y0NoBiasDT,...
+		y0Ground, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %endif                                  
+	  }
+	%endif
+	%if needHiCheck || needLoCheck
+	  else
+	%endif
+	{
+	  %<y0Label> = %<y0Ground>;
+	}
+	%%
+	%<FixPt_EmulationSignExt(y0Label,y0DT)>\
+	%%
+      %endroll
+    }
+    %%
+    %% blank line for formating
+
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Output is zero within specified dead zone:
+%%
+%%      LowerLimit <= U => UpperLimit: Y = 0
+%%      U > UpperLimit: Y = U - UpperLimit
+%%      U < LowerLimit: Y = U - LowerLimit
+%%
+%function ClassicOutputs(block, system) Output
+  %assign doSaturate = SLibHandleSaturateOnOverflow(block)
+  %if NumNonsampledZCs > 0
+    if (%<RTMIs("MajorTimeStep")>) {
+      %assign rollVars = ["U", "Mode", "P"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign m = LibBlockMode("", lcv, sigIdx)
+        %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %assign lwrlim = LibBlockParameter(LowerValue, "", lcv, sigIdx)
+        %assign uprlim = LibBlockParameter(UpperValue, "", lcv, sigIdx)
+        if (%<u> >= %<uprlim>) {
+          %<m> = 1;
+        } else if (%<u> > %<lwrlim>) {
+          %<m> = 0;
+        } else {
+          %<m> = -1;
+        }
+      %endroll
+    }
+    /* Output value */
+    %assign rollVars = ["U", "Mode", "P", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign m = LibBlockMode("", lcv, sigIdx)
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign uprlim = LibBlockParameter(UpperValue, "", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      if (%<m> == 1) {
+        %<y> = %<u> - %<uprlim>;
+      %if ParamSettings.OptimizeLowerLimit == "no"
+      } else if (%<m> == -1) {
+        %assign lwrlim = LibBlockParameter(LowerValue, "", lcv, sigIdx)
+        %<y> = %<u> - %<lwrlim>;
+      %elseif (ShowEliminatedStatements)
+        /* Lower limit comparison of %<u> eliminated */
+      %endif
+      } else {
+        %<y> = 0.0;
+      }
+    %endroll
+  %else
+    %assign uDType = LibBlockInputSignalDataTypeId(0)
+    %assign uDTname = LibBlockOutputSignalDataTypeName(0, "")
+    %assign needTmp = 0
+    %if (doSaturate == 1 && ...
+      (SLibIsSignedFromId(uDType) || ParamSettings.OptimizeLowerLimit == "no"))
+      %assign needTmp = 1
+      {
+    /* 
+     * the declaration of rtTmp must employ the volatile qualifer 
+     * to keep the comparisons to the upper and lower limits from
+     * being optimized out by very smart optimizers which would not
+     * account for overflow but would simply deduce that u - ul < u
+     * when ul > 0
+     */
+    volatile %<uDTname> rtTmp;
+    %assign tmpOutput = "rtTmp"
+    \
+    %endif
+    %assign rollVars = ["Y", "U", "P"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %assign uprlim = LibBlockParameter(UpperValue, "", lcv, sigIdx)
+      %assign zero = SLibGetFormattedValueFromId(uDType, 0)
+      %if ParamSettings.OptimizeLowerLimit == "no"
+	if (%<u> >= %<uprlim>) {
+	%if (doSaturate == 1 && SLibIsSignedFromId(uDType))
+	  %<tmpOutput> = %<u> %<FcnThriftIfReal(uprlim)>;
+	  if (%<uprlim> < 0 && %<tmpOutput> < %<u>) {
+	    %<tmpOutput> = %<LibMaxIntValue(uDType)>;
+	  }
+	  %<y> = %<tmpOutput>;
+	%else
+	  %<y> = %<u> %<FcnThriftIfReal(uprlim)>;
+	%endif
+	%assign lwrlim = LibBlockParameter(LowerValue, "", lcv, sigIdx)
+	} else if (%<u> > %<lwrlim>) {
+	  %<y> = %<zero>;
+	} else {
+	  %if (doSaturate == 1)
+	    %<tmpOutput> = %<u> %<FcnThriftIfReal(lwrlim)>;
+	    if (%<lwrlim> > 0 && %<tmpOutput> > %<u>) {
+	      %<tmpOutput> = %<LibMinIntValue(uDType)>;
+	    }
+	    %<y> = %<tmpOutput>;
+	  %else
+	    %<y> = %<u> %<FcnThriftIfReal(lwrlim)>;
+	  %endif
+	}
+      %else
+	%% Will never be here for floating point
+	%%
+	if (%<u> >= %<uprlim>) {
+	%if (doSaturate == 1 && SLibIsSignedFromId(uDType))
+	  %<tmpOutput> = %<u> %<FcnThriftIfReal(uprlim)>;
+	  if (%<uprlim> < 0 && %<tmpOutput> < %<u>) {
+	    %<tmpOutput> = %<LibMaxIntValue(uDType)>;
+	  }
+	  %<y> = %<tmpOutput>;
+	%else
+	  %<y> = %<u> %<FcnThriftIfReal(uprlim)>;
+	%endif
+	%if (ShowEliminatedStatements)
+	  /* Lower limit comparison of %<u> eliminated */
+	%endif
+	} else {
+	  %<y> = %<zero>;
+	}
+      %endif      
+    %endroll
+    %if (needTmp == 1)
+    }
+    %endif
+  %endif
+
+%endfunction
+
+%% Functions: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %return FixptOutputs(block, system)
+  %else
+    %return ClassicOutputs(block, system)
+  %endif
+%endfunction
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      NSZC[i] = U[i] - lower(upper)Limit[i];
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %assign halfNumZCs = NumNonsampledZCs/2
+  %if ParamSettings.InputContiguous == "yes"
+    %% Input is contiguous, do run-time loop
+    %% ZC indices are always contiguous for this case
+    /* Do zero crossings for the lower limit */
+    %assign rollVars = ["U", "NSZC", "<param>/LowerValue"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %<LibBlockNonSampledZC("",lcv,sigIdx)> \
+      = %<LibBlockInputSignal(0, "", lcv, sigIdx)> -
+      %<LibBlockParameter(LowerValue, "", lcv, sigIdx)>;
+    %endroll
+    /* Do zero crossings for the upper limit */
+    %assign rollVars = ["U", "NSZC", "<param>/UpperValue"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %if lcv != "" %%rolling
+        %<LibBlockNonSampledZC("",lcv + " + %<halfNumZCs>", sigIdx)> = \
+      %else
+        %<LibBlockNonSampledZC("",lcv, sigIdx + halfNumZCs)> = \
+      %endif
+      %<LibBlockInputSignal(0, "", lcv, sigIdx)> -
+      %<LibBlockParameter(UpperValue, "", lcv, sigIdx)>;
+    %endroll
+  %else
+    %% Input is not contiguous, do each element separately
+    /* Do zero crossings for the lower limit */
+    %foreach idx = halfNumZCs
+      %assign u = LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)
+      %assign lowerlimit = ...
+        LibBlockParameter(LowerValue, "", "", NonsampledZC[idx].MapIdx)
+      %<LibBlockNonSampledZC("","",idx)> = %<u> - %<lowerlimit>;
+    %endforeach
+    /* Do zero crossings for the upper limit */
+    %foreach idx = halfNumZCs
+      %assign u = LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)
+      %assign upperlimit = ...
+        LibBlockParameter(UpperValue, "", "", NonsampledZC[idx].MapIdx)
+      %<LibBlockNonSampledZC("","",idx + halfNumZCs)> = %<u> - %<upperlimit>;
+    %endforeach
+  %endif
+
+%endfunction
+
+%% [EOF] deadzone.tlc

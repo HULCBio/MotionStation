@@ -1,0 +1,563 @@
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Backlash block target file
+%%
+
+%implements Backlash "C"
+
+%% Function: ComputeBound ======================================================
+%% Abstract:
+%%   Compute lb and ub
+%%
+%function ComputeBound(dTypeId, lastY) Output
+  %assign dTypeThruId =  LibGetDataTypeIdAliasedThruToFromId(dTypeId)
+  %if (dTypeThruId == tSS_DOUBLE) || (dTypeThruId == tSS_SINGLE)
+    lb = (%<lastY> - halfDeadBand);
+    ub = (%<lastY> + halfDeadBand);
+  %else
+    lb = (%<lastY> <= (%<LibMinIntValue(dTypeId)> + halfDeadBand))? %<LibMinIntValue(dTypeId)>: (%<lastY> - halfDeadBand);
+    ub = ((%<LibMaxIntValue(dTypeId)> - halfDeadBand) <= %<lastY>)? %<LibMaxIntValue(dTypeId)>: (%<lastY> + halfDeadBand);
+  %endif	   
+  
+%endfunction
+
+%% Function: GetSigChName ======================================================
+%% Abstract:
+%%   return the defined signal channel variable name. It is used as an
+%% index of parameter values in frame mode.
+%%
+%function GetSigChName() Output
+  %assign signalChannelName = "rt_sigChIdx"
+  %return signalChannelName
+%endfunction
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: FcnGetLastY =======================================================
+%% Abstract:
+%%      Generate code that declares and determines the lastY buffer to use
+%%      from the PrevA and PrevB DWork vectors. Used when there are 2 DWork
+%%      buffers.
+%%
+%function FcnGetLastY() Output
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  real_T t            = %<LibGetT()>;
+  real_T timeStampA   = %<LibBlockDWork(DWork[0], "", "", 0)>;
+  real_T timeStampB   = %<LibBlockDWork(DWork[2], "", "", 0)>;
+  %<dTypeName>  halfDeadBand;
+  %<dTypeName>  *pLastY;
+  
+  %assign paramWidth = SIZE(BacklashWidth.Value, 1)
+  %if (paramWidth == 1)
+    %assign db = LibBlockParameter(BacklashWidth, "", "", 0)    
+    halfDeadBand = (%<dTypeName>) %<db>/2.0;
+  %endif
+  if (timeStampA < timeStampB) {
+    if (timeStampB < t) {
+      pLastY = &%<LibBlockDWork(DWork[3], "", "", 0)>;
+    } else {
+      /* timeStampB == t, so use lastYatTimeA */
+      pLastY = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+    }
+  } else {
+    /* timeStampB <= timeStampA */
+    if (timeStampA < t) {
+      pLastY = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+    } else {
+      /* timeStampA == t, so use lastYatTimeB */
+      pLastY = &%<LibBlockDWork(DWork[3], "", "", 0)>;
+    }
+  }
+  
+%endfunction
+
+%% Function: NonFrameInitialize =====================================================
+%% Abstract:
+%%      Set the output and the bank of the previous two outputs (stored in the
+%%      DWork vector), to the value specified in the InitialOutput parameter.
+%%      Used for non frame mode
+%%
+%function NonFrameInitialize(block, system) Output
+  %assign numOutputs   = LibBlockOutputSignalWidth(0)
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %if (SIZE(InitialOutput.Value,1) == 1) && (numOutputs >= RollThreshold)
+    %if SolverType == "FixedStep" || !LibIsContinuous(TID)
+      %% Scalar expanding initial condition for wide output.
+      %assign ucv = "i"
+      {
+	int_T %<ucv>;
+	for (%<ucv>=0; %<ucv> < %<numOutputs>; %<ucv>++) {
+	%assign prevY = LibBlockDWork(DWork[0], ucv, "", 0)
+	%<prevY> = %<LibBlockParameter(InitialOutput, "","",0)>;
+	}
+      }
+    %else
+      %% Two time buffers in Dwork
+      {
+	int_T i;
+	real_T* pTimeStampA   = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+	real_T* pTimeStampB   = &%<LibBlockDWork(DWork[2], "", "", 0)>;
+
+	%<dTypeName> *prevYA = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+	%<dTypeName> *prevYB = &%<LibBlockDWork(DWork[3], "", "", 0)>;
+	
+	*pTimeStampA = *pTimeStampB = %<LibRealNonFinite(-inf)>;
+	
+	for (i = 0;i < %<numOutputs>;i++) {
+	  *prevYA++ = *prevYB++ = %<LibBlockParameter(InitialOutput, "", "", 0)>;
+	}
+      }
+    %endif
+  %else
+    %if SolverType == "FixedStep" || !LibIsContinuous(TID)
+      %foreach idx = numOutputs
+	%assign prevY = LibBlockDWork(DWork[0], "", "", idx)
+	%assign tmpidx = (SIZE(InitialOutput.Value,1) == 1) ? (0) : (idx)
+	%<prevY> = %<LibBlockParameter(InitialOutput, "", "", tmpidx)>;
+      %endforeach
+    %else
+      %% Two time buffers in Dwork
+      %<LibBlockDWork(DWork[0], "", "", 0)> = %<LibRealNonFinite(-inf)>;
+      %<LibBlockDWork(DWork[2], "", "", 0)> = %<LibRealNonFinite(-inf)>;
+      
+      %foreach idx = numOutputs
+	%assign tmpidx = (SIZE(InitialOutput.Value,1) == 1) ? (0) : (idx)
+	%<LibBlockDWork(DWork[1], "", "", idx)> = ...
+	  %<LibBlockParameter(InitialOutput, "", "", tmpidx)>;
+	%<LibBlockDWork(DWork[3], "", "", idx)> = ...
+	  %<LibBlockParameter(InitialOutput, "", "", tmpidx)>;
+      %endforeach
+    %endif
+  %endif
+
+%endfunction
+
+%% Function: FrameStart ========================================================
+%% Abstract:
+%%      Set the output and the bank of the previous two outputs (stored in the
+%%      DWork vector), to the value specified in the InitialOutput parameter.
+%%      Used for frame mode
+%%
+%function FrameInitialize(block, system) Output
+  %%
+  %assign dTypeName     = LibBlockOutputSignalDataTypeName(0, "")
+  %%
+  %assign frameDims     = LibBlockInputSignalDimensions(0)
+  %%
+  %assign nFrame        = frameDims[1]
+  %%
+  {
+    %%
+    %% Roll around signal width
+    %%
+    %assign rollVars = ["Y"]
+    %%
+    %assign yRollRegions = [0:%<nFrame-1>]
+    %%
+    %roll sigIdx = yRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %% Get output
+      %%
+      %assign prevY = LibBlockDWork(DWork[0], "", lcv, sigIdx)
+      %if SIZE(InitialOutput.Value,1) == 1
+	%%
+	%% Initialize output
+	%%
+	%<prevY> =  %<LibBlockParameter(InitialOutput, "", "", 0)>;
+      %else
+	%%
+	%% Initialize output
+	%%
+	%<prevY> =  %<LibBlockParameter(InitialOutput, "", lcv, sigIdx)>;
+	%%
+      %endif
+    %endroll
+  }
+  %%
+  
+  %% blank line for formating
+  
+%endfunction
+
+%% Function: InitializeConditions =============================================================
+%% Abstract:
+%%   
+%%
+%function InitializeConditions(block, system) Output
+  /* %<Type> Block: '%<Name>' */
+  %if LibBlockInputSignalIsFrameData(0)           
+    %<FrameInitialize(block, system)>
+  %else 
+    %<NonFrameInitialize(block, system)>
+  %endif    
+%endfunction
+
+%% Function: NonFrameOutputs ===================================================
+%%
+%function NonFrameOutputs(block, system) Output
+  %assign paramWidth = SIZE(BacklashWidth.Value, 1)
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %assign dTypeId   = LibBlockOutputSignalDataTypeId(0)
+  %if SolverType == "FixedStep" || !LibIsContinuous(TID) || ...
+    ZCFindingDisabled == "yes" || NumNonsampledZCs == 0      
+    %% No modes vector, one or two time buffers.
+    %if SolverType == "FixedStep" || !LibIsContinuous(TID)
+      {
+      %<dTypeName> halfDeadBand;
+      %<dTypeName> lb;
+      %<dTypeName> ub;
+      \
+      %% One buffer in Dwork
+      %if (paramWidth == 1)
+	%assign db = LibBlockParameter(BacklashWidth, "", "", 0)    
+	halfDeadBand = (%<dTypeName>)%<db> / %<SLibGetFormattedValueFromId(dTypeId,2)>;
+      %endif
+      %assign rollVars = ["U", "Y", "<param>/BacklashWidth", "<dwork>/DWORK1"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	%assign lastY = LibBlockDWork(DWork[0], "", lcv, sigIdx)
+	%%
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", lcv, sigIdx)
+	  halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+	%%
+	%<ComputeBound(dTypeId, lastY)>
+	%%
+	if (%<u> < lb) {
+	%<y> = %<u> + halfDeadBand;
+	} else if (%<u> <= ub) {
+	%<y> = %<lastY>;
+	} else {
+	%<y> = %<u> - halfDeadBand;
+	}
+      %endroll
+      }
+    %else
+      %% Two time buffers in Dwork
+      {
+	%<dTypeName> lb;
+	%<dTypeName> ub;
+	%<FcnGetLastY()>
+	%%
+	%assign rollVars = ["U", "Y", "<param>/BacklashWidth"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	  %if (paramWidth > 1)
+	    %assign db = LibBlockParameter(BacklashWidth, "", lcv, sigIdx)
+	    halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	  %endif
+	  %assign pLastYvar = "*pLastY"
+	  %<ComputeBound(dTypeId, pLastYvar)>
+	  
+	  if (%<u> <= lb) {
+	  %<y> = %<u> + halfDeadBand;
+	  } else if (%<u> < ub) {
+	  %<y> = *pLastY;
+	  } else {
+	  %<y> = %<u> - halfDeadBand;
+	  }
+	  pLastY++;
+	%endroll
+      }
+    %endif
+  %elseif NumNonsampledZCs > 0
+    %% Variable-Step solver with zero crossing finding enabled
+    %% Two time buffers in Dwork, modes and zero crossings
+    {
+      %<dTypeName> lb;
+      %<dTypeName> ub;
+      enum modes {MODE_NEG_ENGAGED = -1, MODE_DISENGAGED = 0,
+      MODE_POS_ENGAGED = 1};
+      %<FcnGetLastY()>
+      
+      %assign rollVars = ["U", "Y", "Mode", "<param>/BacklashWidth"]
+      %assign rollThreshold = 2
+      %roll sigIdx = RollRegions, lcv = rollThreshold, block, "Roller", rollVars
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	%assign m = LibBlockMode("", lcv, sigIdx)
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", lcv, sigIdx)
+	  halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+	if (%<RTMIs("MajorTimeStep")>) {
+	  int_T  newMode;
+	  %assign pLastYvar = "*pLastY"
+	  %<ComputeBound(dTypeId, pLastYvar)>
+	  
+	  /* find the new engagement mode */
+	  if ( %<u> < lb ) {
+	    newMode = MODE_NEG_ENGAGED;
+	  } else if ( %<u> <= ub ) {
+	    newMode = MODE_DISENGAGED;
+	  } else {
+	    newMode = MODE_POS_ENGAGED;
+	  }
+	  
+	  /* Update the mode vector, and reset solver if mode change */
+	  if (newMode != %<m>) {
+	    %<RTMSetSolverNeedsReset()>;
+	    %<m> = newMode;
+	  }
+	}
+	
+	/* compute the output */
+	switch (%<m>) {
+	  case MODE_NEG_ENGAGED:
+	  %<y> = %<u> + halfDeadBand;
+	  break;
+	  case MODE_DISENGAGED:
+	  %<y> = *pLastY;
+	  break;
+	  case MODE_POS_ENGAGED:
+	  %<y> = %<u> - halfDeadBand;
+	  break;
+	}
+	pLastY++;
+      %endroll
+    }
+    %else
+    %%START_ASSERT
+    %<LibBlockReportFatalError(block,"Unexpected block/solver conditions")>
+    %%END_ASSERT
+  %endif  
+
+%endfunction
+
+%% Function: FrameOutputs ======================================================
+%%
+%function FrameOutputs(block, system) Output
+  %assign paramWidth = SIZE(BacklashWidth.Value, 1)
+  %assign frameDims = LibBlockInputSignalDimensions(0)
+  %assign inputWidth = LibBlockInputSignalWidth(0)
+  %% No modes vector
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %assign dTypeId   = LibBlockOutputSignalDataTypeId(0)
+  %%
+  {
+  %<dTypeName> halfDeadBand;
+  %<dTypeName> lb;
+  %<dTypeName> ub;
+  \
+  %% One time buffer in Dwork
+  %if (paramWidth == 1)
+    %assign db = LibBlockParameter(BacklashWidth, "", "", 0)    
+    halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+  %endif
+  %assign rollVars = ["U", "Y"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %%
+    %if inputWidth >= RollThreshold
+      %%
+      %assign sigChName = GetSigChName()
+      int_T %<sigChName> = %<lcv> /  %<frameDims[0]>;
+      %assign lastY = LibBlockDWork(DWork[0], sigChName,"", "")
+      %%
+      %if (paramWidth > 1)
+	%assign db = LibBlockParameter(BacklashWidth, sigChName,"", "")
+	halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+      %endif
+    %else
+      %assign sigChIdx = sigIdx / frameDims[0]
+      %assign lastY = LibBlockDWork(DWork[0], "", "", sigChIdx)
+      %%
+      %if (paramWidth > 1)
+	%assign db = LibBlockParameter(BacklashWidth, "", "", sigChIdx)
+	halfDeadBand = (%<dTypeName>)%<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+      %endif
+      %%
+    %endif
+    %%
+    %<ComputeBound(dTypeId, lastY)>
+    %%
+    if (%<u> < lb) {
+      %<y> = %<u> + halfDeadBand;
+    } else if (%<u> <= ub) {
+      %<y> = %<lastY>;
+    } else {
+      %<y> = %<u> - halfDeadBand;
+    }
+    %<lastY> = %<y>;
+  %endroll
+  }
+%endfunction
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+  %%
+  %if LibBlockInputSignalIsFrameData(0)           
+    %<FrameOutputs(block, system)>
+  %else 
+    %<NonFrameOutputs(block, system)>
+  %endif    
+%endfunction
+
+%% Function: NonFrameUpdate ====================================================
+%%
+%function NonFrameUpdate(block, system) Output
+  %%
+  %assign numOutputs = LibBlockOutputSignalWidth(0)
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %if SolverType == "FixedStep" || !LibIsContinuous(TID)
+    %if numOutputs > 1
+      {
+	%<dTypeName> *prevY = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+	%assign yPtr = LibBlockOutputSignalAddr(0, "", "", 0)
+	(void) memcpy (prevY, %<yPtr>, %<numOutputs>*sizeof(%<dTypeName>));
+      }
+    %else
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      %<LibBlockDWork(DWork[0], "", "", 0)> = %<y>;
+    %endif
+  %else
+    {
+      real_T t           = %<LibGetT()>;
+      real_T *timeStampA = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+      real_T *timeStampB = &%<LibBlockDWork(DWork[2], "", "", 0)>;
+      %if numOutputs > 1
+	%<dTypeName> *prevY;
+	
+	if (*timeStampA < *timeStampB) {
+	  *timeStampA = t;
+	  prevY       = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+	} else {
+	  *timeStampB = t;
+	  prevY       = &%<LibBlockDWork(DWork[3], "", "", 0)>;
+	}
+	%assign yPtr = LibBlockOutputSignalAddr(0, "", "", 0)
+	(void) memcpy (prevY, %<yPtr>, %<numOutputs>*sizeof(%<dTypeName>));
+      %else
+	%assign y = LibBlockOutputSignal(0, "", "", 0)
+	if (*timeStampA < *timeStampB) {
+	  *timeStampA = t;
+	  %<LibBlockDWork(DWork[1], "", "", 0)> = %<y>;
+	} else {
+	  *timeStampB = t;
+	  %<LibBlockDWork(DWork[3], "", "", 0)> = %<y>;
+	}
+      %endif
+    }
+  %endif
+
+%endfunction
+
+%% Function: Update ============================================================
+%% Abstract:
+%%
+%function Update(block, system) Output
+  %%
+  %if !LibBlockInputSignalIsFrameData(0)           
+    /* %<Type> Block: '%<Name>' */
+    %<NonFrameUpdate(block, system)>
+  %endif
+%endfunction
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<Type> Block: '%<Name>' */
+  {
+    %<FcnGetLastY()>
+    %assign dTypeId   = LibBlockOutputSignalDataTypeId(0)
+    %assign paramWidth = SIZE(BacklashWidth.Value, 1)
+    %if ParamSettings.InputContiguous == "yes"
+      %% Input is contiguous, do run-time loop
+      %% ZC indices are always contiguous for this case
+      %assign numOutputs = LibBlockOutputSignalWidth(0)
+      %assign rollVars = ["U", "NSZC", "<param>/BacklashWidth"]
+      %% rising zero crossings to detect positive engagement
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", lcv, sigIdx)
+	  halfDeadBand = %<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+        if (halfDeadBand == 0.0) {
+          %<LibBlockNonSampledZC("",lcv,sigIdx)> = 0.0;
+        } else {
+	%if (lcv != "") && (numOutputs > 1) %%rolling
+	  %<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+	  %<LibBlockInputSignal(0, "", lcv, sigIdx)> - pLastY[%<lcv>] \
+	  - halfDeadBand;
+	%else
+	  %<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+	  %<LibBlockInputSignal(0, "", lcv, sigIdx)> - pLastY[%<sigIdx>] \
+	  - halfDeadBand;
+	%endif
+        }
+      %endroll
+      %% falling zero crossings to detect negative engagement
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", lcv, sigIdx)
+	  halfDeadBand = %<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+        if (halfDeadBand == 0.0) {
+	%if (lcv != "") && (numOutputs > 1) %%rolling
+          %<LibBlockNonSampledZC("",lcv + " + %<numOutputs>", sigIdx)> = 0.0;
+        } else {
+	  %<LibBlockNonSampledZC("",lcv + " + %<numOutputs>", sigIdx)> = \
+	  %<LibBlockInputSignal(0, "", lcv, sigIdx)> - pLastY[%<lcv>] \
+	  + halfDeadBand;
+	%else
+          %<LibBlockNonSampledZC("",lcv, sigIdx + numOutputs)> = 0.0;
+        } else {
+	  %<LibBlockNonSampledZC("",lcv, sigIdx + numOutputs)> = \
+	  %<LibBlockInputSignal(0, "", lcv, sigIdx)> - pLastY[%<sigIdx>] \
+	  + halfDeadBand;
+	%endif
+        }
+      %endroll
+    %else
+      %% Input is not contiguous, do each element separately
+      %assign halfNumZCs = NumNonsampledZCs/2
+      %foreach idx = halfNumZCs
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", "", idx)
+	  halfDeadBand = %<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+        if (halfDeadBand == 0.0) {
+          %<LibBlockNonSampledZC("","",idx)> = 0.0;
+        } else {
+	%<LibBlockNonSampledZC("","",idx)> = \
+	%<LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)> - \
+	pLastY[%<NonsampledZC[idx].MapIdx>] - halfDeadBand;
+         }
+      %endforeach
+      %foreach idx = halfNumZCs
+	%if (paramWidth > 1)
+	  %assign db = LibBlockParameter(BacklashWidth, "", "", idx)
+	  halfDeadBand = %<db>/ %<SLibGetFormattedValueFromId(dTypeId,2)>;
+	%endif
+        if (halfDeadBand == 0.0) {
+          %<LibBlockNonSampledZC("","",idx + halfNumZCs)> = 0.0;
+        } else {
+	%<LibBlockNonSampledZC("","",idx + halfNumZCs)> = \
+	%<LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)> - \
+	pLastY[%<NonsampledZC[idx].MapIdx>] + halfDeadBand;
+        }
+      %endforeach
+    %endif
+  }
+  
+%endfunction
+
+
+%% [EOF] backlash.tlc

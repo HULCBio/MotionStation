@@ -1,0 +1,345 @@
+%% $Revision: 1.18 $ 
+%% $RCSfile: sbufferc.tlc,v $
+%% $Date: 2002/04/14 21:01:47 $
+%%
+%% Don Orofino, 07-Jul-97
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sbufferc.c
+%%
+
+%implements "sbufferc" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Buffer_Size")>
+  %<LibRenameParameter(block, P2, "Buffer_Overlap")>
+  %<LibRenameParameter(block, P3, "Sample_Time")>
+  %<LibRenameParameter(block, P4, "Init_Cond")>
+  %%
+  %<LibDefineRWork(block, "Circ_Buf", RWork[0])>
+  %%
+  %<LibDefineIWork(block, "UL_COUNT",     1)>
+  %<LibDefineIWork(block, "CIRC_BUF_LEN", 1)>
+  %<LibDefineIWork(block, "BUF_N",        1)>
+  %<LibDefineIWork(block, "BUF_V",        1)>
+  %%
+  %<LibDefinePWork(block, "OUTBUF_PTR", 1)>
+  %<LibDefinePWork(block, "INBUF_PTR",  1)>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the RWork vector (Buffer) to the initial values specified.
+%%      Note that the IWork is memset to zero in the registration function,
+%%      however we need to initialize it to zero again here, because this block
+%%      might be used inside an enabled subsystem that resets on disable.
+%%
+%function InitializeConditions(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+  %assign nChans = LibDataInputPortWidth(0)
+  %assign N  = CAST("Number", LibBlockParameterValue(Buffer_Size, 0))
+  %assign VV = CAST("Number", LibBlockParameterValue(Buffer_Overlap, 0))
+  %%
+  %if VV <= 0
+    %assign circBuf_len = 2 * N
+    %assign newSPB      = N
+  %else
+    %assign circBuf_len = 2 * N - VV
+    %assign newSPB      = N - VV
+  %endif
+  %%
+  real_T *circBuf = &%<LibBlockRWork(Circ_Buf, "", "", 0)>;
+  real_T *outBuf  = circBuf + %<newSPB>;
+
+  %<LibBlockPWork(INBUF_PTR, "", "", 0)>  = (void *)circBuf;
+  %<LibBlockPWork(OUTBUF_PTR, "", "", 0)> = (void *)outBuf;
+
+  %assign sizIC = SIZE(Init_Cond.Value)
+  %assign numIC = sizIC[0]*sizIC[1]
+
+    /* Preset initial output buffers to initial conditions: */
+    {
+	%if nChans > 1
+	int_T   i;
+	%endif
+	%%
+	%if numIC <= 1
+	    %%
+	    /* Scalar expansion, or no IC's given: */
+	    %if numIC == 0
+		%assign icScalar = 0.0
+	    %else
+		%assign icScalar = LibBlockMatrixParameter(Init_Cond,"","",0,"","",0)
+	    %endif
+	    %%
+	    %if nChans > 1
+	    for(i = 0; i < %<nChans>; i++) {
+	    %endif
+	    %%
+		%if N > 1
+		    %% Usual case: buffer has N>1
+		    real_T *p = outBuf;
+		    int_T   j;
+		    for (j = 0; j < %<N>; j++) {
+			    *p++ = %<icScalar>;
+		    }
+		%else
+		  %% Special case: buffer with 1 element
+		  %% (Keep one sample, then skip a bunch ... so usually V<0 as well)
+		  *outBuf++ = %<icScalar>;
+		%endif
+	    %if nChans > 1
+		outBuf += %<circBuf_len>;
+	    }
+	    %endif
+
+	%elseif numIC == N
+	    %%
+	    /* Same IC's for all channels: */
+	    const real_T *pIC = %<LibBlockMatrixParameterAddr(Init_Cond,"","",0,"","",0)>;
+	    %%
+	    %if nChans > 1
+	    for(i = 0; i < %<nChans>; i++) {
+	    %endif
+	    %%
+		memcpy(outBuf, pIC, %<N>*sizeof(real_T));
+	    %%
+	    %if nChans > 1
+		outBuf += %<circBuf_len>;
+	    }
+	    %endif
+
+	%else
+	    %%
+	    /* Matrix of IC's: */
+	    const real_T *pIC = %<LibBlockMatrixParameterAddr(Init_Cond,"","",0,"","",0)>;
+	    %%
+	    %if nChans > 1
+	    for(i = 0; i < %<nChans>; i++) {
+	    %endif
+	    %%
+		memcpy(outBuf, pIC, %<N>*sizeof(real_T));
+	    %%
+	    %if nChans > 1
+		pIC += %<N>;
+		outBuf += %<circBuf_len>;
+	    }
+	    %endif
+	%endif
+    }
+
+    %<LibBlockIWork(UL_COUNT, "", "", 0)>     = 0;
+    %<LibBlockIWork(CIRC_BUF_LEN, "", "", 0)> = %<circBuf_len>;
+    %<LibBlockIWork(BUF_N, "", "", 0)>        = %<N>;
+    %<LibBlockIWork(BUF_V, "", "", 0)>        = %<VV>;
+}
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+    %assign nChans = LibDataInputPortWidth(0)
+    %assign N  = CAST("Number", LibBlockParameterValue(Buffer_Size,    0))
+    %assign VV = CAST("Number", LibBlockParameterValue(Buffer_Overlap, 0))
+    %%
+    %assign circBuf_len = (VV <= 0) ? 2*N : 2*N-VV
+    %assign num_Ts      = SIZE(TID, 1)
+    %%
+    %if num_Ts == 1
+        %% If there is 1 sample time, this gets executed the minimum # of times:
+	real_T *circBuf = &%<LibBlockRWork(Circ_Buf, "", "", 0)>;
+
+    %endif
+    %%
+    %if num_Ts > 1
+        if (%<LibIsSFcnSampleHit(1)>) {
+    %endif
+    %%
+	/* Output next buffer: */
+	real_T *outBuf = %<LibBlockPWork(OUTBUF_PTR, "", "", 0)>;
+	%%
+	%if num_Ts == 2
+	    %% For two sample times, move this definition here:
+	    real_T *circBuf = &%<LibBlockRWork(Circ_Buf, "", "", 0)>;
+	%endif
+	%%
+	real_T *y   = %<LibBlockOutputSignalAddr(0, "", "", 0)>;
+        int_T   cnt = circBuf - (outBuf - %<circBuf_len>);
+                    /* # samples from outBuf to end of buffer */
+
+        if (cnt >= %<N>) {
+            /* Output buffer is one contiguous chunk: */
+            %%
+	    %if nChans==1
+	        %% Single input channel:
+		memcpy(y, outBuf, %<N>*sizeof(real_T));
+	    %else
+	        %% Multiple input channels:
+		real_T *p = outBuf;
+		int_T   i;
+
+		for(i=0; i<%<nChans>; i++) {
+		    memcpy(y, p, %<N>*sizeof(real_T));
+		    y += %<N>; p += %<circBuf_len>;
+		}
+	    %endif
+	    %%
+	    outBuf = (cnt == %<N>) ? circBuf : outBuf + %<N>;
+
+        } else {
+            /* Output buffer is split into two chunks: */
+            %%
+	    %if nChans==1
+	        %% Single input channel:
+		memcpy(y,     outBuf,         cnt*sizeof(real_T));
+		memcpy(y+cnt, circBuf, (%<N>-cnt)*sizeof(real_T));
+	    %else
+	        %% Multiple input channels:
+		real_T *pout  = outBuf;
+		real_T *pcirc = circBuf;
+		int_T   i;
+
+		for(i=0; i < %<nChans>; i++) {
+		    memcpy(y,     pout,      cnt*sizeof(real_T));
+		    memcpy(y+cnt, pcirc, (%<N>-cnt)*sizeof(real_T));
+		    y += %<N>; pout += %<circBuf_len>; pcirc += %<circBuf_len>;
+		}
+	    %endif
+	    %%
+            outBuf = circBuf + (%<N>-cnt);
+
+        }
+	%%
+        %if VV > 0
+
+	/* Bump output buffer pointer for overlap: */
+	outBuf -= %<VV>;  /* Backup for overlap */
+	if (outBuf < circBuf) {
+	    outBuf += %<circBuf_len>;
+	}
+	%endif
+
+	%<LibBlockPWork(OUTBUF_PTR, "", "", 0)> = (void *)outBuf;
+    %if num_Ts > 1
+    }
+    %endif
+}
+
+%endfunction %% Outputs
+
+
+%% Function: Update ==========================================================
+%%
+%% Abstract:
+%%
+%function Update(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+%assign nChans = LibDataInputPortWidth(0)
+%assign N  = CAST("Number", LibBlockParameterValue(Buffer_Size,    0))
+%assign VV = CAST("Number", LibBlockParameterValue(Buffer_Overlap, 0))
+%%
+%assign circBuf_len = (VV <= 0) ? 2*N : 2*N-VV
+%assign num_Ts      = SIZE(TID, 1)
+%%
+%if num_Ts == 1
+    %% If there is 1 sample time, this gets executed the minimum # of times:
+    real_T *circBuf = &%<LibBlockRWork(Circ_Buf, "", "", 0)>;
+
+%endif
+%%
+%if num_Ts > 1
+if (%<LibIsSFcnSampleHit(0)>) {
+%elseif VV < 0
+{
+%endif
+%%
+    /* Acquire input sample: */
+    %if VV < 0
+    boolean_T acquire_samples = 1;
+
+    /* Handle underlap: */
+    {
+	int_T *ul_count = &%<LibBlockIWork(UL_COUNT, "", "", 0)>;
+	++(*ul_count);
+
+	/* skip this sample because of negative overlap */
+	if (*ul_count > %<N>) {
+	    %if VV == -1
+		%% We don't need to make another test:
+		*ul_count = 0;  /* 1-point underlap */
+	    %else
+		if (*ul_count == %<N-VV>) {  /* %<-VV>-point underlap */
+		    *ul_count = 0;
+		}
+	    %endif
+	    acquire_samples = 0; /* Skip acquisition */
+	}
+    }
+    %endif  %% VV < 0
+    %%
+    %% Acquire samples into buffer:
+    %%
+    %if VV < 0
+    if (acquire_samples) {
+    %else
+    {
+    %endif
+        /* Store the latest sample: */
+	%%
+	%if num_Ts == 2
+	    %% For two sample times, move this definition here:
+	    real_T *circBuf = &%<LibBlockRWork(Circ_Buf, "", "", 0)>;
+	%endif
+	%%
+	real_T *inBuf = (real_T *) %<LibBlockPWork(INBUF_PTR, "", "", 0)>;
+	%%
+	%if nChans==1
+	    %% Single input channel:
+	    *inBuf++ = %<LibBlockInputSignal(0, "", "", 0)>;
+	%else
+	    %% Multiple input channels:
+	    {
+		real_T *p = inBuf++;
+		%assign rollVars = ["U"]
+		%roll sigIdx = RollRegions, lcv = RollThreshold, block,...
+			   "Roller", rollVars
+		    *p = %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+		    p += %<circBuf_len>;
+		%endroll
+	    }
+	%endif
+	/*
+	 * If we have reached the end of the circular buffer,
+	 * reset the input buffer index:
+	 */
+	if (inBuf == circBuf + %<circBuf_len>) {
+	    inBuf = circBuf;
+	}
+        %<LibBlockPWork(INBUF_PTR, "", "", 0)> = (void *)inBuf;
+    }
+%%
+%if (num_Ts > 1) || (VV < 0)
+}
+%endif
+}
+%endfunction %% Update
+
+
+%% EOF: sbufferc.tlc

@@ -1,0 +1,323 @@
+%% ============================================================================
+%% File : ertmdlrefabstime.tlc
+%%
+%% Abstract:
+%%   Each task has its own timer. Only task need absolute time will 
+%%   generate timer and update timer at its sample rate.
+%%   Generate pure integer timer for discrete time task.
+%%   (1) If any block need absolute time, the block marks NeedAbsoluteTime of 
+%%       its tid to be true. This is dumped from SImulink to .rtw file.
+%%   (2) If data logging is on, NeedAsoluteTime for tid0 is always true. 
+%%   (3) If there exist block that access absolute time but don't claim 
+%%       NeedAbsoluteTime, obsolete floating absolute timer is generated for 
+%%       backward compatibility. 
+%%   (4) See SLibSetupAbsoluteTime for more info.
+%%  Issues:
+%%   (1) If a block uses LibGetT, in a multi-rate, multi-tasking model, the block
+%%       may use the time of other tasks.
+%%   (2) Rename this function: SLibNeedObsAbsoluteTime. This function has state, 
+%%       and it only should be called during code block's code generation.
+%%       Timing code like ert should use SLibIsObsAbsoluteTimeRequired
+%%   (3) Absolute time for tid0 and tid1, if tid01 is equal, are the same.
+%%       Why do we need both?
+%%       
+%% $Revision: 1.1.6.9 $
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_ERT_MODELREF_ABS_TIME_") == 0
+%assign _ERT_MODELREF_ABS_TIME_ = 1
+
+%% Function: RTMUpdateAbsoluteTimeForTID =================
+%%
+%%
+%function RTMUpdateAbsoluteTimeForTID(tid) void
+  %openfile tmpBuf
+  
+  %if ISFIELD(SampleTime[tid], "needFloatTime")
+    %<RTMUpdateRealAbsoluteTimeForTID(tid)>;
+  %else
+    %<RTMUpdateIntegerAbsoluteTimeForTID(tid)>;
+  %endif 
+  %closefile tmpBuf
+  
+  %return tmpBuf
+  
+%endfunction 
+
+%%Function FcnUpdateAbsoluteTimeNonRateGrouping =======================
+%% Abstract:
+%%       Generate absolute time for all tids if it is required.
+%function FcnUpdateAbsoluteTimeNonRateGrouping(ssIdx) void
+  %% RTMArgDef is accessed
+  %assign absTimeDumped = TLC_FALSE
+  
+  %openfile tmpBuf
+  %% enhanced absolute time
+  %if SLibNeedAbsoluteTimeForTID(0)
+    %% If tid 0 is continuous and is model reference Simstruc based,
+    %% all continuous time related information is accessed from simstruct.
+    %if !LibIsContinuous(0) || !IsModelReferenceForASimstructBasedTarget()
+      %% We are not rate grouping, so we need to guard for TID 0.
+      /* Update absolute time for base rate */
+      %if !SLibSingleTasking()
+	%assign guard = LibIsSampleHit(0)
+	%if guard != "1"
+	  if (%<guard>) {
+	%endif
+      %endif
+      %<RTMUpdateAbsoluteTimeForTID(0)>
+      %if !SLibSingleTasking() && guard != "1"
+        }
+      %endif
+      %assign absTimeDumped = TLC_TRUE
+    %endif
+  %endif
+  %foreach tidIdx = NumSynchronousSampleTimes -1
+    %assign subRateIdx = tidIdx + 1
+    %if SLibNeedAbsoluteTimeForTID(subRateIdx)
+      
+      %if !SLibSingleTasking()
+	%assign tidGuard = LibIsSampleHit(subRateIdx)
+      %else
+	%assign tidGuard = LibIsSpecialSampleHit(subRateIdx, 0)
+      %endif
+      %if tidGuard == "1"
+	{
+      %else
+	if (%<tidGuard>) {
+      %endif
+      %assign period = CompiledModel.SampleTime[subRateIdx].PeriodAndOffset[0]
+      %assign offset = CompiledModel.SampleTime[subRateIdx].PeriodAndOffset[1]
+           /* Update absolute timer for sample time: [%<period>s, %<offset>s] */
+	   %<RTMUpdateAbsoluteTimeForTID(subRateIdx)>
+	 }
+      %assign absTimeDumped = TLC_TRUE
+    %endif
+  %endforeach
+  %closefile tmpBuf
+  
+  %if absTimeDumped
+    %assign arg = CompiledModel.System[ssIdx].Interface.RTMArgDef
+    %<LibAccessArg(arg)>
+  %endif
+
+  %return tmpBuf
+%endfunction %%FcnUpdateAbsoluteTimeNonRateGrouping
+
+
+%%Function FcnUpdateAbsoluteTimeRateGrouping =======================
+%% Abstract:
+%%   Generate float point absolute time if the tid 
+%%   needFloatTime. See SLibSetupAbsoluteTime to find out
+%%   how the needFloatTime logic is calculated.
+%function FcnUpdateAbsoluteTimeRateGrouping(ssIdx, subRateIdx) void
+  %assign tmpBuf = ""
+
+  %if SLibNeedAbsoluteTimeForTID(subRateIdx)
+    %openfile tmpBuf
+    %assert(SampleTime[subRateIdx].NeedAbsoluteTime == "yes")
+    %% If tid 0 is continuous and is model reference Simstruc based,
+    %% all continuous time related information is accessed from simstruct.
+    %if !LibIsContinuous(subRateIdx) || ...
+      !IsModelReferenceForASimstructBasedTarget()
+      /* Update absolute time */
+      %<RTMUpdateAbsoluteTimeForTID(subRateIdx)>
+    %endif  
+    %closefile tmpBuf
+    %assign arg = CompiledModel.System[ssIdx].Interface.RTMArgDef
+    %<SLibAddTIDtoAccessTIDList(arg, ::BlockFcn, "",subRateIdx)>
+  %endif
+  
+  %return tmpBuf
+%endfunction
+
+%% Function: FcnUpdateAsyncTimeAtMinorTimeStep ======================
+%%
+%function FcnUpdateAsyncTimeAtMinorTimeStep()
+  %assert(!IsModelReferenceTarget())
+  %openfile tmpBuf
+  
+  %if RTMBufContTIsReqFcn()
+    %assign strCheckSemaphores = ""
+    %foreach asyncIdx = NumAsynchronousSampleTimes
+      %assign tid = asyncIdx + NumSynchronousSampleTimes
+      %if RTMTimerBufSemaphoreForTIDIsReqFcn(tid) 
+	%assign operator = WHITE_SPACE(strCheckSemaphores) ? "!" : " && !"
+	%assign strCheckSemaphores = strCheckSemaphores + operator + ...
+	  "%<LibGetTimerBufSemaphoreForTID(tid)>"
+      %endif 
+    %endforeach
+    /* Buffering base rate absolute time. 
+    * Lower priority asynchronous task(s) obtain
+    * its task time from this buffer. Data integrity
+    * is insured by single buffer. Each async task 
+    * need read time from this buffer. Each aysn task 
+    * has its own TimerBufSemaphore. At base rate, only 
+    * write to this buffer when none of these 
+    * TimerBufSemaphore is taken. 
+    */
+    if (%<strCheckSemaphores>) {
+      %<LibGetBufContT()> = %<LibGetT()>;
+    }
+  %endif
+
+  %if RTMDoubleBufContTIsReqFcn()
+     {
+       /* Double buffering absolute time of base rate. 
+       * Higher priority asynchronous task(s) obtain 
+       * its task time from these buffers. Data integrity
+       * is insured by double buffers. 
+       */
+       bool bufIdx = !%<LibGetBufIdxForClockTick0()>;
+
+       %<LibGetDoubleBufContT()>[bufIdx] = %<LibGetT()>;
+       %<LibGetBufIdxForClockTick0()> = bufIdx;
+     }
+   %endif
+    
+   %closefile tmpBuf
+   %return tmpBuf
+%endfunction %% FcnUpdateAsyncTimeAtMinorTimeStep
+
+%% Function: FcnUpdateAsyncTaskTimers ===========================
+%% Abstract:
+%%   For asynchronous tasks that don't manage own absolute time,
+%% task time is obtained from absolute time for base rate. 
+%% To insure data integrity, code for obtaining async task time 
+%% has two parts: one part runs at base rate, the other part runs
+%% when asynchronous task runs. 
+%%   This function generate code that runs at the base rate. 
+%% FcnAsyncTaskUpdatesTimersFromBaseRate generates code that
+%% runs with asynchronous tasks. 
+%% 
+%%    We only need obtaint absolute time from base rate for async task if 
+%% the task need absolute time and async task does NOT manage own 
+%% absolute timer. 
+%%   There are three cases:
+%%   1: Asynchronous task priority is unknown. Task time for this task 
+%%      is directly obtained from task time of fundamental task. 
+%%      Task time is updated at base rate, used by asynchronous task. 
+%%      Data integrity is not insured. Warning message is dumped into code.  
+%%   2: Asynchronous task priority is higher than base rate. Double buffers
+%%      are used to protect data integrity. 
+%%      At base rate, clockTick0 of base rate is written into inactive buffer.
+%%                    after writting process complete, set the inactive buffer
+%%                    to be active buffer.
+%%      When start sync task, obtain clockTick%<tid> from active buffer.
+%%   3: Asynchronous task priority is lower than base rate. Single buffer is
+%%      used to protect data integrity. Each async task need read time from
+%%      this buffer has its own TimerBufSemaphore. 
+%%      At base rate, check if any of TimerBufSemaphore(s) is taken, if not, 
+%%      write clockTick0 into the buffer. 
+%%      When start sync task, take semaphore, obtain clockTick%<tid> the buffer,
+%%                            then release the semaphore. 
+%%
+%function FcnUpdateAsyncTaskTimers() void
+  %assert(!IsModelReferenceTarget())
+  %openfile tmpBuf
+  
+  %if RTMBufClockTick0IsReqFcn() 
+    %assign strCheckSemaphores = ""
+    %foreach asyncIdx = NumAsynchronousSampleTimes
+      %assign tid = asyncIdx + NumSynchronousSampleTimes
+      %if RTMTimerBufSemaphoreForTIDIsReqFcn(tid) 
+	%assign operator = WHITE_SPACE(strCheckSemaphores) ? "!" : " && !"
+	%assign strCheckSemaphores = strCheckSemaphores + operator + ...
+	  "%<LibGetTimerBufSemaphoreForTID(tid)>"
+      %endif 
+    %endforeach
+    /* Buffering base rate absolute time. 
+    * Lower priority asynchronous task(s) obtain
+    * its task time from this buffer. Data integrity
+    * is insured by single buffer. Each async task 
+    * need read time from this buffer. Each aysn task 
+    * has its own TimerBufSemaphore. At base rate, only 
+    * write to this buffer when none of these 
+    * TimerBufSemaphore is taken. 
+    */
+    if (%<strCheckSemaphores>) {
+      %<LibGetBufClockTick0()> = %<LibGetClockTick(0)>;
+      %if RTMBufLongClockTick0IsReqFcn()
+	%<LibGetBufClockTick0High()> = %<LibGetClockTickHigh(0)>; 
+      %endif
+    }
+  %endif
+
+  %if RTMDoubleBufClockTick0IsReqFcn()
+     {
+       /* Double buffering absolute time of base rate. 
+       * Higher priority asynchronous task(s) obtain 
+       * its task time from these buffers. Data integrity
+       * is insured by double buffers. 
+       */
+       bool bufIdx = !%<LibGetBufIdxForClockTick0()>;
+
+       %<LibGetDbBufForClockTick0()>[bufIdx] = %<LibGetClockTick(0)>;
+       %if RTMDoubleBufLongClockTick0IsReqFcn()
+	 %<LibGetDbBufForClockTick0High()>[bufIdx] = %<LibGetClockTickHigh(0)>;
+       %endif
+       %<LibGetBufIdxForClockTick0()> = bufIdx;
+     }
+   %endif
+    
+   %closefile tmpBuf
+   %return tmpBuf
+%endfunction %% end FcnUpdateAsyncTaskTimers
+      
+
+%% Function: SLibErtGenUpdateAbsoluteTimeCode ==========================================
+%% Abstract:
+%%    (1) For rate grouping code, if tid needs absolute time, 
+%%        generate specific updatetimebuffer for the tid. 
+%%        * This buffer will be dumped with the UPDATE outputUpdate function of 
+%%          each tid. 
+%%    (2) For non-rate grouping code, and if the model needs absolute time, 
+%%        generate updatetimebuffer. This buffer updates timer for all tids 
+%%        that need absolute time. Code is guarded by IsSampleHit. 
+%%        * This buffer will be dumped with the  UPDATE or outputupdate function.
+%%
+%%    (3) If obsolete timer is required, generate it.
+%%        * This buffer is dumped with OUTPUT or outputUpdate function for tid0
+%%        (rate grouping) or with OUTPUT or output/update function 
+%%        (non-rate grouping). This if for backward compatibility.
+%%
+%function SLibErtGenUpdateAbsoluteTimeCode(ssIdx, buffsRec, isRateGrouping) void
+  %assign ::initBlockFcn = ::BlockFcn
+  %assign ::BlockFcn = "Update"
+  
+  %if isRateGrouping
+    %foreach subRateIdx = NumSynchronousSampleTimes
+      %openfile tmpBuf
+      %<FcnUpdateAbsoluteTimeRateGrouping(ssIdx, subRateIdx)>
+      %if subRateIdx == 0 && !IsModelReferenceTarget()
+	%<FcnUpdateAsyncTaskTimers()>
+      %endif
+      %closefile tmpBuf
+      %addtorecord buffsRec UpdateAbsoluteTimeBuffer%<subRateIdx> tmpBuf
+    %endforeach
+    
+    %if FixedStepOpts.TID01EQ
+      %assign tmpBuf0 = buffsRec.UpdateAbsoluteTimeBuffer0
+      %assign tmpBuf1 = buffsRec.UpdateAbsoluteTimeBuffer1
+      
+      %assign buffsRec.UpdateAbsoluteTimeBuffer0 = tmpBuf0 + tmpBuf1
+      %assign buffsRec.UpdateAbsoluteTimeBuffer1 = ""
+    %endif
+  %else
+    %openfile updateTimeBuffer
+    %<FcnUpdateAbsoluteTimeNonRateGrouping(ssIdx)>
+    %if !IsModelReferenceTarget()
+      %<FcnUpdateAsyncTaskTimers()>
+    %endif
+    %closefile updateTimeBuffer
+    %addtorecord buffsRec UpdateAbsoluteTimeBuffer updateTimeBuffer
+  %endif
+  
+  %assign  ::BlockFcn = initBlockFcn
+%endfunction %% SLibErtGenUpdateAbsoluteTimeCode
+
+
+%endif %% _ERT_MODELREF_ABS_TIME_
+
+%% [EOF] ertmdlrefabstime.tlc

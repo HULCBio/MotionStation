@@ -1,0 +1,49 @@
+/* $Revision: 1.2 $ */
+#ifndef _lcc_wpapi_h_
+#define _lcc_wpapi_h_
+typedef struct tagWPSITEINFOA {
+	DWORD	dwSize;
+	DWORD	dwFlags;
+	LPSTR	lpszSiteName;
+	LPSTR	lpszSiteURL;
+} WPSITEINFOA, *LPWPSITEINFOA;
+typedef struct tagWPSITEINFOW {
+	DWORD	dwSize;
+	DWORD	dwFlags;
+	LPWSTR	lpszSiteName;
+	LPWSTR	lpszSiteURL;
+} WPSITEINFOW, *LPWPSITEINFOW;
+#define WPSF_CAN_BROWSE_DIR		1
+#define WPSF_NEEDS_COMMIT		2
+#define WPSF_CONNECTED_TO_NETWORK	4
+#define WPSF_LOGGED_IN_TO_SERVER	8
+#ifdef UNICODE
+#define WPSITEINFO	WPSITEINFOW
+#define LPWPSITEINFO	LPWPSITEINFOW
+#else
+#define WPSITEINFO	WPSITEINFOA
+#define LPWPSITEINFO	LPWPSITEINFOA
+#endif
+#define WPF_NO_RECURSIVE_POST	1
+#define WPF_NO_WIZARD		2
+#define WPF_MINIMAL_UI		4
+DWORD WINAPI WpPostW(HWND,DWORD,LPWSTR *,LPDWORD,LPWSTR,LPDWORD,LPWSTR,DWORD);
+DWORD WINAPI WpListSitesW(LPDWORD,LPWPSITEINFOW,LPDWORD);
+DWORD WINAPI WpDeleteSiteW(LPCWSTR);
+DWORD WINAPI WpBindToSiteW(HWND,LPCWSTR,LPCWSTR,DWORD,DWORD,PVOID *);
+DWORD WINAPI WpPostA(HWND,DWORD,LPSTR *,LPDWORD,LPSTR,LPDWORD,LPSTR,DWORD);
+DWORD WINAPI WpListSitesA(LPDWORD,LPWPSITEINFOA,LPDWORD);
+DWORD WINAPI WpDeleteSiteA(LPCSTR);
+DWORD WINAPI WpBindToSiteA(HWND,LPCSTR,LPCSTR,DWORD,DWORD,PVOID *);
+#ifdef UNICODE
+#define WpPost	WpPostW
+#define WpListSites	WpListSitesW
+#define WpDeleteSite	WpDeleteSiteW
+#define WpBindToSite	WpBindToSiteW
+#else
+#define WpPost		WpPostA
+#define WpListSites	WpListSitesA
+#define WpDeleteSite	WpDeleteSiteA
+#define WpBindToSite	WpBindToSiteA
+#endif
+#endif

@@ -1,0 +1,124 @@
+<!Doctype html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html>
+<body>
+
+<p>
+This is a short example on how to use <tt>bim</tt> to solve a DAR problem.<br>
+The data for this example can be found in the doc directory inside the
+bim installation directory.
+</p>
+
+<b> Create the mesh and precompute the mesh properties </b><br>
+
+The geometry of the domain was created using gmsh and is stored in the file <tt>fiume.geo</tt>
+
+<p><pre>
+[mesh] = msh2m_gmsh("fiume","scale",1,"clscale",.1);
+[mesh] = bim2c_mesh_properties(mesh);
+</pre></p>
+
+<b> Construct an initial guess</b><br>
+
+For a linear problem only the values at boundary nodes are actually relevant<br>
+
+<p><pre>
+xu     = mesh.p(1,:).';
+yu     = mesh.p(2,:).';
+nelems = columns(mesh.t);
+nnodes = columns(mesh.p);
+uin    = 3*xu;
+</pre></p>
+
+<b> Set the coefficients for the problem:
+ -div ( \alpha \gamma ( \eta \nabla u - \beta u ) )+ \delta \zeta u = f g</b><br>
+
+<p><pre>
+epsilon = .1;
+alfa    = ones(nelems,1);
+gamma   = ones(nnodes,1);
+eta     = epsilon*ones(nnodes,1);
+beta    = xu+yu;
+delta   = ones(nelems,1);
+zeta    = ones(nnodes,1);
+f       = ones(nelems,1);
+g       = ones(nnodes,1);
+</pre></p>
+
+<b> Construct the discretized operators</b><br>
+<pre>
+AdvDiff = bim2a_advection_diffusion(mesh,alfa,gamma,eta,beta);
+Mass    = bim2a_reaction(mesh,delta,zeta);
+b       = bim2a_rhs(mesh,f,g);
+A       = AdvDiff + Mass;
+</pre></p>
+
+<B> To Apply Boundary Conditions, partition LHS and RHS</b><br>
+
+The tags of the sides are assigned by gmsh
+
+<p><pre>
+Dlist = bim2c_unknowns_on_side(mesh, [8 18]); 	   ## DIRICHLET NODES LIST
+Nlist = bim2c_unknowns_on_side(mesh, [23 24]); 	   ## NEUMANN NODES LIST
+Nlist = setdiff(Nlist,Dlist);
+Fn    = zeros(length(Nlist),1);           	   ## PRESCRIBED NEUMANN FLUXES
+Ilist = setdiff(1:length(uin),union(Dlist,Nlist)); ## INTERNAL NODES LIST
+</pre></p>
+
+
+<p><pre>
+Add = A(Dlist,Dlist);
+Adn = A(Dlist,Nlist); ## shoud be all zeros hopefully!!
+Adi = A(Dlist,Ilist); 
+
+And = A(Nlist,Dlist); ## shoud be all zeros hopefully!!
+Ann = A(Nlist,Nlist);
+Ani = A(Nlist,Ilist); 
+
+Aid = A(Ilist,Dlist);
+Ain = A(Ilist,Nlist); 
+Aii = A(Ilist,Ilist); 
+
+bd = b(Dlist);
+bn = b(Nlist); 
+bi = b(Ilist); 
+
+ud = uin(Dlist);
+un = uin(Nlist); 
+ui = uin(Ilist); 
+</pre></p>
+
+<B> Solve for the displacements</B><BR>
+<p><pre>
+temp = [Ann Ani ; Ain Aii ] \ [ Fn+bn-And*ud ; bi-Aid*ud];
+un   = temp(1:length(un));
+ui   = temp(length(un)+1:end);
+u(Dlist) = ud;
+u(Ilist) = ui;
+u(Nlist) = un;
+</pre></p>
+
+<b> Compute the fluxes through Dirichlet sides</b><br>
+<p><pre>
+Fd = Add * ud + Adi * ui + Adn*un - bd;
+</pre></p>
+
+
+<B> Compute the gradient of the solution </B><BR>
+<p><pre>
+[gx, gy] = bim2c_pde_gradient(mesh,u);
+</pre></p>
+
+<B> Compute the internal Advection-Diffusion flux</B><BR>
+<p><pre>
+[jxglob,jyglob] = bim2c_global_flux(mesh,u,alfa,gamma,eta,beta);
+</pre></p>
+
+<B> Save data for later visualization</B><BR>
+<p><pre>
+fpl_dx_write_field("dxdata",mesh,[gx; gy]',"Gradient",1,2,1);
+fpl_vtk_write_field ("vtkdata", mesh, {}, {[gx; gy]', "Gradient"}, 1);
+</pre></p>
+
+</body>
+</html>

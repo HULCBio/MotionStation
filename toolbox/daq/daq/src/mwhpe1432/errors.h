@@ -1,0 +1,32 @@
+#ifndef _hpvxierr_h
+#define _hpvxierr_h
+// Copyright 1998-2003 The MathWorks, Inc. 
+// $Revision: 1.1.6.1 $  $Date: 2003/10/15 18:30:59 $
+
+
+#define DAQERROR_BASE  (-1000)
+#define DEFINE_ERROR(_x) (_x+DAQERROR_BASE)
+#define E_SAFEARRAY_FAILURE          DEFINE_ERROR(1)
+#define E_INVALID_CHAN_RANGE         DEFINE_ERROR(2)
+#define E_INV_SKEW_MODE              DEFINE_ERROR(3)
+#define E_INV_SKEW_VALUE             DEFINE_ERROR(4)
+#define E_MEM_ERROR		             DEFINE_ERROR(5)
+#define E_INVALID_COLA               DEFINE_ERROR(6)
+#define E_INVALID_SUM                DEFINE_ERROR(7)
+#define E_CHANNEL_REPEAT             DEFINE_ERROR(8)
+#define E_INVALID_CHANNEL_ORDER      DEFINE_ERROR(9)
+#define E_INVALID_ENG_BLKSIZE_LESS   DEFINE_ERROR(10)
+#define E_INVALID_ENG_BLKSIZE_GREAT  DEFINE_ERROR(11)
+#define E_INVALID_DEVICE_ID          DEFINE_ERROR(12)
+#define E_RUN_TWO_AI                 DEFINE_ERROR(13)
+#define E_RUN_TWO_AO                 DEFINE_ERROR(14)
+#define E_MUST_DEFINE_ID             DEFINE_ERROR(15)
+#define E_TRIGGER_REP_NOT_SUPPORTED  DEFINE_ERROR(16)
+#define E_PRETRIGGER_NOT_SUPPORTED   DEFINE_ERROR(17)
+#define E_DEVICE_NOT_FOUND           DEFINE_ERROR(18)
+#define E_CANNOT_INSTALL_CALLBACK    DEFINE_ERROR(19)
+#define E_INVALID_TC_RANGE			 DEFINE_ERROR(20)
+#define E_INVALID_TRIGGERCHANNEL     DEFINE_ERROR(21)
+#define E_INVALID_TRIGGERCONDITIONVALUE DEFINE_ERROR(22)
+#endif
+

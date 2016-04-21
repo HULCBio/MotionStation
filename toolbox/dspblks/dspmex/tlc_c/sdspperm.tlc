@@ -1,0 +1,199 @@
+%% $RCSfile: sdspperm.tlc,v $
+%% $Revision: 1.11.4.2 $ 
+%% $Date: 2004/04/12 23:09:20 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Permute a vector or a matrix by rows or columns
+
+%implements sdspperm "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Mode")>
+  %<LibRenameParameter(block, P2, "Badidx")>
+  %<LibRenameParameter(block, P3, "Cols")>
+  %%
+%endfunction 
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Permute Matrix (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign permute_rows = 1
+  %assign permute_cols = 2
+  %%
+  %assign INPORT_A  = 0
+  %assign INPORT_P  = 1
+  %assign OUTPORT   = 0
+  %assign mode      = LibBlockParameterValue(Mode,0)
+  %assign cols      = CAST("Number",LibBlockParameterValue(Cols,0))
+  %assign a_width   = CAST("Number",LibDataInputPortWidth(INPORT_A))
+  %assign rows      = CAST("Number",a_width/cols)
+  %assign p_width   = CAST("Number",LibDataInputPortWidth(INPORT_P))
+  %assign out_width = CAST("Number",LibDataOutputPortWidth(OUTPORT))  
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT_A) != 0
+  %assign dtype     = cplx ? "creal_T" : "real_T"
+  %%  
+  %if !IsInputPortContiguous(block,INPORT_A) ||  !IsInputPortContiguous(block,INPORT_P)
+    %<LibDiscontiguousInputError(block)>
+  %endif   
+  %%
+  %if (mode==permute_cols && cols==1) || (mode==permute_rows && rows==1)
+    %%
+    %% Degenerate case where permute just copies input to output.
+    %% Index values in P are all clipped to equal 1.
+    %%
+    %if out_width == 1
+      /* Scalar output equals scalar input. */          
+      %<LibBlockOutputSignal(OUTPORT, "", "", 0)> = %<LibBlockInputSignal(INPORT_A, "", "", 0)>;
+    %else
+      %% Switch inner and out loops based on mode
+      %assign outer_loop = (mode==permute_cols) ? p_width : a_width
+      %assign inner_loop = (mode==permute_cols) ? a_width : p_width
+
+      %% The *u is a special case for scalar input A
+      %if mode==permute_cols
+	%assign u = (inner_loop > 1) ? "u[i]" : "u[0]"
+      %else
+	%assign u = (outer_loop > 1) ? "u[p]" : "u[0]"
+      %endif
+      {
+        %<dtype> *u = (%<dtype>*)%<LibBlockInputSignalAddr(INPORT_A, "", "", 0)>;
+	%<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>; 
+	
+	%if outer_loop > 1
+	  int_T p;
+	  for(p=0; p < %<outer_loop>; p++) {
+	%endif
+          %if inner_loop > 1
+	    int_T i;
+	    for(i=0; i < %<inner_loop>; i++) {
+	  %endif  
+	      *y++ = %<u>;
+	  %if inner_loop > 1
+	    }
+	  %endif
+        %if outer_loop > 1	  
+          }
+        %endif
+      }
+    %endif 
+%else
+    %%
+    %% Inputs and mode allow permute to occur.
+    %%
+    %if mode == permute_cols
+      %%%%%%%%%%%%%%%%%%%%%
+      /* Permute columns */
+      %%%%%%%%%%%%%%%%%%%%%
+      {
+	%<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	%%
+	%if p_width > 1
+	  int_T i;
+	  for (i=0; i<%<p_width>; i++) {
+	    /* Convert to zero based indexing. */
+	    int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "i", "", 0)>-1);
+	%else
+	  %%
+	  %% Permute input is a scalar
+	  %%
+	  int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "", "", 0)>-1); 
+	%endif
+	%%
+	/* Clip bad index */
+	if (i_idx < 0) {                  
+	  i_idx = 0;         
+        } else if (i_idx > %<cols-1>) {    
+	  i_idx = %<cols-1>;               
+	}
+	%%
+	%if rows > 1
+	  {
+	    int_T A_idx = i_idx*%<rows>;
+	    int_T j;
+	    for(j=0; j < %<rows>; j++) {
+	      *y++ = %<LibBlockInputSignal(INPORT_A, "A_idx+j", "", 0)>;
+	    }
+	  }
+	%else
+	  %%
+	  %% Permuting columns of row vector
+	  %%
+	  %if p_width > 1
+	    *y++ = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	  %else
+	    *y = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	  %endif
+	%endif
+	%%
+	%if p_width > 1
+	  } %% end for
+	%endif
+      }
+    %elseif mode == permute_rows
+      %%%%%%%%%%%%%%%%%%
+      /* Permute rows */
+      %%%%%%%%%%%%%%%%%%
+      {
+	%<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	%%
+	%if p_width > 1
+	  int_T i;
+	  
+	  for (i=0; i<%<p_width>; i++) {
+	    /* Convert to zero based indexing. */
+	    int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "i", "", 0)>-1);
+	  %else
+	    %%
+	    %% Permute input is a scalar
+	    %%
+	    int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "", "", 0)>-1); 	
+	  %endif
+	  %%
+	  /* Clip bad index */
+	  if (i_idx < 0) {                
+	    i_idx = 0;         
+	  } else if (i_idx > %<rows-1>) {    
+	    i_idx = %<rows-1>;               
+	  }
+	  %%  
+	  %if cols > 1
+	    {
+	      int_T A_idx = i_idx;
+	      int_T jNp = 0;
+	      int_T j;
+	      for(j=0; j < %<cols>; j++) {
+		/* # rows in output = length of perm vector */
+		y[jNp] = %<LibBlockInputSignal(INPORT_A, "A_idx", "", 0)>;
+		A_idx  += %<rows>;
+		jNp += %<p_width>;
+	      }
+	      y++; /* Next row */
+	    }
+	  %else
+	    %%
+	    %% Permuting rows of column vector
+	    %%
+	    %if p_width > 1
+	      *y++ = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	    %else
+	      *y   = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	    %endif
+	  %endif
+	  %%
+	  %if p_width > 1
+	  } %% end for
+	%endif
+      }
+    %endif %% Modes
+  %endif   %% Degenerate case
+  
+%endfunction
+
+%% [EOF] sdspperm.tlc
+

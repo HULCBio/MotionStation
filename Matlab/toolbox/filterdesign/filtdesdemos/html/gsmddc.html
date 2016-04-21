@@ -1,0 +1,435 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Design of a Digital Down-Converter for GSM</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-19">
+      <meta name="m-file" content="gsmddc"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Design of a Digital Down-Converter for GSM</h1>
+      <introduction>
+         <p>This demonstration shows the design and analysis of a multistage decimator used in a digital down-converter (DDC) for a GSM
+            signal.
+         </p>
+         <p>The design has been developed so that it can be implemented in a Graychip 4016 multi-standard quad DDC chip.</p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">The Digital Down-Converter</a></li>
+            <li><a href="#2">GSM Design Requirements</a></li>
+            <li><a href="#3">First Stage</a></li>
+            <li><a href="#5">Second Stage</a></li>
+            <li><a href="#6">Quantizing the Filter to 16 Bits</a></li>
+            <li><a href="#7">Progress so Far</a></li>
+            <li><a href="#10">Third Stage</a></li>
+         </ul>
+      </div>
+      <h2>The Digital Down-Converter<a name="1"></a></h2>
+      <p>The 4016 implements the DDC with a three-stage decimator in addition to a numerically-controlled oscillator (NCO) and a mixer.
+         In this demo, we concentrate on the decimator only. The multistage decimator is shown below:
+      </p>
+      <p><img vspace="5" hspace="5" src="ddc.png"> </p>
+      <p>It consists of a five-section Cascaded Integrator-Comb (CIC) decimator followed by two FIR decimators. The first decimator,
+         CFIR, has 21 taps and provides decimation by two. The second decimator, PFIR, has 63 taps and also provides decimation by
+         two.
+      </p>
+      <h2>GSM Design Requirements<a name="2"></a></h2>
+      <p>The 4016 is a programmable DDC so it can be used with different communications standards. For GSM, the specifications are:</p><pre> Input sample rate:       69.333248 MHz
+ CIC decimation factor:   64
+ CFIR input sample rate:  1.083332 MHz
+ PFIR input sample rate:  541.666 kHz
+ PFIR output sample rate: 270.833 kHz
+ Passband width:          80 kHz
+ Passband ripple:         &lt; 0.1 dB peak-to-peak</pre><h2>First Stage<a name="3"></a></h2>
+      <p>The first stage of the decimator is a five-section CIC filter that provides a decimation factor of 64. This filter is attractive
+         for high-speed implementations (the input signal in this case is 69.333248 MHz) because it is implemented without the use
+         of multipliers. However, its magnitude response exhibits a significant droop in the passband which need to be corrected.
+      </p><pre class="codeinput">Hcic = mfilt.cicdecim(64,1,5);
+hfvt = fvtool(Hcic,<span class="string">'Fs'</span>,69.333248e6);
+set(hfvt, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_01.png"> <p>The CIC filter has a lot of passband gain, due to the additions and feedback within the structure. To normalize for this gain,
+         we can cascade with a scalar with gain equal to the inverse of the CIC gain.
+      </p><pre class="codeinput">Hscalar = dfilt.scalar(1/gain(Hcic));
+Hcicnorm = cascade(Hscalar,Hcic);
+</pre><h2>Second Stage<a name="5"></a></h2>
+      <p>The second stage, CFIR, is used primarily to compensate for the droop in the CIC filter. It also provides some out of band
+         attenuation. The function FIRCEQRIP can be used to design an FIR filter which compensates for sinc(x)^N type responses such
+         as that of the CIC. In this case, because the CIC has five sections, we need to compensate for sinc(x)^5. We design a filter
+         with a sloped stopband to provide the most attenuation we can for spectral replicas introduced due to the decimation.
+      </p>
+      <p>Since the overall desired passband is 80 kHz, we compensate for the droop only in the interval 0 to 80 kHz. The CFIR operates
+         at 1.083332 MHz. We have 21 taps to use, and we want to minimize the passband ripple as much as possible so that the overall
+         design is within the 0.1 dB allowed. The design specifications we use are:
+      </p><pre class="codeinput">Fs = 1.083332e6; <span class="comment">% Sampling frequency</span>
+N = 20; <span class="comment">% 21 taps</span>
+Npow = 5; <span class="comment">% Sinc power</span>
+w = 0.5; <span class="comment">% Sinc frequency factor</span>
+Apass = 5.7565e-4; <span class="comment">% 0.01 dB</span>
+Astop = 0.01; <span class="comment">% 40 dB</span>
+Aslope = 60; <span class="comment">% 60 dB slope</span>
+Fpass = 80e3/(Fs/2); <span class="comment">% 80 kHz passband-edge frequency</span>
+cfir = firceqrip(N,Fpass,[Apass,Astop],<span class="string">'passedge'</span>,<span class="string">'slope'</span>,Aslope,<span class="keyword">...</span>
+    <span class="string">'invsinc'</span>,[w,Npow]);
+</pre><h2>Quantizing the Filter to 16 Bits<a name="6"></a></h2>
+      <p>The 4016 provides 16 bits to implement the CFIR filter. Before we create the second-stage decimator, we need to quantize the
+         filter coefficients to 16 bits (Note that this code requires the Fixed-Point Toolbox).
+      </p><pre class="codeinput">cfirq = fi(cfir,true,16);
+Hcfir = mfilt.firdecim(2,double(cfirq));
+</pre><h2>Progress so Far<a name="7"></a></h2>
+      <p>We now see how the design has progressed so far. We create a cascade of the normalized CIC filter and the CFIR decimator.</p>
+      <p>We only look at the compounded response from 0 to 1 MHz since this encompasses most of our region of interest.</p>
+      <p>Notice that we need to pass in the sampling frequency of an equivalent overall filter in order to compute the analysis. For
+         more information see <a href="multianalysisdemo.html">Analysis of Multirate Filters.</a></p><pre class="codeinput">H2stage = cascade(Hcicnorm,Hcfir);
+[Hf2stage,f] = freqz(H2stage,0:200:1e6,69.333248e6);
+plot(f*1e-3,20*log10(abs(Hf2stage)))
+grid <span class="string">on</span>; title(<span class="string">'Magnitude Response'</span>);
+xlabel(<span class="string">'Frequency (kHz)'</span>); ylabel(<span class="string">'Magnitude (dB)'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_02.png"> <p>To look in detail at the passband response and how we have compensated for the droop, we compute the response of each stage
+         up to 100 kHz along with the composite response.
+      </p><pre class="codeinput">f2 = 0:100:100e3;
+Hfcic    = freqz(Hcicnorm,f2(:),69.333248e6);
+Hfcfir   = freqz(Hcfir,f2(:),69.333248e6/64); <span class="comment">% Notice different sampling freq</span>
+Hf2stage = freqz(H2stage,f2(:),69.333248e6);
+plot(f2*1e-3,20*log10(abs([Hfcic,Hfcfir,Hf2stage])));
+grid <span class="string">on</span>; title(<span class="string">'Magnitude Response'</span>);
+xlabel(<span class="string">'Frequency (kHz)'</span>); ylabel(<span class="string">'Magnitude (dB)'</span>);
+legend(<span class="string">'CIC'</span>,<span class="string">'CFIR'</span>,<span class="string">'Composite response'</span>,2);
+set(gcf, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_03.png"> <p>We can see that the droop in the passband has been eliminated very effectively with the CFIR filter.</p>
+      <h2>Third Stage<a name="10"></a></h2>
+      <p>In order to design the third stage, we look at the required GSM spectral mask and determine what specifications are required
+         for the PFIR filter. We compare the design we have so far to the required mask. We obviously are far from meeting the spec.
+         but this serves the purpose of giving us an idea of how we should design the PFIR filter. The code to draw the GSM mask is
+         given at the end of this demo.
+      </p><pre class="codeinput">[Hf2stage,f] = freqz(H2stage,0:200:1e6,69.333248e6);
+plot(f*1e-3,20*log10(abs(Hf2stage)))
+grid <span class="string">on</span>; title(<span class="string">'Magnitude Response'</span>);
+xlabel(<span class="string">'Frequency (kHz)'</span>); ylabel(<span class="string">'Magnitude (dB)'</span>);
+drawgsmmask
+legend(<span class="string">'Response of first two stages'</span>,<span class="string">'GSM spectral mask requirement'</span>)
+set(gcf, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_04.png"> <p>The mask requires an attenuation of 18 dB at 100 kHz. So we can try a simple equiripple lowpass filter. Once again we need
+         to quantize the coefficients to 16 bits.
+      </p><pre class="codeinput">N = 62; <span class="comment">% 63 taps</span>
+Fs = 541666; <span class="comment">% 541.666 kHz</span>
+F = [0 80e3 100e3 Fs/2]/(Fs/2);
+A = [1 1 0 0];
+pfir = firgr(N,F,A);
+pfirq = fi(pfir,true,16);
+Hpfir = mfilt.firdecim(2,double(pfirq));
+</pre><p>Let us compare this new design with the required spectral mask.</p><pre class="codeinput">H3stage = cascade(Hcicnorm,Hcfir,Hpfir);
+[Hf3stage,f] = freqz(H3stage,0:200:1e6,69.333248e6);
+plot(f*1e-3,20*log10(abs(Hf3stage)))
+grid <span class="string">on</span>; title(<span class="string">'Magnitude Response'</span>);
+xlabel(<span class="string">'Frequency (kHz)'</span>); ylabel(<span class="string">'Magnitude (dB)'</span>);
+drawgsmmask
+legend(<span class="string">'Response of all three stages'</span>,<span class="string">'GSM spectral mask requirement'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_05.png"> <p>At first glance, it seems that we meet the spec. However, close inspection of the passband ripple reveals that we don't meet
+         the &lt; 0.1 dB peak-to-peak requirement. We can increase the passband weight of the PFIR design in order to reduce the passband
+         ripple.
+      </p><pre class="codeinput">W = [5 1]; <span class="comment">% Weight the passband 5 times more than the stopband</span>
+pfir = firgr(N,F,A,W);
+pfirq = fi(pfir,true,16);
+Hpfir = mfilt.firdecim(2,double(pfirq));
+H3stage = cascade(Hcicnorm,Hcfir,Hpfir);
+[Hf3stage,f] = freqz(H3stage,0:200:1e6,69.333248e6);
+plot(f*1e-3,20*log10(abs(Hf3stage)))
+grid <span class="string">on</span>; title(<span class="string">'Magnitude Response'</span>);
+xlabel(<span class="string">'Frequency (kHz)'</span>); ylabel(<span class="string">'Magnitude (dB)'</span>);
+drawgsmmask
+legend(<span class="string">'Response of all three stages'</span>,<span class="string">'GSM spectral mask requirement'</span>);
+set(gcf, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="gsmddc_06.png"> <p>This does the trick and we have a three-stage decimator that meets the GSM spectral mask requirement.</p><pre class="codeinput"><span class="comment">% Code to draw GSM mask</span>
+<span class="comment">% function drawgsmmask(hfig)</span>
+<span class="comment">%</span>
+<span class="comment">% if nargin &lt; 1, hfig = gcf; end</span>
+<span class="comment">% args = {'Color',[1 0 1],'LineWidth',1,'LineStyle','--'};</span>
+<span class="comment">% line([0 100],[0 0],args{:})</span>
+<span class="comment">% line([100 100],[0 -18],args{:})</span>
+<span class="comment">% line([100 300],[-18 -18],args{:})</span>
+<span class="comment">% line([300 300],[-18 -50],args{:})</span>
+<span class="comment">% line([300 500],[-50 -50],args{:})</span>
+<span class="comment">% line([500 500],[-50 -85],args{:})</span>
+<span class="comment">% line([500 700],[-85 -85],args{:})</span>
+<span class="comment">% line([700 700],[-85 -95],args{:})</span>
+<span class="comment">% line([700 1100],[-95 -95],args{:})</span>
+</pre><p class="footer">Copyright 1999-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Design of a Digital Down-Converter for GSM
+% This demonstration shows the design and analysis of a multistage
+% decimator used in a digital down-converter (DDC) for a GSM signal.
+%
+% The design has been developed so that it can be implemented in a Graychip
+% 4016 multi-standard quad DDC chip.
+%
+% Copyright 1999-2004 The MathWorks, Inc. 
+% $Revision: 1.1.2.1 $ $Date: 2004/04/08 18:16:42 $
+
+%% The Digital Down-Converter
+% The 4016 implements the DDC with a three-stage decimator in addition to a
+% numerically-controlled oscillator (NCO) and a mixer. In this demo, we
+% concentrate on the decimator only. The multistage decimator is shown
+% below:
+%
+% <<ddc.png>>
+%
+% It consists of a five-section Cascaded Integrator-Comb (CIC) decimator
+% followed by two FIR decimators. The first decimator, CFIR, has 21 taps
+% and provides decimation by two. The second decimator, PFIR, has 63 taps
+% and also provides decimation by two.
+
+%% GSM Design Requirements
+% The 4016 is a programmable DDC so it can be used with different
+% communications standards. For GSM, the specifications are:
+%
+%   Input sample rate:       69.333248 MHz
+%   CIC decimation factor:   64
+%   CFIR input sample rate:  1.083332 MHz
+%   PFIR input sample rate:  541.666 kHz
+%   PFIR output sample rate: 270.833 kHz
+%   Passband width:          80 kHz
+%   Passband ripple:         < 0.1 dB peak-to-peak
+
+
+%% First Stage
+% The first stage of the decimator is a five-section CIC filter that provides
+% a decimation factor of 64. This filter is attractive for high-speed
+% implementations (the input signal in this case is 69.333248 MHz) because
+% it is implemented without the use of multipliers. However, its magnitude
+% response exhibits a significant droop in the passband which need to be
+% corrected.
+
+Hcic = mfilt.cicdecim(64,1,5);
+hfvt = fvtool(Hcic,'Fs',69.333248e6);
+set(hfvt, 'Color', [1 1 1]);
+
+%% 
+% The CIC filter has a lot of passband gain, due to the additions and
+% feedback within the structure. To normalize for this gain, we can cascade
+% with a scalar with gain equal to the inverse of the CIC gain.
+
+Hscalar = dfilt.scalar(1/gain(Hcic));
+Hcicnorm = cascade(Hscalar,Hcic);
+
+%% Second Stage
+% The second stage, CFIR, is used primarily to compensate for the droop in
+% the CIC filter. It also provides some out of band attenuation. The
+% function FIRCEQRIP can be used to design an FIR filter which compensates
+% for sinc(x)^N type responses such as that of the CIC. In this case,
+% because the CIC has five sections, we need to compensate for sinc(x)^5. We
+% design a filter with a sloped stopband to provide the most attenuation we
+% can for spectral replicas introduced due to the decimation.
+%
+% Since the overall desired passband is 80 kHz, we compensate for the droop
+% only in the interval 0 to 80 kHz. The CFIR operates at 1.083332 MHz. We
+% have 21 taps to use, and we want to minimize the passband ripple as much
+% as possible so that the overall design is within the 0.1 dB allowed. The
+% design specifications we use are:
+
+Fs = 1.083332e6; % Sampling frequency
+N = 20; % 21 taps
+Npow = 5; % Sinc power
+w = 0.5; % Sinc frequency factor
+Apass = 5.7565e-4; % 0.01 dB
+Astop = 0.01; % 40 dB
+Aslope = 60; % 60 dB slope
+Fpass = 80e3/(Fs/2); % 80 kHz passband-edge frequency
+cfir = firceqrip(N,Fpass,[Apass,Astop],'passedge','slope',Aslope,...
+    'invsinc',[w,Npow]);
+
+%% Quantizing the Filter to 16 Bits
+% The 4016 provides 16 bits to implement the CFIR filter. Before we create
+% the second-stage decimator, we need to quantize the filter coefficients
+% to 16 bits (Note that this code requires the Fixed-Point Toolbox).
+cfirq = fi(cfir,true,16);
+Hcfir = mfilt.firdecim(2,double(cfirq));
+
+%% Progress so Far
+% We now see how the design has progressed so far. We create a cascade of
+% the normalized CIC filter and the CFIR decimator.
+%
+% We only look at the compounded response from 0 to 1 MHz since this
+% encompasses most of our region of interest.
+%
+% Notice that we need to pass in the sampling frequency of an equivalent
+% overall filter in order to compute the analysis. For more information see
+% <multianalysisdemo.html Analysis of Multirate Filters.>
+
+
+H2stage = cascade(Hcicnorm,Hcfir);
+[Hf2stage,f] = freqz(H2stage,0:200:1e6,69.333248e6); 
+plot(f*1e-3,20*log10(abs(Hf2stage)))
+grid on; title('Magnitude Response');
+xlabel('Frequency (kHz)'); ylabel('Magnitude (dB)');
+set(gcf, 'Color', [1 1 1]);
+
+%%
+% To look in detail at the passband response and how we have compensated
+% for the droop, we compute the response of each stage up to 100 kHz along
+% with the composite response.
+f2 = 0:100:100e3;
+Hfcic    = freqz(Hcicnorm,f2(:),69.333248e6); 
+Hfcfir   = freqz(Hcfir,f2(:),69.333248e6/64); % Notice different sampling freq
+Hf2stage = freqz(H2stage,f2(:),69.333248e6); 
+plot(f2*1e-3,20*log10(abs([Hfcic,Hfcfir,Hf2stage])));
+grid on; title('Magnitude Response');
+xlabel('Frequency (kHz)'); ylabel('Magnitude (dB)');
+legend('CIC','CFIR','Composite response',2);
+set(gcf, 'Color', [1 1 1]);
+
+%%
+% We can see that the droop in the passband has been eliminated very
+% effectively with the CFIR filter.
+
+%% Third Stage
+% In order to design the third stage, we look at the required GSM spectral
+% mask and determine what specifications are required for the PFIR filter.
+% We compare the design we have so far to the required mask. We obviously
+% are far from meeting the spec. but this serves the purpose of giving us
+% an idea of how we should design the PFIR filter. The code to draw the GSM
+% mask is given at the end of this demo.
+
+[Hf2stage,f] = freqz(H2stage,0:200:1e6,69.333248e6); 
+plot(f*1e-3,20*log10(abs(Hf2stage)))
+grid on; title('Magnitude Response');
+xlabel('Frequency (kHz)'); ylabel('Magnitude (dB)');
+drawgsmmask
+legend('Response of first two stages','GSM spectral mask requirement')
+set(gcf, 'Color', [1 1 1]);
+
+%%
+% The mask requires an attenuation of 18 dB at 100 kHz. So we can try a
+% simple equiripple lowpass filter. Once again we need to quantize the
+% coefficients to 16 bits.
+
+N = 62; % 63 taps
+Fs = 541666; % 541.666 kHz
+F = [0 80e3 100e3 Fs/2]/(Fs/2);
+A = [1 1 0 0];
+pfir = firgr(N,F,A);
+pfirq = fi(pfir,true,16);
+Hpfir = mfilt.firdecim(2,double(pfirq));
+
+%%
+% Let us compare this new design with the required spectral mask.
+
+H3stage = cascade(Hcicnorm,Hcfir,Hpfir);
+[Hf3stage,f] = freqz(H3stage,0:200:1e6,69.333248e6); 
+plot(f*1e-3,20*log10(abs(Hf3stage)))
+grid on; title('Magnitude Response');
+xlabel('Frequency (kHz)'); ylabel('Magnitude (dB)');
+drawgsmmask
+legend('Response of all three stages','GSM spectral mask requirement');
+set(gcf, 'Color', [1 1 1]);
+
+
+%%
+% At first glance, it seems that we meet the spec. However, close
+% inspection of the passband ripple reveals that we don't meet the < 0.1 dB
+% peak-to-peak requirement. We can increase the passband weight of the PFIR
+% design in order to reduce the passband ripple.
+
+W = [5 1]; % Weight the passband 5 times more than the stopband
+pfir = firgr(N,F,A,W);
+pfirq = fi(pfir,true,16);
+Hpfir = mfilt.firdecim(2,double(pfirq));
+H3stage = cascade(Hcicnorm,Hcfir,Hpfir);
+[Hf3stage,f] = freqz(H3stage,0:200:1e6,69.333248e6); 
+plot(f*1e-3,20*log10(abs(Hf3stage)))
+grid on; title('Magnitude Response');
+xlabel('Frequency (kHz)'); ylabel('Magnitude (dB)');
+drawgsmmask
+legend('Response of all three stages','GSM spectral mask requirement');
+set(gcf, 'Color', [1 1 1]);
+
+%%
+% This does the trick and we have a three-stage decimator that meets the
+% GSM spectral mask requirement.
+
+
+% Code to draw GSM mask
+% function drawgsmmask(hfig)
+%
+% if nargin < 1, hfig = gcf; end
+% args = {'Color',[1 0 1],'LineWidth',1,'LineStyle','REPLACE_WITH_DASH_DASH'};
+% line([0 100],[0 0],args{:})
+% line([100 100],[0 -18],args{:})
+% line([100 300],[-18 -18],args{:})
+% line([300 300],[-18 -50],args{:})
+% line([300 500],[-50 -50],args{:})
+% line([500 500],[-50 -85],args{:})
+% line([500 700],[-85 -85],args{:})
+% line([700 700],[-85 -95],args{:})
+% line([700 1100],[-95 -95],args{:})
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

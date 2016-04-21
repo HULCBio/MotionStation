@@ -1,0 +1,4086 @@
+%selectfile NULL_FILE
+%% $RCSfile: globalmaplib.tlc,v $
+%% $Revision: 1.60.4.15 $
+%%
+%% March 24, 1999
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Disclaimer
+%% ==========
+%%
+%% The functionality provided in this TLC module is currently under
+%% development.  The MathWorks reserves the right to make changes
+%% without notice.
+%%
+%% This library is optimized for speed, and therefore does not use the
+%% formal TLC access functions.  This means that the code may not be
+%% backward compatible with future releases.  Hence, you should not
+%% mimic the programing style or logic found in this library file.
+%%
+%%
+%% Deviations from R13 Map
+%% =======================
+%% 
+%% o Continuous states - By default, Map Continuous states & State Derivatives
+%% o Simulink Bus - Support non-virtual Simulink Bus structures.
+%%          IMPORTANT: Added IsStruct to Data record.  Code prior to R14 must
+%%               be updated to handle the IsStruct field properly.  Otherwise,
+%%               non-virtual buses will be misinterpreted.
+%% o Memory enhancements 
+%%     - Using DataDefaults (defaults for variables)
+%%     - FixedPoint - Referenced Records for storing Fixed Point information
+%% o Parameter Value - Value field for parameter records
+%% o CustomData Access - Added Access field for CustomData.Data records. 
+%%                       Maps DataAccess value provided in the Custom Storage
+%%                       Class definition.
+%%                       (Access = "direct"   : DataAccess = "Direct"
+%%                               = "indirect" : DataAccess = "Pointer"
+%%                               = "unknown"  : data access not defined in 
+%%                                              Custom class definition
+%%
+%% Deviations from R12 Map
+%% =======================
+%%
+%% o DWork changes:
+%%   - By default, map dwork
+%%   - Support nonstructured dwork data
+%% o Support Custom Storage classes
+%%
+%% Deviations from R11 Map
+%% =======================
+%%
+%% o DWork changes:
+%%   - CompiledModel.DWorkRecords.DWorkRecord changed to
+%%     CompiledModel.DWorks.DWork
+%%   - RWork, IWork, PWork and Modes are now part of DWork
+%% o Method of initiating map generation
+%%   - %assign GenerateInterfaceAPI = 1 (See Note 11)
+%%   - Not all data is mapped by default (See LibMapData)
+%% o MemoryMapIdx is added to each ModelParameter and
+%%   Block.Parameter reference unconditionally
+%% o SimulinkGlobal storage class is synonomous with Auto
+%% o Added matrix support, including N-D matrix
+%% o Added of ObjectProperties support (See Note 10)
+%% o Stateflow workspace data removed
+%% o Nearly all RTW matrices are in column major order versus
+%%   row major order
+%%
+%% Abstract
+%% ========
+%%
+%% There are currently 6 RTW data structures that contain variables of mixed
+%% data type and complexity.
+%% 
+%% o Block I/O
+%% o Constant Block I/O
+%% o Parameters
+%% o DWork
+%% o External Inputs
+%% o External Outputs
+%% 
+%% Additionally, signals, parameters, and dwork can have external storage
+%% class declarations making them unstructured global variables.
+%% 
+%% The goal of this specification is to present a consistent view of
+%% signals, states and parameters so that you can easily and
+%% consistently interface memory declared by The Real-Time Workshop.
+%%
+%% The idea is to create a TLC record which contains all information
+%% required for accessing memory in the generated code.
+%%
+%% Signals (Block I/O)
+%% ===================
+%%
+%% Assume a non-complex signal foo with width 3.  A MemoryMapIdx field
+%% is added (at TLC runtime) to the BlockOutput record.
+%% 
+%% BlockOutputs {
+%%   NumGlobalBlockOutputs 10
+%%   GlobalBlockOutput {
+%%     Identifier foo
+%%     MemoryMapIdx [0, 0, 0]    <--- Added during map process
+%%   }
+%% }
+%% 
+%% The MemoryMapIdx field points into a global data map record.  The
+%% value specifies which data to access inside the GlobalMemoryMap
+%% record.
+%% 
+%% The MemoryMapIdx is always present, and is interpreted as follows.
+%%
+%%   [structureIdx, sectionIdx, dataIdx]  -- Global structured data
+%%   [-1, classIdx, dataIdx]              -- Custom data
+%%   [-1, -1, dataIdx]                    -- Global unstructured data
+%%   [-1, -1, -1]                         -- Local or reused data
+%%
+%%   %assign gmm = GlobalMemoryMap
+%%   %if MemoryMapIdx[2] == -1
+%%     %% data is unavailable (probably local or reused)
+%%   %elseif MemoryMapIdx[1] == -1
+%%     %% global unstructured data
+%%     %assign dataIdx = MemoryMapIdx[2]
+%%     %assign data = gmm.UnstructuredData.Data[dataIdx]
+%%   %elseif MemoryMapIdx[0] == -1
+%%     %% custom data
+%%     %assign classIdx = MemoryMapIdx[1]
+%%     %assign dataIdx = MemoryMapIdx[2]
+%%     %assign data = gmm.CustomData[classIdx].Data[dataIdx]
+%%   %else
+%%     %% global structured data
+%%     %assign structureIdx = MemoryMapIdx[0]
+%%     %assign sectionIdx = MemoryMapIdx[1]
+%%     %assign dataIdx = MemoryMapIdx[2]
+%%     %assign data = ...
+%%       gmm.StructuredData[structureIdx].Section[sectionIdx].Data[dataIdx]
+%%   %endif
+%%
+%% The global memory map is a collection of structured, custom, and 
+%% unstructured data sections.  Sections are globs of memory that have 
+%% "likeness", and they can be structured or unstructured.  When sections of 
+%% memory are contained within a C-structure they are StructuredData.  
+%% Otherwise, a CustomData or UnstructuredData section is a collection of 
+%% unstructured C-variables.
+%%
+%% Parameters
+%% ==========
+%%
+%% There is a global setting for inlining parameters.  By default, inline
+%% parameters is off which means that each block parameter in the model is
+%% tunable.  In this case, a parameter is referenced using an absolute block
+%% path name along with the block's paticular parameter name.  It is also
+%% possible to tune parameters by MATLAB variable name when inline parameters
+%% is off.  This often leads to a 1-to-many mapping situation for a tunable
+%% variable.  For example, having inline parameters off means that every block
+%% parameter can be independently tuned.  However, if 100 gain blocks specify
+%% their parameter as "k" then each "instance of k" must be updated when "k"
+%% is to be modified on a model-wide basis.
+%% 
+%% When inline parameters is on, like block parameters collapse to a single
+%% memory location (when specified as tunable parameters).  This means
+%% that all 100 gain parameters in the previous example collapse to a
+%% single "k" memory location.
+%%
+%% Inline Parameters Off:
+%%
+%% A MemoryMapIdx is added to each CompiledModel.System.Block.Parameter
+%% record, and points to GlobalMemoryMap as follows.
+%%
+%% [structureIdx, sectionIdx, dataIdx]  -- Global structured data
+%% [-1, -1, -1]                         -- Not accessible
+%%
+%% Additionally, the GlobalMemoryMap will contain a list of tunable MATLAB
+%% variables.  Since tunable MATLAB variables are model based they are
+%% added directly to the GlobalMemoryMap.
+%%
+%% GlobalMemoryMap {
+%%   ModelParameters {
+%%     NumModelParameters 1
+%%     ModelParameter {
+%%       Name "k"
+%%       NumInstances 2
+%%       Instance {
+%%  	   Source        "SL"
+%%  	   Parent        "root/sys1/block1"
+%%  	   MemoryMapIdx  [structureIdx, sectionIdx, dataIdx]
+%%  	 }
+%%  	 Instance {
+%%  	   Source        "SF"
+%%         Parent        "machine"
+%%  	   MemoryMapIdx  [-1, -1, dataIdx]
+%%  	 }
+%%     }
+%%   }
+%% }
+%%
+%% The MemoryMapIdx can point to both structured and unstructured data.
+%% Simulink block parameters are structured data.  Stateflow machine
+%% parented imported and exported data are unstructured data.
+%%
+%% Note that Simulink parameters are sometimes transformed.  For example,
+%% mask initialization code may transform a variable used by a block
+%% contained within the mask.  Therefore, an additional IsTransformed field
+%% is added to each parameter in the GlobalMemoryMap.  Hence, special care
+%% must be taken to tune a transformed parameter (IsTransformed==1).
+%%
+%% Inline Parameters On:
+%%
+%% Parameters are tuned on a model basis when inline parameters is
+%% selected.  All parameter information is attached derectly to
+%% GlobalMemoryMap similar to the inline parameters off case except that
+%% Source and Parent are set to "multiple" when the source location
+%% of the parameter is not unique.
+%%
+%% The number of instances of a parameter varies depending on the
+%% Simulink parameter storage class and the Stateflow data scope.  For
+%% example, NumInstances=1 if a Simulink parameter k has an ImportedExtern
+%% storage class and a Stateflow machine parented data has an exported scope.
+%% In other words, Simulink and Stateflow map k to the same piece of memory.
+%%
+%% However, Simulink and Stateflow do not map to the same memory when
+%% k has an Auto storage class in Simulink (regardless of the Stateflow
+%% scope).  Simulink accesses k as rtP.k and Stateflow accesses k as k.
+%%
+%% The following table summarizes the combinatorics between Simulink
+%% parameters and Stateflow data.  A number signifies the number
+%% of instances (i.e., the number of variables created) "E" signifies
+%% that an error is generated when encountered.
+%%
+%%                             Simulink Storage Class
+%% 
+%%                     Simulink  Exported  Imported    Imported
+%%                      Global    Global    Extern   Extern Pointer
+%%                     ========  ========  ========  ==============
+%%  Stateflow Scope 
+%%     Imported           2        1(b)      1(b)          E
+%%     Exported           2         E        1(a)          E
+%%
+%% (a) Recommended, and does not require any user defined data definition
+%% (b) Requires user defined data definition
+%%
+%% An example map for the inline parameters on case follows.
+%%
+%% GlobalMemoryMap {
+%%   ModelParameters {
+%%     NumModelParameters 2
+%%     ModelParameter {
+%%       Name "k1"
+%%       NumInstances 2
+%%       Instance {
+%%  	   Source        "SL"
+%%  	   Parent        "root/sys/block"
+%%  	   MemoryMapIdx  [structureIdx, sectionIdx, dataIdx]
+%%  	 }
+%%  	 Instance {
+%%  	   Source        "SF"
+%%         Parent        "Machine"
+%%  	   MemoryMapIdx  [-1, -1, dataIdx]
+%%  	 }
+%%     }
+%%     ModelParameter {
+%%       Name "k2"
+%%       NumInstances 1
+%%       Instance {
+%%  	   Source        "multiple"
+%%         Parent        "multiple"
+%%  	   MemoryMapIdx  [-1, -1, dataIdx]
+%%  	 }
+%%     }
+%%   }
+%% }
+%%
+%% Simulink States
+%% ===============
+%% To Be Documented
+%%
+%% External Inputs
+%% ===============
+%%
+%% External inputs are structured or unstructured data.  A MemoryMapIdx is
+%% attached to each CompiledModel.ExternalInputs.ExternalInput record and
+%% interpreted as follows.
+%%
+%% [structureIdx, sectionIdx, dataIdx]  -- Global structured data
+%% [-1, -1, dataIdx]                    -- Global unstructured data
+%%
+%% %if MemoryMapIdx[1] == -1
+%%   %% global unstructured data
+%% %else
+%%   %% global structured data
+%% %endif
+%%
+%% External inputs are very similar to block outputs except they are never
+%% local.
+%%
+%% External Outputs
+%% ================
+%%
+%% External outputs are always structured data.  A MemoryMapIdx is attached
+%% to each CompiledModel.ExternalOutputs.ExternalOutput record and interpreted
+%% as follows.
+%%
+%% [structureIdx, sectionIdx, dataIdx]  -- Global structured data
+%%
+%% Notes
+%% =====
+%% 
+%% 1. StructuredData contains an OffsetFromBaseAddr.  UnstructuredData
+%% does not.
+%% 
+%% 2. StructuredData is always direct memory access.  UnstructuredData
+%% can have direct or indirect memory access.
+%% 
+%% 3. StructuredData sections have common data type, complexity,
+%% and memory access.  Unstructured data sections list these
+%% attributes separately within each data record.
+%%
+%% 4. Fixed-point data includes an extra FixedPointInfo record (test
+%% IsFixedPoint to determine if the additional record exists).  Fixed-point
+%% vector and matrix data can have uniform or non-uniform element scaling.
+%% Uniform fixed-point data is represented with a single (flat) record for
+%% all of its elements.
+%%
+%%   FixedPointInfo {
+%%     Scaling    "uniform"
+%%     NumBits     16
+%%     IsSigned    1
+%%     FixedExp    -4
+%%     FracSlope   1.0
+%%     Bias        0.0
+%%   }
+%%
+%% Non-uniform fixed-point data is represented with additional ElementScaling
+%% records.  For example, a non-uniform 3 element vector has 3 ElementScaling
+%% records for its 3 elements.
+%%
+%%   FixedPointInfo {
+%%     Scaling            "non-uniform"
+%%     NumBits            16
+%%     IsSigned           1
+%%     NumElementScalings 3
+%%     ElementScaling {
+%%       FixedExp    -4
+%%       FracSlope   1.0
+%%       Bias        12.0
+%%     }
+%%     ElementScaling {
+%%       FixedExp    -5
+%%       FracSlope   2.0
+%%       Bias        40.0
+%%     }
+%%     ElementScaling {
+%%       FixedExp    -6
+%%       FracSlope   1.0
+%%       Bias        90.0
+%%     }
+%%   }
+%%
+%% Elements of a non-uniform MxN matrix are laid out as follows.
+%%
+%%   Data(1,1) = ElementScaling[0]
+%%   Data(1,2) = ElementScaling[1]
+%%   Data(1,N) = ElementScaling[N-1]
+%%   Data(2,1) = ElementScaling[N]
+%%   etc.
+%%
+%% The real-world value is derived from a quantized integer as follows.
+%%
+%%   Vreal = FracSlope * 2^FixedExp + Qint + Bias
+%%
+%% The DataTypeIdx for fixed-point data tyeps is somewhat irrelevant.
+%% Most likely you should use NumBits in its place.  Fixed-point matrices
+%% are currently 2-Dimensional only.
+%%
+%% 5. UnstructuredData sections mix data of all types.
+%%
+%% 6. You should compare a data's DataTypeIdx with these global TLC variables
+%% Typical default C-types for the value of DataTypeIdx, which can be changed
+%% using #define at compile time, are shown.
+%%
+%%    TLC Variable   C typedef    Typical Default C-type
+%%    ------------   ---------    ----------------------
+%%    tSS_DOUBLE     real_T       double
+%%    tSS_SINGLE     real32_T     float
+%%    tSS_INT32      int32_T      int
+%%    tSS_INT16      int16_T      short
+%%    tSS_INT8       int8_T       char
+%%    tSS_UINT32     uint32_T     unsigned int
+%%    tSS_UINT16     uint16_T     unsigned short
+%%    tSS_UINT8      uint8_T      unsigned char
+%%    tSS_BOOLEAN    boolean_T    unsigned char
+%%
+%% The number of built-in Simulink data types is found in the DataTypes scope.
+%% That is, CompiledModel.DataTypes.NumSLBuiltInDataTypes
+%%
+%% 7. Each data has a class designation.  Currently TMW has these classes:
+%%
+%%    Data.Class  Description
+%%    ==========  ===========
+%%    scalar      scalar data
+%%    vector      vector data
+%%    row-mat     2-D mat in row major order: data[row][col] 
+%%    col-mat     2-D mat in column major order (MATLAB style): data[col][row]
+%%    col-mat-nd  N-D mat in "stacked" column major order (MATLAB style)
+%%
+%%    Nearly all RTW matricies are represented in true MATLAB fashion (i.e.,
+%%    column major order).
+%% 
+%% 8. Scalar data have NumRows=1 and NumCols=1.  Vector data is non-oriented
+%% in Simulink, however, it is best represented as a column vector with
+%% NumRows=width and NumCols=1.  The number of dimensions, NumDimentions,
+%% for scalars and vectors is 2.  For a 2-Dimensional MxN matrix data,
+%% NumRows=M, NumCols=N and NumDimensions is 2.  N-Dimensional matrices have
+%% NumDimensions > 2 with Dimensions [d1,d2,d3,...,dn] in MATLAB fashion.
+%%
+%% 9. The Type field for Data records can have these values
+%%
+%% unknown   - Unknown usage.  Usually an internal "state" variable.
+%% signal    - A SL signal parented by a block
+%% state     - A SL state parented by a block
+%% data      - Data parented by SF machine 
+%% parameter - A parameter within SL parented by 1 or more blocks and
+%%             optionally parented by a SF machine.
+%%
+%% 10. Simulink Data Objects are included as follows
+%%
+%% Data {
+%%   :
+%%   HasObject 1
+%%   Object {
+%%     Package
+%%     Class
+%%     ObjectProperties {
+%%       :
+%%     }
+%%   }
+%% }
+%%
+%% where ObjectProperties is a reference to the object's properties, and
+%% is only included when HasObject=1.
+%%
+%% 11. Simulink Bus objects (signals) are included as follows
+%% 
+%% Data {
+%%   :
+%%   IsStruct      1
+%%   StructInfo   'CompiledModel.GlobalMemoryMap.NonVirtualStructures.Bus[1]'
+%%   :
+%% }
+%%
+%% where StructInfo is a reference to the data's Bus properties, and is 
+%% only included if IsStruct = 1.
+%%
+%% StructInfo refers to a record in GlobalMemoryMap.NonVirtualStructures, this record is
+%% record of all the Bus Structures in the model. The layout of this record is 
+%% as follows
+%%
+%% GlobalMemoryMap {
+%%   NonVirtualStructures {
+%%     NumNonVirtualBuses 1
+%%     Bus {
+%%       Name           "Bus1"                                   
+%%       Description    ""        
+%%       Header         ""     
+%%       DataTypeIdx    14                             
+%%       NumElements    2                                 
+%%       BusElement {                                                         
+%%         Name           "BusElem1"
+%%         Class          "scalar"
+%%         DataTypeIdx    0
+%%         IsComplex      0
+%%         IsFixedPoint   0
+%%         IsStruct          0
+%%         NumCols        1
+%%         NumDimensions  2
+%%         NumRows        1
+%%       }
+%%       BusElement {                                                         
+%%         Name           "BusElem2"
+%%         Class          "col-mat"
+%%         DataTypeIdx    0
+%%         IsComplex      0
+%%         IsFixedPoint   0
+%%         IsStruct          0
+%%         NumCols        4
+%%         NumDimensions  2
+%%         NumRows        3
+%%       }
+%%     }
+%%   }
+%% }
+%%
+%% o The Bus Properties can be directly accessed from the data.
+%%   %assign isDataABus = data.IsStruct
+%%   %if isDataABus
+%%     %assign busName              = data.StructInfo.Name
+%%     %assign busDescription       = data.StructInfo.Description
+%%     :
+%%     %assign numBusElementsInData = data.StructInfo.NumElements
+%%     %foreach eIdx = numBusElementsInData
+%%       %assign busElementName  = data.StructInfo.BusElement[eIdx].Name
+%%       %assign busElementNRows = data.StructInfo.BusElement[eIdx].NumRows
+%%       :
+%%     %endforeach
+%%   %endif
+%%
+%%   Note: The fields in BusElement record closely match that of a Data
+%%         (unstructured or structured) in GlobalMemoryMap. 
+%%
+%% o If a BusElement is a Bus structure itself, then a reference to Bus's
+%%   properties is added to the BusElement record. For e.g
+%%
+%% GlobalMemoryMap {
+%%   :
+%%   NonVirtualStructures {
+%%     :
+%%     Bus {
+%%       Name           "Bus1"                                   
+%%       Description    ""        
+%%       Header         ""     
+%%       DataTypeIdx    14                             
+%%       NumElements    2                                 
+%%       BusElement {                                                         
+%%         Name           "BusElem1"
+%%         :
+%%         IsStruct          0                                      
+%%       }
+%%       BusElement {                                                         
+%%         Name           "BusElem2"
+%%         :
+%%         IsStruct          1
+%%         StructInfo {
+%%           Name           "SubBus"                                   
+%%           Description    ""        
+%%           Header         ""     
+%%           DataTypeIdx    14                             
+%%           NumElements    2                                 
+%%           BusElement {    
+%%             Name           "BusSubElem1"
+%%             :
+%%           }
+%%           BusElement {         
+%%             Name           "BusSubElem2"
+%%             :
+%%           }
+%%         }
+%%       }
+%%     }
+%%   }
+%% }
+%%
+%% 12. You produce the GlobalMemoryMap by setting global variables in your
+%% system target file.  The abstract for SLibMapData describes how to avoid
+%% generating individual maps.
+%%
+%% %% direct RTW to generate data map, excluding external outputs
+%%
+%% %assign GenerateInterfaceAPI = 1
+%%
+%% %include "commonsetup.tlc"
+%%
+%% %% do your stuff
+%%
+%% %include "commonentry.tlc"  /% map is produced with generated code %/
+%%
+%% %% do more of your stuff
+%%
+%% You can interogate the memory map using the TLC debugger.  Alternatively,
+%% you can pass CompiledModel.GlobalMemoryMap into the MATLAB base workspace
+%% by assigning InterfaceAPIAsMatlabVar.  For example,
+%%
+%% %assign InterfaceAPIAsMatlabVar = "foo"
+%%
+%% creates MATLAB variable foo, and mirrors GlobalMemoryMap.
+%%
+%% 13.  You can get a slight boost in map performance if you turn off the
+%% symbol name conflict resolution code (code to check conflicts between
+%% Simulink signals, parameters and Stateflow data).  To turn off the
+%% checking using this assignment
+%%
+%% %assign GMMConflictChecking = 0
+%%
+%% Note that the default value is 1 (on).
+%%
+%%
+%% Example
+%% =======
+%%
+%% The following GlobalMemoryMap example summarizes the specification.
+%% Most fields are self-explanatory.  Fields requiring additional explanation
+%% over what's been described contain a brief description.
+%% 
+%% GlobalMemoryMap {
+%%   NumStructuredData 4
+%%   NumUnstructuredData 1
+%%   NumCustomData 2  
+%%   StructuredData {
+%%     Name              "rtB"
+%%     NumSections       2
+%%     NumTotalElements  5        # sum of all stucture
+%%                                # elements including width
+%%                                # and complexity.  This value
+%%                                # is used to determine the
+%%                                # structure size for a CPU
+%%                                # with a single word
+%%                                # length (e.g., TMS320xx)
+%%    
+%%     DataDefaults {             # Provides Default values for
+%%       Class           scalar   # structured data variables that
+%%       HasObject       0        # are not explicitly written in the
+%%       IsFixedPoint    0        # structured data records
+%%       IsStruct        0
+%%       NumCols         1
+%%       NumDimensions   2
+%%       NumRows         1
+%%       Permission     "rw"
+%%       Type           "signal"
+%%     }
+%%     Section {
+%%       DataTypeIdx  0
+%%       IsComplex    0
+%%       BaseAddr     "&rtB.foo[0]"
+%%       NumElements  4                # sum of section elements
+%%       NumData      2
+%%       Data {
+%% 	   Name               rtB.foo
+%% 	   Type               signal 
+%%         IsStruct           0        # no associated Bus Structure
+%%         IsFixedPoint       0
+%%         HasObject          0        # does not have associated UDD object
+%% 	   Permission         ro       # read-only (ro) vs. read-write (rw)
+%%         BaseAddr           &rtB.foo[0] # base address of this data
+%% 	   OffsetFromBaseAddr 0        # Offset from &rtB.foo[0].
+%%           			       # For example, if DataTypeIdx
+%%           			       # maps to "double", then you
+%%           			       # are X number of doubles from
+%%           			       # the section's base address
+%%           			       # (the offset includes width
+%%           			       # and complexity so you don't need
+%%           			       # to worry about those details).
+%% 	   Class                vector 
+%% 	   NumDimensions        2
+%% 	   NumRows              3
+%% 	   NumCols              1
+%%       }
+%%       Data {
+%% 	   Name               rtB.vout
+%% 	   Type               signal
+%%         IsStruct           0
+%%         IsFixedPoint       0
+%%         HasObject          0
+%% 	   Permission         ro
+%%         BaseAddr           &rtB.vout
+%% 	   OffsetFromBaseAddr 3
+%% 	   Class              scalar
+%% 	   NumDimensions      2
+%% 	   NumRows            1
+%% 	   NumCols            1
+%%       }
+%%     }
+%%     Section {
+%%       DataTypeIdx  15
+%%       IsComplex    0
+%%       IsFixedPoint 1
+%%       BaseAddr     "&rtB.fpsignal"
+%%       NumElements  1
+%%       NumData      1
+%%       Data {
+%% 	   Name               rtB.fpsignal
+%%   	   Type               signal
+%%         IsStruct           0
+%%         IsFixedPoint       1
+%%         HasObject          0
+%%   	   Permission         ro
+%%         BaseAddr           &rtB.fpsignal
+%%   	   OffsetFromBaseAddr 0
+%%   	   Class              scalar
+%% 	   NumDimensions      2
+%%   	   NumRows            1
+%%   	   NumCols            1
+%%   	   FixedPointInfo {
+%%   	     NumBits   32
+%%   	     IsSigned  1
+%%   	     FixedExp  -24
+%%   	     FracSlope 1.0
+%%   	     Bias      2000.0
+%%           Scaling   uniform
+%%   	   }
+%%   	 }
+%%     }
+%%   }
+%%   StructuredData {
+%%     Name              "rtP"
+%%     NumSections       1
+%%     NumTotalElements  2
+%%     DataDefaults {             
+%%       Class           scalar   
+%%       HasObject       0
+%%       IsStruct        0
+%%       IsFixedPoint    0        
+%%       NumCols         1
+%%       NumDimensions   2
+%%       NumRows         1
+%%       Permission     "rw"
+%%       Type           "parameter"
+%%     }
+%%     Section {
+%%     	 DataTypeIdx  0
+%%     	 IsComplex    1
+%%       NumElements  2
+%%     	 BaseAddr     "&rtP.k.re"
+%%     	 NumData      1
+%%     	 Data {
+%%     	   Name               rtP.k
+%%     	   Type               parameter
+%%         HasObject          0
+%%         IsStruct           0
+%%         IsFixedPoint       0
+%%         HasObject          0
+%%     	   Permission         rw
+%%     	   BaseAddr           &rtP.k
+%%     	   OffsetFromBaseAddr 0
+%%     	   Class              scalar
+%% 	   NumDimensions      2
+%%     	   NumRows            1
+%%     	   NumCols            1
+%%         IsTransformed      0  # parameter transformation (0/1)
+%%         Value              0.0
+%%     	 }
+%%     }
+%%   }
+%%   StructuredData {
+%%     Name              "rtDWork"
+%%     NumSections       1
+%%     NumTotalElements  1
+%%     DataDefaults {             # Provides Default values for
+%%       Class           scalar   # structured data variables that
+%%       HasObject       0        # are not explicitly written in the
+%%       IsFixedPoint    0        # structured data records
+%%       IsStruct        0
+%%       NumCols         1
+%%       NumDimensions   2
+%%       NumRows         1
+%%       Permission     "rw"
+%%       Type           "state"
+%%     }
+%%     Section {
+%%     	 DataTypeIdx  0
+%%     	 IsComplex    1
+%%       NumElements  2
+%%     	 BaseAddr     "&rtDWork.foo_state"
+%%     	 NumData      2
+%%     	 Data {
+%%     	   Name               rtDWork.foo_state
+%%     	   Type               state
+%%         IsStruct           0
+%%         IsFixedPoint       0
+%%         HasObject          0
+%%     	   Permission         ro
+%%     	   BaseAddr           &rtDWork.foo_state
+%%     	   OffsetFromBaseAddr 0
+%%     	   Class              scalar
+%% 	   NumDimensions      2
+%%     	   NumRows            1
+%%     	   NumCols            1
+%%     	 }
+%%     	 Data {
+%%     	   Name               rtDWork.foo_mydata
+%%     	   Type               unknown
+%%         IsStruct           0
+%%         IsFixedPoint       0
+%%         HasObject          0
+%%     	   Permission         ro
+%%     	   BaseAddr           &rtDWork.foo_mydata
+%%     	   OffsetFromBaseAddr 1
+%%     	   Class              scalar
+%% 	   NumDimensions      2
+%%     	   NumRows            1
+%%     	   NumCols            1
+%%     	 }
+%%     }
+%%   }
+%%   StructuredData {
+%%     Name              "rtX"
+%%     NumSections       1
+%%     NumTotalElements  1
+%%     DataDefaults {             # Provides Default values for
+%%       Class           scalar   # structured data variables that
+%%       HasObject       0        # are not explicitly written in the
+%%       IsFixedPoint    0        # structured data records
+%%       IsStruct        0
+%%       NumCols         1
+%%       NumDimensions   2
+%%       NumRows         1
+%%       Permission     "rw"
+%%       Type           "state"
+%%     }
+%%     Section {
+%%     	 DataTypeIdx  0
+%%     	 IsComplex    0
+%%       NumElements  1
+%%     	 BaseAddr     "&rtX.Cont_Integrator"
+%%     	 NumData      1
+%%     	 Data {
+%%     	   Name               rtX.Cont_Integrator
+%%     	   Type               state
+%%         IsStruct           0
+%%         IsFixedPoint       0
+%%         HasObject          0
+%%     	   Permission         ro
+%%     	   BaseAddr           &rtX.Cont_Integrator
+%%     	   OffsetFromBaseAddr 0
+%%     	   Class              scalar
+%% 	   NumDimensions      2
+%%     	   NumRows            1
+%%     	   NumCols            1
+%%     	 }
+%%     }
+%%   }
+%%   UnstructuredData {
+%%     Name             "RTW unstructured data"
+%%     NumTotalElements 2
+%%     NumData          2
+%%     DataDefaults {             # Provides Default values for
+%%       Access         "direct"  # unstructured data variables that
+%%       Class           scalar   # are not explicitly written in the
+%%       DataTypeIdx     0        # unstructured data records
+%%       HasObject       0
+%%       IsStruct        0
+%%       IsComplex       0
+%%       IsFixedPoint    0        
+%%       NumCols         1
+%%       NumDimensions   2
+%%       NumRows         1
+%%       Permission     "rw"
+%%       Type           "signal"
+%%     }
+%%     Data {       
+%% 	 Name           k1     
+%% 	 Type           signal    # signal, parameter, state, data
+%% 	 DataTypeIdx    15        #
+%%       IsStruct       0         # 0/1
+%% 	 IsComplex      0         # 0/1
+%%       IsFixedPoint   1         # 0/1
+%%       HasObject          0
+%% 	 BaseAddr       "&k1"     #
+%% 	 Access         indirect  # memory access: direct, indirect
+%% 	 Permission     ro        # memory permission: ro, rw
+%% 	 Class          scalar    # scalar, vector, col-mat, row-mat
+%%                                # Note: You access a 3x4 matrix A as
+%%                                # A[colIdx][rowIdx] and A[roxIdx][rowIdx]
+%%                                # for column major and row-major order,
+%%                                # respectively.  Non-inlined S-Functions
+%%                                # matrices are stored in column major
+%%                                # order.  All other matrices are stored
+%%                                # in row major order.
+%%       NumDimensions  2
+%% 	 NumRows        1
+%% 	 NumCols        1
+%%       FixedPointInfo {
+%%         NumBits    16 
+%%         IsSigned   1  
+%%         FixedExp   -4 
+%%         FracSlope  1.0
+%%         Bias       0.0
+%%       }               
+%%     }
+%%     Data {
+%% 	 Name           k2
+%% 	 Type           parameter
+%% 	 DataTypeIdx    0
+%%       IsStruct       0         # 0/1
+%% 	 IsComplex      0
+%%       IsFixedPoint   0
+%%       HasObject      0
+%% 	 BaseAddr       "&k2"
+%% 	 Access         direct
+%% 	 Permission     rw
+%% 	 Class          scalar
+%%       NumDimensions  2
+%% 	 NumRows        1
+%% 	 NumCols        1
+%%       IsTransformed  0
+%%       Value          100.0
+%%     }
+%%   }
+%%   CustomData {
+%%     Name             Struct
+%%     Package          Simulink
+%%     FullName         Simulink::Struct
+%%     NumData          1
+%%     Version          1
+%%     DataDefaults {      # Provides Default values for Custom Data variables
+%%                         # that are not explicitly written in the
+%%                         # Custom data records
+%%       Access         "direct" 
+%%       Class           scalar   
+%%       DataTypeIdx     0        
+%%       HasObject       1
+%%       IsStruct        0
+%%       IsComplex       0
+%%       IsFixedPoint    0        
+%%       Permission     "rw"
+%%       Type           "parameter"
+%%     }
+%%     Data {       
+%% 	 Name           k3     
+%% 	 Type           parameter # signal, parameter, state, data
+%% 	 DataTypeIdx    15        #
+%%       IsStruct       0         # 0/1
+%% 	 IsComplex      0         # 0/1
+%%       IsFixedPoint   1         # 0/1
+%%       HasObject      1
+%%       Object         CompiledModel.ModelParameters.Parameter[4].Object
+%% 	 BaseAddr       "&k3"     #
+%%       IsTransformed  0
+%% 	 Permission     ro        # memory permission: ro, rw
+%% 	 Class          scalar    # scalar, vector, col-mat, row-mat
+%%       NumDimensions  2
+%% 	 NumRows        1
+%% 	 NumCols        1
+%%       Value          145
+%%       FixedPointInfo {
+%%         NumBits    16 
+%%         IsSigned   1  
+%%         FixedExp   -4 
+%%         FracSlope  1.0
+%%         Bias       0.0
+%%       }               
+%%     }
+%%   }
+%%   CustomData {
+%%     Name             Define
+%%     Package          Simulink
+%%     FullName         Simulink::Define
+%%     NumData          1
+%%     Version          1
+%%     Data {       
+%% 	 Name           k3     
+%% 	 Type           parameter # signal, parameter, state, data
+%% 	 DataTypeIdx    15        #
+%%       IsStruct       0         # 0/1
+%% 	 IsComplex      0         # 0/1
+%%       IsFixedPoint   1         # 0/1
+%%       HasObject      1
+%%       Object         CompiledModel.ModelParameters.Parameter[5].Object
+%% 	 BaseAddr       address not supported for #define
+%%       IsTransformed  0
+%% 	 Permission     ro        # memory permission: ro, rw
+%% 	 Class          scalar    # scalar, vector, col-mat, row-mat
+%%       NumDimensions  -1
+%%       Value          112
+%%       FixedPointInfo {
+%%         NumBits    16 
+%%         IsSigned   1  
+%%         FixedExp   -4 
+%%         FracSlope  1.0
+%%         Bias       0.0
+%%       }               
+%%     }
+%%   }
+%% }
+%%
+
+%if EXISTS("_GLOBALMAPLIB_") == 0
+%assign _GLOBALMAPLIB_ = 1
+
+%% =============================================================================
+%% Add global TLC variables to CompiledModel
+%% =============================================================================
+
+%% These variables are used to enforce the order dependency in which
+%% maps are generated.  Signals must be generated before parameters and
+%% parameters must be generated before Stateflow data.
+
+%<LibAddToCompiledModel("CustomInterfaceAPIGenerated", 0)>
+%<LibAddToCompiledModel("InterfaceAPIGenerated", 0)>
+%<LibAddToCompiledModel("BlockOutputsMapped", 0)>
+%<LibAddToCompiledModel("ExternalInputsMapped", 0)>
+%<LibAddToCompiledModel("ParametersMapped", 0)>
+%<LibAddToCompiledModel("StateflowDataMapped", 0)>
+
+%% These variables control which maps are generated.
+
+%if !EXISTS("MapBlockOutputs")
+  %assign MapBlockOutputs = 1
+%endif
+%if !EXISTS("MapExternalInputs")
+  %assign MapExternalInputs = 1
+%endif
+%if !EXISTS("MapExternalOutputs")
+  %assign MapExternalOutputs = 0
+%endif
+%if !EXISTS("MapParameters")
+  %assign MapParameters = 1
+%endif
+%if !EXISTS("MapStateflow")
+  %assign MapStateflow = 1
+%endif
+%if !EXISTS("MapDWork")
+  %assign MapDWork = 1
+%endif
+%if !EXISTS("MapContStates")
+  %assign MapContStates = 1
+%endif
+%if !EXISTS("MapDerivatives")
+  %assign MapDerivatives = 1
+%endif
+%if !EXISTS("GMMConflictChecking")
+  %assign GMMConflictChecking = 1
+%endif
+
+%<LibAddToCompiledModel("MapBlockOutputs",     MapBlockOutputs)>
+%<LibAddToCompiledModel("MapExternalInputs",   MapExternalInputs)>
+%<LibAddToCompiledModel("MapExternalOutputs",  MapExternalOutputs)>
+%<LibAddToCompiledModel("MapParameters",       MapParameters)>
+%<LibAddToCompiledModel("MapStateflow",        MapStateflow)>
+%<LibAddToCompiledModel("MapDWork",            MapDWork)>
+%<LibAddToCompiledModel("MapContStates",       MapContStates)>
+%<LibAddToCompiledModel("MapDerivatives",      MapDerivatives)>
+%<LibAddToCompiledModel("GMMConflictChecking", GMMConflictChecking)>
+
+%% Function: SLibGetGlobalMemoryDataRecord ======================================
+%% Abstract:
+%%   Return the data record in the GlobalMemoryMap corresponding to
+%%   the specified MemoryMapIdx.
+%%
+%function SLibGetGlobalMemoryDataRecord(memoryMapIdx) void
+  
+  %assign structIdx = memoryMapIdx[0]
+  %assign secIdx    = memoryMapIdx[1]
+  %assign dataIdx   = memoryMapIdx[2]
+
+  %assign retVal = []
+
+  %with CompiledModel.GlobalMemoryMap
+    %if dataIdx == -1       %% Local / reused data
+      %assign retVal = []
+    %elseif secIdx == -1        %% Unstructured data
+      %assign retVal = UnstructuredData.Data[dataIdx]
+      
+    %elseif structIdx == -1 %% Custom data
+      %assign retVal = CustomData[secIdx].Data[dataIdx]
+      
+    %else                   %% Structured data
+      %assign section = StructuredData[structIdx].Section[secIdx]
+      %assign retVal  = section.Data[dataIdx]
+    %endif
+  %endwith
+
+  %return retVal
+%endfunction
+
+
+%% Function: SLibMapData =======================================================
+%% Abstract:
+%%   Map Real-Time Workshop data structures that do not have custom storage
+%%   class.
+%%
+%%   By default not all data is mapped.  You can individually control which
+%%   data structures are mapped by setting global TLC variables to 0 or 1
+%%   prior to including "codegenentry.tlc" or "commonsetup.tlc".  Possible
+%%   flags to set are:
+%%
+%%   MapBlockOutputs
+%%   MapExternalInputs
+%%   MapExternalOutputs
+%%   MapParameters
+%%   MapStateflow
+%%   MapDWork
+%%   MapContStates
+%%   MapDerivatives
+%%
+%%   You can get a boost in map performance if you turn off the symbol
+%%   name conflict resolution code (code that checks that no conflicts
+%%   are ever encountered among Simulink signals, parameters, Stateflow
+%%   data, etc.)  This is achieved with
+%%
+%%   %assign GMMConflictChecking = 0   %% default value is 1
+%%
+%function SLibMapData() void
+
+  %if InterfaceAPIGenerated == 1
+    %% Different API call SLibMapData at different locations.
+    %return ""
+  %endif
+  
+  %assign ::CompiledModel.InterfaceAPIGenerated = 1
+
+%% send message to command window
+%if RTWVerbose
+%selectfile STDOUT
+### Generating TLC interface API.
+%selectfile NULL_FILE
+%endif
+
+  %assign ::CompiledModel.BlockOutputsMapped = 0
+  %assign ::CompiledModel.ExternalInputsMapped = 0
+  %assign ::CompiledModel.ParametersMapped = 0
+  %assign ::CompiledModel.StateflowDataMapped = 0
+
+  %if MapBlockOutputs
+    %<FcnMapBlockIO()>
+  %endif
+  
+  %if MapExternalInputs
+    %<FcnMapExternalInputs()>
+  %endif
+  
+  %% NOTE: external input and block I/O signals must be mapped prior to
+  %% parameters and Stateflow data for proper symbol conflict resolution.
+  %% This dependency is explicitly enforced by RTW using the global
+  %% TLC variables created above.
+
+  %if MapParameters
+    %<FcnMapParameters()>
+  %endif
+  
+  %if MapStateflow
+    %<FcnMapStateflowData()>
+  %endif
+  
+  %if MapDWork
+    %<FcnMapDWork()>
+  %endif
+  
+  %if MapContStates
+    %<FcnMapContStates()>
+  %endif
+  
+  %if MapDerivatives
+    %<FcnMapContStateDerivatives()>
+  %endif
+  
+  %if MapExternalOutputs
+    %<FcnMapExternalOutputs()>
+  %endif
+  
+  %% internal testing facility.  Set InterfaceAPITestFile2
+  %% to the name of the TLC file which contains your map
+  %% validation code.  For example, InterfaceAPITestFile2="mytest.tlc"
+  %if EXISTS("InterfaceAPITestFile2")
+    %assign stdText = "### Writing custom code from %<InterfaceAPITestFile2>"
+    %<LibWriteToStandardOutput(stdText)>
+    %include "%<InterfaceAPITestFile2>"
+  %endif
+  
+%endfunction
+
+
+%% Function: SLibMapCustomData =================================================
+%% Abstract:
+%%   Map Real-Time Workshop data structures that have custom storage class.
+%%
+%%   By default not all data is mapped.  You can individually control which
+%%   data structures are mapped by setting global TLC variables to 0 or 1
+%%   prior to including "codegenentry.tlc" or "commonsetup.tlc".  Possible
+%%   flags to set are:
+%%
+%%   MapBlockOutputs
+%%   MapExternalInputs
+%%   MapParameters
+%%   MapDWork
+%%
+%%   You can get a boost in map performance if you turn off the symbol
+%%   name conflict resolution code (code that checks that no conflicts
+%%   are ever encountered among Simulink signals, parameters, Stateflow
+%%   data, etc.)  This is achieved with
+%%
+%%   %assign GMMConflictChecking = 0   %% default value is 1
+%%
+%function SLibMapCustomData() void
+  %assign ::CompiledModel.CustomInterfaceAPIGenerated = 1
+  
+  %% send message to command window
+  %if RTWVerbose
+%selectfile STDOUT
+### Generating TLC interface API for custom data
+%selectfile NULL_FILE
+  %endif
+
+  %assign ::CompiledModel.BlockOutputsMapped = 0
+  %assign ::CompiledModel.ExternalInputsMapped = 0
+  %assign ::CompiledModel.ParametersMapped = 0
+
+  %if MapBlockOutputs
+    %<FcnMapCustomBlockIO()>
+  %endif
+  
+  %if MapExternalInputs
+    %<FcnMapCustomExternalInputs()>
+  %endif
+  
+  %% NOTE: external input and block I/O signals must be mapped prior to
+  %% parameters and Stateflow data for proper symbol conflict resolution.
+  %% This dependency if explicitly enforced by RTW using the global
+  %% TLC variables created above.
+
+  %if MapParameters
+    %<FcnMapCustomParameters()>
+  %endif
+  
+  %if MapDWork
+    %<FcnMapCustomDWork()>
+  %endif
+  
+%endfunction
+
+
+%% Function: SLibPostMapData ===================================================
+%% Abstract:
+%%   Now that the map is created, do something with it
+%%
+%function SLibPostMapData() void
+  %% remove "internal use" only fields
+  %<FcnPostMapCleanup()>
+  
+  %% create GlobalMemoryMap as MATLAB variable
+  %if EXISTS("InterfaceAPIAsMatlabVar")
+    %assign mlVar = InterfaceAPIAsMatlabVar
+    %if FEVAL("tlc2m",mlVar, GlobalMemoryMap)
+      %warning Created GlobalMemoryMap as MATLAB variable: %<mlVar>
+    %else
+      %warning Unable to create GlobalMemoryMap as MATLAB variable: %<mlVar>
+    %endif
+  %endif
+  
+  %% internal testing facility.  Set InterfaceAPITestFile
+  %% to the name of the TLC file which contains your map
+  %% validation code.  For example, InterfaceAPITestFile="mytest.tlc"
+  %if EXISTS("InterfaceAPITestFile")
+    %include "%<InterfaceAPITestFile>"
+  %endif
+%endfunction
+
+
+%% =============================================================================
+%% Create GlobalMemoryMap and attach it to CompiledModel
+%% =============================================================================
+
+%% Function: FcnCreateGlobalMemoryMap ==========================================
+%% Abstract:
+%%   Creates the GlobalMemoryMap and attaches it to CompiledModel.
+%%
+%%   Note that InstanceCache and SignalInstanceCache are for internal use 
+%%   only, and are removed in FcnPostMapCleanup.
+%%
+%function FcnCreateGlobalMemoryMap() void
+  %addtorecord CompiledModel      \
+  GlobalMemoryMap {               \
+    NumStructuredData   0         \
+    NumUnstructuredData 1         \
+    NumCustomData       0         \
+    CustomDataIndexHash {         \
+    }                             \
+    ModelParameters {             \
+      NumModelParameters 0        \
+      InstanceCache {             \
+        NumCachedVariables 0      \
+      }                           \ 
+      SignalInstanceCache {       \
+        NumCachedSignals 0        \
+      }                           \
+    }                             \
+    NonVirtualStructures {               \
+      NumNonVirtualBuses  0         \
+      BusStructureHash {          \
+      }                           \
+    }                             \
+    FixedPointMaps {              \
+      NumFixPtTypes 0             \
+      FixPtTypeHash {             \
+      }                           \
+    }                             \
+    UnstructuredData {            \
+      Name             "RTW unstructured data" \
+      NumTotalElements 0          \
+      NumData          0          \
+      DataDefaults {              \
+        Access        "direct"    \
+        Class         "scalar"    \
+	DataTypeIdx    0          \
+        HasObject     TLC_FALSE   \
+	IsComplex     TLC_FALSE   \
+        IsFixedPoint  TLC_FALSE   \
+	IsStruct      TLC_FALSE   \
+        NumCols        1          \
+        NumDimensions  2          \
+        NumRows        1          \
+	Permission    "rw"        \
+	Type          "parameter" \
+      }                           \
+    }                             \
+  }
+%endfunction
+
+%<FcnCreateGlobalMemoryMap()>
+
+
+
+%% Function: FcnAddNonUniformElement ========================================
+%% Abstract:
+%%   Add element scaling information to FixedPointInfo record.
+%%
+%function FcnAddNonUniformElement(fpInfo, dtIdx) void
+  %assign dtDefine = DataTypes.DataType[dtIdx]
+  %addtorecord fpInfo              \
+  ElementScaling {                 \
+    FixedExp  dtDefine.FixedExp;   \
+    FracSlope dtDefine.FracSlope;  \
+    Bias      dtDefine.Bias        \
+  }
+%endfunction
+
+%% Function: FcnGetUniformFixPtTypeInGMM ======================================
+%% Abstract:
+%%   Get the index of a uniformly scaled  Fixed Point Record in 
+%%   GlobalMemoryMap.FixedPointMaps, where FixedPointMaps is a hashed 
+%%   collection of all Fixed Point data types. If the Fixed Point 
+%%   information does not exist in the hashed map, then it is
+%%   added to the map and the new index is returned
+%%
+%%   GlobalMemoryMap {
+%%     :
+%%     FixedPointMaps {
+%%       NumFixPtTypes 1
+%%       FixPtRecord {
+%%         Scaling
+%%         NumBits
+%%         IsSigned
+%%         FixedExp
+%%         FracSlope
+%%         Bias
+%%       }
+%%     }
+%%   }
+%%
+%% Use the returned index to add a reference to the FixPtRecord in your data
+%% for example
+%%   %addtorecord data FixedPointInfo FixedPointMaps.FixPtRecord[returnIndex]
+%%
+%function FcnGetUniformFixPtTypeInGMM(dataTypeRec) void
+  %assert (dataTypeRec.IsFixedPoint == 1)
+  %assign hashKey    = "DataTypeId%<dataTypeRec.Id>"
+  %with GlobalMemoryMap.FixedPointMaps
+    %if ISFIELD(FixPtTypeHash, hashKey)
+      %assign fxpIdx = GETFIELD(FixPtTypeHash, hashKey)
+    %else
+      %assign fxpIdx = NumFixPtTypes
+      %addtorecord GlobalMemoryMap.FixedPointMaps \
+      FixPtRecord {                               \
+        Scaling   "uniform";                      \
+	NumBits   dataTypeRec.ActualBits;         \
+	IsSigned  dataTypeRec.IsSigned;           \
+	FixedExp  dataTypeRec.FixedExp;           \
+	FracSlope dataTypeRec.FracSlope;          \
+	Bias      dataTypeRec.Bias                \
+      }
+      %addtorecord FixPtTypeHash %<hashKey> fxpIdx
+      %assign GlobalMemoryMap.FixedPointMaps.NumFixPtTypes = NumFixPtTypes + 1
+    %endif
+  %endwith
+  %return fxpIdx
+%endfunction
+
+%% Function: FcnGetNonUniformFixPtTypeInGMM ===================================
+%% Abstract:
+%%   Get the index of a non-uniformly scaled  Fixed Point Record in 
+%%   GlobalMemoryMap.FixedPointMaps
+%%
+%function FcnGetNonUniformFixPtTypeInGMM(dataTypeRec, FixPtGainID) void
+  %assert (dataTypeRec.IsFixedPoint == 1)
+  %assign hashKey    = "DataTypeId%<dataTypeRec.Id>"
+  %with GlobalMemoryMap.FixedPointMaps
+    %if ISFIELD(FixPtTypeHash, hashKey)
+      %assign fxpIdx = GETFIELD(FixPtTypeHash, hashKey)
+    %else
+      %assign fxpIdx = NumFixPtTypes
+      %assign nRows  = SIZE(FixPtGainID,0)
+      %assign nCols  = SIZE(FixPtGainID,1)
+      %assign numEls = nRows * nCols
+      %addtorecord GlobalMemoryMap.FixedPointMaps  \
+      FixPtRecord {                                \
+        Scaling            "non-uniform";          \
+	NumBits            dataTypeRec.ActualBits; \
+	IsSigned           dataTypeRec.IsSigned;   \
+	NumElementScalings numEls                  \
+      }
+      %foreach rowIdx = nRows
+	%foreach colIdx = nCols
+	  %assign dtIdx = FixPtGainID[rowIdx][colIdx]
+	  %<FcnAddNonUniformElement(FixPtRecord[fxpIdx], dtIdx)>
+	%endforeach
+      %endforeach
+      %addtorecord FixPtTypeHash %<hashKey> fxpIdx
+      %assign GlobalMemoryMap.FixedPointMaps.NumFixPtTypes = NumFixPtTypes + 1
+    %endif
+  %endwith
+  %return fxpIdx
+%endfunction
+
+%% Function: FcnAddFixedPointInfo =============================================
+%% Abstract:
+%%   Add relevent fixed-point information to a record.  Fixed-point signals
+%%   always have uniform scaling.  Fixed-point parameters can have uniform or
+%%   non-uniform scaling.
+%%
+%%   data:   global memory map data record to which we'll add FixedPointInfo
+%%   record: reference of data to be mapped
+%%
+%function FcnAddFixedPointInfo(data, record) void
+  %switch record.RecordType
+    %case "BlockOutput"
+    %case "ExternalInput"
+    %case "DWork"
+      %assign dtDefine = DataTypes.DataType[record.DataTypeIdx]
+      %assign scaling  = "uniform"
+      %break
+      
+    %case "ModelParameter"
+      %assign mdlParam = record
+      %assign sysIdx   = mdlParam.ReferencedBy[0][0]
+      %assign blkIdx   = mdlParam.ReferencedBy[0][2]
+      %assign block    = System[sysIdx].Block[blkIdx]
+      %if block.Type != "SubSystem" 
+	%assign prmIdx   = mdlParam.ReferencedBy[0][3]
+	%assign blkParam = block.Parameter[prmIdx]
+	%%
+	%% Only fixed-point Gain parameters can have non-uniform scaling.
+	%%
+	%assign FixPtGainID = []
+	%if blkParam.Name == "Gain" 
+	  %if ISFIELD(block, "ParamSettings") && ...
+	    ISFIELD(block.ParamSettings, "FixPtGainID")
+	    %assign FixPtGainID = block.ParamSettings.FixPtGainID
+	  %elseif ISFIELD(block, "FixPtGainID")
+	    %assign FixPtGainID = block.FixPtGainID
+	  %endif
+	%endif
+	%if !ISEMPTY(FixPtGainID) && ...
+	  (SIZE(FixPtGainID,0) > 1 || SIZE(FixPtGainID,1) > 1)
+	  %assign scaling  = "non-uniform"
+	  %assign dtDefine = DataTypes.DataType[FixPtGainID[0][0]]
+	  %assign fxpIdx = FcnGetNonUniformFixPtTypeInGMM(dtDefine,FixPtGainID)
+	%else
+	  %assign scaling  = "uniform"
+	  %assign dtDefine = DataTypes.DataType[record.OriginalDataTypeIdx]
+	%endif
+      %else
+	%assign scaling  = "uniform"
+	%assign dtDefine = DataTypes.DataType[record.OriginalDataTypeIdx]
+      %endif
+      %break
+      
+    %default
+      %<LibReportFatalError("unknown record type: %<record.RecordType>.")>
+  %endswitch
+  
+  %if scaling == "uniform"
+    %assign fxpIdx = FcnGetUniformFixPtTypeInGMM(dtDefine)
+  %endif
+  
+  %addtorecord data \
+  FixedPointInfo GlobalMemoryMap.FixedPointMaps.FixPtRecord[fxpIdx]
+%endfunction
+
+
+%% Function: FcnAddObjectProperties ===========================================
+%% Abstract:
+%%   Add Simulink data object property info.
+%%
+%function FcnAddObjectProperties(data, record) void
+  %if record.HasObject
+    %assign data.HasObject = TLC_TRUE
+    %addtorecord data Object record.Object
+  %endif
+%endfunction
+
+%% Function: FcnAddBusStructure ============================================
+%% Abstract
+%%   Adds Simulink Bus information to data. 
+%%
+%function FcnAddBusStructure(data, dataTypeIdx) void
+  %if LibIsStructDataType(dataTypeIdx)
+    %% if data type is Struct (Bus)
+    %assign data.IsStruct     = TLC_TRUE     %% Set IsStruct to 1
+    %% create a hashKey for the bus data type
+    %assign busDataTypeIdx = dataTypeIdx
+    %assign busName        = LibGetDataTypeNameFromId(busDataTypeIdx)
+    %assign busHashKey     = busName
+    %with GlobalMemoryMap.NonVirtualStructures
+      %% Check if the Bus is already mapped in GlobalMemoryMap
+      %if ISFIELD(BusStructureHash, busHashKey)
+	%assign busIdx = GETFIELD(BusStructureHash, busHashKey)
+      %else
+	%% if not mapped, add the Bus to GlobalMemoryMap
+	%assign busIdx      = NumNonVirtualBuses
+	%assign numElements = LibDataTypeNumElements(busDataTypeIdx)
+	%addtorecord GlobalMemoryMap.NonVirtualStructures              \
+	Bus {                                                          \
+	  Name           busName;                                      \
+	  Description    LibDescriptionForDataTypeIdx(busDataTypeIdx); \       
+	  Header         LibHeaderForDataTypeIdx(busDataTypeIdx)       \
+	  DataTypeIdx    busDataTypeIdx;                               \
+	  NumElements    numElements                                   \
+	  BusElementDefaults {                                         \
+	    Class          "scalar";                                   \
+	    DataTypeIdx    0;                                          \
+	    IsComplex      TLC_FALSE;                                  \
+	    IsFixedPoint   TLC_FALSE;                                  \
+	    IsStruct       TLC_FALSE;                                  \
+	    NumDimensions  2;                                          \
+	    NumRows        1;                                          \
+	    NumCols        1                                           \
+	  }                                                            \
+	}
+	%% add the new bus to the hashed record
+	%addtorecord BusStructureHash %<busHashKey> busIdx
+	%% increment the number of Bus structures
+	%assign GlobalMemoryMap.NonVirtualStructures.NumNonVirtualBuses = ...
+	  NumNonVirtualBuses + 1  
+	%% Add Elements to the Bus Structure
+	%foreach elemIdx = numElements
+	  %<FcnAddBusElement(Bus[busIdx], elemIdx)>
+	%endforeach
+      %endif
+      %% add a reference of the Bus to the data
+      %addtorecord data StructInfo Bus[busIdx]
+    %endwith
+  %endif  %% LibIsStructDataType(data.DataTypeIdx)
+%endfunction
+
+%% Function: FcnAddBusElement ================================================
+%% Abstract:
+%%   Add a Simulink Bus Element information to a Bus structure record in 
+%%   GlobalMemoryMap
+%%   gmmBusStructure - Bus structure in GlobalMemoryMap.NonVirtualStructures
+%%   elemIdx   - element number
+%%
+%function FcnAddBusElement(gmmBusStructure, elemIdx) void
+  %with GlobalMemoryMap.NonVirtualStructures
+    %assign busDTIdx        = gmmBusStructure.DataTypeIdx
+    
+    %% Element Data Type attributes
+    %assign elemDataTypeIdx = LibDataTypeElementDataTypeId(busDTIdx, elemIdx)
+    %assign elemIsFixPt     = LibDataTypeElementIsFixPt(busDTIdx, elemIdx)
+    
+    %% Element Dimensions
+    %% In MATLAB, Scalar and Vector Bus Elements have NumDimensions=1 &
+    %% Dimensions = [1] for scalar and [N] for 1-D vectors.
+    %% To be consistent with how Dimensions are represented for DATA in
+    %% GlobalMemoryMap, dimensions for Bus Elements are represented as 
+    %% following
+    %% Scalar
+    %%     Class         "scalar"
+    %%     NumDimensions  2
+    %%     NumRows        1
+    %%     NumCols        1
+    %% Nx1 Vector 
+    %%     Class         "vector"
+    %%     NumDimensions  2
+    %%     NumRows        N
+    %%     NumCols        1
+    %% NxM Matrix
+    %%     Class         "col-mat"
+    %%     NumDimensions  2
+    %%     NumRows        N
+    %%     NumCols        M
+    %% N-D Matrix (highly unlikely for Bus Signals)
+    %%     Class         "col-mat-nd"
+    %%     NumDimensions  N
+    %%     NumRows        -1
+    %%     NumCols        -1
+    %%     Dimensions     [N, M, P, ...]
+    %assign numDims  = LibDataTypeElementNumDimensions(busDTIdx, elemIdx)
+    %assign dims     = LibDataTypeElementDimensions(busDTIdx, elemIdx)
+    %assign width    = LibDataTypeElementWidth(busDTIdx, elemIdx)
+    %if numDims == 1
+      %assign numDims = 2
+      %assign numRows = CAST("Number", dims[0])
+      %assign numCols = 1
+      %if width == 1
+	%assign elemClass = "scalar"
+      %else
+	%assign elemClass = "vector"
+      %endif
+    %elseif numDims == 2
+      %assign numRows   = CAST("Number", dims[0])
+      %assign numCols   = CAST("Number", dims[1])
+      %assign elemClass = "col-mat"
+    %else
+      %assign numRows   = -1
+      %assign numCols   = -1
+      %assign elemClass = "col-mat-nd"
+    %endif
+    %addtorecord gmmBusStructure                                         \
+    BusElement {                                                         \
+      Name           LibDataTypeElementName(busDTIdx, elemIdx)           \
+    }
+    
+    %% Assign class if not scalar, otherwise inherit from Defaults
+    %if elemClass != "scalar"
+      %assign gmmBusStructure.BusElement[elemIdx].Class = elemClass
+    %endif
+    
+    %% Assign dataType if not Double, otherwise inherit from Defaults
+    %if elemDataTypeIdx > 0
+      %assign gmmBusStructure.BusElement[elemIdx].DataTypeIdx = elemDataTypeIdx
+    %endif
+    
+    %% Assign complexity if Complex, otherwise inherit from Defaults
+    %if  LibDataTypeElementIsComplex(busDTIdx, elemIdx)
+      %assign gmmBusStructure.BusElement[elemIdx].IsComplex = TLC_TRUE
+    %endif
+    
+    %% Add Fixed Point Information
+    %if elemIsFixPt
+      %assign gmmBusStructure.BusElement[elemIdx].IsFixedPoint = TLC_TRUE
+      %assign fxpDataTypeRec = DataTypes.DataType[elemDataTypeIdx]
+      %assign fxpIdx = FcnGetUniformFixPtTypeInGMM(fxpDataTypeRec)
+      %addtorecord gmmBusStructure.BusElement[elemIdx]   ...
+	FixedPointInfo GlobalMemoryMap.FixedPointMaps.FixPtRecord[fxpIdx]
+    %endif
+    
+    %% Check and add Dimensions to the Data record
+    %if numDims > 2
+      %addtorecord gmmBusStructure.BusElement[elemIdx] Dimensions dims
+      %assign gmmBusStructure.BusElement[elemIdx].NumDimensions =  numDims
+    %else
+      %if numRows > 1
+	%assign gmmBusStructure.BusElement[elemIdx].NumRows = numRows
+      %endif
+      %if numCols > 1
+	%assign gmmBusStructure.BusElement[elemIdx].NumCols = numCols
+      %endif
+    %endif
+    
+    %% Add Bus Structure information
+    %<FcnAddBusStructure(gmmBusStructure.BusElement[elemIdx], elemDataTypeIdx)>
+    
+  %endwith
+%endfunction
+
+
+%% Function: LibRTWRecord ====================================================
+%% Abstract:
+%%   For a given memory map record, return the corresponding RTW record
+%%
+%function LibRTWRecord(record)
+  %return record.RTWRecord
+%endfunction
+
+%% Function: LibGetDataWidth ===================================================
+%% Abstract:
+%%   For a given record, return the width
+%%
+%function LibGetDataWidth(record) void
+  %switch record.RecordType
+    %case "BlockOutput"
+      %return record.Width
+      
+    %case "ModelParameter"
+      %return record.Width
+      
+    %case "DWork"
+      %return FcnGetDWorkWidth(record)
+      
+    %case "ContState"
+      %return record.Width
+      
+    %case "ExternalInput"
+      %return record.Width
+      
+    %case "ExternalOutput"
+      %return record.Width
+      
+    %case "MachineData"
+      
+      %assign sfSize = CAST("Number", record.Size)
+      %return sfSize == 0 ? 1 : sfSize
+      
+    %default
+      %<LibReportFatalError("unknown record type: %<record.RecordType>")>
+  %endswitch
+%endfunction    
+
+
+%% Function: LibGetDataLayout ==================================================
+%% Abstract:
+%%   For a given record, return a vector with the following format
+%%
+%%     ["data-class", NumDimensions, [dim1, dim2, ..., dimM], "optWidth"]
+%%
+%%   For example, a 4D, 2D, vector and scalar data, respectively
+%%
+%%     3x3x2x5 matrix: ["col-mat-nd", 4, [3, 3, 2, 5], "[0]"]
+%%     3x4 matrix:     ["col-mat",    2, [3, 4],       "[0]"]
+%%     3(x1) vector:   ["vector",     2, [3, 1],       "[0]"]
+%%     (1x1) scalar:   ["scalar",     2, [1, 1],       ""   ]
+%%
+%%   The optWidth value is how the first element is indexed.
+%%
+%function LibGetDataLayout(record) void
+  %assign width = LibGetDataWidth(record)
+  %switch record.RecordType
+    %case "BlockOutput"
+      
+      %assign bo      = record
+      %assign sysIdx  = bo.SigSrc[0]
+      %assign blkIdx  = bo.SigSrc[2]
+      %assign portIdx = bo.SigSrc[3]
+      %assign block   = System[sysIdx].Block[blkIdx]
+      %assign dop     = block.DataOutputPort[portIdx]
+      
+      %if dop.Dimensions[0] != -1 && width > 1
+	%assign nRows = dop.Dimensions[0]
+	%assign nCols = dop.Dimensions[1]
+	%return ["col-mat", 2, [%<nRows>,%<nCols>], "[0]"]
+      %elseif width > 1
+	%return ["vector",  2, [%<width>,1], "[0]"]
+	%else
+	  %return ["scalar", 2, [1,1], ""]
+      %endif
+      %break
+      
+    %case "ModelParameter"
+      
+      %assign mdlParam = record
+      %assign sysIdx   = mdlParam.ReferencedBy[0][0]
+      %assign blkIdx   = mdlParam.ReferencedBy[0][2]
+      %assign block    = System[sysIdx].Block[blkIdx]
+      
+      %assign dims  = LibBlockParameterDimensions(mdlParam)
+      %assign nDims = SIZE(dims, 1)
+      %assign width = LibBlockParameterWidth(mdlParam)
+      %assign nRows = mdlParam.Dimensions[0]
+      %assign nCols = width/nRows
+
+      %if nDims > 2
+	%return ["col-mat-nd", %<nDims>, %<dims>, "[0]"]
+      %elseif nRows > 1 && nCols > 1
+	%return ["col-mat", 2, [%<nRows>,%<nCols>], "[0]"]
+      %elseif width > 1
+	%return ["vector", 2, [%<nRows>,%<nCols>], "[0]"]
+      %else
+	  %return ["scalar", 2, [1,1], ""]
+      %endif
+      %break
+      
+    %case "DWork"
+    %case "ContState"
+      %if width == 1
+	  %return ["scalar", 2, [1,1], ""]
+      %else
+	%return ["vector", 2, [%<width>,1], "[0]"]
+      %endif
+      %break
+      
+    %case "ExternalInput"
+      %assign ei    = record
+      %if ISFIELD(ei, "Dimensions") && width > 1
+	%assign nRows = ei.Dimensions[0]
+	%assign nCols = ei.Dimensions[1]
+	%return ["col-mat", 2, [%<nRows>,%<nCols>], "[0]"]
+      %elseif width > 1
+	%return ["vector", 2, [%<width>,1], "[0]"]
+      %else
+	  %return ["scalar", 2, [1,1], ""]
+      %endif
+      %break
+      
+    %case "ExternalOutput"
+      %assign eo     = record
+      %assign sysIdx = eo.Block[0]
+      %assign blkIdx = eo.Block[1]
+      %assign oblock = System[sysIdx].Block[blkIdx]
+      %assign ip     = oblock.DataInputPort
+      %if ISFIELD(ip, "Dimensions") && width > 1
+	%assign nRows = ip.Dimensions[0]
+	%assign nCols = ip.Dimensions[1]
+	%return ["col-mat", 2, [%<nRows>,%<nCols>], "[0]"]
+      %elseif ip.Width > 1
+	%return ["vector", 2, [%<ip.Width>,1], "[0]"]
+      %else
+	  %return ["scalar", 2, [1,1], ""]
+      %endif
+      %break
+      
+    %case "MachineData"
+      
+      %assign sfInfo = record
+      %assign sfSize = CAST("Number", sfInfo.Size)
+      
+      %if width > 1
+	%return ["vector", 2, [%<width>,1], "[0]"]
+      %else
+	%return ["scalar", 2, [1,1], ""]
+      %endif
+      %break
+      
+    %default
+      %<LibReportFatalError("unknown record type: %<record.RecordType>")>
+  %endswitch
+%endfunction    
+
+
+%% Function: SLibGetDataLayout =================================================
+%% Abstract:
+%%   For a given record, return a vector with the following format
+%%
+%%     ["data-class", NumDimensions, [dim1, dim2, ..., dimM], "optWidth"]
+%function SLibGetDataLayout(record) void
+  %return LibGetDataLayout(record)
+%endfunction    
+
+
+%% Function: FcnAddCustomData ==================================================
+%% Abstract:
+%%   Adds a custom data to CustomData
+%function FcnAddCustomData(record) void
+  %assign gmm = GlobalMemoryMap
+
+  %% See if a custom class of the given name and package exists; if not, 
+  %% create it
+  %assign packageName = LibGetRTWInfoObjectPackage(record)
+  %assign className   = LibGetCustomStorageClassName(record)
+  %assign classIdx    = SLibGetCustomStorageIdxInMap(packageName, className)
+  %if classIdx == -1
+    
+    %% Find RTW record for this storage class and cache it
+    %foreach idx = NumCustomStorageClasses
+      %if CustomStorageClass[idx].Package == packageName ...
+	&& CustomStorageClass[idx].Name == className
+	%assign rtwRecord = CustomStorageClass[idx]
+	%break
+      %endif
+    %endforeach
+    
+    %% Add record to global map
+    %addtorecord  gmm               \
+    CustomData {                    \
+      Name             className;   \
+      Package          packageName; \
+      NumData          0        ;   \
+      Version          1;           \
+      RTWRecord        rtwRecord;   \
+      FullName         "%<packageName>::%<className>"; \
+      RecordType       "CustomStorageClassInMap" \
+      DataDefaults {                \
+        Access         "direct"     \
+	Class          "scalar"     \
+	DataTypeIdx      0          \
+	HasObject      TLC_TRUE     \
+	IsComplex      TLC_FALSE    \
+	IsFixedPoint   TLC_FALSE    \
+	IsStruct       TLC_FALSE    \
+	Permission      "rw"        \
+	Type            "parameter" \
+	}                           \
+    }
+
+    %% Increment number of custom records
+    %assign classIdx = gmm.NumCustomData
+    %assign gmm.NumCustomData = gmm.NumCustomData + 1
+    
+    %% cache name and index away for fast retrival
+    %if !ISFIELD(gmm.CustomDataIndexHash, packageName)
+      %addtorecord gmm.CustomDataIndexHash %<packageName> {}
+    %endif
+    %addtorecord gmm.CustomDataIndexHash.%<packageName> %<className> classIdx
+    %assign csc = gmm.CustomData[classIdx]
+    
+    %% Obtain version
+    %assign dummyScope = csc
+    %assign genType    = SLibGetGenerateTypeForData(record)
+    %if GENERATE_TYPE_FUNCTION_EXISTS(dummyScope, "Version", genType)
+      %assign csc.Version = GENERATE_TYPE(rtwRecord, "Version", genType)
+    %endif
+    
+  %else
+    %assign csc = gmm.CustomData[classIdx]
+  %endif
+
+  %% nestle data records in the parent storage class records
+  %addtorecord csc.RTWRecord.Data %<LibGetRecordIdentifier(record)> record
+  
+  %% Get the CSC Definition - Used for data access 
+  %assign cscDefn = SLibGetCSCDefForName(packageName, className)
+  
+  %if ISEMPTY(cscDefn)
+    %% R13 CSC's with no csc_registration file. Create a temporary record with
+    %% DataAccess as "unknown", since SLibGetDataAccess requires this field
+    %createrecord cscDefn {DataAccess "unknown"}
+  %endif
+  
+  %switch record.RecordType
+    %case "BlockOutput"
+
+      %% block output signal
+      
+      %assign bo           = record
+      %assign bo.CustomStorageClassVersion = csc.Version
+      %assign dataTypeIdx  = bo.DataTypeIdx
+      %assign isComplex    = bo.ComplexSignal == "yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = LibCustomData(bo, "layout", "", "")
+      %assign dataAccess   = SLibGetDataAccess(cscDefn, bo)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = bo.Identifier
+      %assign baseIndex    = bo.Width == 1 ?  "" : "[0]"
+      %if (dataAccess == "Pointer")
+	%assign baseAddr   = "&(%<name>)"
+      %else  %% dataAccess is either direct or unknown
+	%assign baseAddr   = LibCustomData(bo, "address", baseIndex, reim)
+      %endif
+      %assign type         = "signal"
+      %assign permission   = bo.Invariant == "no" ? "rw" : "ro"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> bo
+      %break
+    
+    %case "ExternalInput"
+      
+      %% Simulink external input signal (root inport)
+      
+      %assign ei           = record
+      %assign ei.CustomStorageClassVersion = csc.Version
+      %assign dataTypeIdx  = ei.DataTypeIdx
+      %assign isComplex    = ei.ComplexSignal=="yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = LibCustomData(ei, "layout", "", "")
+      %assign dataAccess   = SLibGetDataAccess(cscDefn, ei)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = ei.Identifier
+      %assign baseIndex    = ei.Width == 1 ?  "" : "[0]"
+      %if (dataAccess == "Pointer")
+	%assign baseAddr   = "&(%<name>)"
+      %else  %% dataAccess is either direct or unknown
+	%assign baseAddr   = LibCustomData(ei, "address", baseIndex, reim)
+      %endif
+      %assign type         = "signal"
+      %assign permission   = "rw"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> ei
+      %break
+    
+    %case "DWork"
+      
+      %% Simulink DWork (discrete states and persistent memory)
+      
+      %assign dwRec        = record
+      %assign dwRec.CustomStorageClassVersion = csc.Version
+      %assign dataTypeIdx  = dwRec.DataTypeIdx
+      %assign isComplex    = dwRec.ComplexSignal=="yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = LibCustomData(dwRec, "layout", "", "")
+      %assign dataAccess   = SLibGetDataAccess(cscDefn, dwRec)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = dwRec.Identifier
+      %assign baseIndex    = dwRec.Width == 1 ?  "" : "[0]"
+      %if (dataAccess == "Pointer")
+	%assign baseAddr   = "&(%<name>)"
+      %else  %% dataAccess is either direct or unknown
+	%assign baseAddr   = LibCustomData(dwRec, "address", baseIndex, reim)
+      %endif
+      %assign type         = dwRec.UsedAs == "DSTATE" ? "state" : "unknown"
+      %assign permission   = "ro"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> dwRec
+      %break
+    
+    %case "ModelParameter"
+      
+      %% Simulink parameter
+      
+      %assign mdlParam     = record
+      %assign mdlParam.CustomStorageClassVersion = csc.Version
+      %assign dataTypeIdx  = mdlParam.DataTypeIdx
+      %assign isComplex    = mdlParam.ComplexSignal
+      %assign isFixedPoint = DataTypes.DataType[mdlParam.OriginalDataTypeIdx].IsFixedPoint
+      %assign name         = mdlParam.Identifier
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout   = LibCustomData(mdlParam, "layout", "", "")
+      %assign dataAccess   = SLibGetDataAccess(cscDefn, mdlParam)
+      %assign baseIndex    = SIZE(mdlParam.Value, 1) == 1 ?  "" : "[0]"
+      %if (dataAccess == "Pointer")
+	%assign baseAddr   = "&(%<name>)"
+      %else  %% dataAccess is either direct or unknown
+	%assign baseAddr   = LibCustomData(mdlParam, "address", baseIndex, reim)
+      %endif
+      %assign type         = "parameter"
+      %assign permission   = "rw"
+
+      %break
+      
+    %case "MachineData"
+      
+      %<LibReportFatalError("custom storage class not supported for \
+                             stateflow machine data")>
+      
+    %default
+      %<LibReportFatalError("unknown record type: %<record.RecordType>")>
+  %endswitch
+
+  %% Copy TypeQualifier from CustomStorageClass to data record in CompiledModel
+  %assign tq = LibCustomData(record, "qualifier", "", "")
+  %if !WHITE_SPACE(tq)
+    %switch record.RecordType
+      %case "BlockOutput"
+      %case "ExternalInput"
+      %case "DWork"
+	%assign tqName = "StorageTypeQualifier"
+	%break
+      %case "ModelParameter"
+	%assign tqName = "TypeQualifier"
+	%break
+      %case "MachineData"
+	%<LibReportFatalError("custom storage class not supported for \
+	                       stateflow machine data")>
+      %default
+	%<LibReportFatalError("unknown record type: %<record.RecordType>")>
+    %endswitch
+    %<SETFIELD(record, tqName, tq)>
+  %endif
+	
+  %assign class = dataLayout[0]
+  %if class != "other"
+    %assign nDims = dataLayout[1]
+    %assign dims  = dataLayout[2]
+  %else
+    %assign nDims = -1
+    %assign dims  = []
+  %endif
+  
+  %% create custom data record
+  %addtorecord csc                     \
+  Data {                               \
+    Name            name;              \
+    BaseAddr        baseAddr;          \
+    NumDimensions   nDims              \
+  }
+  
+  %% Note: Some fields can be inherited from CustomData.DataDefaults
+  %% If they cannot be inherited, set the fields explicitly
+  
+  %% Check and add Access to the Data record
+  %if dataAccess == "Pointer"
+    %assign csc.Data[csc.NumData].Access = "indirect"
+  %elseif (dataAccess == "unknown")
+    %assign csc.Data[csc.NumData].Access = "unknown"
+  %endif
+  
+  %% Check and add class to the Data record
+  %if class != "scalar"
+    %assign csc.Data[csc.NumData].Class = class
+  %endif
+    
+  %% Check and add DataTypeIdx to the Data record
+  %if dataTypeIdx > 0
+    %assign csc.Data[csc.NumData].DataTypeIdx = dataTypeIdx
+  %endif
+   
+  %% Check and add IsComplex to the Data record
+  %if isComplex
+    %assign csc.Data[csc.NumData].IsComplex = isComplex
+  %endif
+  
+  %% Check and add IsFixedPoint to the Data record
+  %if isFixedPoint
+    %assign csc.Data[csc.NumData].IsFixedPoint = isFixedPoint
+    %% Add FixedPoint record
+    %<FcnAddFixedPointInfo(csc.Data[csc.NumData], record)>
+  %endif
+  
+  %% Check and add Permission to the Data record
+  %if permission != "rw"
+    %assign csc.Data[csc.NumData].Permission = permission
+  %endif
+  
+  %% Check and add Type to the Data record
+  %if type != "parameter"
+    %assign csc.Data[csc.NumData].Type = type
+  %endif
+  
+  %% Add NumDimensions, NumRows NumCols
+  %if nDims > 2
+    %addtorecord csc.Data[csc.NumData] Dimensions dims
+  %elseif nDims > 0
+    %addtorecord csc.Data[csc.NumData] NumRows  CAST("Number", dims[0])
+    %addtorecord csc.Data[csc.NumData] NumCols  CAST("Number", dims[1])
+  %endif
+  
+  %% optional IsTransformed identifier and Value (parameters only)
+    %if record.RecordType == "ModelParameter"
+      %addtorecord csc.Data[csc.NumData] IsTransformed 0
+      %addtorecord csc.Data[csc.NumData] Value         mdlParam.Value
+    %endif
+ 
+  %%
+  %% Parameter specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "ModelParameter"
+    %assign idNum = IDNUM(mdlParam.LogicalSrc)
+    %addtorecord csc.Data[csc.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord csc.Data[csc.NumData] SL_ExtModeType "parameter"
+  %endif
+
+  %%
+  %% Signal specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "BlockOutput"
+    %assign idNum = IDNUM(bo.LogicalSrc)
+    %addtorecord csc.Data[csc.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord csc.Data[csc.NumData] SL_ExtModeType "signal"
+  %endif
+  
+  %%
+  %% DWork specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "DWork"
+    %assign idNum = IDNUM(dwRec.LogicalSrc)
+    %addtorecord csc.Data[csc.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord csc.Data[csc.NumData] SL_ExtModeType "dwork"
+  %endif
+  
+  %%
+  %% External Input signal specific fields.
+  %% (Note: SL_ExtModeType is for internal use only)
+  %%
+  %if record.RecordType == "ExternalInput"
+    %addtorecord csc.Data[csc.NumData] SL_ExtModeType "signal"
+  %endif
+  
+  %% optional Simulink data object properties
+  %if record.HasObject
+    %addtorecord csc.Data[csc.NumData] Object record.Object
+  %else
+    %assign csc.Data[csc.NumData].HasObject = TLC_FALSE
+  %endif
+  
+  %% optional Bus Object Properties
+  %<FcnAddBusStructure(csc.Data[csc.NumData], dataTypeIdx)>
+
+  %% Cross Reference the record in the map entry
+  %addtorecord csc.Data[csc.NumData] RTWRecord record
+  
+  %% add custom data record to map
+  %assign csc.NumData = csc.NumData + 1
+  
+  %% return data index
+  %return csc.NumData-1
+%endfunction
+
+%% Function: FcnAddUnstructuredData ============================================
+%% Abstract:
+%%   Adds an unstructured (global) data to UnstructuredData.
+%%
+%function FcnAddUnstructuredData(record) void
+  %assign gmm = GlobalMemoryMap
+  %assign usd = gmm.UnstructuredData
+
+  %switch record.RecordType
+    %case "BlockOutput"
+
+      %% block output signal
+      
+      %assign bo           = record
+      %assign dataTypeIdx  = bo.DataTypeIdx
+      %assign isComplex    = bo.ComplexSignal == "yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(bo)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = bo.Identifier
+      %assign isPointer    = bo.StorageClass == "ImportedExternPointer" ? ...
+	TLC_TRUE : TLC_FALSE
+      %if (isPointer)
+	%assign baseAddr   = "&(%<name>)"
+      %else
+	%assign baseAddr   = "&%<name>%<dataLayout[3]>%<reim>"
+      %endif
+      %assign type         = "signal"
+      %assign permission   = bo.Invariant == "no" ? "rw" : "ro"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> bo
+      %break
+    
+    %case "ExternalInput"
+      
+      %% Simulink external input signal (root inport)
+      
+      %assign ei           = record
+      %assign dataTypeIdx  = ei.DataTypeIdx
+      %assign isComplex    = ei.ComplexSignal=="yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(ei)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = ei.Identifier
+      %assign isPointer    = ei.StorageClass == "ImportedExternPointer" ? ...
+	TLC_TRUE : TLC_FALSE
+      %if (isPointer)
+	%assign baseAddr   = "&(%<name>)"
+      %else
+	%assign baseAddr   = "&%<name>%<dataLayout[3]>%<reim>"
+      %endif
+      %assign type         = "signal"
+      %assign permission   = "rw"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> ei
+      %break
+    
+    %case "DWork"
+      
+      %% Simulink external input signal (root inport)
+      
+      %assign dwRec        = record
+      %assign dataTypeIdx  = dwRec.DataTypeIdx
+      %assign isComplex    = dwRec.ComplexSignal=="yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(dwRec)
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign name         = dwRec.Identifier
+      %assign isPointer    = dwRec.StorageClass == "ImportedExternPointer" ? ...
+	TLC_TRUE : TLC_FALSE
+      %if (isPointer)
+	%assign baseAddr   = "&(%<name>)"
+      %else
+	%assign baseAddr   = "&%<name>%<dataLayout[3]>%<reim>"
+      %endif
+      %assign type         = dwRec.UsedAs == "DSTATE" ? "state" : "unknown"
+      %assign permission   = "ro"
+      %%
+      %% add signal name to SignalInstanceCache so we make sure
+      %% SL parameters and SF data don't clash
+      %%
+      %addtorecord gmm.ModelParameters.SignalInstanceCache %<name> dwRec
+      %break
+    
+    %case "ModelParameter"
+      
+      %% Simulink parameter
+      
+      %assign mdlParam     = record
+      %assign dataTypeIdx  = mdlParam.DataTypeIdx
+      %assign isComplex    = mdlParam.ComplexSignal
+      %assign isFixedPoint = DataTypes.DataType[mdlParam.OriginalDataTypeIdx].IsFixedPoint
+      %assign name         = mdlParam.Identifier
+      %assign reim         = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout   = SLibGetDataLayout(mdlParam)
+      %assign isPointer    = mdlParam.StorageClass == "ImportedExternPointer" ? ...
+	TLC_TRUE : TLC_FALSE
+      %if (isPointer)
+	%assign baseAddr   = "&(%<name>)"
+      %else
+	%assign baseAddr   = LibModelParameterAddr(mdlParam,"","",0)
+      %endif
+      %assign type         = "parameter"
+      %assign permission   = "rw"
+      %break
+      
+    %case "MachineData"
+      
+      %% Stateflow data
+      
+      %assign sfInfo       = record
+      %assign dataTypeIdx  = SLibGetIdFromMLDataType(sfInfo.DataType)
+      %assign isFixedPoint = 0
+      %assign name         = sfInfo.Name
+      %assign isComplex    = 0
+      %assign reim         = ""
+      %assign dataLayout   = SLibGetDataLayout(sfInfo)
+      %assign baseAddr     = "&%<name>%<dataLayout[3]>%<reim>"
+      %assign type         = "data"
+      %assign isPointer    = TLC_FALSE
+      %assign access       = "direct"
+      %assign permission   = "rw"
+      %break
+      
+    %default
+      %<LibReportFatalError("unknown record type: %<record.RecordType>")>
+  %endswitch
+
+  %assign class = dataLayout[0]
+  %assign nDims = dataLayout[1]
+  %assign dims  = dataLayout[2]
+  
+  %% create unstructured data record
+  %addtorecord usd                     \
+  Data {                               \
+    Name            name               \
+    BaseAddr        baseAddr           \
+  }
+  
+  %% Note: Some fields can be inherited from UnstructureData.DataDefaults
+  %% If they cannot be inherited, set the fields explicitly
+  
+  %% Check and add Access to the Data record
+  %if (isPointer)
+    %assign usd.Data[usd.NumData].Access = "indirect"
+  %endif
+  
+  %% Check and add class to the Data record
+  %if class != "scalar"
+    %assign usd.Data[usd.NumData].Class = class
+  %endif
+  
+  %% Check and add DataTypeIdx to the Data record
+  %if dataTypeIdx > 0
+    %assign usd.Data[usd.NumData].DataTypeIdx = dataTypeIdx
+  %endif
+  
+  %% Check and add IsComplex to the Data record
+  %if isComplex
+    %assign usd.Data[usd.NumData].IsComplex = isComplex
+  %endif
+  
+  %% Check and add IsFixedPoint to the Data record
+  %if isFixedPoint
+    %assign usd.Data[usd.NumData].IsFixedPoint = isFixedPoint
+    %% Add FixedPoint record
+    %<FcnAddFixedPointInfo(usd.Data[usd.NumData], record)>
+  %endif
+  
+  %% Check and add Dimensions to the Data record
+  %if nDims > 2
+    %addtorecord usd.Data[usd.NumData] Dimensions dims
+    %assign usd.Data[usd.NumData].NumDimensions =  nDims
+  %else
+    %if dims[0] > 1
+      %assign usd.Data[usd.NumData].NumRows = CAST("Number", dims[0])
+    %endif
+    %if dims[1] > 1
+      %assign usd.Data[usd.NumData].NumCols = CAST("Number", dims[1])
+    %endif
+  %endif
+  
+  %% Check and add permission to the Data record
+  %if permission != "rw"
+    %assign usd.Data[usd.NumData].Permission = permission
+  %endif
+  
+  %% Check and add Type to the Data record
+  %if type != "parameter"
+    %assign usd.Data[usd.NumData].Type = type
+  %endif
+  
+  %% optional IsTransformed identifier and Value (parameters only)
+  %if record.RecordType == "ModelParameter"
+    %addtorecord usd.Data[usd.NumData] IsTransformed 0
+    %addtorecord usd.Data[usd.NumData] Value         mdlParam.Value
+  %endif
+
+  %%
+  %% Parameter specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "ModelParameter"
+    %assign idNum = IDNUM(mdlParam.LogicalSrc)
+    %addtorecord usd.Data[usd.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord usd.Data[usd.NumData] SL_ExtModeType "parameter"
+  %endif
+
+  %%
+  %% Signal specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "BlockOutput"
+    %assign idNum = IDNUM(bo.LogicalSrc)
+    %addtorecord usd.Data[usd.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord usd.Data[usd.NumData] SL_ExtModeType "signal"
+  %endif
+  
+  %%
+  %% DWork specific fields.
+  %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+  %%
+  %if record.RecordType == "DWork"
+    %assign idNum = IDNUM(dwRec.LogicalSrc)
+    %addtorecord usd.Data[usd.NumData] SL_LogicalSrc idNum[1]
+    %addtorecord usd.Data[usd.NumData] SL_ExtModeType "dwork"
+  %endif
+  
+  %%
+  %% External Input signal specific fields.
+  %% (Note: SL_ExtModeType is for internal use only)
+  %%
+  %if record.RecordType == "ExternalInput"
+    %addtorecord usd.Data[usd.NumData] SL_ExtModeType "signal"
+  %endif
+  
+  %% optional Simulink data object properties
+  %<FcnAddObjectProperties(usd.Data[usd.NumData], record)>
+  
+  %% optional Bus Object Properties
+  %<FcnAddBusStructure(usd.Data[usd.NumData], dataTypeIdx)>
+
+  %% compute size of data
+  %assign size = FcnComputeSizeFromDims(dims,isComplex)
+
+  %% add unstructured data record to map
+  %assign usd.NumData = usd.NumData + 1
+  %assign usd.NumTotalElements = usd.NumTotalElements + size
+  
+  %% return data index
+  %return usd.NumData-1
+%endfunction
+
+
+%% Function: FcnAddStructuredData ==============================================
+%% Abstract:
+%%  Add Data record to designated (structured) section.
+%%
+%function FcnAddStructuredData(structure, section, record) void
+  %switch record.RecordType
+    %case "BlockOutput"
+
+      %% block output signal
+
+      %assign bo           = record
+      %assign dataTypeIdx  = bo.DataTypeIdx
+      %assign isComplex    = bo.ComplexSignal == "yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(bo)
+      %assign isInvariant  = bo.Invariant == "yes" 
+      %assign baseSysIdx   = GetBaseSystemIdx()
+      %if isInvariant
+	%assign boPath    = ...
+	  FcnGetConstBlockIOPath(bo.SigSrc[0], bo.SigSrc[1], baseSysIdx)
+	
+      %else
+	%assign boPath    = ...
+	  FcnGetLocalBlockIOPath(bo.SigSrc[0], bo.SigSrc[1], baseSysIdx)
+      %endif
+      %assign name         = "%<boPath>%<bo.Identifier>"
+      %assign type         = "signal"
+      %assign permission   = isInvariant ? "ro" : "rw"
+
+      %break
+    
+    %case "ExternalInput"
+      
+      %% external input signal (root inport)
+
+      %assign ei           = record
+      %assign dataTypeIdx  = ei.DataTypeIdx
+      %assign isComplex    = ei.ComplexSignal == "yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(ei)
+      %assign name         = "%<tInput>%<IOQualifier>%<ei.Identifier>"
+      %assign type         = "signal"
+      %assign permission   = "rw"
+
+      %break
+    
+    %case "ExternalOutput"
+      
+      %% external output signal (root outport)
+      
+      %assign eo           = record
+      %assign sysIdx       = eo.Block[0]
+      %assign blkIdx       = eo.Block[1]
+      %assign oblock       = System[sysIdx].Block[blkIdx]
+      %assign ip           = oblock.DataInputPort
+      %assign dataTypeIdx  = ip.DataTypeIdx
+      %assign isComplex    = ip.ComplexSignal == "yes"
+      %assign isFixedPoint = 0
+      %assign dataLayout   = SLibGetDataLayout(eo)
+      %assign name         = "%<tOutput>%<IOQualifier>%<oblock.Identifier>"
+      %assign type         = "signal"
+      %assign permission   = "ro"
+      %break
+    
+    %case "ModelParameter"
+      
+      %% Simulink parameter
+      
+      %assign mdlParam     = record
+      %assign idNum        = IDNUM(mdlParam.LogicalSrc)
+      %assign mdlParamIdx  = idNum[1]
+      %assign dataTypeIdx  = mdlParam.DataTypeIdx
+      %assign isComplex    = mdlParam.ComplexSignal
+      %assign isFixedPoint = DataTypes.DataType[mdlParam.OriginalDataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(mdlParam)
+      %assign name         = FcnGetAutoParamIdentifier(mdlParam)
+      %assign type         = "parameter"
+
+      %if mdlParam.IsSfcnSizePrm || ...
+	mdlParamIdx >= NumInrtP
+	%% Parameter is a
+	%% o C-MEX S-Function size parameter
+	%% o Rolled vector or matrix
+	%assign permission = "ro"
+      %else
+	%assign permission = "rw"
+      %endif
+
+      %break
+      
+    %case "DWork"
+      
+      %% DWork (states in paticular)
+      
+      %assign dwRec        = record
+      %assign dataTypeIdx  = dwRec.DataTypeIdx
+      %assign isComplex    = dwRec.ComplexSignal == "yes"
+      %assign isFixedPoint = DataTypes.DataType[dataTypeIdx].IsFixedPoint
+      %assign dataLayout   = SLibGetDataLayout(dwRec)
+      %assign baseSysIdx   = GetBaseSystemIdx()
+      %assign name         = FcnGetDWorkIdentifier(dwRec, baseSysIdx)
+      %assign type         = dwRec.UsedAs == "DSTATE" ? "state" : "unknown"
+      %assign permission   = "ro"
+      %break
+      
+    %case "ContState"
+      
+      %% Continuous states 
+      
+      %assign cStateRec    = record
+      %assign dataTypeIdx  = 0
+      %assign isComplex    = 0
+      %assign isFixedPoint = 0
+      %assign dataLayout   = SLibGetDataLayout(cStateRec)
+      %assign baseSysIdx   = GetBaseSystemIdx()
+      %assign name         = FcnGetCStateIdentifier(cStateRec, baseSysIdx)
+      %assign type         = "state"
+      %assign permission   = "ro"
+      %break
+      
+    %default
+      %<LibReportFatalError("unknown section type.")>
+  %endswitch
+
+  %assign class = dataLayout[0]
+  %assign nDims = dataLayout[1]
+  %assign dims  = dataLayout[2]
+
+  %assign reim = isComplex ? ".%<tRealPart>" : ""
+  %assign baseAddr = "&%<name>%<dataLayout[3]>%<reim>"
+  
+  %if (structure.Name == "StateDerivatives")
+    %assign name      = "%<RTMGet("dX")>[%<section.OffsetCounter>]"
+    %assign baseAddr  = "&(%<name>)"
+    %assign type      = "stateDerivative"
+  %endif
+  
+  %with structure  %% TLC DataDefaults requirement, grandchild inheritance
+    
+    %% create a structured data record
+    %addtorecord section                        \
+    Data {                                      \
+      Name               name;                  \
+      BaseAddr           baseAddr;              \
+      OffsetFromBaseAddr section.OffsetCounter  \
+    }
+    
+    %% Note: Some fields can be inherited from StructuredData.DataDefaults
+    %% If they cannot be inherited, set the fields explicitly
+    
+    %% Check and add class to the Data record
+    %if class != "scalar"
+      %assign section.Data[section.NumData].Class = class
+    %endif
+    
+    %% Check and add Fixed Point to the the data record
+    %if isFixedPoint
+      %assign section.Data[section.NumData].IsFixedPoint = TLC_TRUE
+      %% Add FixedPoint record
+      %<FcnAddFixedPointInfo(section.Data[section.NumData], record)>
+    %endif
+    
+    %% Check and add Dimensions to the Data record
+    %if nDims > 2
+      %addtorecord section.Data[section.NumData] Dimensions dims
+      %assign section.Data[section.NumData].NumDimensions =  nDims
+    %else
+      %if dims[0] > 1
+	%assign section.Data[section.NumData].NumRows = CAST("Number", dims[0])
+      %endif
+      %if dims[1] > 1
+	%assign section.Data[section.NumData].NumCols = CAST("Number", dims[1])
+      %endif
+    %endif
+    
+    %% Check and add Permission to the Data record
+    %if permission != "rw"
+      %assign section.Data[section.NumData].Permission = permission
+    %endif
+
+    %% Check and add Type to the Data record
+    %if type != structure.DataDefaults.Type
+      %assign section.Data[section.NumData].Type = type
+    %endif
+        
+    %% optional IsTransformed identifier and Value (parameters only)
+    %if record.RecordType == "ModelParameter"
+      %addtorecord section.Data[section.NumData] IsTransformed mdlParam.Transformed
+      %addtorecord section.Data[section.NumData] Value         mdlParam.Value
+    %endif
+  
+    %%
+    %% Parameter specific fields.
+    %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+    %%
+    %if record.RecordType == "ModelParameter"
+      %assign idNum = IDNUM(mdlParam.LogicalSrc)
+      %addtorecord section.Data[section.NumData] SL_LogicalSrc idNum[1]
+      %addtorecord section.Data[section.NumData] SL_ExtModeType "parameter"
+    %endif
+    
+    %%
+    %% Signal specific fields.
+    %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+    %%
+    %if record.RecordType == "BlockOutput"
+      %assign idNum = IDNUM(bo.LogicalSrc)
+      %addtorecord section.Data[section.NumData] SL_LogicalSrc idNum[1]
+      %addtorecord section.Data[section.NumData] SL_ExtModeType "signal"
+    %endif
+    
+    %%
+    %% DWork specific fields.
+    %% (Note: SL_LogicalSrc and SL_ExtModeType are for internal use only)
+    %%
+    %if record.RecordType == "DWork"
+      %assign idNum = IDNUM(dwRec.LogicalSrc)
+      %addtorecord section.Data[section.NumData] SL_LogicalSrc idNum[1]
+      %addtorecord section.Data[section.NumData] SL_ExtModeType "dwork"
+    %endif
+    
+    %%
+    %% External Input signal specific fields.
+    %% (Note: SL_ExtModeType is for internal use only)
+    %%
+    %if record.RecordType == "ExternalInput"
+      %addtorecord section.Data[section.NumData] SL_ExtModeType "signal"
+    %endif
+    
+    %% Simulink data object properties
+    %<FcnAddObjectProperties(section.Data[section.NumData], record)>
+    
+    %% optional Bus Object Properties
+    %<FcnAddBusStructure(section.Data[section.NumData], section.DataTypeIdx)>
+  
+    %% compute size of data
+    %assign size = FcnComputeSizeFromDims(dims,isComplex)
+    
+    %% add structured data record
+    %assign section.NumData = section.NumData + 1
+    %assign section.OffsetCounter = section.OffsetCounter + size
+    %assign section.NumElements = section.NumElements + size
+    %assign structure.NumTotalElements = structure.NumTotalElements + size
+    
+  %endwith  %%endwith structure
+  
+  %% return data index
+  %return section.NumData-1
+%endfunction
+
+  
+%% Function: FcnAddSection =====================================================
+%% Abstract:
+%%   Add a section to a structure.
+%%
+%function FcnAddSection(structure, record) void
+  %%
+  %% core attributes
+  %%
+  %switch record.RecordType
+    %case "BlockOutput"
+      %% signal
+      %assign bo          = record
+      %assign dataTypeIdx = bo.DataTypeIdx
+      %assign isComplex   = bo.ComplexSignal == "yes"
+      %assign reim        = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout  = SLibGetDataLayout(bo)
+      %assign isInvariant = bo.Invariant == "yes" 
+      %assign baseSysIdx  = GetBaseSystemIdx()
+      %if isInvariant
+	%assign name = ...
+	  FcnGetConstBlockIOPath(bo.SigSrc[0], bo.SigSrc[1], baseSysIdx)
+      %else
+	%assign name = ...
+	  FcnGetLocalBlockIOPath(bo.SigSrc[0], bo.SigSrc[1], baseSysIdx)
+      %endif
+      %assign baseAddr    = "&%<name>%<bo.Identifier>%<dataLayout[3]>%<reim>"
+      %break
+    
+    %case "ExternalInput"
+      %% external input signal
+      %assign ei          = record
+      %assign dataTypeIdx = ei.DataTypeIdx
+      %assign isComplex   = ei.ComplexSignal == "yes"
+      %assign reim        = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout  = SLibGetDataLayout(ei)
+      %assign baseAddr    = ...
+	"&%<tInput>%<IOQualifier>%<ei.Identifier>%<dataLayout[3]>%<reim>"
+      %break
+
+    %case "ExternalOutput"
+      %% external output signal
+      %assign eo          = record
+      %assign sysIdx      = eo.Block[0]
+      %assign blkIdx      = eo.Block[1]
+      %assign oblock      = System[sysIdx].Block[blkIdx]
+      %assign ip          = oblock.DataInputPort
+      %assign dataTypeIdx = ip.DataTypeIdx
+      %assign isComplex   = ip.ComplexSignal == "yes"
+      %assign reim        = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout  = SLibGetDataLayout(eo)
+      %assign baseAddr    = ...
+	"&%<tOutput>%<IOQualifier>%<oblock.Identifier>%<dataLayout[3]>%<reim>"
+      %break
+    
+    %case "ModelParameter"
+      %% parameter
+      %assign mdlParam    = record
+      %assign dataTypeIdx = mdlParam.DataTypeIdx
+      %assign isComplex   = mdlParam.ComplexSignal
+      %assign reim        = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout  = SLibGetDataLayout(mdlParam)
+      %assign id          = FcnGetAutoParamIdentifier(mdlParam)
+      %assign baseAddr    = "&%<id>%<dataLayout[3]>%<reim>"
+      %break
+    
+    %case "DWork"
+      %% dwork (states in paticular)
+      %assign dwRec       = record
+      %assign dataTypeIdx = dwRec.DataTypeIdx
+      %assign isComplex   = dwRec.ComplexSignal == "yes"
+      %assign reim        = isComplex ? ".%<tRealPart>" : ""
+      %assign dataLayout  = SLibGetDataLayout(dwRec)
+      %assign baseSysIdx  = GetBaseSystemIdx()
+      %assign id          = FcnGetDWorkIdentifier(dwRec, baseSysIdx)
+      %assign baseAddr    = "&%<id>%<dataLayout[3]>%<reim>"
+      %break
+      
+    %case "ContState"
+      %% Continuous States
+      %assign cStateRec   = record
+      %assign dataTypeIdx = 0
+      %assign isComplex   = 0
+      %assign reim        = ""
+      %assign dataLayout  = SLibGetDataLayout(cStateRec)
+      %assign baseSysIdx  = GetBaseSystemIdx()
+      %assign id          = FcnGetCStateIdentifier(cStateRec, baseSysIdx)
+      %assign baseAddr    = "&%<id>%<dataLayout[3]>%<reim>"
+      %if (structure.Name == "StateDerivatives")
+	%assign baseAddr = "&(%<RTMGet("dX")>[0])"
+      %endif
+      %break
+
+    %default
+      %<LibReportFatalError("unknown section type.")>
+  %endswitch
+
+  %% create a structure section
+  %% (Note: OffsetCounter is for internal use only)
+  %addtorecord structure           \
+  Section {                        \
+    DataTypeIdx     dataTypeIdx;   \
+    IsComplex       isComplex;     \
+    BaseAddr        baseAddr;      \
+    NumElements     0;             \
+    NumData         0;             \
+    OffsetCounter   0              \
+  }
+  
+  %% add section to structure
+  %assign structure.NumSections = structure.NumSections + 1
+  
+  %% return section index
+  %return structure.NumSections-1
+%endfunction
+
+
+%% Function: FcnAddStructure ===================================================
+%% Abstract:
+%%   Add a structure to global memory map.
+%%
+%function FcnAddStructure(name) void
+  
+  %% Get Default Type of the Structured Data
+  %switch(name)
+      %case tBlockIO
+      %case tConstBlockIOStruct
+      %case tInput
+      %case tOutput
+	%assign defaultType = "signal"
+	%break
+      %case tParameters
+	%assign defaultType = "parameter"
+	%break
+      %case tDWork
+      %case tContState
+	%assign defaultType = "state"
+	%break
+      %case "StateDerivatives"
+	%assign defaultType = "stateDerivative"
+	%break
+      %default
+	%assign defaultType = "unknown"
+  %endswitch
+  
+  %% add record to global map
+  %assign gmm = GlobalMemoryMap
+  
+  %addtorecord gmm                 \
+  StructuredData {                 \
+    Name             name;         \
+    NumTotalElements 0;            \
+    NumSections      0             \
+    DataDefaults {                 \
+      Class         "scalar"       \
+      HasObject     TLC_FALSE      \
+      IsFixedPoint  TLC_FALSE      \
+      IsStruct      TLC_FALSE      \
+      NumDimensions  2             \
+      NumCols        1             \
+      NumRows        1             \
+      Permission    "rw"           \
+      Type          defaultType    \
+    }                              \
+  }
+
+  %% increment number of structured data records
+  %assign gmm.NumStructuredData = gmm.NumStructuredData + 1
+
+  %% return index to newly created record
+  %return gmm.NumStructuredData-1
+%endfunction
+
+
+%% Function: FcnAddToModelParameters ===========================================
+%% Abstract:
+%%   Add data to ModelParameters.
+%%
+%function FcnAddToModelParameters(record) void
+
+  %assign cmModelParams       = CompiledModel.ModelParameters
+  %assign gmmModelParams      = GlobalMemoryMap.ModelParameters
+  %assign instanceCache       = gmmModelParams.InstanceCache
+  %assign signalInstanceCache = gmmModelParams.SignalInstanceCache
+
+  %switch record.RecordType
+
+    %case "ModelParameter"
+    
+      %% Simulink parameter
+      
+      %assign mdlParam = record
+      %assign source   = "SL"
+      %assign sysIdx   = mdlParam.ReferencedBy[0][0]
+      %assign blkIdx   = mdlParam.ReferencedBy[0][2]
+      %assign prmIdx   = mdlParam.ReferencedBy[0][3]
+      %assign block    = System[sysIdx].Block[blkIdx]
+
+      %if InlineParameters
+	%assign paramName = mdlParam.Identifier
+      %else
+	%assign paramName = block.Parameter[prmIdx].String
+      %endif
+
+      %assign numLocations = SIZE(mdlParam.ReferencedBy,0)
+      %if numLocations > 1
+	%assign parent = "multiple"
+      %else
+	%assign parent = SLibGrBlockPath(mdlParam.GraphicalRef[0])
+      %endif
+      %assign memoryMapIdx = mdlParam.MemoryMapIdx
+      %%
+      %% create an alias for the model parameter for future reference
+      %% by Stateflow.  This is needed to resolve SL/SF combinatorics
+      %% issues when InlineParameters is on and the storage class
+      %% is external.
+      %%
+      %if mdlParam.StorageClass != "Auto"
+	%addtorecord cmModelParams %<paramName> mdlParam
+      %endif
+      %break
+
+    %case "MachineData"
+      
+      %% Stateflow data
+
+      %assign sfInfo    = record
+      %assign paramName = sfInfo.Name
+
+      %% check that it's not a Simulink signal
+      %if GMMConflictChecking && ISFIELD(signalInstanceCache, paramName)
+	%assign errTxt = "Cannot declare machine parented " ...
+	  "Stateflow data the same as a Simulink signal: %<paramName>"
+	%<LibReportFatalError(errTxt)>
+      %endif
+      %%
+      %% handle the SL/SF combinatorics.
+      %%
+      %assign isExternSimulinkParam = 0
+
+      %if ISFIELD(cmModelParams, paramName)
+	%assign slParam = CompiledModel.ModelParameters.%<paramName>
+	%assign isExternSimulinkParam = slParam.StorageClass != "Auto" ? 1 : 0
+      %endif
+      %if isExternSimulinkParam
+	%% check for Simulink conflict
+	%assign slScope = slParam.StorageClass
+	%if (slScope == "ImportedExternPointer") || ...
+	  (slScope == "ExportedGlobal" && sfInfo.Scope == "Exported")
+	  %% error
+	  %assign errTxt = "\n\n"...
+	    "Data definition conflict between " ...
+	    "Simulink and Stateflow for variable '%<paramName>'.  " ...
+	    "The Simulink storage class is " ...
+	    "'%<slParam.StorageClass>' and the Stateflow scope is " ...
+	    "'%<sfInfo.Scope>'.  The recommended Stateflow scope " ...
+	    "is 'Exported' with Simulink storage class 'ImportedExtern'."
+	  %<LibReportFatalError(errTxt)>
+	%else
+	  %% SL/SF are using the same memory.  Need to change the source
+	  %% and parent and type of the previously created SL instance
+	  %% to "multiple".
+	  %assign idx = instanceCache.%<paramName>
+	  %assign parameter = gmmModelParams.ModelParameter[idx]
+	  %assign parameter.Instance.Source = "multiple"
+	  %assign parameter.Instance.Parent = "multiple"
+	  %assign dataIdx = parameter.Instance.MemoryMapIdx[2]
+	  %assign usd = GlobalMemoryMap.UnstructuredData.Data[dataIdx]
+	  %assign usd.Type = "multiple"
+	  %% early return
+	  %return ""
+	%endif
+      %else
+	%% No conflict with Simulink, so add an instance
+	%assign source = "SF"
+	%assign parent = "Machine"
+	%assign dataIdx = FcnAddUnstructuredData(sfInfo)
+	%assign memoryMapIdx = [-1, -1, %<dataIdx>]
+      %endif
+      %break
+      
+    %default
+      %<LibReportFatalError("unknown source: %<source>")>
+  %endswitch
+
+  %%
+  %% create the instance
+  %%
+  
+  %createrecord                \
+  Instance {                   \
+    Source       source;       \
+    Parent       parent;       \
+    MemoryMapIdx memoryMapIdx  \
+  }
+  
+  %%
+  %% create a new model parameter if one doesn't exist
+  %%
+  
+  %if ISFIELD(instanceCache, paramName) == TLC_FALSE
+    %% create new model parameter (note that NumInstances is
+    %% incremented below)
+    %createrecord               \
+    ModelParameter {            \
+      Name         paramName;   \
+      NumInstances 0            \
+    }
+    %% Attach ModelParameter to GlobalMemoryMap.ModelParameters
+    %assign gmmModelParams = gmmModelParams + ModelParameter
+    %% Assign the cached value to be the index of the ModelParameter
+    %% and add it to the instance cache
+    %addtorecord instanceCache %<paramName> gmmModelParams.NumModelParameters
+    %assign instanceCache.NumCachedVariables = instanceCache.NumCachedVariables + 1
+    %% Increment the number of model parameters
+    %assign gmmModelParams.NumModelParameters = gmmModelParams.NumModelParameters + 1
+  %endif
+  
+  %assign idx                    = instanceCache.%<paramName>
+  %assign parameter              = gmmModelParams.ModelParameter[idx]
+  %assign parameter.NumInstances = parameter.NumInstances + 1
+  %assign parameter              = parameter + Instance
+  
+%endfunction
+
+
+%% Function: FcnMapParameters ==================================================
+%% Abstract:
+%%   This function creates a map of all model parameters not of custom 
+%%   storage class.
+%%
+%function FcnMapParameters() void
+
+  %if !CompiledModel.BlockOutputsMapped || !CompiledModel.ExternalInputsMapped
+    %assign errTxt = "Block output and external signals must be mapped " ...
+      "prior to parameters."
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %with ModelParameters
+    
+    %% Map rtP (structured data)
+    
+    %if !LibParametersStructIsEmpty()
+
+      %% Add parameters structure to global memory map
+      
+      %assign structIdx = FcnAddStructure(tParameters)
+      %assign struct = GlobalMemoryMap.StructuredData[structIdx]
+      
+      %assign prevComplex     = -1
+      %assign prevDataTypeIdx = -1
+      %assign prevHStructSystemIdx = -1
+      %assign prevHStructInstanceIdx = -1
+      
+      %foreach mdlParamIdx = NumInrtP
+	%assign mdlParam = Parameter[mdlParamIdx]
+	%assign nRows = SIZE(mdlParam.Value, 0)
+	%assign nCols = SIZE(mdlParam.Value, 1)
+	%if (nRows*nCols) == 0
+	  %continue
+	%endif
+	
+	%% Look for transitions which occur if:
+	%%   - change in complexity
+	%%   - change in data type
+	%%   - change in heirarchy level
+	%% The last is needed so that the global map automatically
+	%% handles any padding the compilers might add to enforce 
+	%% a byte alignment for the substructures
+	%assign   HStructSystemIdx = mdlParam.OwnerSysIdx[0]
+	%assign HStructInstanceIdx = mdlParam.OwnerSysIdx[1]
+	
+	%if (mdlParam.ComplexSignal != prevComplex)  || ...
+	  (mdlParam.DataTypeIdx != prevDataTypeIdx)  || ...
+	  (HStructSystemIdx != prevHStructSystemIdx) || ...
+	  (HStructInstanceIdx != prevHStructInstanceIdx)
+	  
+	  %% add new parameters section
+	  %assign secIdx = FcnAddSection(struct, mdlParam)
+	  %assign section = struct.Section[secIdx]
+	  %assign prevComplex = mdlParam.ComplexSignal
+	  %assign prevDataTypeIdx = mdlParam.DataTypeIdx
+	  %assign prevHStructSystemIdx = HStructSystemIdx
+	  %assign prevHStructInstanceIdx = HStructInstanceIdx
+	%endif
+	
+	%% Add data record to section
+	
+	%assign dataIdx = FcnAddStructuredData(struct, section, mdlParam)
+	
+	%% Add MemoryMapIdx to ModelParameter record
+	
+	%assign mdlParam.MemoryMapIdx = [%<structIdx>,%<secIdx>,%<dataIdx>]
+	
+	%if InlineParameters
+	  %% Parameter collapsed to a single memory address in rtP.  Add it as
+	  %% a model parameter
+	  %if mdlParam.Tunable == "yes" && mdlParam.StorageClass == "Auto"
+	    %<FcnAddToModelParameters(mdlParam)>
+	  %endif
+	%else
+	  %% Each parameter is unique.  Optionally, add as model parameter
+	  %% if the parameter field is exclusively a MATLAB variable.  (Note
+	  %% that FcnAddToModelParameter manages multiple instances of
+	  %% a variable).
+	  %assign sysIdx = mdlParam.ReferencedBy[0][0]
+	  %assign blkIdx = mdlParam.ReferencedBy[0][2]
+	  %assign prmIdx = mdlParam.ReferencedBy[0][3]
+	  %assign blockI = System[sysIdx].Block[blkIdx]
+	  %assign paramI = blockI.Parameter[prmIdx]
+	  %if paramI.StringType == "Variable" && blockI.InMask != "yes"
+	    %<FcnAddToModelParameters(mdlParam)>
+	  %endif
+	%endif
+	%<FcnUpdateBlockParameterMemoryMapIdx(mdlParam)>
+      %endforeach    %% ModelParameter
+    %endif           %% LibParametersStructIsEmpty()
+    
+    %% Map interfaced parameters (unstructured data)
+    
+    %if InlineParameters
+      %% Add SimulinkGlobal parameters if they are unstructured
+      %if SLibAreSimulinkGlobalParamsUnstructured()
+      	%foreach mdlParamIdx = NumInrtP
+      	  %assign mdlParam = Parameter[mdlParamIdx]
+      	  %assign dataIdx = FcnAddUnstructuredData(mdlParam)
+      	  %assign mdlParam.MemoryMapIdx = [-1, -1, %<dataIdx>]
+      	  %<FcnAddToModelParameters(mdlParam)>
+      	  %<FcnUpdateBlockParameterMemoryMapIdx(mdlParam)>
+      	%endforeach
+      %endif
+      %% Add the other unstructured parameters
+      %assign pOffset = NumInrtP + NumConstPrmsWithInit + NumConstPrms
+      %assign numExterns = NumExportedGlobal + NumImportedExtern + NumImportedExternPointer
+      %foreach idx = numExterns
+	%assign mdlParamIdx = pOffset + idx
+	%assign mdlParam = Parameter[mdlParamIdx]
+	%assign dataIdx = FcnAddUnstructuredData(mdlParam)
+	%assign mdlParam.MemoryMapIdx = [-1, -1, %<dataIdx>]
+	%<FcnAddToModelParameters(mdlParam)>
+	%<FcnUpdateBlockParameterMemoryMapIdx(mdlParam)>
+      %endforeach
+    %endif
+    
+  %endwith %% ModelParameters
+
+  %assign ::CompiledModel.ParametersMapped = 1
+
+%endfunction
+
+
+%% Function: FcnMapCustomParameters ===========================================
+%% Abstract:
+%%   This function creates a map of all model parameters with custom 
+%%   storage class
+%%
+%function FcnMapCustomParameters() void
+
+  %if !CompiledModel.BlockOutputsMapped || !CompiledModel.ExternalInputsMapped
+    %assign errTxt = "Block output and external signals must be mapped " ...
+      "prior to parameters."
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %with ModelParameters
+    %if InlineParameters
+      %assign numExterns = NumExportedGlobal + NumImportedExtern + NumImportedExternPointer
+      %assign pOffset = NumInrtP + NumConstPrmsWithInit + ...
+	                NumConstPrms + numExterns
+      %foreach idx = NumCustomStorageClass
+	%assign mdlParamIdx = pOffset + idx
+	%assign mdlParam = Parameter[mdlParamIdx]
+	%assign dataIdx = FcnAddCustomData(mdlParam)
+	%assign package = LibGetRTWInfoObjectPackage(mdlParam)
+	%assign class = LibGetCustomStorageClassName(mdlParam)
+	%assign classIdx = SLibGetCustomStorageIdxInMap(package, class)
+	%assign mdlParam.MemoryMapIdx = [-1, %<classIdx>, %<dataIdx>]
+	%assign csc = LibGetCustomStorageInMap(package, class)
+	%<FcnAddToModelParameters(mdlParam)>
+	%<FcnUpdateBlockParameterMemoryMapIdx(mdlParam)>
+      %endforeach
+
+    %endif
+  %endwith %% ModelParameters
+
+  %assign ::CompiledModel.ParametersMapped = 1
+
+%endfunction
+
+
+%% Function: FcnUpdateBlockParameterMemoryMapIdx ===============================
+%% Abstract:
+%%   This function copies the memory map index from a model parameter
+%%   to a block parameter
+%function FcnUpdateBlockParameterMemoryMapIdx(mdlParam) void
+  %if mdlParam.MemoryMapIdx[2] != -1
+    %foreach refIdx = SIZE(mdlParam.ReferencedBy,0)
+      %assign sysIdx = mdlParam.ReferencedBy[refIdx][0]
+      %assign blkIdx = mdlParam.ReferencedBy[refIdx][2]
+      %assign prmIdx = mdlParam.ReferencedBy[refIdx][3]
+      %assign blockI = System[sysIdx].Block[blkIdx]
+      %%
+      %% Generate a mapping for the block parameter iff:
+      %%   1. The model parameter is used directly by a non-subsystem block.
+      %%   2. The model parameter is not part of an expression within that
+      %%      block's paramter.
+      %%
+      %if blockI.Type != "SubSystem"
+      %assign paramI = blockI.Parameter[prmIdx]
+	%if paramI.ASTNode.IsNonTerminal == 0
+	  %% %assert paramI.ASTNode.Identifier == mdlParam.Identifier
+      %assign paramI.MemoryMapIdx = mdlParam.MemoryMapIdx
+	%endif
+      %endif
+    %endforeach
+  %endif
+%endfunction
+
+
+%% Function: FcnMapBlockIO =====================================================
+%% Abstract:
+%%   This function creates a map of all block output signals not of custom
+%%   storage class.  Note that BlockOutputs is not sorted by data type.  
+%%   Therefore, it's necessary to make multiple passes through BlockOutputs 
+%%   in order to extract all necessary information.
+%%
+%function FcnMapBlockIO() void
+  %with BlockOutputs
+    %%
+    %% block I/O signals
+    %%
+    %if !LibBlockIOStructIsEmpty()
+      %%
+      %% add block I/O to global memory map
+      %%
+      %assign structIdx = FcnAddStructure(tBlockIO)
+      %assign struct    = GlobalMemoryMap.StructuredData[structIdx]
+      %%
+      %% loop through outputs
+      %%
+      %assign prevDataTypeIdx = -1
+      %assign prevComplex     = "unknown"
+      %assign prevHStructSystemIdx = -1
+      %assign prevHStructInstanceIdx = -1
+      %foreach boIdx = NumGlobalBlockOutputs
+	%assign bo = GlobalBlockOutput[boIdx]
+	%assign HStructSystemIdx   = System[bo.SigSrc[0]].HStructDeclSystemIdx
+	%assign HStructInstanceIdx = bo.SigSrc[1]
+	%if bo.RequiredInBlockIO[0] == 1 && bo.RequiredInBlockIO[1] == 0
+	  %if (bo.DataTypeIdx != prevDataTypeIdx) || ...
+	    (bo.ComplexSignal != prevComplex) || ...
+	    (prevHStructSystemIdx != HStructSystemIdx) || ...
+	    (prevHStructInstanceIdx != HStructInstanceIdx) 	    
+	    %%
+	    %% add new BIO section
+	    %%
+	    %assign secIdx                 = FcnAddSection(struct, bo)
+	    %assign section                = struct.Section[secIdx]
+	    %assign prevDataTypeIdx        = bo.DataTypeIdx
+	    %assign prevComplex            = bo.ComplexSignal
+	    %assign prevHStructSystemIdx   = HStructSystemIdx
+	    %assign prevHStructInstanceIdx = HStructInstanceIdx
+	  %endif
+	  %%
+	  %% add data record to section
+	  %%
+	  %assign dataIdx = FcnAddStructuredData(struct, section, bo)
+	  %%
+	  %% update MemoryMapIdx
+	  %%
+	  %assign bo.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+	%endif
+      %endforeach
+    %endif
+    %%
+    %% const block I/O signals
+    %%
+    %if !LibConstBlockIOStructIsEmpty()
+      %%
+      %% add const block I/O to global memory map
+      %%
+      %assign structIdx = FcnAddStructure(tConstBlockIOStruct)
+      %assign struct    = GlobalMemoryMap.StructuredData[structIdx]
+      %%
+      %% loop through outputs
+      %%
+      %assign prevDataTypeIdx = -1
+      %assign prevComplex     = "unknown"
+      %assign prevHStructSystemIdx = -1
+      %assign prevHStructInstanceIdx = -1
+      %foreach boIdx = NumConstBlockOutputs
+	%assign bo = ConstBlockOutput[boIdx]
+	%assign HStructSystemIdx   = System[bo.SigSrc[0]].HStructDeclSystemIdx
+	%assign HStructInstanceIdx = bo.SigSrc[1]
+	%if bo.RequiredInConstBlockIO && bo.NumReusedBlockOutputs == 0
+	  %if (bo.DataTypeIdx != prevDataTypeIdx) || ...
+	    (bo.ComplexSignal != prevComplex) || ...
+	    (prevHStructSystemIdx != HStructSystemIdx) || ...
+	    (prevHStructInstanceIdx != HStructInstanceIdx)
+	    %%
+	    %% add new const BIO section
+	    %%
+	    %assign secIdx          = FcnAddSection(struct, bo)
+	    %assign section         = struct.Section[secIdx]
+	    %assign prevDataTypeIdx = bo.DataTypeIdx
+	    %assign prevComplex     = bo.ComplexSignal
+	  %endif
+	  %%
+	  %% add data record to section
+	  %%
+	  %assign dataIdx = FcnAddStructuredData(struct, section, bo)
+	  %%
+	  %% update MemoryMapIdx in signal
+	  %%
+	  %assign bo.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+	%endif
+      %endforeach
+    %endif
+    %%
+    %% external signal
+    %%
+    %if !SLibExportedGlobalSignalsIsEmpty() || ...
+      !SLibImportedExternSignalsIsEmpty() || ...
+      !SLibImportedExternPointerSignalsIsEmpty()
+      %foreach boIdx = NumExternalBlockOutputs
+	%assign bo = ExternalBlockOutput[boIdx]
+	%if bo.StorageClass != "Custom"
+	  %assign dataIdx = FcnAddUnstructuredData(bo)
+	  %assign bo.MemoryMapIdx = [-1, -1, %<dataIdx>]
+	%endif
+      %endforeach
+    %endif
+  %endwith  %% BlockOutputs
+  
+  %assign ::CompiledModel.BlockOutputsMapped = 1
+%endfunction
+
+
+%% Function: FcnMapCustomBlockIO ===============================================
+%% Abstract:
+%%   This function creates a map of all block output signals with custom
+%%   storage class.  Note that BlockOutputs is not sorted by data type.  
+%%   Therefore, it's necessary to make multiple passes through BlockOutputs 
+%%   in order to extract all necessary information.
+%%
+%function FcnMapCustomBlockIO() void
+  %with BlockOutputs
+    %if NumCustomStorageClasses > 0
+      %foreach boIdx = NumExternalBlockOutputs
+	%assign bo = ExternalBlockOutput[boIdx]
+	%if bo.StorageClass == "Custom"
+	  %assign dataIdx = FcnAddCustomData(bo)
+	  %assign package = LibGetRTWInfoObjectPackage(bo)
+	  %assign class = LibGetCustomStorageClassName(bo)
+	  %assign classIdx = SLibGetCustomStorageIdxInMap(package, class)
+	  %assign bo.MemoryMapIdx = [-1, %<classIdx>, %<dataIdx>]
+	  %assign csc = LibGetCustomStorageInMap(package, class)
+	%endif
+      %endforeach
+    %endif
+  
+  %endwith  %% BlockOutputs
+  
+  %assign ::CompiledModel.BlockOutputsMapped = 1
+%endfunction
+
+
+%% Function: FcnMapStateflowData ===============================================
+%% Abstract:
+%%   Stateflow machine parented data.
+%%
+%function FcnMapStateflowData() void
+  
+  %if !CompiledModel.ParametersMapped
+    %assign errTxt = "Parameters must be mapped prior to Stateflow data."
+    %<LibReportFatalError(errTxt)>
+  %endif
+  
+  %assign sfInfo = FEVAL("rtwmaputil", CompiledModel.Name)
+  %assign numData = (SIZE(sfInfo,1)-2)/4
+  %foreach idx = numData
+    %assign offset = (idx*4)+2
+    %createrecord                            \
+    infoRec {                                \
+      RecordType          "MachineData";     \
+      HasObject           0;                 \
+      Name          	  sfInfo[offset];    \
+      Scope         	  sfInfo[offset+1];  \
+      DataType      	  sfInfo[offset+2];  \
+      Size          	  sfInfo[offset+3]   \
+    }
+    %<FcnAddToModelParameters(infoRec)>
+  %endforeach
+  
+  %assign ::CompiledModel.StateflowDataMapped = 1
+  
+%endfunction
+
+
+%% Function: FcnMapDWork =======================================================
+%% Abstract:
+%%   Map DWork structure not of custom storage class.
+%%
+%function FcnMapDWork() void
+  %if !LibDWorkStructIsEmpty()
+    %% add DWork to global memory map
+    
+    %assign structIdx = FcnAddStructure(tDWork)
+    %assign struct    = GlobalMemoryMap.StructuredData[structIdx]
+    
+    %assign prevComplex     = "unknown"
+    %assign prevDataTypeIdx = -1
+    %assign prevHStructSystemIdx = -1
+    %assign prevHStructInstanceIdx = -1      
+  %endif
+  
+  %foreach dwIdx = DWorks.NumDWorks
+    %assign dwRec = DWorks.DWork[dwIdx]
+    %assign dwIdx = SLibGetSystemAndCallSideIndex(dwRec)
+    %assign HStructSystemIdx = System[dwIdx[0]].HStructDeclSystemIdx
+    %assign HStructInstanceIdx = dwIdx[1]
+    %if dwRec.StorageClass == "Auto"
+      %if (dwRec.ComplexSignal != prevComplex) || ...
+	(dwRec.DataTypeIdx != prevDataTypeIdx) || ...
+	(prevHStructSystemIdx != HStructSystemIdx) || ...
+	(prevHStructInstanceIdx != HStructInstanceIdx)
+	%% add new section
+	%assign secIdx                 = FcnAddSection(struct, dwRec)
+	%assign section                = struct.Section[secIdx]
+	%assign prevComplex            = dwRec.ComplexSignal
+	%assign prevDataTypeIdx        = dwRec.DataTypeIdx
+	%assign prevHStructSystemIdx   = HStructSystemIdx
+	%assign prevHStructInstanceIdx = HStructInstanceIdx
+      %endif
+      
+      %assign dataIdx = FcnAddStructuredData(struct, section, dwRec)
+      %assign dwRec.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+      
+    %elseif dwRec.StorageClass != "Auto" && ...
+      dwRec.StorageClass != "Custom"
+      %% 
+      %% external dwork are unstructured data
+      %%
+      %assign dataIdx = FcnAddUnstructuredData(dwRec)
+      %assign dwRec.MemoryMapIdx = [-1, -1, %<dataIdx>]
+      
+    %endif	
+  %endforeach
+%endfunction
+
+%% Function: FcnMapContStates ================================================
+%% A bstract:
+%%   Map Continuous states structure.
+%%
+%function FcnMapContStates() void
+  %if !LibContStatesStructIsEmpty()
+    
+    %% add ContStates StructuredData to global memory map
+    %assign structIdx = FcnAddStructure(tContState)
+    %assign struct    = GlobalMemoryMap.StructuredData[structIdx]
+    
+    %% default System and instance indices
+    %assign prevHStructSystemIdx = -1
+    %assign prevHStructInstanceIdx = -1      
+    
+    %% Loop through ContStates
+    %foreach cStateIdx = ContStates.NumContStates
+      %assign cStateRec = ContStates.ContState[cStateIdx]
+      %assign sysIdx    = cStateRec.SigSrc[0]
+      %assign instIdx   = cStateRec.SigSrc[1]
+      %assign HStructSystemIdx = System[sysIdx].HStructDeclSystemIdx
+      %assign HStructInstanceIdx = instIdx
+      %%
+      %% Assert that Storage class is auto. Continuous states cannot be
+      %% exported or imported. They cannot be of custom storage class.
+      %%
+      %assert cStateRec.StorageClass == "Auto"
+      %% Add section to StructuredData, if the state is from a different 
+      %% system or is different instance of the same system
+      %if (prevHStructSystemIdx != HStructSystemIdx) || ...
+	(prevHStructInstanceIdx != HStructInstanceIdx)
+	%% add new section
+	%assign secIdx                 = FcnAddSection(struct, cStateRec)
+	%assign section                = struct.Section[secIdx]
+	%assign prevHStructSystemIdx   = HStructSystemIdx
+	%assign prevHStructInstanceIdx = HStructInstanceIdx
+      %endif
+      %% Add new data to section and assign memory map index to the record
+      %assign dataIdx = FcnAddStructuredData(struct, section, cStateRec)
+      %assign cStateRec.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+    %endforeach
+  
+  %endif   %% !LibContStatesStructIsEmpty()
+%endfunction
+
+%% Function: FcnMapContStateDerivatives =======================================
+%% A bstract:
+%%   Map Continuous states Derivatives structure.
+%%
+%function FcnMapContStateDerivatives() void
+  %if !(LibCStatesDerivStructIsEmpty())
+    
+    %% add ContStateDerivatives StructuredData to global memory map
+    %assign structIdx = FcnAddStructure("StateDerivatives")
+    %assign struct    = GlobalMemoryMap.StructuredData[structIdx]
+    
+    %% default System and instance indices
+    %assign prevHStructSystemIdx = -1
+    %assign prevHStructInstanceIdx = -1      
+    
+    %% Loop through ContStates. There is no CompiledModel.Derivatives records
+    %% Note each ContState will have a corresponding derivative
+    %% 
+    %foreach cStateIdx = ContStates.NumContStates
+      %assign cStateRec = ContStates.ContState[cStateIdx]
+      %assign sysIdx    = cStateRec.SigSrc[0]
+      %assign instIdx   = cStateRec.SigSrc[1]
+      %assign HStructSystemIdx = System[sysIdx].HStructDeclSystemIdx
+      %assign HStructInstanceIdx = instIdx
+      %%
+      %% Assert that Storage class is auto. Continuous states cannot be
+      %% exported or imported. They cannot be of custom storage class.
+      %%
+      %assert cStateRec.StorageClass == "Auto"
+      %% Add section to StructuredData, if the state is from a different 
+      %% system or is different instance of the same system
+      %if (prevHStructSystemIdx != HStructSystemIdx) || ...
+	(prevHStructInstanceIdx != HStructInstanceIdx)
+	%% add new section
+	%assign secIdx    = FcnAddSection(struct, cStateRec)
+	%assign section   = struct.Section[secIdx]
+	%assign prevHStructSystemIdx   = HStructSystemIdx
+	%assign prevHStructInstanceIdx = HStructInstanceIdx
+      %endif
+      %% Add new data to section and assign memory map index to the record
+      %assign dataIdx = FcnAddStructuredData(struct, section, cStateRec)
+      %assign cStateRec.DerivativeMemoryMapIdx = ...
+	[%<structIdx>, %<secIdx>, %<dataIdx>]
+    %endforeach
+  
+  %endif   %% !(LibCStatesDerivStructIsEmpty())
+%endfunction
+
+
+%% Function: FcnMapCustomDWork =================================================
+%% Abstract:
+%%   Map DWork with custom storage class.
+%%
+%function FcnMapCustomDWork() void
+  %foreach dwIdx = DWorks.NumDWorks
+    %assign dwRec = DWorks.DWork[dwIdx]
+    
+    %if dwRec.StorageClass == "Custom"
+      %assign dataIdx = FcnAddCustomData(dwRec)
+      %assign package = LibGetRTWInfoObjectPackage(dwRec)
+      %assign class = LibGetCustomStorageClassName(dwRec)
+      %assign classIdx = SLibGetCustomStorageIdxInMap(package, class)
+      %assign dwRec.MemoryMapIdx = [-1, %<classIdx>, %<dataIdx>]
+      %assign csc = LibGetCustomStorageInMap(package, class)
+      
+    %endif
+      
+  %endforeach
+%endfunction
+
+
+%% Function: FcnMapExternalInputs ==============================================
+%% Abstract:
+%%   Map ExternalInputs structure.
+%%
+%function FcnMapExternalInputs() void
+  %if !LibExternalInputsStructIsEmpty()
+    %% add external inputs to global memory map
+    %assign structIdx = FcnAddStructure(tInput)
+    %assign struct = GlobalMemoryMap.StructuredData[structIdx]
+  %endif
+  
+  %assign prevComplex = "unknown"
+  %assign prevDataTypeIdx = -1
+    
+  %with ExternalInputs
+    %foreach eiIdx = NumExternalInputs
+      %assign ei = ExternalInput[eiIdx]
+      
+      %if ei.StorageClass == "Auto"
+	
+	%% it's in ExternalInputs structure, so look for transition
+	
+	%if (ei.ComplexSignal != prevComplex) || ...
+	  (ei.DataTypeIdx != prevDataTypeIdx)
+	  %% add new section
+	  %assign secIdx = FcnAddSection(struct, ei)
+	  %assign section = struct.Section[secIdx]
+	  %assign prevComplex = ei.ComplexSignal
+	  %assign prevDataTypeIdx = ei.DataTypeIdx
+	%endif
+	
+	%assign dataIdx = FcnAddStructuredData(struct, section, ei)
+	%assign ei.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+	
+      %elseif ei.StorageClass != "Custom"
+	
+	%% external signals are unstructured data
+
+	%assign dataIdx = FcnAddUnstructuredData(ei)
+	%assign ei.MemoryMapIdx = [-1, -1, %<dataIdx>]
+	
+      %endif
+      
+    %endforeach
+  %endwith
+
+  %assign ::CompiledModel.ExternalInputsMapped = 1
+  
+%endfunction
+
+
+%% Function: FcnMapCustomExternalInputs ========================================
+%% Abstract:
+%%   Map ExternalInputs with custom storage class
+%%
+%function FcnMapCustomExternalInputs() void
+  %with ExternalInputs
+    %foreach eiIdx = NumExternalInputs
+      %assign ei = ExternalInput[eiIdx]
+      
+      %if ei.StorageClass == "Custom"
+	%assign dataIdx = FcnAddCustomData(ei)
+	%assign package = LibGetRTWInfoObjectPackage(ei)
+	%assign class = LibGetCustomStorageClassName(ei)
+	%assign classIdx = SLibGetCustomStorageIdxInMap(package, class)
+	%assign ei.MemoryMapIdx = [-1, %<classIdx>, %<dataIdx>]
+	%assign csc = LibGetCustomStorageInMap(package, class)
+	
+      %endif
+    %endforeach
+  %endwith
+    
+  %assign ::CompiledModel.ExternalInputsMapped = 1
+  
+%endfunction
+
+
+%% Function: FcnMapExternalOutputs =============================================
+%% Abstract:
+%%   Map ExternalOutputs structure.
+%%
+%function FcnMapExternalOutputs() void
+  %if !LibExternalOutputsStructIsEmpty()
+    %% add external outputs to global memory map
+    %assign structIdx = FcnAddStructure(tOutput)
+    %assign struct = GlobalMemoryMap.StructuredData[structIdx]
+    
+    %assign prevComplex = "unknown"
+    %assign prevDataTypeIdx = -1
+    
+    %with ExternalOutputs
+      %foreach eoIdx = NumExternalOutputs
+	%assign eo = ExternalOutput[eoIdx]
+	
+	%assign sysIdx = eo.Block[0]
+	%assign blkIdx = eo.Block[1]
+	%assign oblock = System[sysIdx].Block[blkIdx]
+	%assign ip     = oblock.DataInputPort
+	
+	%% look for transition
+	
+	%if (ip.ComplexSignal != prevComplex) || ...
+	  (ip.DataTypeIdx != prevDataTypeIdx)
+	  %% add new section
+	  %assign secIdx = FcnAddSection(struct, eo)
+	  %assign section = struct.Section[secIdx]
+	  %assign prevComplex = ip.ComplexSignal
+	  %assign prevDataTypeIdx = ip.DataTypeIdx
+	%endif
+	
+	%assign dataIdx = FcnAddStructuredData(struct, section, eo)
+	%assign eo.MemoryMapIdx = [%<structIdx>, %<secIdx>, %<dataIdx>]
+      %endforeach
+    %endwith
+  %endif
+%endfunction
+
+
+%% Function SLibGetCustomStorageIdxInMap =======================================
+%% Abstract:
+%%   Return index of custom storage class (-1 if doesn't exist) from package
+%%   and name
+%%
+%function SLibGetCustomStorageIdxInMap(package, name)
+  %assign gmm = CompiledModel.GlobalMemoryMap
+  %if ISFIELD(gmm.CustomDataIndexHash, package)
+    %if ISFIELD(gmm.CustomDataIndexHash.%<package>, name)
+      %return gmm.CustomDataIndexHash.%<package>.%<name>
+    %else
+      %return -1
+    %endif
+  %else
+    %return -1
+  %endif
+%endfunction
+
+
+%% Function LibGetCustomStorageInMap ===========================================
+%% Abstract:
+%%   Return custom storage class ([] if doesn't exist) from package and name
+%%
+%function LibGetCustomStorageInMap(package, name)
+  %assign gmm = CompiledModel.GlobalMemoryMap
+  %if ISFIELD(gmm.CustomDataIndexHash, package)
+    %if ISFIELD(gmm.CustomDataIndexHash.%<package>, name)
+     %return gmm.CustomData[gmm.CustomDataIndexHash.%<package>.%<name>]
+   %else
+     %return []
+   %endif
+  %else
+    %return []
+  %endif
+%endfunction
+
+%% Function: FcnPostMapCleanup =================================================
+%% Abstract:
+%%   Removes MathWorks internal use only fields from GlobalMemoryMap
+%%
+%function FcnPostMapCleanup() void
+  %with GlobalMemoryMap
+
+    %% remove OffsetCounter, SL_LogicalSrc, and SL_ExtModeType from each
+    %% StructuredData Section
+
+    %foreach structureIdx = NumStructuredData
+      %assign structure = StructuredData[structureIdx]
+      %with structure
+	%foreach sectionIdx = NumSections
+	  %<REMOVEFIELD(Section[sectionIdx], "OffsetCounter")>
+	  %assign section = structure.Section[sectionIdx]
+	  %with section
+	    %foreach dataIdx = NumData
+	      %<REMOVEFIELD(Data[dataIdx], "SL_LogicalSrc")>
+	      %<REMOVEFIELD(Data[dataIdx], "SL_ExtModeType")>
+	    %endforeach
+	  %endwith
+	%endforeach
+      %endwith
+    %endforeach
+
+    %% remove InstanceCache and SignalInstanceCache from ModelParameters
+
+    %<REMOVEFIELD(ModelParameters, "InstanceCache")>
+    %<REMOVEFIELD(ModelParameters, "SignalInstanceCache")>
+
+    %% There may not be any unstructured data
+
+    %if UnstructuredData.NumData == 0
+      %<REMOVEFIELD(GlobalMemoryMap, "UnstructuredData")>
+      %<SETFIELD(GlobalMemoryMap, "NumUnstructuredData", 0)>
+    %else
+      
+      %% remove SL_LogicalSrc and SL_ExtModeType from each
+      %% UnstructuredData Section
+
+      %if ISFIELD(GlobalMemoryMap,"UnstructuredData")
+	%with UnstructuredData
+	  %foreach dataIdx = NumData
+	    %<REMOVEFIELD(Data[dataIdx], "SL_LogicalSrc")>
+	    %<REMOVEFIELD(Data[dataIdx], "SL_ExtModeType")>
+	  %endforeach
+	%endwith
+      %endif
+    %endif
+    
+    %% remove SL_LogicalSrc and SL_ExtModeType from each custom data section
+
+    %if ISFIELD(GlobalMemoryMap,"CustomData")
+      %foreach customDataIdx = NumCustomData
+	%with CustomData[customDataIdx]
+	%foreach dataIdx = NumData
+	  %<REMOVEFIELD(Data[dataIdx], "SL_LogicalSrc")>
+	  %<REMOVEFIELD(Data[dataIdx], "SL_ExtModeType")>
+	%endforeach
+        %endwith
+      %endforeach
+    %endif
+
+  %endwith
+%endfunction
+
+%% Function: FcnGetDWorkIdentifier =============================================
+%% Abstract:
+%%   The DWork identifier is a little tricky since the RIPWork vectors are
+%%   mapped into DWork.  RIPWork have an RIPWorkDefines naming convension,
+%%   in which case, the named RIPWork is added to the DWork identifier.
+%%
+%function FcnGetDWorkIdentifier(dwRec, accessSysIdx) void
+  %assign dwIdx  = SLibGetSystemAndCallSideIndex(dwRec)
+  %assign dwPath = FcnGetLocalDWorkPath(dwIdx[0], dwIdx[1], accessSysIdx)
+  %assign id     = "%<dwPath>%<dwRec.Identifier>"
+  %assign block  = System[dwRec.SigSrc[0]].Block[dwRec.SigSrc[2]]
+
+  %with block
+    %if (dwRec.Origin == "RWORK") && (NumRWorkDefines > 0)
+      %assign optName = ".%<RWorkDefine[0].Name>"
+    %elseif (dwRec.Origin == "IWORK") && (NumIWorkDefines > 0)
+      %assign optName = ".%<IWorkDefine[0].Name>"
+    %elseif (dwRec.Origin == "PWORK") && (NumPWorkDefines > 0)
+      %assign optName = ".%<PWorkDefine[0].Name>"
+    %else
+      %assign optName = ""
+    %endif
+  %endwith
+  
+  %return  id + optName
+%endfunction
+
+%% Function: FcnGetDWorkWidth ==================================================
+%% Abstract:
+%%   The DWork width is a little tricky since the RIPWork vectors are
+%%   mapped into DWork.
+%%
+%function FcnGetDWorkWidth(dwRec) void
+  %assign block = System[dwRec.SigSrc[0]].Block[dwRec.SigSrc[2]]
+  %with block
+    %if (dwRec.Origin == "RWORK") && (NumRWorkDefines > 0)
+      %return RWorkDefine[0].Width
+    %elseif (dwRec.Origin == "IWORK") && (NumIWorkDefines > 0)
+      %return IWorkDefine[0].Width
+    %elseif (dwRec.Origin == "PWORK") && (NumPWorkDefines > 0)
+      %return PWorkDefine[0].Width
+    %else
+      %return dwRec.Width
+    %endif
+  %endwith
+%endfunction
+
+%% Function: FcnGetCStateIdentifier =============================================
+%% Abstract:
+%%
+%function FcnGetCStateIdentifier(cStateRec, accessSysIdx) void
+  %assign cStateIdx  = LocalGetCStateIndex(cStateRec)
+  %assign cStatePath = FcnGetLocalCStatePath(cStateIdx[0], cStateIdx[1], accessSysIdx)
+  %assign id         = "%<cStatePath>%<cStateRec.Identifier>"
+    
+  %return  id
+%endfunction
+
+
+%% Function: LocalGetCStateIndex ================================================
+%% Abstract:
+%%   This function robustly determines the system and callsite index for a DWork
+%%   record considering the special nature of a subsystem blocks MODE vector.
+%%
+%function LocalGetCStateIndex(cStateRec)
+  %assign   retVal = [-1, -1]
+  %assign   sysIdx = cStateRec.SigSrc[0]
+  %assign    csIdx = cStateRec.SigSrc[1]
+  %assign retVal[0] = sysIdx
+  %assign retVal[1] = csIdx
+  
+  %return retVal
+%endfunction
+
+
+%% Function: FcnComputeSizeFromDims ============================================
+%% Abstract:
+%%   Returns the nominal size of an N-Dimensional array (i.e., this routine
+%%   takes everything into account except word size).
+%%
+%function FcnComputeSizeFromDims(dims,isComplex) void
+  %assign nDims = SIZE(dims,1)
+  %if nDims > 2
+    %assign size = 1
+    %foreach dimIdx = nDims
+      %assign size = size * dims[dimIdx]
+    %endforeach
+    %assign size = size * (isComplex ? 2 : 1)
+  %else
+    %assign nRows = dims[0]
+    %assign nCols = dims[1]
+    %assign size = nRows*nCols * (isComplex ? 2 : 1)
+  %endif
+  %return CAST("Number", size)
+%endfunction
+
+
+%% =============================================================================
+%% Utilities for accessing GlobalMemoryMap
+%% =============================================================================
+
+%% Function: SLibGetMapStructData ==============================================
+%% Abstract:
+%%  Returns the params in the rtP structure, the signals in the rtB
+%%  structure, or the DWorks in the rtDWorks structure based on the
+%%  input argument - if they exist.
+%%
+%function SLibGetMapStructData(type) void
+  %with GlobalMemoryMap
+    %switch(type)
+      %case "parameter"
+	%assign name = "%<tParameters>"
+	%break
+      %case "signal"
+	%assign name = "%<tBlockIO>"
+	%break
+      %case "dwork"
+	%assign name = "%<tDWork>"
+	%break
+      %default
+	%assert TLC_FALSE
+	%break
+    %endswitch
+
+    %foreach structureIdx = NumStructuredData
+      %assign structure = StructuredData[structureIdx]
+      %if structure.Name == name
+	%return structure
+      %endif
+    %endforeach
+  %endwith
+  
+  %return  %%return an empty record if no structured parameters
+%endfunction
+
+
+%% Function: SLibGetParameterMapNumDataSections ================================
+%% Abstract:
+%%   This function is a wrapper and calls SLibGetMapNumDataSections() with
+%%   "parameter" type argument.
+%%
+%function SLibGetParameterMapNumDataSections() void
+  %return %<SLibGetMapNumDataSections("parameter")>
+%endfunction
+
+
+%% Function: SLibGetBlockIOMapNumDataSections ==================================
+%% Abstract:
+%%   This function is a wrapper and calls SLibGetMapNumDataSections() with
+%%   "signal" and "dwork" type arguments.  The returned values are added
+%%   together and returned to the caller.  The BlockIO data type trans table
+%%   consists of signals and dwork, so the total number of elements is the
+%%   sum of the data sections for each.
+%%
+%function SLibGetBlockIOMapNumDataSections() void
+  %return %<SLibGetMapNumDataSections("signal")> + ...
+  %<SLibGetMapNumDataSections("dwork")>
+%endfunction
+
+
+%% Function: SLibGetMapNumDataSections =========================================
+%% Abstract:
+%%   Returns the total number of data sections by adding the sections in the
+%%   structured, unstructured, and custom classes.
+%%
+%function SLibGetMapNumDataSections(type) void
+  %with GlobalMemoryMap
+    
+    %%
+    %% Get numSections in structured area.
+    %%
+    %assign structuredData = SLibGetMapStructData(type)
+    %if !EXISTS(structuredData.NumSections)
+      %assign nStructured = 0
+    %else
+      %assign nStructured = structuredData.NumSections
+    %endif
+    
+    %%
+    %% Count number of non-auto storage classes (each one is a 'section')
+    %%
+    %assign nNonAuto = 0
+    %if ISFIELD(GlobalMemoryMap,"UnstructuredData")
+      %assign nData = UnstructuredData.NumData
+      
+      %foreach dataIdx = nData
+	%assign data = UnstructuredData.Data[dataIdx]
+	%if data.SL_ExtModeType == type
+	  %% Any data record without the SL_LogicalSrc field does not
+	  %% correspond to an element of the Simulink BIO or Aggregate
+	  %% Parameter tables and can not be included in the data type
+	  %% tranistion table or the target data map file.  An example
+	  %% is a signal declared as an "exported global".  The function
+	  %% FcnDumpExtModeHostMapBody() in extmodemaplib.ttlc performs
+	  %% the same check to exclude these records from being written
+	  %% to the target data map file.
+	  %if ISFIELD(data,"SL_LogicalSrc")
+	    %assign nNonAuto = nNonAuto + 1
+	  %endif
+	%endif
+      %endforeach
+    %endif
+    
+    %%
+    %% Count number of custom storage classes (each one is a 'section')
+    %%
+    %assign nCustom = 0
+    %if ISFIELD(GlobalMemoryMap,"CustomData")
+      %assign nDataRecs = NumCustomData
+      
+      %foreach dataRecIdx = nDataRecs
+	%assign customDataRec = CustomData[dataRecIdx]
+	%assign nData         = customDataRec.NumData
+      
+      %foreach dataIdx = nData
+	  %if nData == 1
+	    %assign data = customDataRec.Data
+	  %else
+	    %assign data = customDataRec.Data[dataIdx]
+	  %endif
+	
+	  %if data.SL_ExtModeType == type && data.NumDimensions != -1
+	    %% Any data record without the SL_LogicalSrc field does not
+	    %% correspond to an element of the Simulink BIO or Aggregate
+	    %% Parameter tables and can not be included in the data type
+	    %% tranistion table or the target data map file.  An example
+	    %% is a signal declared as an "exported global".  The function
+	    %% FcnDumpExtModeHostMapBody() in extmodemaplib.ttlc performs
+	    %% the same check to exclude these records from being written
+	    %% to the target data map file.
+	    %if ISFIELD(data,"SL_LogicalSrc")
+	      %assign nCustom = nCustom + 1
+	    %endif
+	  %endif
+	%endforeach
+	
+      %endforeach
+      
+    %endif
+    
+  %endwith
+  
+  %return nStructured + nNonAuto + nCustom
+%endfunction
+
+%% Function: FcnGetGlobalMemoryMapData =========================================
+%% Abstract:
+%%      Returns pointer to GlobalMemoryMap data referred to by record
+%%      (record = Record containing MemoryMapIdx)
+%%      - MemoryMapIdx[0] = StructureIdx (-1 if data unavailable)
+%%      - MemoryMapIdx[1] = SectionIdx   (-1 if unstructured data)
+%%      - MemoryMapIdx[2] = DataIdx
+%%
+%%      Returns string if GlobalMemoryMap data is not available.
+%% 
+%function FcnGetGlobalMemoryMapData(record)
+%with record
+  %if !EXISTS("record.MemoryMapIdx")
+    %assign globalMemoryMapData = "No_MemoryMapIdx"
+  %elseif MemoryMapIdx[2] == -1\
+    %% Data is unavailable (reused signal)
+    %assign globalMemoryMapData = "MemoryReused"
+  %elseif MemoryMapIdx[1] == -1\
+    %% Unstructured Data
+    %assign dataIdx = MemoryMapIdx[2]
+    %assign globalMemoryMapData    = ...
+            GlobalMemoryMap.UnstructuredData.Data[dataIdx]
+  %elseif MemoryMapIdx[0] == -1\
+    %% found a custom storage class
+    %assign classIdx = MemoryMapIdx[1]
+    %assign dataIdx = MemoryMapIdx[2]
+    %assign globalMemoryMapData = ...
+            GlobalMemoryMap.CustomData[classIdx].Data[dataIdx]
+  %else \
+    %% Structured data
+    %assign structIdx  = MemoryMapIdx[0]
+    %assign sectionIdx = MemoryMapIdx[1]
+    %assign dataIdx    = MemoryMapIdx[2]
+    %assign globalMemoryMapData = ...
+            GlobalMemoryMap.StructuredData[structIdx].Section[sectionIdx].Data[dataIdx]
+  %endif
+%endwith
+%return globalMemoryMapData
+%endfunction
+
+
+%% Function: FcnGetGlobalMemoryMapSection ======================================
+%% Abstract:
+%%      Returns pointer to GlobalMemoryMap section referred to by record
+%%      (record = Record containing MemoryMapIdx)
+%%      - MemoryMapIdx[0] = StructureIdx (-1 if data unavailable)
+%%      - MemoryMapIdx[1] = SectionIdx   (-1 if unstructured data)
+%%      - MemoryMapIdx[2] = DataIdx
+%%      Returns string if GlobalMemoryMap section is not available.
+%%
+%function FcnGetGlobalMemoryMapSection(record)
+%with record
+  %if !EXISTS("record.MemoryMapIdx")
+    %assign globalMemoryMapSection = "No_MemoryMapIdx"
+  %elseif MemoryMapIdx[2] == -1\
+    %% Data is unavailable (reused signal)
+    %assign globalMemoryMapSection = "MemoryReused"
+  %elseif MemoryMapIdx[1] == -1\
+    %% Unstructured Data
+    %assign globalMemoryMapSection = "Unstructured"
+  %elseif MemoryMapIdx[0] == -1\
+    %% Unstructured Data
+    %assign globalMemoryMapSection = "Custom"
+  %else \
+    %% Structured data
+    %assign structIdx  = MemoryMapIdx[0]
+    %assign sectionIdx = MemoryMapIdx[1]
+    %assign globalMemoryMapSection = ...
+            GlobalMemoryMap.StructuredData[structIdx].Section[sectionIdx]
+  %endif
+%endwith
+%return globalMemoryMapSection
+%endfunction
+
+
+
+%endif %% _GLOBALMAPLIB_
+
+%% [EOF] globalmaplib.tlc
+

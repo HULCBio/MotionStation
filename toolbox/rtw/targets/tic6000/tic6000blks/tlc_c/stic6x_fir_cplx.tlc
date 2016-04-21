@@ -1,0 +1,149 @@
+%% $RCSfile: stic6x_fir_cplx.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:34 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%% Abstract: Implement complex FIR filter using optimized TI C62/C64 DSPLIB fir_cplx fcn call
+
+%implements stic6x_fir_cplx "C"
+
+%include "tiblksutil.tlc"
+
+%% Function: BlockInstanceSetup ==================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign INPORT    = 0
+  %assign COEFFPORT = 1
+  %assign OUTPORT   = 0
+  %assign inDims    = LibBlockInputSignalDimensions(INPORT)
+  %assign inFrame   = LibBlockInputSignalIsFrameData(INPORT)
+  %assign numChans  = (inFrame) ? inDims[1] : LibBlockInputSignalWidth(INPORT)
+  %assign nx        = (inFrame) ? inDims[0] : 1
+  %assign block = block + INPORT + COEFFPORT + OUTPORT + numChans + nx
+%endfunction %%BlockInstanceSetup
+
+  
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_ti_header(block, "dsp_fir_cplx")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: InitializeConditions ==============================================
+%%
+%function InitializeConditions(block, system) Output
+/* C%<chipID.Value[0]>x DSP Library fir_cplx (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign hSize   = LibBlockParameterSize(COEFFRTP)
+    %assign nh      = (hSize[0] * hSize[1])
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign nh      = getInportSamps(COEFFPORT)
+  %endif
+  %assign delaysPerChan = nh - 1
+  %assign inputsPerChan = nx
+  %assign statesPerChan = inputsPerChan + delaysPerChan
+  %assign statePtr = LibBlockDWorkAddr(FILTBUFF, "", "", 0)
+  %assign ICPtr    = LibBlockParameterAddr(ICRTP, "", "", 0)
+  %assign ICSize   = LibBlockParameterSize(ICRTP)
+  %assign numICs   = (ICSize[0] * ICSize[1])
+  cint16_T *statePtr = %<statePtr>;
+  %if (numICs > 1)
+  const cint16_T *ICPtr = %<ICPtr>;
+  %endif
+  %if (numChans > 1)
+    int chanCount = %<numChans>;
+    while (chanCount--) { %% Begin channel loop if needed
+  %endif
+  %if (numICs == 1)
+    %% Scalar IC
+      int delayCount = %<delaysPerChan>;
+      while (delayCount--) {
+        *statePtr++ = %<LibBlockParameter(ICRTP, "", "", 0)>;
+      }
+    %if (numChans > 1)
+      statePtr += %<inputsPerChan>;
+    }  %% End channel loop if needed
+    %endif
+  %else
+      memcpy(statePtr, ICPtr, %<4 * delaysPerChan>);
+    %if (numICs > delaysPerChan)
+      %% multi-channel case, different vector of ICs per channel, 
+      %% so bump IC pointer in channel loop
+      ICPtr += %<delaysPerChan>;
+    %endif
+    %if (numChans > 1)
+      statePtr += %<statesPerChan>;
+    }  %% End channel loop if needed
+    %endif
+  %endif
+}
+
+%endfunction %% InitializeConditions
+  
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign hPtr    = LibBlockParameterAddr(COEFFRTP, "", "", 0)
+    %assign hSize   = LibBlockParameterSize(COEFFRTP)
+    %assign nh      = (hSize[0] * hSize[1])
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign hPtr    = LibBlockInputSignalAddr(COEFFPORT, "", "", 0)
+    %assign nh      = getInportSamps(COEFFPORT)
+  %endif
+  %assign nf        = nh - 1
+  %assign uPtr      = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign rPtr      = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign fPtr      = LibBlockDWorkAddr(FILTBUFF, "", "", 0)
+  /* C%<chipID.Value[0]>x DSP Library fir_cplx (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (numChans == 1)
+    %assign x1Ptr = LibBlockDWorkAddr(FILTBUFF, "", "", nf)
+    %assign x2Ptr = LibBlockDWorkAddr(FILTBUFF, "", "", nx)
+    /* Copy current inputs to filter buffer position x = f[nf] */
+    memcpy(%<x1Ptr>, %<uPtr>, %<4*nx>);
+    
+    /* Run fir_cplx filter algorithm on filter buffer x[] */
+    DSP_fir_cplx((short *) %<x1Ptr>, (short *) %<hPtr>, (short *) %<rPtr>, %<nh>, %<nx>);
+    
+    /* Update filter states: move previous nf inputs from f[nx] to f[0] */
+    memmove(%<fPtr>, %<x2Ptr>, %<4*nf>);
+    
+  %else
+    {
+      const cint16_T *u = %<uPtr>;
+      const cint16_T *h = %<hPtr>;
+      int   *r          = (int *) %<rPtr>;
+      int   *f          = (int *) %<fPtr>;
+      int   *x;
+      int    chanCount = %<numChans>;
+      
+      while (chanCount--) {
+        /* Copy current inputs to filter buffer position x = f[nf] */
+        x = f + %<nf>;
+        memcpy(x, u, %<4*nx>);
+        u += %<nx>;
+        
+        /* Run fir_cplx filter algorithm in current filter input x[] */
+        DSP_fir_cplx((short *) x, (short *)h, (short *)r, %<nh>, %<nx>);
+        r += %<nx>;
+        
+        /* Update filter states: move previous nf inputs from f[nx] to f[0] */
+        x = f + %<nx>;
+        memmove(f, x, %<4*nf>);
+        f += %<nx + nf>;
+      }
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] stic6x_fir_cplx.tlc

@@ -1,0 +1,154 @@
+%% $RCSfile: ctf.tlc,v $
+%% $Revision: 1.15 $ 
+%% $Date: 2002/04/27 00:35:00 $
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+%% Abstract: Continuous Transfer Function block target file
+
+%implements "TransferFcn" "C"
+
+%% InitializeConditions =======================================================
+%%
+%function InitializeConditions(block, system) Output
+  %if ContStates[0] > 0
+    /* %<Type> Block: %<Name> */
+    %if ParamSettings.Realization == "General"
+      %assign rollVars = ["Xc"]
+      %assign rollRegions = [0:%<ContStates[0]-1>]
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockContinuousState("", lcv, sigIdx)> = 0.0;
+      %endroll
+    %else
+      %<LinLibInitializeConditions(block,system)>
+    %endif
+  %endif
+%endfunction
+
+%% FcnNumElem ================================================================
+%% Abstract: return an element of the numerator
+%function FcnNumElem(rollR,numR,lcvR,idxR,rollC,lcvC,idxC) Output
+  %if rollR && rollC
+    %assign idxStr = "%<lcvR> + %<numR>*%<lcvC>"
+  %elseif rollR
+    %assign idxStr = "%<lcvR> + %<numR*idxC>"
+  %elseif rollC
+    %assign idxStr = "%<numR>*%<lcvC> + %<idxR>"
+  %else
+    %assign idxStr = idxR + numR*idxC
+  %endif
+  %if rollR || rollC
+    %<LibBlockParameter(Numerator, idxStr, "", 0)>
+  %else
+    %<LibBlockParameter(Numerator, "", "", idxStr)>
+  %endif
+%endfunction
+
+%% FcnTransFcnOutput
+%% Abstract: output code for a transfer function
+%function FcnTransFcnOutput(block, system) Output
+    %assign nNumRows    = Numerator.Dimensions[0]
+    %assign nNumCols    = Numerator.Dimensions[1]
+    %assign nDenCols    = Denominator.Dimensions[1]
+    %assign feedThrough = nDenCols == nNumCols
+    %assign rowRollVars = ["y0"]
+    %assign rowRollReg  = [0:%<nNumRows-1>]
+    %assign U           = LibBlockInputSignal(0, "", "", 0)
+    %assign D0          = LibBlockParameter(Denominator, "", "", 0)
+    %roll rowIdx = rowRollReg, lcvR = RollThreshold, block, "Roller", rowRollVars
+      %assign rowRoll     = (lcvR != "")
+      %assign Yi = LibBlockOutputSignal(0, "", lcvR, rowIdx)
+      %assign colRollVars = ["Xc"]
+      %if feedThrough
+	%<Yi> = %<LibBlockParameter(Numerator, lcvR, "", rowIdx)>/ %<D0>*%<U>;
+        %if nDenCols > 1
+  	  %assign colRollReg  = [0:%<nNumCols-2>]
+	  %roll colIdx = colRollReg, lcvC = RollThreshold, block, "Roller", colRollVars
+ 	    %assign colRoll = (lcvC != "")
+	    %<Yi> += (\
+	    %if colRoll 
+	      %assign lcvCPlus1 = "(%<lcvC>+1)"
+	      %assign colIdxPlus1 = 0
+	    %else
+	      %assign lcvCPlus1 = ""
+	      %assign colIdxPlus1 = %<colIdx + 1>
+	    %endif
+            %assign x = LibBlockContinuousState("", lcvC, colIdx)
+	    %<FcnNumElem(rowRoll,nNumRows,lcvR,rowIdx,colRoll,lcvCPlus1,colIdxPlus1)>\
+	      - %<LibBlockParameter(Numerator, lcvR, "", rowIdx)>*\
+	      %<LibBlockParameter(Denominator, lcvCPlus1, "", colIdxPlus1)>/ %<D0>)/ %<D0>*%<x>;
+	  %endroll 
+	%endif
+      %else
+	%<Yi> = 0;
+        %assign colRollReg  = [0:%<nNumCols-1>]
+	%roll colIdx = colRollReg, lcvC = RollThreshold, block, "Roller", colRollVars
+ 	  %assign colRoll = (lcvC != "")
+	  %<Yi> += \
+	  %if colRoll 
+	    %assign lcvCPlusM = "(%<lcvC> + %<nDenCols-nNumCols - 1>)"
+	    %assign colIdxPlusM = 0
+	  %else
+	    %assign lcvCPlusM = ""
+	    %assign colIdxPlusM = %<colIdx + nDenCols - nNumCols - 1>
+	  %endif
+          %assign x = LibBlockContinuousState("", lcvCPlusM, colIdxPlusM)
+          %<FcnNumElem(rowRoll,nNumRows,lcvR,rowIdx,colRoll,lcvC,colIdx)>/ %<D0>*%<x>;
+	%endroll 
+      %endif
+    %endroll 
+%endfunction
+
+%% Outputs ====================================================================
+%%
+%function Outputs(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %if ParamSettings.Realization == "General"
+    %<FcnTransFcnOutput(block, system)>\
+  %else
+    %<LinLibOutputs(block, system)>\
+  %endif
+
+%endfunction
+
+
+%% Derivatives ================================================================
+%%
+%function Derivatives(block, system) Output
+  %if ContStates[0] > 0
+  /* %<Type> Block: %<Name> */
+  {
+    %if ParamSettings.Realization == "General"
+      %assign nx = ContStates[0]
+      %assign U = LibBlockInputSignal(0, "", "", 0)
+      %assign D0 = LibBlockParameter(Denominator, "", "", 0)
+      %<LibBlockContinuousStateDerivative("","",0)> = %<U>;
+      %assign region = [0:%<nx-1>]
+      %assign rollVars = ["Xc"]
+      %roll sigIdx = region, lcv = RollThreshold, block, "Roller", rollVars
+        %assign lcvPlus1 = (lcv != "") ? "%<lcv>+1" : ""
+        %assign sigIdxPlus1 = (lcv != "") ? "" : %<sigIdx + 1>
+        %<LibBlockContinuousStateDerivative("","",0)> -= ...
+	  %<LibBlockParameter(Denominator, lcvPlus1, "", sigIdxPlus1)>*...
+		%<LibBlockContinuousState("", lcv, sigIdx)>/ %<D0>;
+      %endroll
+
+      %if nx > 1
+        %assign region = [0:%<nx-2>]
+        %assign rollVars = ["Xc","xdot"]
+        %roll sigIdx = region, lcv = RollThreshold, block, "Roller", rollVars
+          %assign lcvPlus1 = (lcv != "") ? "%<lcv>+1" : ""
+          %assign sigIdxPlus1 = (lcv != "") ? "" : %<sigIdx + 1>
+	  %<LibBlockContinuousStateDerivative("",lcvPlus1,sigIdxPlus1)> =...
+	    %<LibBlockContinuousState("", lcv, sigIdx)>;
+        %endroll
+      %endif
+    %else
+      %<LinLibDerivatives(block, system)>\
+    %endif
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] ctf.tlc

@@ -1,0 +1,277 @@
+%% ============================================================================
+%% $RCSfile: formatparam.tlc,v $
+%% $Revision: 1.13.4.10 $ 
+%% $Date: 2004/04/14 23:48:18 $
+%%
+%% Abstract:
+%%   This system file puts parameters definitions and defines in model.c
+%%   and model_data.c for RTW's RealTime code format.
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%% 
+%selectfile NULL_FILE
+
+%if EXISTS("_FORMATPARAM_") == 0
+%assign _FORMATPARAM_ = 1
+
+%realformat "CONCISE"
+
+%%*****************************************************************************
+%% NOTE: This file is not used for model reference. If you are updating
+%% this file, please update ModelrefGenSfcnAndHandleConstPrmAndBIO in
+%% formatmodelref.tlc file.
+%%
+%assert (!IsModelReferenceTarget())
+
+
+%% Function: SLibFormatParam ===================================================
+%% Abstract:
+%%   Function to create and cache parameter definitions and defines in model.c
+%%   and model_data.c file sections.
+%%
+%function SLibFormatParam() void
+  %% ============================================================================
+  %% Generate the model_param.h file
+  %% ============================================================================
+  
+  %assign rootSystem = System[NumSystems-1]
+  %assign reqInsts   = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+  %if CodeFormat != "Embedded-C"
+    %assign statPrefix = RootPrmHdrInstsStatic ? "static" : ""
+  %else
+    %assign statPrefix = ""
+  %endif
+  %%
+  %% We need to unify the names "tParameters" & "tDefaultParameters"
+  %% and tConstBlockIOStruct & tInvariantSignals. Currently, the new
+  %% names are setup only for RealTime
+  %% 
+  %assign oldStrNames = !((CodeFormat == "RealTime") || ...
+    (CodeFormat == "Embedded-C"))
+  
+  %% This file is not used for model reference target
+  %assign opFile = SLibAddModelFile("SystemBody","Simulink", Name)
+  
+  %openfile dataBanBuf
+  /*
+  * %<Name>_data.c
+  *
+  %<SLibCommonHeaderInfo()>\
+  */
+  %closefile dataBanBuf
+  %openfile inclBuf
+  %if !IsModelReferenceTarget()
+    #include "%<Name>.h"
+  %endif
+  #include "%<Name>_private.h"
+  %closefile inclBuf
+  
+  %if CodeFormat != "Embedded-C"
+    %openfile tmpBuf
+    %if !GenRTModel
+      #include "simstruc.h"
+      #include "fixedpoint.h"
+    %endif
+    %closefile tmpBuf
+    %<SLibSetModelFileAttribute(opFile, "Includes", tmpBuf)>
+  %endif
+  
+  %openfile tmpBuf
+  
+  %%=============================================================================
+  %% Create global variables for profiler objects
+  %<SLibGenProfGlbData()>\
+  
+  %%
+  %% ============================================================================
+  %% Parameters
+  %%
+  %openfile dataBuf
+  %if SLibAreSimulinkGlobalParamsUnstructured()
+    %% This must be a top model that contains model reference blocks.
+    %assert !IsModelReferenceTarget() && HasModelReferenceBlocks()
+    %if reqInsts.ParamsInst && !SLibPrmBufferIsEmpty("UnstructuredSimulinkGlobal", "Instance")
+      
+      /* Block parameters (auto storage) */
+      %<SLibGetPrmBuffer("UnstructuredSimulinkGlobal", "Instance")>
+    %endif
+  %elseif reqInsts.ParamsInst && !SLibPrmBufferIsEmpty("SimulinkGlobal", "Instance")
+    %if CodeFormat != "Embedded-C"
+      %assign paramPrefix = statPrefix
+    %else
+      %assign paramPrefix = ""
+    %endif
+    %assign prmsName = oldStrNames ? tDefaultParameters : tParameters
+    %if RootPrmHdrInstsStatic
+      %openfile staticBuf
+    %endif
+    /* Block parameters (auto storage) */
+    %<SLibAddPreStructDeclarePragma(prmsName)>\  
+    %<paramPrefix> %<tParametersType> %<prmsName> = {
+      %<SLibGetPrmBuffer("SimulinkGlobal", "Instance")>
+    };
+    %<SLibAddPostStructDeclarePragma(prmsName)>\  
+    %if RootPrmHdrInstsStatic
+      %closefile staticBuf
+      %<SLibSetModelFileAttribute(opFile, "Definitions", staticBuf)>
+      %undef staticBuf
+    %endif
+    %undef prmsName
+  %endif
+  %%
+  %% Constant parameters
+  %%
+  %if !SLibPrmBufferIsEmpty("Const", "Instance")
+  
+    /* Constant parameters (auto storage) */
+    %<SLibGetPrmBuffer("Const", "Instance")>
+  %endif
+  %%
+  %% Constant parameters (with initialization)
+  %%
+  %if !SLibPrmBufferIsEmpty("ConstWithInit", "Instance")
+  
+    /* Constant parameters with dynamic initialization (auto storage) */
+    %<SLibGetPrmBuffer("ConstWithInit", "Instance")>
+  %endif
+  %closefile dataBuf
+  %%
+  
+  %%
+  %% ============================================================================
+  %% Block I/O
+  %%
+  %if reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+    
+    /* Block signals (auto storage) */
+    %<LibDumpBlockIOInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% Const Block I/O
+  %%
+  %openfile cioBuf
+  %if reqInsts.ConstBlockIOInst && !LibConstBlockIOInstanceIsEmpty()
+    
+    %assign cioName = oldStrNames ? tInvariantSignals : tConstBlockIOStruct
+    %if RootPrmHdrInstsStatic
+      %openfile staticBuf
+    %endif
+    /* Invariant block signals (auto storage) */
+    %<SLibAddPreStructDeclarePragma(cioName)>\
+    %<statPrefix> %<tConstBlockIOType> %<cioName> = {
+      %<LibDumpConstBlockIOInstance()>
+    };
+    %<SLibAddPostStructDeclarePragma(cioName)>\
+    %if RootPrmHdrInstsStatic
+      %closefile staticBuf
+      %<SLibSetModelFileAttribute(opFile, "Definitions", staticBuf)>
+      %undef staticBuf
+    %endif
+    %undef cioName
+  %endif
+  %closefile cioBuf
+  %% Check if the _data.c file needs to be written.
+  %if !WHITE_SPACE(cioBuf) || !WHITE_SPACE(dataBuf)
+    %assign dataFile = SLibAddModelFile("SystemBody","Simulink", "%<Name>_data")
+    %<LibSetSourceFileCodeTemplate(dataFile,ERTDataSrcFileTemplate)>
+    %<SLibSetModelFileAttribute(dataFile, "Banner", dataBanBuf)>
+    %undef dataBanBuf
+    %<SLibSetModelFileAttribute(dataFile, "Includes", inclBuf)>
+    %undef inclBuf
+    %<SLibSetModelFileAttribute(dataFile, "Definitions", cioBuf)>
+    %undef cioBuf
+    %<SLibSetModelFileAttribute(dataFile, "Definitions", dataBuf)>
+    %undef dataBuf
+  %endif
+  %%
+  %%
+  %% ============================================================================
+  %% States
+  %%
+  %if reqInsts.ContStatesInst && !LibContStatesInstanceIsEmpty()
+    
+    /* Continuous states */
+    %<LibDumpContStatesInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% Solver Matrices
+  %%
+  %if !LibSolverMatricesInstanceIsEmpty()
+    
+    /* Solver Matrices */
+    %<LibDumpSolverMatricesInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% State Derivatives
+  %%
+  %% State derivatives are statically declared by integration routine.
+  %%   ode1 --> static real_T f[1][NCSTATES];
+  %%   ode2 --> static real_T f[2][NCSTATES]
+  %%   :   :    :
+  %%
+  %%
+  %% ============================================================================
+  %% DWork
+  %%
+  %if reqInsts.DworkInst && !LibDWorkInstanceIsEmpty()
+    
+    /* Block states (auto storage) */
+    %<LibDumpDWorkInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% Zero-crossings
+  %%
+  %if reqInsts.PrevZCStatesInst && !LibPrevZCStatesInstanceIsEmpty()
+    
+    /* Previous zero-crossings (trigger) states */
+    %<LibDumpPrevZCStatesInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% Model inputs
+  %%
+  %if reqInsts.ExtInpsInst && !LibExternalInputsInstanceIsEmpty()
+    
+    /* External inputs (root inport signals with auto storage) */
+    %<LibDumpExternalInputsInstance()>\
+  %endif
+  %%
+  %% ============================================================================
+  %% Model outputs
+  %%
+  %if reqInsts.ExtOutputsInst && !LibExternalOutputsInstanceIsEmpty()
+    
+    /* External output (root outports fed by signals with auto storage) */
+    %<LibDumpExternalOutputsInstance()>\
+  %endif
+  %%
+  %% ===========================================================================
+  %% Declare the Simstruct
+  %%
+  %if reqInsts.SimStructInst
+  
+    %if CodeFormat != "Embedded-C"
+      /* Parent Simstruct */
+      %assign rtModelObjType = tSimStructType
+      static %<rtModelObjType> model_S;
+      %<rtModelObjType> *const %<RTMGetModelSS()> = &model_S;
+    %else
+      %if !CompiledModel.EmptyRealTimeObject
+	/* Real-time model */
+	%<tSimStructType> %<RTMGetModelSS()>_;
+	%<tSimStructType> *%<RTMGetModelSS()> = &%<RTMGetModelSS()>_;
+      %endif
+    %endif
+  %endif
+  %closefile tmpBuf
+  
+  %<SLibSetModelFileAttribute(opFile, "Definitions", tmpBuf)>
+%endfunction
+
+%endif %% _FORMATPARAM_
+
+%% [EOF] formatparam.tlc

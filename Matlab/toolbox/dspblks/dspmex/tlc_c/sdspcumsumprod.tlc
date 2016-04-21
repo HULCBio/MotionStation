@@ -1,0 +1,1521 @@
+%% $RCSfile: sdspcumsumprod.tlc,v $
+%% $Revision: 1.14.4.5 $  $Date: 2004/04/20 23:16:16 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspcumsumprod.cpp
+%%
+
+%implements "sdspcumsumprod" "C"
+
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+
+  %assign INPORT       = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT      = 0
+  
+  %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+  %assign inDims  = LibBlockInputSignalDimensions(INPORT)
+  %assign inCols  = (numDims == 2) ? inDims[1] : 1
+  %assign inRows  = inDims[0]
+  
+  %assign cmplx   = LibBlockOutputSignalIsComplex(OUTPORT)
+  
+  %assign framebased = LibBlockInputSignalIsFrameData(INPORT)
+  %assign isRunning = (SFcnParamSettings.OpDir == 3)
+  %assign resetport = (SFcnParamSettings.ResetPort == 1)
+  %assign diffPortRates = !LibIsSFcnSingleRate(block)
+  %assign multiTasking  = SFcnParamSettings.multiTasking
+
+  %% I/O port data types
+  %assign inDT      = FixPt_GetInputDataType(0)
+  %assign outDT     = FixPt_GetOutputDataType(0)
+
+  %if FixPt_DataTypeIsFloat(inDT)
+    %assign accumDT = inDT
+    %assign DType   = LibBlockInputSignalDataTypeName(INPORT,"")
+    %assign ipDT    = inDT
+    %assign prodDT  = inDT
+  %else
+    %if(!EXISTS(inDT.usedName))
+        %addtorecord inDT usedName ((cmplx) ? inDT.ComplexName : inDT.Name)
+    %endif
+    %assign accumDT = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+    %assign DType   = (cmplx) ? accumDT.ComplexName : accumDT.Name
+
+    %if SFcnParamSettings.MathOp == 1
+        %assign ipDT     = FixPt_GetParameterDataType(INTER_PROD_DATA_TYPE, 0, 0)
+        %if(!EXISTS(ipDT.usedName))
+            %addtorecord ipDT usedName ((cmplx) ? ipDT.ComplexName : ipDT.Name)
+        %endif
+        %assign prodDT   = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+    %endif
+    
+  %endif
+  
+  %if SFcnParamSettings.MathOp == 0
+    %% cumsum
+    %assign op = "+"
+    %assign fcnustr = "Sum"
+    %assign fcnlstr = "sum"
+  %elseif SFcnParamSettings.MathOp == 1
+    %% cumprod
+    %assign op = "*"
+    %assign fcnustr = "Product"
+    %assign fcnlstr = "product"
+    %assign block = block + ipDT + prodDT    
+  %else
+    %error "Invalid operation"
+  %endif    
+  
+  %assign block = block  + INPORT + OUTPORT + numDims + ...
+    INPORT_RESET + inCols     + inRows + cmplx  + DType        + ...
+    framebased   + isRunning  + diffPortRates   + op           + ...
+    fcnustr      + fcnlstr    + resetport       + multiTasking + ...
+    inDT         + outDT      + accumDT         
+
+  %assign inplace   = (LibBlockInputSignalBufferDstPort(INPORT) == OUTPORT)
+  %if (framebased) 
+    %assign RowCumOp = (SFcnParamSettings.OpDir == 2)      
+    %assign ColCumOp = ((SFcnParamSettings.OpDir == 1) || ...
+                         (SFcnParamSettings.OpDir == 3))
+  %else %% sample-based
+    %assign ColCumOp = (SFcnParamSettings.OpDir == 1)
+    %assign RowCumOp = (SFcnParamSettings.OpDir == 2)
+    %if ((numDims == 1) && RowCumOp)
+      %assign ColCumOp = 1
+      %assign RowCumOp = 0
+    %endif
+  %endif
+  %assign block = block + inplace + ColCumOp + RowCumOp
+
+  %%
+  %% Setup the event port handler:
+  %%
+  %if resetport
+    %if (multiTasking && diffPortRates)
+        %% To achieve determinism we delay the event port data and store it in
+        %% DWork. The variable below tells event port handler to use this DWork
+        %% instead of the input port to check for events
+
+        %assign ephDataSource = PortDataEPH
+        %assign block = block + ephDataSource
+    %endif
+    %<EventPortHandlerInstanceSetup(block)>
+    %if  EventPortRequiresState(block)
+        %assign ephdwork = EPHPState
+     %else
+        %assign ephdwork = 0
+     %endif
+     %assign block = block + ephdwork
+  %endif
+
+  %assign GenerateSampleHitCode = 1 %%Used by the rate grouping functions
+  %assign block = block + GenerateSampleHitCode
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %if resetport
+    %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+  %endif
+%endfunction %% InitializeConditions
+
+%% Function: Start =============================================================
+%% Abstract:
+%%
+%function Start(block, system) Output
+  %%
+  %if !LibIsEqual(TID, "constant")
+    %%
+    %if isRunning
+      {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+  %endif
+    %%
+%endfunction  %% Start
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Compute cumulative sum/product of input elements
+%%
+%function Outputs(block, system) Output
+  /* DSP Blockset Cumulative %<fcnustr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if FixPt_DataTypeIsFloat(inDT)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION             %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FltPtInlineCode(block,system)>\
+  %else
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION                %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FixPtInlineCode(block)>\
+  %endif
+
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtInlineCode
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FltPtInlineCode(block, system) Output
+  %%
+  %% Certain cases don't require any code - assuming we are NOT in 
+  %% a running mode
+  %%  - Col CumOp of a row
+  %%  - Row CumOp of a col
+  %%  - Scalar
+  %%
+  %if ((!isRunning) && ...
+       ((ColCumOp && inRows==1) || ...
+        (RowCumOp && inCols==1) || ...
+        (inRows==1 && inCols==1))) 
+    %%
+    %if !inplace
+      /* Signal Processing Blockset Cumulative %<fcnustr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+      %assign u     = LibBlockInputSignal(INPORT,"i","",0)
+      %assign y     = LibBlockOutputSignal(OUTPORT,"i","",0)
+      %%
+      %assign uptr  = LibBlockInputSignalAddr(INPORT,"","",0)
+      %assign yptr  = LibBlockOutputSignalAddr(OUTPORT,"","",0)
+      %assign width = LibDataInputPortWidth(INPORT)
+      %%
+      /* Copy input to output because data is unchanged. */
+      %<LibBlockCopyInputsToOutputs(INPORT,OUTPORT)>
+
+    %endif
+    %%
+  %else
+    /* Signal Processing Blockset Cumulative %<fcnustr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+    {
+      %if ColCumOp 
+        %%
+        %if isRunning
+          %if diffPortRates
+            %if GenerateSampleHitCode
+              if (%<LibIsSFcnSampleHit("InputPortIdx0")>) 
+              { %<LibTaskSFcnComment("InputPortIdx0")>
+            %else
+              {
+            %endif
+             %if (multiTasking)
+               %<specialSampleHitCode(block)>
+               {
+             %endif
+          %endif
+          %if inplace
+            /* Running cumulative %<fcnlstr> using in-place algorithm */
+            %<CSumProdRunningInPlace(block)> \
+          %else
+            /* Running cumulative %<fcnlstr> */
+            %<CSumProdRunning(block)> \
+          %endif
+          %if diffPortRates
+            %if multiTasking
+               }
+            %endif
+            }
+          %endif
+        %else
+          %if inplace
+            /* Cumulative %<fcnlstr> columns using in-place algorithm */
+            %<CSumProdColInPlace(op)> \
+          %else
+            /* Cumulative %<fcnlstr> columns */
+            %<CSumProdCol(op)> \
+          %endif
+        %endif
+        %%
+      %elseif RowCumOp
+        %%
+        %if inplace
+          /* Cumulative %<fcnlstr> rows using in-place algorithm */
+          %<CSumProdRowInPlace(op)> \
+        %else
+          /* Cumulative %<fcnlstr> rows */
+          %<CSumProdRow(op)> \
+        %endif
+      %else %% 'into-the'page' sample-based cumulative running op
+        %if diffPortRates
+          %if GenerateSampleHitCode
+            if (%<LibIsSFcnSampleHit("InputPortIdx0")>) 
+            { %<LibTaskSFcnComment("InputPortIdx0")>
+          %else
+            {
+          %endif
+          %if (multiTasking)
+               %<specialSampleHitCode(block)>
+               {
+          %endif
+        %endif
+        %if inplace
+          /* Cumulative %<fcnlstr> samples using in-place algorithm */
+          %<CSumProdPageInPlace(block)> \
+        %else
+          /* Cumulative %<fcnlstr> samples */
+          %<CSumProdPage(block)> \
+        %endif          
+        %if diffPortRates
+          %if (multiTasking)
+               }
+          %endif
+          }
+        %endif
+      %endif
+    }   
+  %endif
+%endfunction %% Outputs
+
+%% Function: OutputsForTID =====================================================
+%%
+%function OutputsForTID(block, system, tid) Output
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %assign block.GenerateSampleHitCode = 0
+    %<Outputs(block, system)>
+  %endif
+%endfunction %% OutputsForTID
+
+
+%% Function: specialSampleHitCode ==============================================
+%%
+%function specialSampleHitCode(block) Output
+    %%Delay reset port data by storing in DWork to achieve determinism
+    if (%<LibIsSFcnSpecialSampleHit("InputPortIdx1", "InputPortIdx0")>) {
+        memcpy(%<LibBlockDWorkAddr(ephDataSource, "", "", 0)>, 
+               %<LibBlockInputSignalAddr(INPORT_RESET, "", "", 0)>,
+               sizeof(%<LibBlockInputSignalDataTypeName(INPORT_RESET, "")>));
+    }
+%endfunction
+
+
+%% Function: CSumProdRunningInPlace ============================================
+%%
+%function CSumProdRunningInPlace(block) Output 
+%%
+    %<DType> *rcumval = %<LibBlockDWorkAddr(RunningCumVal,"","",0)>;
+    %<DType> *y       = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T     rows    = %<inRows>;
+    int_T     cols    = %<inCols>;
+    int_T     r, c;
+    %<DType> *yprev;
+
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+    for(c=0; c<cols; c++) {
+        %if !cmplx
+          *y %<op>= *rcumval;
+        %else
+          %if ISEQUAL(op,"+")
+            y->re += rcumval->re;
+            y->im += rcumval->im;
+          %else
+            %<DType> ytmp = *y;
+            y->re = CMULT_RE(ytmp,*rcumval);
+            y->im = CMULT_IM(ytmp,*rcumval);
+          %endif
+        %endif
+        %%
+        yprev  = y++;  
+
+        for(r=1; r<rows; r++) {
+          %if cmplx
+            %if ISEQUAL(op,"+")
+              y->re     += yprev->re;
+              (y++)->im += (yprev++)->im;
+            %else
+              %<DType> ytmp = *y;
+              y->re = CMULT_RE(ytmp,*yprev);
+              (y++)->im = CMULT_IM(ytmp,*yprev);
+              yprev++;
+            %endif
+          %else
+            *y++ %<op>= *yprev++;
+          %endif
+        }
+        *rcumval++ = *yprev;  /* Save cumulative %<fcnlstr> for next frame. */
+    }
+    %%
+%endfunction  %% CSumProdRunningInPlace
+
+
+%% Function: CSumProdRunning ==========================================================
+%%
+%function CSumProdRunning(block) Output 
+%%
+    %<DType> *rcumval = %<LibBlockDWorkAddr(RunningCumVal,"","",0)>;
+    const %<DType> *u  = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    %<DType> *y       = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T     rows    = %<inRows>;
+    int_T     cols    = %<inCols>;
+    int_T     r, c;
+    %<DType> *yprev;
+
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+    for(c=0; c<cols; c++) {
+        %if !cmplx
+          *y = *u++ %<op> *rcumval;  
+        %else
+          %if ISEQUAL(op,"+")
+            y->re = u->re + rcumval->re;
+            y->im = (u++)->im + rcumval->im;
+          %else
+            y->re = CMULT_RE(*u,*rcumval);
+            y->im = CMULT_IM(*u,*rcumval); 
+            u++;
+          %endif
+        %endif
+        %%
+        yprev = y++;    
+
+        for(r=1; r<rows; r++) {
+            %if !cmplx
+              *y++ = *u++ %<op> *yprev++;
+            %else
+              %if ISEQUAL(op,"+")         
+                y->re     = u->re + yprev->re;
+                (y++)->im = (u++)->im + (yprev++)->im;      
+              %else
+                y->re     = CMULT_RE(*u,*yprev);
+                (y++)->im = CMULT_IM(*u,*yprev);
+                u++;
+                yprev++;
+              %endif
+            %endif
+        }
+        *rcumval++ = *yprev;  /* Save cumulative %<fcnlstr> for next frame. */
+    }
+    %%
+%endfunction  %% CSumProdRunning
+
+
+%% Function: CSumProdColInPlace ==========================================================
+%%
+%function CSumProdColInPlace(op) Output 
+%%
+    %if inCols > 1
+        %%
+        %% Matrix code
+        %%  
+        %<DType> *y    = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T     rows = %<inRows>;
+        int_T     cols = %<inCols>;
+        int_T     r, c;
+
+        for(c=0; c<cols; c++) {
+            %<DType> *yprev = y++;  /* Skip over first element */
+
+            for(r=1; r<rows; r++) {
+                %if cmplx
+                  %if ISEQUAL(op,"+")
+                    y->re     += yprev->re;
+                    (y++)->im += (yprev++)->im;
+                  %else
+                    %<DType> ytmp = *y;
+                    y->re     = CMULT_RE(ytmp,*yprev);
+                    (y++)->im = CMULT_IM(ytmp,*yprev); 
+                    yprev++;
+                  %endif
+                %else
+                    *y++ %<op>= *yprev++;
+                %endif
+            }
+        }
+    %else
+        %<CSumProdVectorInPlace(inRows,op)> \        
+    %endif
+    %%
+%endfunction  %% CSumProdColInPlace
+
+
+%% Function: CSumProdCol ==========================================================
+%%
+%function CSumProdCol(op) Output 
+%%
+    %if inCols > 1
+        %%
+        %% Matrix code
+        %%  
+        const %<DType> *u = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+        %<DType> *y = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T rows = %<inRows>;
+        int_T cols = %<inCols>;
+        int_T r, c;
+
+        for(c=0; c<cols; c++) {
+            %<DType> *yprev = y;
+            *y++ = *u++;  
+    
+            for(r=1; r<rows; r++) {
+                %if cmplx
+                  %if ISEQUAL(op,"+")
+                    y->re     = u->re + yprev->re;
+                    (y++)->im = (u++)->im + (yprev++)->im;
+                  %else
+                    y->re     = CMULT_RE(*u,*yprev);
+                    (y++)->im = CMULT_IM(*u,*yprev); 
+                    u++;
+                    yprev++;
+                  %endif
+                %else
+                    *y++ = *u++ %<op> *yprev++;
+                %endif
+            }
+        }
+    %else
+        %<CSumProdVector(inRows,op)> \        
+    %endif
+    %%
+%endfunction  %% CSumProdCol
+
+
+%% Function: CSumProdRowInPlace ==========================================================
+%%
+%function CSumProdRowInPlace(op) Output 
+%%
+    %if inRows > 1
+        %%
+        %% Matrix code
+        %%  
+        %<DType> *y    = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T     rows = %<inRows>;
+        int_T     cols = %<inCols>;
+        int_T     r, c;
+
+        for(r=0; r<rows; r++) {
+            for(c=1; c<cols; c++) {
+                int_T idx = c * rows;
+                %%
+                %if cmplx
+                  int_T idxprev = idx - rows;
+                  %if ISEQUAL(op,"+")
+                    y[idx].re += y[idxprev].re;
+                    y[idx].im += y[idxprev].im;
+                  %else
+                    %<DType> ytmp = y[idx];
+                    y[idx].re = CMULT_RE(ytmp,y[idxprev]);
+                    y[idx].im = CMULT_IM(ytmp,y[idxprev]);             
+                  %endif
+                %else
+                    y[idx] %<op>= y[idx - rows];
+                %endif
+            }
+            y++;  /* next row */
+        }
+    %else
+        %<CSumProdVectorInPlace(inCols,op)> \        
+    %endif
+    %%
+%endfunction  %% CSumProdRowInPlace
+
+
+%% Function: CSumProdRow ==========================================================
+%%
+%function CSumProdRow(op) Output 
+%%
+    %if inRows > 1
+        %%
+        %% Matrix code
+        %%  
+        const %<DType> *u    = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+        %<DType> *y    = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T     rows = %<inRows>;
+        int_T     cols = %<inCols>;
+        int_T     r, c;
+
+        for(r=0; r<rows; r++) {
+            *y = *u;  
+
+            for(c=1; c<cols; c++) {
+                int_T idx = c * rows;
+                %%
+                %if cmplx
+                  int_T idxprev = idx - rows;
+                  %if ISEQUAL(op,"+")
+                    y[idx].re = y[idxprev].re + u[idx].re;
+                    y[idx].im = y[idxprev].im + u[idx].im;
+                  %else
+                    y[idx].re = CMULT_RE(u[idx],y[idxprev]);
+                    y[idx].im = CMULT_IM(u[idx],y[idxprev]);             
+                  %endif
+                %else
+                    y[idx] = y[idx - rows] %<op> u[idx];
+                %endif
+            }
+            u++;   /* next input row */
+            y++;   /* next output row */
+        }
+    %else
+        %<CSumProdVector(inCols,op)> \        
+    %endif
+    %%
+%endfunction  %% CSumProdRow
+
+
+%% Function: CSumProdVectorInPlace ==========================================================
+%%
+%function CSumProdVectorInPlace(width,op) Output 
+%%
+    %<DType> *y     = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    %<DType> *yprev = y++;
+    int_T    width  = %<width>;
+
+    while(width-- > 1) {
+        %if cmplx
+          %if ISEQUAL(op,"+")
+            y->re     += yprev->re;
+            (y++)->im += (yprev++)->im;
+          %else
+            %<DType> ytmp = *y;
+            y->re     = CMULT_RE(ytmp,*yprev);
+            (y++)->im = CMULT_IM(ytmp,*yprev); 
+            yprev++;
+          %endif
+        %else
+            *y++ %<op>= *yprev++;
+        %endif
+    }
+%%
+%endfunction  %% CSumProdVector
+
+
+%% Function: CSumProdVector ==========================================================
+%%
+%function CSumProdVector(width,op) Output 
+%%
+    const %<DType> *u     = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    %<DType> *y     = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T     width = %<width>;
+
+    %<DType> *yprev = y;
+    *y++ = *u++;  
+
+    while(width-- > 1) {
+        %if cmplx
+          %if ISEQUAL(op,"+")
+            y->re     = u->re + yprev->re;
+            (y++)->im = (u++)->im + (yprev++)->im; 
+          %else
+            y->re     = CMULT_RE(*u,*yprev);
+            (y++)->im = CMULT_IM(*u,*yprev); 
+            u++;
+            yprev++;
+          %endif
+        %else
+            *y++ = *u++ %<op> *yprev++;
+        %endif
+    }
+%%
+%endfunction  %% CSumProdVector
+
+%% Function: CSumProdPageInPlace ==========================================================
+%%
+%function CSumProdPageInPlace(block) Output 
+%%
+    %assign rows = inRows
+    %assign cols = inCols
+    %<DType> *y     = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    %<DType> *rcval = %<LibBlockDWorkAddr(RunningCumVal,"","",0)>;
+    %assign width = rows*cols
+    int_T width = %<width>;
+    
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+    while(width-- > 0) {
+      %if cmplx
+        %if ISEQUAL(op,"+")
+          y->re += rcval->re;
+          y->im += rcval->im;
+        %else
+          %<DType> ytmp = *y;          
+          y->re = CMULT_RE(ytmp,*rcval);
+          y->im = CMULT_IM(ytmp,*rcval); 
+        %endif
+      %else
+        *y %<op>= *rcval;
+      %endif
+      *rcval++ = *y++;  /* Save cumulative %<fcnlstr> for next time step. */
+    }
+    
+%%
+%endfunction  %% CSumProdPageInPlace
+
+
+%% Function: CSumProdPage ==========================================================
+%%
+%function CSumProdPage(block) Output 
+%%
+    %assign rows = inRows
+    %assign cols = inCols
+    const %<DType> *u     = %<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    %<DType> *y     = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    %<DType> *rcval = %<LibBlockDWorkAddr(RunningCumVal,"","",0)>;
+    %assign width = rows*cols
+    int_T width = %<width>;
+    
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+    while(width-- > 0) {
+      %if cmplx
+        %if ISEQUAL(op,"+")
+          y->re = u->re + rcval->re;
+          y->im = (u++)->im + rcval->im;
+        %else
+          y->re = CMULT_RE(*u,*rcval);
+          y->im = CMULT_IM(*u,*rcval); 
+          u++;
+        %endif
+      %else
+        *y = *u++ %<op> *rcval;
+      %endif
+      *rcval++ = *y++;  /* Save cumulative %<fcnlstr> for next time step. */
+    }
+%%
+%endfunction  %% CSumProdPage
+
+%% Function: resetRunningVals ==========================================================
+%%
+%function resetRunningVals(block) Output   
+  %assign nChans = (framebased) ? inCols : inCols*inRows
+  %assign isCplx = cmplx
+  %assign isDbl = (LibBlockInputSignalDataTypeId(INPORT) == tSS_DOUBLE)
+  %if (FixPt_DataTypeIsFloat(inDT) || !isRunning || ISEQUAL(op,"+"))
+      %<DType> *cachePtr = %<LibBlockDWorkAddr(RunningCumVal,"","",0)>;
+  %endif  
+  %if nChans > 1
+    int_T nChans = %<nChans>;
+    while (nChans--) {
+  %endif
+  %if FixPt_DataTypeIsFloat(inDT)
+    %if ISEQUAL(op,"+")
+      %assign baseVal = "0.0"
+    %else
+      %assign baseVal = "1.0"
+    %endif
+    %if isCplx
+      %if isDbl
+        cachePtr->re   = %<baseVal>;
+        cachePtr++->im = 0.0;
+      %else
+        cachePtr->re   = %<baseVal>F;
+        cachePtr++->im = 0.0F;
+      %endif %%isDbl
+    %else %% real
+      %if isDbl
+        *cachePtr++ = %<baseVal>;
+      %else
+        *cachePtr++ = %<baseVal>F;
+      %endif %%isDbl
+    %endif %%isCplx
+  %else  %% is FixPt data type
+    %if ISEQUAL(op,"+")
+      %if isCplx
+        cachePtr->re = (%<accumDT.Name>)0;
+        cachePtr->im = (%<accumDT.Name>)0;
+        cachePtr++;
+      %else
+        *cachePtr++ = (%<DType>)0;
+      %endif %%isCplx
+    %else
+        %if isRunning
+            %<LibBlockDWork(UseCacheFlag,"","",0)> = 2;
+        %endif
+    %endif %%ISEQUAL(op,"+")
+  %endif %% FixPt_DataTypeIsFloat(inDT)
+%%  
+  %if nChans > 1
+    }
+  %endif
+%endfunction %% resetRunningVals
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%% Tier 1
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtInlineCode(block) Output
+{
+    /* Function Fixed Point Cumulative %<fcnustr> */
+%% Start by setting up the DataType Records
+%% We can change them later if nessesary
+%%
+%createrecord inRec {label  LibBlockInputSignal(0, "", "", "0");...
+                     dTypeRec  inDT;...
+                     isComplex cmplx}
+%createrecord outRec{label  LibBlockOutputSignal(0, "", "", "0");...
+                     dTypeRec  outDT;...
+                     isComplex cmplx}
+%createrecord accumRec {label "accum";...
+                     dTypeRec  accumDT;...
+                     isComplex cmplx}
+%createrecord RndSat { roundingMode FixPtRoundingMode;...
+                       overflowMode FixPtSaturationMode}
+%%
+%assign block = block  + inRec + outRec + accumRec + RndSat
+%%
+%if SFcnParamSettings.MathOp == 1
+    %createrecord ipRec {label "innerProd";...
+                         dTypeRec  ipDT;...
+                         isComplex cmplx}
+    %createrecord prodRec {label "prod";...
+                         dTypeRec  prodDT;...
+                         isComplex 0}
+    %assign block = block + ipRec + prodRec
+%endif
+%%
+%% Some cases reduce to data type conversion
+  %if (((SFcnParamSettings.OpDir == 2) && (inCols == 1)) ||...
+       ((SFcnParamSettings.OpDir == 1) && (inRows == 1))) 
+     %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>\
+  %else
+     %if(isRunning)
+         %<FixPtRunningOp(block)>\
+     %elseif(SFcnParamSettings.OpDir == 1) 
+         %<FixPtColumnOp(block)>\
+     %else    %% SFcnParamSetting.OpDir == 2
+         %<FixPtRowOp(block)>\
+     %endif
+  %endif
+}
+%endfunction %% FixPtInlineCode
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function for dealing with running operations   Tier2 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtRunningOp(block) Output
+%%
+    %if diffPortRates
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { %<LibTaskSFcnComment("InputPortIdx0")>
+        %if (multiTasking)
+           %<specialSampleHitCode(block)>
+        %endif
+    %endif
+%%
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetRunningVals(block)> \
+      }
+    %endif
+    %if (inRows == 1)
+        %if(inCols == 1)
+            %<FixPtSingleRunningOp(block)>\
+        %else
+            %<FixPtRowRunningOp(block)>\
+        %endif
+    %elseif framebased
+        %if (inCols == 1)
+            %<FixPtSingleChannelRunningOp(block)>\
+        %else
+            %<FixPtRowChannelRunningOp(block)>\
+        %endif
+    %else
+        %if (inCols == 1)
+            %<FixPtColRunningOp(block)>\
+        %else
+            %<FixPtMatrixRunningOp(block)>\
+        %endif
+    %endif
+    %if diffPortRates
+        }
+    %endif
+%endfunction %% FixPtRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function for dealing with column operations Tier2 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtColumnOp(block) Output
+    %if (inCols == 1)        %% single accum
+        %<FixPtSingleColumnOp(block,inRows)>\
+    %else                    %% multiple accum
+        %<FixPtMultiColumnOp(block)>\
+    %endif
+    %% the one row columns ops should already be taken care
+    %%  of by <LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+%endfunction %% FixPtColumnOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function for dealing with row operations   Tier2  %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtRowOp(block) Output
+    %if (inRows == 1)        %% single accum
+        %<FixPtSingleColumnOp(block,inCols)>\
+    %else                    %% multiple accum
+        %<FixPtMultiRowOp(block)>\
+    %endif
+    %% the one column row ops should already be taken care
+    %% of by <LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+%endfunction %% FixPtRowOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% functions for dealing with different matrix       %%
+%% configurations                   Tier3            %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% 1-D Operation used for both single column or single row 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleColumnOp(block, width) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtSingleColumnSum(block,width)>\
+    %else                                %% else Prod
+        %<FixPtSingleColumnProd(block,width)>\
+    %endif
+%endfunction %% FixPtSingleColumnOp
+
+%function FixPtMultiColumnOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtVectorAccumSum(block,"idxC",inCols,"idxR",inRows)>\
+    %else    
+        %<FixPtVectorAccumProd(block,"idxC",inCols,"idxR",inRows)>\
+    %endif
+%endfunction %% FixPtMultiColumnOp
+
+%%  function: FixPtSingleRowOp done by FixPtSingleColumnOp
+
+%function FixPtMultiRowOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtVectorAccumSum(block,"idxR",inRows,"idxC",inCols)>\
+    %else
+        %<FixPtVectorAccumProd(block,"idxR",inRows,"idxC",inCols)>\
+    %endif
+%endfunction %% FixPtMultiRowOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does running operation on 1x1 matrix   Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleRunningOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtSingleRunningSum(block)>\
+    %else
+        %<FixPtSingleRunningProd(block)>\
+    %endif
+%endfunction %% FixPtSingleRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does running operation on a row vector of inputs   Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtRowRunningOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtVecAccumRunningSum(block,inCols,"i")>\
+    %else
+        %<FixPtVecAccumRowRunningProd(block,inCols)>\
+    %endif
+%endfunction %%FixPtRowRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does running operation on a column of inputs non-framebased  Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtColRunningOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtVecAccumRunningSum(block,inRows,"i")>\
+    %else
+        %<FixPtVecAccumRowRunningProd(block,inRows)>\
+    %endif
+%endfunction %%FixPtColRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does running operation on a single column of %%
+%% framebased inputs                     Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleChannelRunningOp(block) Output
+   %if SFcnParamSettings.MathOp == 0    %% if Sum
+       %<FixPtVecAccumRunningSum(block,inRows,"0")>\
+   %else
+       %<FixPtSingleChannelRunningProd(block)>\
+   %endif
+%endfunction %%FixPtSingleChannelRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does running operation on multiple columns of %%
+%% framebased inputs                      Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtRowChannelRunningOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+       %<FixPtMatrixAccumRunningSum(block,"idxC")>\
+    %else
+       %<FixPtRowChannelRunningProd(block)>\
+    %endif
+%endfunction %%FixPtRowChannelRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% does into the page running operation on a %%
+%% non-framebased matrix input        Tier 3 %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtMatrixRunningOp(block) Output
+    %if SFcnParamSettings.MathOp == 0    %% if Sum
+        %<FixPtMatrixAccumRunningSum(block,"idxC*%<inRows>+idxR")>\
+    %else
+        %<FixPtMatrixRunningProd(block)>\
+    %endif
+%endfunction %%FixPtMatrixRunningOp
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtSingleRunningSum(block)                       Tier4   %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleRunningSum(block) Output
+  {
+     %assign accumRec.label  = LibBlockDWork(RunningCumVal,"","",0)
+%%
+     %<DSPFixptLibPlusEquals(accumRec, inRec, RndSat)>
+     %<DSPFixptLibEquals(outRec, accumRec, RndSat)>
+  }
+%endfunction %% FixPtSingleRunningSum
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtSingleRunningProd(block)                      Tier4   %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleRunningProd(block) Output
+  {
+    %copyrecord icRec inRec
+    %assign ipRec.label = LibBlockDWork(RunningCumVal,"","",0)
+    %assign icRec.label = LibBlockDWork(InputCache,"","",0)
+    %if cmplx
+        %assign multOutRec = accumRec
+    %else
+        %assign multOutRec = prodRec
+    %endif  
+     %<prodDT.Name> %<prodRec.label>;
+     %if cmplx
+     %<accumDT.ComplexName> %<accumRec.label>;
+     %endif 
+     if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 0){
+        /* normal running: out = in * stored */
+        %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, inRec, ipRec, prodRec, RndSat)>
+        %else
+            %<DSPFixptLibTimes(prodRec, inRec, ipRec, RndSat)>
+        %endif
+        %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+        %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+     }else if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 1){
+        /* second pass: out = in * previous in */
+        %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, inRec, icRec, prodRec, RndSat)>
+        %else
+            %<DSPFixptLibTimes(prodRec, inRec, icRec, RndSat)>
+        %endif
+        %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+        %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = 0;
+     }else{
+        /* first pass: out = in,  store in for second pass */
+        %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+        %<DSPFixptLibEquals(icRec, inRec, RndSat)>
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = 1;
+     }  
+  }
+%endfunction %% FixPtSingleRunningProd
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtSingleColumnSum(block,width)                  Tier4   %%
+%% width: number of elements to do a running sum of in the accumulator %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleColumnSum(block, width) Output
+%%
+    %assign inRec.label  = LibBlockInputSignal(0, "i", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "i", "", "0")
+%%
+  {
+    %if cmplx
+      %<accumDT.ComplexName> %<accumRec.label>;
+    %else
+      %<accumDT.Name> %<accumRec.label>;
+    %endif
+    int32_T i = 0;
+%%
+    %<DSPFixptLibEquals(accumRec, inRec, RndSat)>
+    %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+%%
+    i = 1;
+    do{
+%%  for(i = 1; i < %<width>; i++){
+        %<DSPFixptLibPlusEquals(accumRec, inRec, RndSat)>
+        %<DSPFixptLibEquals(outRec, accumRec, RndSat)>
+    }while(++i < %<width>);
+  }
+%endfunction %% FixPtSingleColumnSum
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtSingleColumnProd(block,width)                  Tier4  %%
+%% width: number of elements to do a running prod of                   %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleColumnProd(block,width) Output
+    %copyrecord inOneRec inRec
+    %copyrecord inTwoRec inRec
+    %assign inOneRec.label = LibBlockInputSignal(0, "0", "", "0")
+    %assign inTwoRec.label = LibBlockInputSignal(0, "1", "", "0")
+    %assign inRec.label    = LibBlockInputSignal(0, "i", "", "0")
+    %assign outRec.label   = LibBlockOutputSignal(0, "i", "", "0")
+    %if cmplx
+        %assign multOutRec = accumRec
+    %else
+        %assign multOutRec = prodRec
+    %endif
+%%    
+%% get the first two elements taken care of.  
+%% We will always have at least 2 elements
+    {
+        %<ipDT.usedName> %<ipRec.label>;
+        %<prodDT.Name> %<prodRec.label>;
+        %if cmplx
+        %<accumDT.ComplexName> %<accumRec.label>;
+        %endif 
+        int32_T i = 0;        
+        %<DSPFixptLibEquals(outRec, inOneRec, RndSat)>
+        i++;
+        %if cmplx
+        %<DSPFixptLibCplxTimes(accumRec, inOneRec, inTwoRec, prodRec, RndSat)>
+        %else
+        %<DSPFixptLibTimes(prodRec, inOneRec, inTwoRec, RndSat)>
+        %endif
+        %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+        i++;
+%% if there are more than 2 loop to do the rest        
+        %if(width > 2)
+        %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+%%
+        do{
+            %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, inRec, ipRec, prodRec, RndSat)>
+            %else
+            %<DSPFixptLibTimes(prodRec, inRec, ipRec, RndSat)>
+            %endif
+            %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+            %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+        }while(++i < %<width>);
+        %endif
+    }
+%endfunction %% FixPtSingleColumnProd
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtVectorAccumSum(block,acIdx,acLen,opIdx,opLen)  Tier4  %%
+%% This function used for matrix input and either column or row        %%
+%% summing depending on how the parameters are setup:                  %%
+%% column operations acIdx should be idxC                              %%
+%% row operations acIdx should be idxR                                 %%
+%% acIdx: should be "idxC" or "idxR" itterates through the acuumulator %%
+%% acLen: should be %<inCols> or %<inRows> to match acIdx              %%
+%% opIdx: should be "idxC" or "idxR" opposite of %<acIdx>              %%
+%% opLen: should be %<inCols> or %<inRows> opposite of %<acLen>        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtVectorAccumSum(block,acIdx,acLen,opIdx,opLen) Output
+    %assign accumLabel = "accum"
+    %assign accumIdxLabel = "%<accumLabel>[%<acLen>]"
+%%
+    %assign inRec.label = LibBlockInputSignal(0, "idxC*%<inRows>+idxR", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "idxC*%<inRows>+idxR", "", "0")
+    %assign accumRec.label = "%<accumLabel>[%<acIdx>]"
+%%
+    {
+    %if cmplx
+      %<accumDT.ComplexName> %<accumIdxLabel>;
+    %else
+      %<accumDT.Name> %<accumIdxLabel>;
+    %endif
+      int32_T %<acIdx> = 0;
+      int32_T %<opIdx> = 0;
+%%
+      do{
+          %<DSPFixptLibEquals(accumRec, inRec, RndSat)>
+          %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+      }while(++%<acIdx> < %<acLen>);
+%%
+      %<opIdx>++;
+      do{
+          %<acIdx> = 0;
+          do{
+              %<DSPFixptLibPlusEquals(accumRec,inRec, RndSat)>
+              %<DSPFixptLibEquals(outRec, accumRec, RndSat)>
+          }while(++%<acIdx> < %<acLen>);
+      }while(++%<opIdx> < %<opLen>);
+    }
+%endfunction %% FixPtVectorAccumSum
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtVectorAccumProd(block,acIdx,acLen,opIdx,opLen) Tier4  %%
+%% acIdx: should be "idxC" itterates through the acuumulator           %%
+%% acLen: should be %<inCols>                                          %%
+%% opIdx: should be "idxR" opposite of %<acIdx>                        %%
+%% opLen: should be %<inRows> opposite of %<acLen>                     %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtVectorAccumProd(block,acIdx,acLen,opIdx,opLen) Output
+    %copyrecord inOneRec inRec
+    %copyrecord inTwoRec inRec
+    %assign ipDeclareLabel    = "%<ipRec.label>[%<acLen>]"
+    %assign prodDeclareLabel  = "%<prodRec.label>[%<acLen>]"
+    %assign accumDeclareLabel = "%<accumRec.label>[%<acLen>]"
+    %if(SFcnParamSettings.OpDir == 1)  %% if we are columns
+        %assign inOneRec.label = LibBlockInputSignal(0, "idxC*%<inRows>", "", "0")
+        %assign inTwoRec.label = LibBlockInputSignal(0, "idxC*%<inRows> +1",    "", "0")
+    %else                             %% we are rows
+        %assign inOneRec.label = LibBlockInputSignal(0, "idxR", "", "0")
+        %assign inTwoRec.label = LibBlockInputSignal(0, "%<inRows> +idxR",    "", "0")
+    %endif
+    %assign inRec.label    = LibBlockInputSignal(0, "idxC*%<inRows> +idxR", "", "0")
+    %assign outRec.label   = LibBlockOutputSignal(0,"idxC*%<inRows> +idxR", "", "0")
+    %assign ipRec.label    = "%<ipRec.label>[%<acIdx>]"
+    %assign prodRec.label  = "%<prodRec.label>[%<acIdx>]"
+    %if cmplx
+        %assign accumRec.label = "%<accumRec.label>[%<acIdx>]"
+        %assign multOutRec = accumRec
+    %else
+        %assign multOutRec = prodRec
+    %endif
+    
+%% get the first two elements taken care of.  
+%% We will always have at least 2 elements
+    {
+      %if ((inRows > 2) || (inCols > 2))
+        %<ipDT.usedName> %<ipDeclareLabel>;
+      %endif
+        %<prodDT.Name> %<prodDeclareLabel>;
+        %if cmplx
+        %<accumDT.ComplexName> %<accumDeclareLabel>;
+        %endif 
+        int32_T %<acIdx> = 0;
+        int32_T %<opIdx>;
+        do{
+            %<opIdx> = 0;
+            %<DSPFixptLibEquals(outRec, inOneRec, RndSat)>
+            %<opIdx>++;
+            %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, inOneRec, inTwoRec, prodRec, RndSat)>
+            %else
+            %<DSPFixptLibTimes(prodRec, inOneRec, inTwoRec, RndSat)>
+            %endif
+            %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+            %if(opLen > 2)
+            %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            %endif
+        }while(++%<acIdx> < %<acLen>);                
+%%
+%% if there are more than 2 loop to do the rest        
+        %if(%<opLen> > 2)
+        %<opIdx> = 2;
+        do{
+            %<acIdx> = 0;
+            do{
+                %if cmplx
+                %<DSPFixptLibCplxTimes(accumRec, inRec, ipRec, prodRec, RndSat)>
+                %else
+                %<DSPFixptLibTimes(prodRec, inRec, ipRec, RndSat)>
+                %endif
+                %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+                %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++%<acIdx> < %<acLen>);
+        }while(++%<opIdx> < %<opLen>);
+        %endif
+    }
+%endfunction %% FixPtVectorAccumProd
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtVecAccumRunningSum(block,width,accumIdx)       Tier4  %%
+%% function to use with a Vector input signal and Sum running mode     %%
+%% width: number of inputs to itterate over                            %%
+%% accumIdx: String to use when indexing the accumulator vector        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtVecAccumRunningSum(block,width,accumIdx) Output
+    {
+        %assign accumRec.label = LibBlockDWork(RunningCumVal,"i","",0)
+        %assign inRec.label  = LibBlockInputSignal(0, "i", "", "0")
+        %assign outRec.label = LibBlockOutputSignal(0, "i", "", "0")
+%%
+        uint32_T  i = 0;  
+        do{
+%%      for(i = 0; i < %<width>; i++){
+            %<DSPFixptLibPlusEquals(accumRec, inRec, RndSat)>
+            %<DSPFixptLibEquals(outRec, accumRec, RndSat)>
+        }while(++i < %<width>);
+    }
+%endfunction %%FixPtVecAccumRunningSum
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtVecAccumRowRunningProd(block,width,accumIdx)    Tier4 %%
+%% function to use with a Vector input signal and Prod running mode    %%
+%%    when only 1 input per accum is available per timestep            %%
+%% width: number of inputs to itterate over                            %%
+%% accumIdx: String to use when indexing the accumulator vector        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtVecAccumRowRunningProd(block,width) Output
+    {
+        %copyrecord icRec inRec
+        %assign icRec.label  = LibBlockDWork(InputCache,"i","",0)
+        %assign ipRec.label  = LibBlockDWork(RunningCumVal,"i","",0)
+        %assign inRec.label  = LibBlockInputSignal(0, "i", "", "0")
+        %assign outRec.label = LibBlockOutputSignal(0, "i", "", "0")
+        %assign multOutRec = prodRec
+%%
+        %<prodDT.Name> %<prodRec.label>;
+        %if cmplx
+            %<accumDT.ComplexName> %<accumRec.label>;
+            %assign multOutRec = accumRec
+        %endif 
+        uint32_T  i = 0;
+        if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 0){
+            /* continue normal accumulation */
+            do{
+                %if cmplx
+                    %<DSPFixptLibCplxTimes(accumRec, inRec, ipRec, prodRec, RndSat)>
+                %else
+                    %<DSPFixptLibTimes(prodRec, inRec, ipRec, RndSat)>
+                %endif
+                %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+                %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++i < %<width>);            
+         }else if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 1){
+            /* set innerProd based on input cache */
+            do{
+                %if cmplx
+                    %<DSPFixptLibCplxTimes(accumRec, inRec, icRec, prodRec, RndSat)>
+                %else
+                    %<DSPFixptLibTimes(prodRec, inRec, icRec, RndSat)>
+                %endif
+                %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+                %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++i < %<width>);            
+            %<LibBlockDWork(UseCacheFlag,"","",0)> = 0;
+         }else{
+            /* store the input to the input cache */
+            do{
+                %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+                %<DSPFixptLibEquals(icRec, inRec, RndSat)>
+            }while(++i < %<width>);
+            %<LibBlockDWork(UseCacheFlag,"","",0)> = 1;
+         }  
+    }
+%endfunction %%FixPtVecAccumRowRunningProd
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtSingleChannelRunningProd(block)                 Tier4 %%
+%% function to use with a Vector input signal and Prod running mode    %%
+%%    when only 1 input per accum is available per timestep            %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtSingleChannelRunningProd(block) Output
+    %copyrecord inOneRec inRec
+    %assign inOneRec.label = LibBlockInputSignal(0, "0", "", "0")
+    %assign inRec.label  = LibBlockInputSignal(0, "i", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "i", "", "0")
+    %assign ipRec.label = LibBlockDWork(RunningCumVal,"","",0)
+    %assign multOutRec = prodRec
+    %<prodDT.Name> %<prodRec.label>;
+    %if cmplx
+        %<accumDT.ComplexName> %<accumRec.label>;
+        %assign multOutRec = accumRec
+    %endif   
+    int32_T i = 0;
+    if(%<LibBlockDWork(UseCacheFlag,"","",0)> > 0){
+        %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+        i++;
+        %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, inOneRec, inRec, prodRec, RndSat)>
+        %else
+            %<DSPFixptLibTimes(prodRec, inOneRec, inRec, RndSat)>
+        %endif
+        %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+        %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = 0;
+    %if (inRows == 2)
+    }else{
+    %else
+        i++;
+    }
+    %endif
+    do{
+        %if cmplx
+            %<DSPFixptLibCplxTimes(accumRec, ipRec, inRec, prodRec, RndSat)>
+        %else
+            %<DSPFixptLibTimes(prodRec, ipRec, inRec, RndSat)>
+        %endif
+        %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+        %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+        i++;
+    }while(i < %<inRows>);
+    %if (inRows == 2)
+    }
+    %endif
+%endfunction %%FixPtSingleChannelRunningProd
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtMatrixAccumRunningSum(block,accumIdx)          Tier4  %%
+%% function to use with 2D matrix input signal and Sum running mode.   %%
+%% accumIdx: String to use when indexing the accumulator vector        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtMatrixAccumRunningSum(block,accumIdx) Output
+    %assign inRec.label = LibBlockInputSignal(0, "idxC*%<inRows>+idxR", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "idxC*%<inRows>+idxR", "", "0")
+    %assign accumRec.label = LibBlockDWork(RunningCumVal,accumIdx,"",0)
+    {
+        uint32_T idxR = 0;        
+        do{
+           uint32_T idxC = 0;
+           do{
+              %<DSPFixptLibPlusEquals(accumRec,inRec, RndSat)>
+              %<DSPFixptLibEquals(outRec, accumRec, RndSat)>
+           }while(++idxC < %<inCols>);
+        }while(++idxR < %<inRows>);
+    }
+%endfunction %% FixPtMatrixAccumRunningSum
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtMatrixRunningProd(block)                       Tier4  %%
+%% function to use with 2D matrix input signal and Sum running mode.   %%
+%% accumIdx: String to use when indexing the accumulator vector        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtRowChannelRunningProd(block) Output
+    %copyrecord inOneRec inRec
+    %assign inRec.label  = LibBlockInputSignal(0, "(idxC*%<inRows>) + idxR", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "(idxC*%<inRows>) + idxR", "", "0")
+    %assign ipRec.label  = LibBlockDWork(RunningCumVal,"idxC","",0)
+    %assign inOneRec.label = LibBlockInputSignal(0, "idxC*%<inRows>", "", "0")
+    %assign multOutRec = prodRec
+    %<prodDT.Name> %<prodRec.label>;
+    %if cmplx
+        %<accumDT.ComplexName> %<accumRec.label>;
+        %assign multOutRec = accumRec
+    %endif  
+    int32_T idxC = 0;
+    int32_T idxR = 0;
+    
+    if(%<LibBlockDWork(UseCacheFlag,"","",0)> > 0){
+        do{
+            %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+        }while(++idxC < %<inCols>);
+        idxR = 1;
+        idxC = 0;
+        do{
+             %if cmplx
+                %<DSPFixptLibCplxTimes(accumRec, inOneRec, inRec, prodRec, RndSat)>
+             %else
+                %<DSPFixptLibTimes(prodRec, inOneRec, inRec, RndSat)>
+             %endif
+             %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+             %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+        }while(++idxC < %<inCols>);
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = (int8_T)0;
+%%
+    %if (inRows == 2)
+    }else{
+    %else
+        idxR = 2;
+    }
+    %endif
+        do{
+            idxC = 0;
+            do{
+               %if cmplx
+                  %<DSPFixptLibCplxTimes(accumRec, ipRec, inRec, prodRec, RndSat)>
+               %else
+                  %<DSPFixptLibTimes(prodRec, ipRec, inRec, RndSat)>
+               %endif
+               %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+               %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++idxC < %<inCols>);
+        }while(++idxR < %<inRows>);
+%%
+    %if (inRows == 2)
+    }
+    %endif
+%endfunction %% FixPtRowChannelRunningProd
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% function FixPtMatrixRunningProd(block)                       Tier4  %%
+%% function to use with 2D matrix input signal and Sum running mode.   %%
+%% accumIdx: String to use when indexing the accumulator vector        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixPtMatrixRunningProd(block) Output
+    %copyrecord icRec inRec
+    %assign inRec.label  = LibBlockInputSignal(0, "(idxC*%<inRows>) + idxR", "", "0")
+    %assign outRec.label = LibBlockOutputSignal(0, "(idxC*%<inRows>) + idxR", "", "0")
+    %assign ipRec.label  = LibBlockDWork(RunningCumVal,"(idxC*%<inRows>)+idxR","",0)
+    %assign icRec.label  = LibBlockDWork(InputCache,"(idxC*%<inRows>)+idxR","",0)
+    %assign multOutRec = prodRec
+    %<prodDT.Name> %<prodRec.label>;
+    %if cmplx
+        %<accumDT.ComplexName> %<accumRec.label>;
+        %assign multOutRec = accumRec
+    %endif 
+    int32_T idxC = 0;
+    int32_T idxR = 0;
+    if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 0){
+        do{
+            idxC = 0;
+            do{
+               %if cmplx
+                  %<DSPFixptLibCplxTimes(accumRec, ipRec, inRec, prodRec, RndSat)>
+               %else
+                  %<DSPFixptLibTimes(prodRec, ipRec, inRec, RndSat)>
+               %endif
+               %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+               %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++idxC < %<inCols>);
+        }while(++idxR < %<inRows>);
+    }else if(%<LibBlockDWork(UseCacheFlag,"","",0)> == 1){
+        do{
+            idxC = 0;
+            do{
+               %if cmplx
+                  %<DSPFixptLibCplxTimes(accumRec, icRec, inRec, prodRec, RndSat)>
+               %else
+                  %<DSPFixptLibTimes(prodRec, icRec, inRec, RndSat)>
+               %endif
+               %<DSPFixptLibEquals(outRec, multOutRec, RndSat)>
+               %<DSPFixptLibEquals(ipRec, multOutRec, RndSat)>
+            }while(++idxC < %<inCols>);
+        }while(++idxR < %<inRows>);
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = (int8_T)0;
+    }else{
+        do{ 
+            idxC = 0;
+            do{
+                %<DSPFixptLibEquals(icRec, inRec, RndSat)>
+                %<DSPFixptLibEquals(outRec, inRec, RndSat)>               
+            }while(++idxC < %<inCols>);
+        }while(++idxR < %<inRows>);
+        %<LibBlockDWork(UseCacheFlag,"","",0)> = 1;
+    }
+%%
+%endfunction %% FixPtMatrixRunningProd
+
+%% EOF: sdspcumsumprod.tlc
+
+

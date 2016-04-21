@@ -1,0 +1,382 @@
+%% $RCSfile: sdsphist2.tlc,v $
+%% $Revision: 1.13.4.2 $ 
+%% $Date: 2004/04/12 23:08:43 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Histogram Block
+
+%implements sdsphist2 "C"
+%include "dsplib.tlc"
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsphist_rt")>
+    %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+%% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %assign INPORT_DATA  = 0
+    %assign INPORT_RESET = 1
+    %assign OUTPORT      = 0
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(INPORT_DATA)
+    %assign isFixPt = !FixPt_DataTypeIsFloat(inDT)
+    %assign block = block + isFixPt
+    %%
+    %assign running      = CAST("Boolean",(SFcnParamSettings.isRunning == "Yes"))
+    %assign isRstPort    = CAST("Boolean",(SFcnParamSettings.isRstPort == "Yes"))
+    %assign Nbins        = SFcnParamSettings.Nbins
+    %assign isFullMatrix = LibBlockInputSignalIsFullMatrix(INPORT_DATA)
+    %assign cplx         = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+    %assign dType        = (cplx) ? "creal_T" : "real_T"
+    %assign width        = LibBlockInputSignalWidth(INPORT_DATA)
+    %assign dims         = LibBlockInputSignalDimensions(INPORT_DATA)  
+    %assign frame        = LibBlockInputSignalIsFrameData(INPORT_DATA)
+    %assign nChans       = (frame || isFullMatrix) ? dims[1] : 1
+    %assign nSamps       = (frame || isFullMatrix) ? dims[0] : width
+    %assign dType        = LibBlockInputSignalDataTypeName(INPORT_DATA,"")
+    %assign dType_real   = LibBlockInputSignalDataTypeName(INPORT_DATA,"%<tRealPart>")
+    %%
+    %if (isFixPt)
+        %assign outDT = FixPt_GetOutputDataType(0)
+        %assign totalBins = Nbins*nChans
+        %assign block = block + inDT + outDT + totalBins
+    %else
+    %assign normalize = LibBlockParameterValue(IS_NORM, 0)
+    %assign umin      = LibBlockParameterValue(MIN_MAG, 0)
+    %assign umax      = LibBlockParameterValue(MAX_MAG, 0)
+    %assign inSingle  = ((dType == "real32_T") || (dType == "creal32_T")) ? 1 : 0
+    %assign block = block + normalize + umin + umax + inSingle
+    %endif
+    %%
+    %if isRstPort
+        %<EventPortHandlerInstanceSetup(block)>
+        %if EventPortRequiresState(block)
+        %assign ephdwork = EPHPState
+        %else
+        %assign ephdwork = 0
+        %endif
+        %assign block = block + ephdwork
+    %endif
+    %%
+    %assign block = block + INPORT_DATA + INPORT_RESET + OUTPORT + running + isRstPort ...
+                          + cplx + Nbins +  nChans + nSamps + dType + dType_real
+%%
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+    /* Signal Processing Blockset Histogram (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %if running
+        %if isRstPort
+            %<InitializeEventPortPrevStateCache(block, ephdwork)> \
+        %endif
+        %if (!isFixPt)
+            %if normalize
+                %<LibBlockDWork(Iteration,"", "", 0)> = 0.0;
+            %endif
+            /* Set all histogram bin counts to zero: */
+            memset(%<LibBlockDWorkAddr(BinCount,"", "", 0)>, 0, %<LibBlockDWorkWidth(BinCount)>*sizeof(%<dType_real>));
+        %endif
+    %endif
+%%
+%endfunction %% InitializeConditions
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Histogram (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %if isFixPt
+        %<CallFixptRuntimeFcn(block)>
+    %else
+        %<CallFltptRuntimeFcn(block)>
+    %endif
+}
+
+%endfunction  %% Outputs
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  FIXED-POINT OUTPUT FUNCTIONS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function CommonReset(block) Output
+%%
+%if (!running)
+    memset((void *)y, 0, %<totalBins>*sizeof(uint32_T));
+%endif
+%if (isRstPort)
+    if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        memset((void *)y, 0, %<totalBins>*sizeof(uint32_T));  
+    }
+%endif
+%%
+%endfunction  %% CommonReset 
+%%
+%%
+%function CallFixptRuntimeFcn(block) Output
+%%
+%assign NbinsMinusOne = Nbins - 1
+%%
+uint32_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "","", 0)>;
+%%
+%if (Nbins == 1)   
+%%
+%% Single bin optimization : no binary search needed
+%%
+    %if (nChans > 1)
+    int_T i;
+    %endif
+    %if (running) 
+        %if (isRstPort)
+            if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+                memset((void *)y, 0, %<totalBins>*sizeof(uint32_T));
+            }
+        %endif
+        %if (nChans > 1)
+            for (i=0; i<%<nChans>; i++) {
+                y[i] += %<nSamps>;
+            }
+        %else
+            y[0] += %<nSamps>;
+        %endif
+    %else
+        %% Non-running
+        %if (nChans > 1)
+            for (i=0; i<%<nChans>; i++) {
+                y[i] = %<nSamps>;
+            }
+        %else
+            y[0] = %<nSamps>;
+        %endif
+    %endif
+%%
+%elseif (!cplx)
+%%
+%% Real Data Port && need binary search
+%%
+    %if (dType_real == "int8_T")   
+        %assign strDType = "S08"
+    %elseif (dType_real == "uint8_T")  
+        %assign strDType = "U08"
+    %elseif (dType_real == "int16_T")  
+        %assign strDType = "S16"
+    %elseif (dType_real == "uint16_T") 
+        %assign strDType = "U16"
+    %elseif (dType_real == "int32_T")  
+        %assign strDType = "S32"
+    %elseif (dType_real == "uint32_T") 
+        %assign strDType = "U32"
+    %else
+        %error "Code generation not supported for accumulator data type."
+    %endif
+    %%
+    const %<dType_real> *data = %<LibBlockInputSignalAddr(INPORT_DATA, "","", 0)>;
+    const %<dType_real> *bin  = %<LibBlockParameterAddr(BIN_BOUNDARY,"","",0)>;
+    int_T j;
+    %if (nChans > 1)
+    int_T i;
+    %endif
+    %%
+    %<CommonReset(block)>
+    %%
+    %if (nChans > 1)
+        for (i=0; i<%<nChans>; i++) {
+            for (j=0; j<%<nSamps>; j++) {
+                MWDSP_Hist_BinSearch_%<strDType>(0, %<NbinsMinusOne>, data[%<nSamps>*i+j], bin, (y+%<Nbins>*i));
+            }
+        }
+    %else
+        %% Single channel optimization
+        for (j=0; j<%<nSamps>; j++) {
+            MWDSP_Hist_BinSearch_%<strDType>(0, %<NbinsMinusOne>, data[j], bin, y);
+        }
+    %endif
+%%
+%else
+%%
+%% Complex Data Port && need binary search
+%%
+    %assign accDT  = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+    %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+    %if (accDT.Name == "int8_T")   
+        %assign strDType = "S08"
+    %elseif (accDT.Name == "uint8_T")  
+        %assign strDType = "U08"
+    %elseif (accDT.Name == "int16_T")  
+        %assign strDType = "S16"
+    %elseif (accDT.Name == "uint16_T") 
+        %assign strDType = "U16"
+    %elseif (accDT.Name == "int32_T")  
+        %assign strDType = "S32"
+    %elseif (accDT.Name == "uint32_T") 
+        %assign strDType = "U32"
+    %else
+        %error "Code generation not supported for input data type."
+    %endif
+    %%
+    %createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                              overflowMode FixPtSaturationMode}
+    %createrecord accRec    {label "magSqVal"; dTypeRec accDT;  isComplex 0}
+    %createrecord prodRec   {label "prod";     dTypeRec prodDT; isComplex 0}
+    %createrecord inRealRec {label "data->re"; dTypeRec inDT;   isComplex 0}
+    %createrecord inImagRec {label "data->im"; dTypeRec inDT;   isComplex 0}
+    %%
+    const %<dType>      *data = %<LibBlockInputSignalAddr(INPORT_DATA, "","", 0)>;
+    const %<accDT.Name> *bin  = %<LibBlockParameterAddr(BIN_BOUNDARY,"","",0)>;
+    int_T j;
+    %if (nChans > 1)
+    int_T i;
+    %endif
+    %%
+    %<CommonReset(block)>
+    %%
+    %if (nChans > 1)
+        for (i=0; i<%<nChans>; i++) {
+            for (j=0; j<%<nSamps>; j++) {
+                %<accDT.Name> magSqVal;
+                %<prodDT.Name> prod;
+                %<FixptMAC(accRec, "=",  prodRec, inRealRec, inRealRec, rndSatRec)>\
+                %<FixptMAC(accRec, "+=", prodRec, inImagRec, inImagRec, rndSatRec)>\
+                MWDSP_Hist_BinSearch_%<strDType>(0, %<NbinsMinusOne>, magSqVal, bin, (y+%<Nbins>*i));
+                ++data;
+            }
+        }
+    %else
+        %% Single channel optimization
+        for (j=0; j<%<nSamps>; j++) {
+            %<accDT.Name> magSqVal;
+            %<prodDT.Name> prod;
+            %<FixptMAC(accRec, "=",  prodRec, inRealRec, inRealRec, rndSatRec)>\
+            %<FixptMAC(accRec, "+=", prodRec, inImagRec, inImagRec, rndSatRec)>\ 
+            MWDSP_Hist_BinSearch_%<strDType>(0, %<NbinsMinusOne>, magSqVal, bin, y);
+            ++data;
+        }
+    %endif
+%%
+%endif
+%%
+%endfunction %% CallFixptRuntimeFcn
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  FLOATING-POINT OUTPUT FUNCTIONS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function getRunTimeFcnName(block) void
+    %%
+   %if inSingle
+    %if cplx
+      %assign dtsuffix = "C"
+    %else
+      %assign dtsuffix = "R"
+    %endif 
+   %else       
+    %if cplx
+      %assign dtsuffix = "Z"
+    %else
+      %assign dtsuffix = "D"
+    %endif 
+   %endif
+   %%
+   %return "MWDSP_Hist" + dtsuffix
+%endfunction %% getRunTimeFcnName
+
+%function getArgName(block) void
+    %%
+   %if running
+     %if !normalize && !isRstPort
+       %return "y"
+     %else
+       %return "h"
+     %endif
+   %else  
+     %return "y"     
+   %endif
+   %%
+   %return "MWDSP_Hist" + dtsuffix
+%endfunction %% getArgName
+
+%function CallFltptRuntimeFcn(block) Output
+  %%
+  %% Running and Non-Running:
+  %%
+  %assign idelta = %<Nbins/(umax - umin)>
+  %assign str = inSingle ? "F" : ""
+  {
+    %%
+    %if !running
+        %<dType_real>   *y   = %<LibBlockOutputSignalAddr(OUTPORT, "","", 0)>;
+    %else
+      %if (normalize || isRstPort)
+        %<dType_real> *h   = %<LibBlockDWorkAddr(BinCount, "", "", 0)>;
+      %else
+        %<dType_real> *y   = %<LibBlockOutputSignalAddr(OUTPORT, "","", 0)>;
+      %endif
+    %endif
+    const %<dType> *u_data   = %<LibBlockInputSignalAddr(INPORT_DATA, "","", 0)>;
+    %if !running
+        /* Initialize all bins to zero: */
+        int_T n;
+        for(n=0; n < %<Nbins*nChans>; n++) {
+            y[n] = 0.0;
+        }
+    %endif
+    %%
+    %if isRstPort
+       if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+         memset((void *)h, 0, %<Nbins*nChans>*sizeof(%<dType_real>));     
+         %%
+         %if normalize
+            %<LibBlockDWork(Iteration, "", "", 0)> = 0.0%<str>;
+         %endif
+       }
+    %endif
+    %% now is the time to run-time function
+    %%
+    %<getRunTimeFcnName(block)>(u_data, %<getArgName(block)>, %<nChans>, %<nSamps>, %<umin>, %<umax>, %<Nbins>, %<idelta>);
+
+    %if (!running & normalize)
+    {
+        int_T i  = %<Nbins*nChans>;
+        y   = %<LibBlockOutputSignalAddr(OUTPORT, "","", 0)>;
+        while (i-- > 0) {
+            *y++ *= %<SFcnParamSettings.ScaleVal>;  
+        }
+    }
+    %endif
+    %if running
+        %if normalize
+        {
+            /* Copy normalized bin count to output: */
+            %<dType_real> *iter_cnt = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+            %<dType_real> scale;
+            %<dType_real> *h   = %<LibBlockDWorkAddr(BinCount, "", "", 0)>;
+            int_T i;
+
+            (*iter_cnt)++;
+            scale = 1.0%<str> / (*iter_cnt * %<nSamps>);
+
+            for(i=0; i < %<Nbins*nChans>; i++) {
+                %<LibBlockOutputSignal(OUTPORT, "i", "", 0)> = scale * (*h++);
+            }
+        }
+        %endif
+        %if (!normalize && isRstPort)
+            memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>,h,%<Nbins*nChans>*sizeof(%<dType_real>));
+        %endif
+    %endif
+  }
+%endfunction
+
+%% [EOF] sdsphist2.tlc

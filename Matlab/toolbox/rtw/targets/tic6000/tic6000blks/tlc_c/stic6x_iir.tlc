@@ -1,0 +1,181 @@
+%% $RCSfile: stic6x_iir.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:40 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%% Abstract: Implement real IIR filter using optimized TI C62/C64 DSPLIB fcn call.
+%%
+%%
+
+%implements stic6x_iir "C"
+
+%include "tiblksutil.tlc"
+
+%% Function: BlockInstanceSetup ==================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign INPORT    = 0
+  %assign H1PORT    = 1
+  %assign H2PORT    = 2
+  %assign OUTPORT   = 0
+  %assign inDims    = LibBlockInputSignalDimensions(INPORT)
+  %assign inFrame   = LibBlockInputSignalIsFrameData(INPORT)
+  %assign nChans    = (inFrame) ? inDims[1] : LibBlockInputSignalWidth(INPORT)
+  %assign nr        = (inFrame) ? inDims[0] : 1
+  %assign block = block + INPORT + H1PORT + H2PORT + OUTPORT + nChans + nr
+%endfunction %%BlockInstanceSetup
+
+  
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+  
+  %<Include_ti_header(block, "dsp_iir")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: InitializeConditions ==============================================
+%%
+%function InitializeConditions(block, system) Output
+/* C%<chipID.Value[0]>x DSP Library IIR (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %assign nh = 5
+  %assign delaysPerChan = 4
+  %assign inputsPerChan = nr
+  %assign inBuffPtr   = LibBlockDWorkAddr(INBUFF, "", "", 0)
+  %assign outBuffPtr  = LibBlockDWorkAddr(OUTBUFF, "", "", 1)
+  %assign inICPtr     = LibBlockParameterAddr(INICRTP, "", "", 0)
+  %assign inICSize    = LibBlockParameterSize(INICRTP)
+  %assign outICPtr    = LibBlockParameterAddr(OUTICRTP, "", "", 0)
+  %assign outICSize   = LibBlockParameterSize(OUTICRTP)
+  %assign numInICs   = (inICSize[0] * inICSize[1])
+  %assign numOutICs   = (outICSize[0] * outICSize[1])
+  short *inBuffPtr = %<inBuffPtr>;
+  short *outBuffPtr = %<outBuffPtr>;
+  %if (numInICs > 1)
+  const short *inICPtr = %<inICPtr>;
+  %endif
+  %if (numOutICs > 1)
+  const short *outICPtr = %<outICPtr>;
+  %endif
+  %if (nChans > 1)
+    int nChans = %<nChans>;
+    while (nChans--) { %% Begin channel loop if needed
+  %endif
+  %if (numInICs == 1) || (numOutICs == 1)
+    %% Scalar state IC
+      int delayCount = %<delaysPerChan>;
+      while (delayCount--) {
+        %if (numInICs == 1)
+          *inBuffPtr++ = %<LibBlockParameter(INICRTP, "", "", 0)>;
+        %endif
+        %if (numOutICs == 1)
+          *outBuffPtr++ = %<LibBlockParameter(OUTICRTP, "", "", 0)>;
+        %endif
+      }
+      %if (numInICs == 1)
+        inBuffPtr += %<inputsPerChan>;
+      %endif
+      %if (numOutICs == 1)
+        %% Remember that the output buff has an 'unused' element, so
+        %% bump by inputsPerchan + 1
+        outBuffPtr += %<inputsPerChan + 1>;
+      %endif
+  %else
+    %if (numInICs > 1)
+      memcpy(inBuffPtr, inICPtr, %<2 * delaysPerChan>);
+      %if (numInICs > delaysPerChan)
+        %% multi-channel case, different vector of ICs per channel, 
+        %% so bump IC pointer in channel loop
+        inICPtr += %<delaysPerChan>;
+      %endif
+    %endif
+    %if (numOutICs > 1)
+      memcpy(outBuffPtr, outICPtr, %<2 * delaysPerChan>);
+      %if (numOutICs > delaysPerChan)
+        %% multi-channel case, different vector of ICs per channel, 
+        %% so bump IC pointer in channel loop
+        outICPtr += %<delaysPerChan>;
+      %endif
+    %endif
+    %if (nChans > 1)
+      inBuffPtr  += %<inputsPerChan + delaysPerChan>;
+      %% Remember that the output buff has an 'unused' element, so
+      %% bump by inputsPerchan + delaysPerChan + 1
+      outBuffPtr += %<inputsPerChan + delaysPerChan + 1>;
+    %endif
+  %endif
+  %if (nChans > 1)
+    }  %% End channel loop if needed
+  %endif
+}
+
+%endfunction %% InitializeConditions
+  
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign h1Ptr    = LibBlockParameterAddr(H1RTP, "", "", 0)
+    %assign h2Ptr    = LibBlockParameterAddr(H2RTP, "", "", 0)
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign h1Ptr    = LibBlockInputSignalAddr(H1PORT, "", "", 0)
+    %assign h2Ptr    = LibBlockInputSignalAddr(H2PORT, "", "", 0)
+  %endif
+  %assign uPtr      = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign rPtr      = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign inb       = LibBlockDWorkAddr(INBUFF, "", "", 0)
+  %assign outb      = LibBlockDWorkAddr(OUTBUFF, "", "", 1)
+  /* C%<chipID.Value[0]>x DSP Library IIR (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (nChans == 1)
+    %assign x1Ptr = LibBlockDWorkAddr(INBUFF, "", "", 4)
+    %assign x2Ptr = LibBlockDWorkAddr(INBUFF, "", "", nr)
+    %assign yPtr  = LibBlockDWorkAddr(OUTBUFF, "", "", nr+1)
+    /* Copy current inputs to buffer end */
+    memcpy(%<x1Ptr>, %<uPtr>, %<2*nr>);
+    /* Run iir filter algorithm on filter buffer */
+    DSP_iir((short *) %<outb>, (short *) %<inb>, (short *) %<rPtr>, (short *) %<h2Ptr>, (short *) %<h1Ptr>, %<nr>);
+    /* Update filter states: move previous 4 inputs/outputs from buff[nr] to buff[0] */
+    memmove(%<inb>, %<x2Ptr>, 8);
+    memmove(%<outb>, %<yPtr>, 8);
+  %else
+    {
+      const short *u  = %<uPtr>;
+      const short *h1 = %<h1Ptr>;
+      const short *h2 = %<h2Ptr>;
+      short *r        = (short *) %<rPtr>;
+      short *inb      = (short *) %<inb>;
+      short *outb     = (short *) %<outb>;
+      short *xPtr;
+      short *yPtr;
+      int    chanCount = %<nChans>;
+      
+      while (chanCount--) {
+        /* Copy current inputs to filter buffer position x = f[4] */
+        xPtr = inb + 4;
+        memcpy(xPtr, u, %<2*nr>);
+        /* Run iir filter algorithm on filter buffers */
+        DSP_iir(outb, inb, r, (short *)h2, (short *)h1, %<nr>);
+        /* Update filter states */
+        xPtr = inb + %<nr>;
+        yPtr = outb + %<nr>;
+        /* move last 4 elements to front for next time step */
+        memmove(inb, xPtr, 8);
+        memmove(outb, yPtr, 8);
+        /* move pointers to next channel */
+        u += %<nr>;
+        r += %<nr>;
+        inb  += %<nr + 4>;
+        outb += %<nr + 5>;
+      }
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] stic6x_iir.tlc

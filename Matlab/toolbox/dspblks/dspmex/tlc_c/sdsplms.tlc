@@ -1,0 +1,641 @@
+%% $RCSfile: sdsplms.tlc,v $
+%% $Revision: 1.1.6.2 $ 
+%% $Date: 2004/01/25 22:38:20 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: LMS adaptive filter S-function block for sdsplms.cpp
+%%
+
+%implements sdsplms "C"
+%include "dsplib.tlc"
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsplms_rt")>
+    %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %% 
+  %<FixPt_Setup(block, system)>
+  %%
+  %assign INPORT_INSIG = 0
+  %assign INPORT_DESIG = 1
+  %assign INPORT_MU    = 2
+  %assign tmpINPORT_ADAPT = 3
+  %assign tmpINPORT_RESET = 4
+  %%
+  %assign OUTPORT_SIG  = 0
+  %assign OUTPORT_ERR  = 1
+  %assign OUTPORT_WGT  = 2
+  %%
+  %assign WhichLmsAlgorithm    = SFcnParamSettings.WhichLmsAlgorithm
+  %assign IsMuSrcInport        = SFcnParamSettings.IsMuSrcInport
+  %assign BlkHasAdaptInPort    = SFcnParamSettings.BlkHasAdaptInPort
+  %assign BlkHasResetInPort    = SFcnParamSettings.BlkHasResetInPort
+  %assign BlkHasWgtOutPort     = SFcnParamSettings.BlkHasWgtOutPort  
+  %%
+  %assign inport_adapt = tmpINPORT_ADAPT- !IsMuSrcInport
+  %assign inport_reset = tmpINPORT_RESET - !IsMuSrcInport - !BlkHasAdaptInPort
+  %%
+  %%Get data type,size and complexity profiles
+  %assign DTYPE_ID_INSIG   = LibBlockInputSignalDataTypeId(INPORT_INSIG)
+  %assign INSIG_COMPLEX    = LibBlockInputSignalIsComplex(INPORT_INSIG)  
+  %assign DESIG_COMPLEX    = LibBlockInputSignalIsComplex(INPORT_DESIG) 
+  %assign InSigDTName      = LibBlockInputSignalDataTypeName(INPORT_INSIG, "%<tRealPart>")
+  %assign bytesPerInpElmt  = INSIG_COMPLEX?"2*sizeof(%<InSigDTName>)" : "sizeof(%<InSigDTName>)"
+
+  %%Get other info
+  %assign FilterLength        = SFcnParamSettings.FilterLength
+  %assign FrameLength         = LibBlockInputSignalWidth(INPORT_INSIG)
+  %assign WGTIC_MASK_ROW_COL  = LibBlockParameterSize(WGT_IC_RTP)
+  %assign IsWgtICinMaskVector = (WGTIC_MASK_ROW_COL[0]>1 || WGTIC_MASK_ROW_COL[1]>1)
+  %%
+  %% I/O port data types
+  %assign inSigDType      = FixPt_GetInputDataType(INPORT_INSIG)
+
+  %if BlkHasResetInPort
+      %<EventPortHandlerInstanceSetup(block)>
+      %if EventPortRequiresState(block)
+        %assign ephdwork = EPHState
+      %else
+        %assign ephdwork = 0
+      %endif
+      %assign block = block + ephdwork
+  %endif
+  
+  %assign block = block + INPORT_INSIG + INPORT_DESIG + INPORT_MU + OUTPORT_SIG + OUTPORT_ERR + OUTPORT_WGT
+  %assign block = block + WhichLmsAlgorithm + IsMuSrcInport + BlkHasAdaptInPort + BlkHasResetInPort + BlkHasWgtOutPort
+  %assign block = block + inport_adapt + inport_reset + DTYPE_ID_INSIG + INSIG_COMPLEX + DESIG_COMPLEX
+  %assign block = block + InSigDTName + bytesPerInpElmt + FilterLength + FrameLength + WGTIC_MASK_ROW_COL
+  %assign block = block + IsWgtICinMaskVector + inSigDType
+  %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: ResetWeightBuffer =============================================
+%%
+%% Abstract:
+%%      Reset the weight IC buffer.
+%%
+%function ResetWeightBuffer(block) Output
+    /* reset weight buffer: copy Weight IC from RTP to Weight IC buffer (DWork) */
+       %assign wgtDWorkPtr = "(byte_T*)%<LibBlockDWorkAddr(WGT_IC_DWORK, "", "", 0)>"
+       %assign wgtICRTPPtr = "(byte_T*)%<LibBlockParameterAddr(WGT_IC_RTP,"","",0)>" 
+       %if (IsWgtICinMaskVector)
+          %% copy the entire vector
+	  /* Initial condition for filter taps is a vector */
+          memcpy(%<wgtDWorkPtr>, %<wgtICRTPPtr>, %<bytesPerInpElmt>*%<FilterLength>);
+       %else
+       {  %% expand scalar IC to vector 
+          /* Initial condition for filter taps is a scalar */
+          int_T i;
+	  for (i = 0; i < %<FilterLength>; i++)           
+             memcpy(%<wgtDWorkPtr>+i*%<bytesPerInpElmt>, %<wgtICRTPPtr>, %<bytesPerInpElmt>);
+       }
+       %endif
+%endfunction %%ResetWeightBuffer
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the filter weights buffer to the initial values.
+%%
+%function InitializeConditions(block, system) Output
+  /* Initialization: Signal Processing Blockset LMS adaptive filter (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+        %if BlkHasResetInPort
+        %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+        %endif
+        %<ResetWeightBuffer(block)>
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset LMS adaptive filter (%<ParamSettings.FunctionName>) - '%<Name>' - Output */
+%% get the name of LMS filter type 
+%if (WhichLmsAlgorithm == 1)
+/* LMS filter */
+%elseif (WhichLmsAlgorithm == 2)  
+/* Normalized LMS filter */
+%elseif (WhichLmsAlgorithm == 3)  
+/* Sign-error LMS filter */ 
+%elseif (WhichLmsAlgorithm == 4) 
+/* Sign-data LMS filter */
+%else
+/* Sign-sign LMS filter */
+%endif
+{
+  %if FixPt_DataTypeIsFloat(inSigDType)
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION  %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FltPtRutimeFunctionCall(block)>
+    }
+    %%
+  %else
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION     %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    {
+    %<FixPtInlineCode(block)>
+    }
+    %%
+  %endif
+
+}
+%endfunction  %% Outputs    
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%% 
+    %%%%%%%%% Get labels
+    %assign InSigLabel_i  = LibBlockInputSignal(INPORT_INSIG, "i", "", 0)   %% get InSigLabel_i = mInSig[i]
+    %assign DeSigLabel_i  = LibBlockInputSignal(INPORT_DESIG, "i", "", 0)   %% get DeSigLabel_i = mDeSig[i]
+    %assign OutYLabel_i  = LibBlockOutputSignal(OUTPORT_SIG, "i", "", 0)   %% get OutYLabel_i = mOutY[i]
+    %assign ErrYLabel_i  = LibBlockOutputSignal(OUTPORT_ERR, "i", "", 0)   %% get ErrYLabel_i = mErrY[i]
+    %if BlkHasWgtOutPort
+      %assign WgtYLabel_j  = LibBlockOutputSignal(OUTPORT_WGT, "j", "", 0)   %% get WgtYLabel_j = mWgtY[j]
+      %assign FilterLength_minus_1 = FilterLength-1
+      %assign WgtBuffLabel_Flen_1_j   = LibBlockDWork(WGT_IC_DWORK, "%<FilterLength_minus_1>-j",   "", 0)  %% get WgtBuffLabel_Flen_1_j = mWgtBuff[mFilterLen-1-j]
+    %endif
+    %if IsMuSrcInport
+        %assign muLabel_0  = LibBlockInputSignal(INPORT_MU, "", "", 0) %% get muLabel_0 = mMu[0]
+    %else
+        %assign muLabel_0  = LibBlockParameter(MU_RTP,"","",0)
+    %endif
+    %assign LkgFactorLabel_0 = LibBlockParameter(LEAKAGE_RTP,"","",0) %% get LkgFactorLabel_0 = mLeakageFactor[0]
+    %%
+    %assign InBuffLabel_idx  = LibBlockDWork(IN_BUFFER_DWORK, "BuffStartIdx", "", 0)   %% get InBuffLabel = mInBuff[*mBuffStartIdx]
+    %assign InBuffLabel_j    = LibBlockDWork(IN_BUFFER_DWORK, "j", "", 0)   %% get InBuffLabel_j = mInBuff[j]
+    %assign WgtBuffLabel_m   = LibBlockDWork(WGT_IC_DWORK, "m",   "", 0)  %% get WgtBuffLabel_m = mWgtBuff[m]
+    %if WhichLmsAlgorithm == 2 %%normalized lms
+      %assign EnrgInBuffLabel_0 = LibBlockDWork(NRM_ERGY_DWORK, "0",   "", 0)  %% get WgtBuffLabel_Flen_1_j = mEnrgInBuff[0]
+    %endif
+    %%
+    %%
+    %%%%%%%%% Get DTYPE
+    %assign InSigDT  = FixPt_GetInputDataType(INPORT_INSIG)
+    %assign DeSigDT  = FixPt_GetInputDataType(INPORT_DESIG)
+    %if IsMuSrcInport
+        %assign MuDT     = FixPt_GetInputDataType(INPORT_MU)
+    %else
+        %assign MuDT     = DSPFixPt_GetParameterDataType(MU_RTP)
+    %endif
+    %assign LkgFactorDT = DSPFixPt_GetParameterDataType(LEAKAGE_RTP)
+    %assign OutYDT     = DeSigDT %% FixPt_GetOutputDataType(OUTPORT_SIG)
+    %assign ErrYDT     = DeSigDT %% FixPt_GetOutputDataType(OUTPORT_ERR)
+    %assign WgtBuffDTID   = LibBlockDWorkDataTypeId(WGT_IC_DWORK)
+    %assign WgtBuffDT     = FixPt_GetDataTypeFromIndex(WgtBuffDTID)
+  %if BlkHasWgtOutPort
+    %assign WgtYDT   = WgtBuffDT %% FixPt_GetOutputDataType(OUTPORT_WGT)
+  %endif
+    %assign InBuffDT      = InSigDT
+    %%
+    %assign accXTXDT     = FixPt_GetParameterDataType(ACCXTX_DATA_TYPE, 0, 0)
+    %assign prodXTXDT    = FixPt_GetParameterDataType(PRODXTX_DATA_TYPE, 0, 0)
+    %assign accWTXDT     = FixPt_GetParameterDataType(ACCWTX_DATA_TYPE, 0, 0)
+    %assign prodWTXDT    = FixPt_GetParameterDataType(PRODWTX_DATA_TYPE, 0, 0)
+    %assign prodMuErrDT  = FixPt_GetParameterDataType(PRODMUERR_DATA_TYPE, 0, 0)
+    %assign prodQuXDT    = FixPt_GetParameterDataType(PRODQUX_DATA_TYPE, 0, 0)
+    %assign quotientDT   = FixPt_GetParameterDataType(QUOT_DATA_TYPE, 0, 0)
+    %assign EnrgInBuffDT = accXTXDT  
+
+    %%
+    %%
+    %assign inSigIsComplex  = LibBlockInputSignalIsComplex(INPORT_INSIG)
+    %assign deSigIsComplex  = LibBlockInputSignalIsComplex(INPORT_DESIG)
+    %createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                              overflowMode FixPtSaturationMode}
+    %%    
+    %createrecord InSigRec_i          { label InSigLabel_i;          dTypeRec  InSigDT;     isComplex inSigIsComplex }
+    %createrecord DeSigRec_i          { label DeSigLabel_i;          dTypeRec  DeSigDT;     isComplex deSigIsComplex }
+    %createrecord OutYRec_i           { label OutYLabel_i;           dTypeRec  OutYDT;      isComplex inSigIsComplex }
+    %createrecord ErrYRec_i           { label ErrYLabel_i;           dTypeRec  ErrYDT;      isComplex inSigIsComplex }
+  %if BlkHasWgtOutPort
+    %createrecord WgtYRec_j           { label WgtYLabel_j;           dTypeRec  WgtYDT;      isComplex inSigIsComplex }
+    %createrecord WgtBuffRec_Flen_1_j { label WgtBuffLabel_Flen_1_j; dTypeRec  WgtYDT;      isComplex inSigIsComplex }
+  %endif
+    %createrecord muRec_0             { label muLabel_0;             dTypeRec  MuDT;        isComplex 0 }
+    %createrecord LkgFactorRec_0      { label LkgFactorLabel_0;      dTypeRec  LkgFactorDT; isComplex 0 }
+    %createrecord InBuffRec_idx       { label InBuffLabel_idx;       dTypeRec  InBuffDT;    isComplex inSigIsComplex }
+    %createrecord InBuffRec_j         { label InBuffLabel_j;         dTypeRec  InBuffDT;    isComplex inSigIsComplex }
+    %createrecord WgtBuffRec_m        { label WgtBuffLabel_m;        dTypeRec  WgtBuffDT;   isComplex inSigIsComplex }
+  %if WhichLmsAlgorithm == 2 %%normalized lms
+    %createrecord EnrgInBuffRec_0     { label EnrgInBuffLabel_0;     dTypeRec  EnrgInBuffDT;isComplex 0 }
+  %endif
+    %createrecord accXTXRec              { label "accXTX";                 dTypeRec  accXTXDT;       isComplex 0 } %% stores energy so always non-complex
+  %if WhichLmsAlgorithm == 2 %%normalized lms
+    %createrecord accXTXTmpRec           { label "accXTXTmp";              dTypeRec  accXTXDT;       isComplex 0 } %% stores energy so always non-complex
+  %endif 
+    %createrecord prodXTXRec             { label "prodXTX";                dTypeRec  prodXTXDT;      isComplex 0 } %% stores energy so always non-complex
+    %createrecord accWTXRec              { label "accWTX";                 dTypeRec  accWTXDT;       isComplex inSigIsComplex } 
+    %createrecord prodWTXRec             { label "prodWTX";                dTypeRec  prodWTXDT;      isComplex inSigIsComplex } 
+    %createrecord prodMuErrRec           { label "prodMuErr";              dTypeRec  prodMuErrDT;    isComplex inSigIsComplex }
+    %createrecord prodQuXRec             { label "prodQuX";                dTypeRec  prodQuXDT;      isComplex inSigIsComplex }
+    %createrecord prodQuXTmpRec          { label "prodQuXTmp";             dTypeRec  prodQuXDT;      isComplex inSigIsComplex }
+  %if (WhichLmsAlgorithm <= 2 && inSigIsComplex) %% LMS and normalized lms
+    %createrecord prodQuXRealTmpRec      { label "prodQuXRealTmp";         dTypeRec  prodQuXDT;      isComplex 0 } %% it must be NON-COMPLEX
+  %endif
+    %createrecord quotientRec            { label "quotient";               dTypeRec  quotientDT;     isComplex inSigIsComplex }
+  %if inSigIsComplex
+    %createrecord InBuffjConjRec         { label "InBuffjConjTmp";         dTypeRec  InSigDT;        isComplex inSigIsComplex }
+  %endif
+    %%
+    %% Main Body of the program %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%    
+    %%
+{
+    uint32_T BuffStartIdx = %<LibBlockDWork(BUFF_IDX_DWORK, "", "", 0)>; 
+    int_T i,j,m;
+%%%%%%%%%%%%%%%%% Begin: Create local variables %%%%%%%%%%%%%%%%%%%%%%%
+%if !inSigIsComplex
+  %if WhichLmsAlgorithm ==2 %%normalized lms
+    %<accXTXDT.Name> %<accXTXRec.label>, %<accXTXTmpRec.label> ;
+    %<prodXTXDT.Name> %<prodXTXRec.label>;
+    %<quotientDT.Name> %<quotientRec.label>;
+  %endif
+    %<accWTXDT.Name> %<accWTXRec.label> ;
+    %% 
+    %<prodWTXDT.Name> %<prodWTXRec.label>;
+  %if (WhichLmsAlgorithm == 1 || WhichLmsAlgorithm == 2 || WhichLmsAlgorithm == 4) %% LMS, NORM_LMS, SIGN_DATA
+    %<prodMuErrDT.Name> %<prodMuErrRec.label>;
+  %endif
+    %<prodQuXDT.Name> %<prodQuXRec.label>, %<prodQuXTmpRec.label>;
+%else
+  %if WhichLmsAlgorithm ==2 %%normalized lms
+    %<accXTXDT.Name> %<accXTXRec.label>, %<accXTXTmpRec.label> ; %% always real XTX
+    %<prodXTXDT.Name> %<prodXTXRec.label>;                       %% always real XTX
+    %<quotientDT.ComplexName> %<quotientRec.label>;              %% always complex Quotient
+  %endif
+    %<accWTXDT.ComplexName> %<accWTXRec.label> ;                 %% always complex WTX
+    %% 
+    %<prodWTXDT.ComplexName> %<prodWTXRec.label>;                %% always complex WTX
+  %if (WhichLmsAlgorithm == 1 || WhichLmsAlgorithm == 2 || WhichLmsAlgorithm == 4) %% LMS, NORM_LMS, SIGN_DATA
+    %<prodMuErrDT.ComplexName> %<prodMuErrRec.label>;            %% always complex Mu*err
+  %endif
+    %<prodQuXDT.ComplexName> %<prodQuXRec.label>, %<prodQuXTmpRec.label>;    %% always complex QuX
+  %% for sign LMS input always real, so no need to consider sign cases here
+    %<InSigDT.ComplexName> %<InBuffjConjRec.label>;                          %% always complex InBuff
+  %if (WhichLmsAlgorithm <= 2) %%LMS and normalized lms
+    %<prodQuXDT.Name> %<prodQuXRealTmpRec.label>;                            %% always and MUST be real to store prod of two cplx inputs Qu, X             
+  %endif
+%endif  
+%%%%%%%%%%%%%%%%% End: Create local variables %%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%%%%%%%%%%%%%%%%%%%%%% Adapt port %%%%%%%%%%%%%%%%%
+    %if BlkHasAdaptInPort
+       %assign adaptDTName    = LibBlockInputSignalDataTypeName(inport_adapt,"")
+       %assign adaptDTID = LibBlockInputSignalDataTypeId(inport_adapt)
+       %if adaptDTID == tSS_BOOLEAN
+          const boolean_T NeedAdapt =  *(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)>;
+       %else
+          const boolean_T NeedAdapt =  ((boolean_T)(*(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)> > 0));
+       %endif
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%% Reset port %%%%%%%%%%%%%%%%%
+    %if BlkHasResetInPort
+      /* check for reset */
+      if(%<CheckEventPort(block, inport_reset, ephdwork)>) 
+      {
+          %<ResetWeightBuffer(block)>
+      }
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%% LMS (all 5 variants) filtering %%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+       for (i=0; i<%<FrameLength>; i++) 
+       { %%1 
+         %%
+%%%%%%%%%%%%%%%%%%%%%%% Begin: Only for NORM LMS algorithm %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %if WhichLmsAlgorithm ==2 %%normalized lms
+         /* Calculate the energy of the signal in input buffer */
+         %<DSPFixptLibNorm(accXTXRec, InSigRec_i, prodXTXRec, rndSatRec)> \         %% mInSig[i].norm(mAccProdXTX[0]);
+         %<DSPFixptLibPlusEquals(accXTXRec, EnrgInBuffRec_0, rndSatRec)>  \         %% mAccProdXTX[0] += mEnrgInBuff[0];
+         %<DSPFixptLibNorm(accXTXTmpRec, InBuffRec_idx, prodXTXRec, rndSatRec)> \   %% mInBuff[*mBuffStartIdx].norm(mAccProdTmpXTX[0]);
+         %<DSPFixptLibMinusEquals(accXTXRec, accXTXTmpRec, rndSatRec)>  \           %% mAccProdXTX[0] -= mAccProdTmpXTX[0];
+         %<DSPFixptLibEquals(EnrgInBuffRec_0, accXTXRec, rndSatRec)>\               %% mEnrgInBuff[0] = mAccProdXTX[0];
+   %endif
+%%%%%%%%%%%%%%%%%%%%%%% End: Only for NORM LMS algorithm %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+         %%
+	 %<DSPFixptLibEquals(InBuffRec_idx, InSigRec_i, rndSatRec)>                 %% mInBuff[*mBuffStartIdx] = mInSig[i];
+	 if (++BuffStartIdx == (uint32_T)%<FilterLength>) BuffStartIdx=0;
+      /* Multiply wgtIC_vector (not yet updated) and mInBuff_vector */ 
+       %if inSigIsComplex
+           %assign accWTXRecRelabel = accWTXRec.label + ".re"
+	   %assign accWTXRecImlabel = accWTXRec.label + ".im"
+           %<accWTXRecRelabel> = 0;				              
+	   %<accWTXRecImlabel> = 0;
+       %else
+           %<accWTXRec.label> = 0;
+       %endif
+           for (j=BuffStartIdx, m=0; j < %<FilterLength>; j++, m++)   
+	   { %%  {mAccProdWTX[0] += mWgtBuff[m++] * mInBuff[j];}
+               %<FixptMAC(accWTXRec, "+=", prodWTXRec, WgtBuffRec_m, InBuffRec_j, rndSatRec)>\
+	   }
+
+           for (j=0; j <(int_T) BuffStartIdx; j++, m++)      
+	   { %%  Repeat the above for loop %%
+             %<FixptMAC(accWTXRec, "+=", prodWTXRec, WgtBuffRec_m, InBuffRec_j, rndSatRec)>\
+	   }
+           %<DSPFixptLibEquals(OutYRec_i, accWTXRec, rndSatRec)>\  %%  mOutY[i] = mAccProdWTX[0];
+	   %%
+      /* Get error for the current sample  */
+           %%
+           %<DSPFixptLibEquals(ErrYRec_i, DeSigRec_i, rndSatRec)>\      %% mErrY[i] = mDeSig[i];
+           %<DSPFixptLibMinusEquals(ErrYRec_i, OutYRec_i, rndSatRec)>\  %% mErrY[i] -= mOutY[i];
+           %%
+           %%
+         %if (WhichLmsAlgorithm == 1 || WhichLmsAlgorithm == 2 || WhichLmsAlgorithm == 4) %% LMS, NORM_LMS, SIGN_DATA
+           /* Calculate mu*err outside the adaptation loop */
+           %<DSPFixptLibTimes( prodMuErrRec, muRec_0, ErrYRec_i, rndSatRec)>\  %% mProdMuErr[0] = mMu[0] * mErrY[i];
+	 %endif
+         %if WhichLmsAlgorithm ==2 %%normalized lms
+           %<DSPFixptLibDivide(quotientRec, prodMuErrRec, EnrgInBuffRec_0, rndSatRec)>\ %%DSPFixptDivide(mQuotient[0], mProdMuErr[0], mEnrgInBuff[0]);  
+         %endif
+      /* Update wgtIC for next input sample */
+         %if BlkHasAdaptInPort
+           if (NeedAdapt) 
+	   {
+         %endif
+               for (j=BuffStartIdx, m=0; j < %<FilterLength>; j++, m++) 
+               {
+%%%%%%%%%%%%%%% following code repeated below %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%if (WhichLmsAlgorithm == 1)  %%%%%%%%%%%%%%%%%%%%%% LMS ONLY %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 %if inSigIsComplex
+                   %<DSPFixptLibConjugate(InBuffjConjRec, InBuffRec_j, rndSatRec)>\    %% mInBuffConj[0] = conj(mInBuff[j]);
+		   %<DSPFixptLibCplxTimes( prodQuXRec, InBuffjConjRec, prodMuErrRec, prodQuXRealTmpRec, rndSatRec)>\   %% mProdQuX[0] = mInBuffConj[0] * mProdMuErr[0]; (all three cplx, prodQuXRealTmpRec for intermediate product)
+                 %else
+                   %<DSPFixptLibEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\          %% mProdQuX[0] = mProdMuErr[0];
+		   %<DSPFixptLibTimesEquals( prodQuXRec, InBuffRec_j, rndSatRec)>\     %% mProdQuX[0] *= mInBuff[j];
+                 %endif
+                   %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                   %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+		   %%
+%elseif (WhichLmsAlgorithm == 2)  %%%%%%%%%%%%%%%%%%%%%% NORM LMS %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 %%%% DSPFixptLibCplxTimes(Acc, In1, In2, PrdOut, RndSat)
+                 %if inSigIsComplex %% both InBuffjConjRec, quotientRec complex
+                   %<DSPFixptLibConjugate(InBuffjConjRec, InBuffRec_j, rndSatRec)>\                    %% mInBuffConj[0] = conj(mInBuff[j]);
+		   %<DSPFixptLibCplxTimes( prodQuXRec, InBuffjConjRec, quotientRec, prodQuXRealTmpRec, rndSatRec)>\   %% mProdQuX[0] = mInBuffConj[0] * mQuotient[0]; (all three cplx, prodQuXRealTmpRec for intermediate product)
+                 %else
+		   %<DSPFixptLibTimes( prodQuXRec, InBuffRec_j, quotientRec, rndSatRec)>\             %% mProdQuX[0] = mInBuff[j] * mQuotient[0];
+                 %endif
+                   %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                   %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		   %%
+%elseif (WhichLmsAlgorithm == 3)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_ERROR %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<ErrYLabel_i> == 0) /* error = 0 */     %% (mErrY[i] == 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if (%<ErrYLabel_i> > 0) /* error > 0 */ %% (mErrY[i] > 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, muRec_0, InBuffRec_j, rndSatRec)>\                  %% mProdQuX[0] = mMu[0] * mInBuff[j];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else %% (mErrY[i] < 0) /* error < 0 */
+		 {
+		    %<prodQuXRec.label> = 0;                                               %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, muRec_0, rndSatRec)>\              %% mProdQuX[0] -= mMu[0];
+		    %<DSPFixptLibTimesEquals( prodQuXRec, InBuffRec_j, rndSatRec)>\         %% mProdQuX[0] *= mInBuff[j]; this line inclusing above 2 lines mean: mProdQuX[0] = -mMu[0] * mInBuff[j];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%elseif (WhichLmsAlgorithm == 4)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_DATA %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<InBuffLabel_j> == 0)  /* input sample = 0 */   %% (mInBuff[j] == 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if (%<InBuffLabel_j> > 0) /* input sample > 0 */ %% (mInBuff[j] > 0)
+		 {
+                    %<DSPFixptLibEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\                  %% mProdQuX[0] = mProdMuErr[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else /* input sample < 0 */ %% (mInBuff[j] < 0)
+		 {
+                    %<prodQuXRec.label> = 0;                                                          %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\                    %% mProdQuX[0] -= mProdMuErr[0]; this line and above lines mean: mProdQuX[0] = -mProdMuErr[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%else %% (WhichLmsAlgorithm == 5)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_SIGN %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<InBuffLabel_j> == 0 || %<ErrYLabel_i> == 0)     %% (mInBuff[j] ==0 || mErrY[i] == 0) /* either error or input sample = 0 */
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if ((%<InBuffLabel_j> > 0 && %<ErrYLabel_i> > 0) || (%<InBuffLabel_j> < 0 && %<ErrYLabel_i> < 0)) /* sign(error*input_sample) > 0 */   %%if ((mInBuff[j] > mTmpInSig[0] && mErrY[i] > mTmpErrZero[0]) || (mInBuff[j] < mTmpInSig[0] && mErrY[i] < mTmpErrZero[0]))
+		 {
+                    %<DSPFixptLibEquals(prodQuXRec, muRec_0, rndSatRec)>\ %% mProdQuX[0] = mMu[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else /* sign(error*input_sample) < 0 */
+		 {  
+ 	            %<prodQuXRec.label> = 0;                                             %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, muRec_0, rndSatRec)>\            %% mProdQuX[0] -= mMu[0]; this line and above lines mean: mProdQuX[0] = -mMu[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%endif
+%%%%%%%%%%% above code repeated below %%%%%%%%%%%%%
+               }
+               for (j=0; j < (int_T)BuffStartIdx; j++, m++) 
+               {
+%%%%%%%%%%%%%%%Repeat exactly the above codes %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%if (WhichLmsAlgorithm == 1)  %%%%%%%%%%%%%%%%%%%%%% LMS ONLY %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 %if inSigIsComplex
+                   %<DSPFixptLibConjugate(InBuffjConjRec, InBuffRec_j, rndSatRec)>\    %% mInBuffConj[0] = conj(mInBuff[j]);
+		   %<DSPFixptLibCplxTimes( prodQuXRec, InBuffjConjRec, prodMuErrRec, prodQuXRealTmpRec, rndSatRec)>\   %% mProdQuX[0] = mInBuffConj[0] * mProdMuErr[0]; (all three cplx, prodQuXRealTmpRec for intermediate product)
+                 %else
+                   %<DSPFixptLibEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\          %% mProdQuX[0] = mProdMuErr[0];
+		   %<DSPFixptLibTimesEquals( prodQuXRec, InBuffRec_j, rndSatRec)>\     %% mProdQuX[0] *= mInBuff[j];
+                 %endif
+                   %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                   %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+		   %%
+%elseif (WhichLmsAlgorithm == 2)  %%%%%%%%%%%%%%%%%%%%%% NORM LMS %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 %%%% DSPFixptLibCplxTimes(Acc, In1, In2, PrdOut, RndSat)
+                 %if inSigIsComplex %% both InBuffjConjRec, quotientRec complex
+                   %<DSPFixptLibConjugate(InBuffjConjRec, InBuffRec_j, rndSatRec)>\                    %% mInBuffConj[0] = conj(mInBuff[j]);
+		   %<DSPFixptLibCplxTimes( prodQuXRec, InBuffjConjRec, quotientRec, prodQuXRealTmpRec, rndSatRec)>\   %% mProdQuX[0] = mInBuffConj[0] * mQuotient[0]; (all three cplx, prodQuXRealTmpRec for intermediate product)
+                 %else
+		   %<DSPFixptLibTimes( prodQuXRec, InBuffRec_j, quotientRec, rndSatRec)>\             %% mProdQuX[0] = mInBuff[j] * mQuotient[0];
+                 %endif
+                   %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                   %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		   %%
+%elseif (WhichLmsAlgorithm == 3)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_ERROR %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<ErrYLabel_i> == 0) /* error = 0 */     %% (mErrY[i] == 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if (%<ErrYLabel_i> > 0) /* error > 0 */ %% (mErrY[i] > 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, muRec_0, InBuffRec_j, rndSatRec)>\                  %% mProdQuX[0] = mMu[0] * mInBuff[j];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else %% (mErrY[i] < 0) /* error < 0 */
+		 {
+		    %<prodQuXRec.label> = 0;                                               %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, muRec_0, rndSatRec)>\              %% mProdQuX[0] -= mMu[0];
+		    %<DSPFixptLibTimesEquals( prodQuXRec, InBuffRec_j, rndSatRec)>\         %% mProdQuX[0] *= mInBuff[j]; this line inclusing above 2 lines mean: mProdQuX[0] = -mMu[0] * mInBuff[j];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%elseif (WhichLmsAlgorithm == 4)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_DATA %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<InBuffLabel_j> == 0)  /* input sample = 0 */   %% (mInBuff[j] == 0)
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if (%<InBuffLabel_j> > 0) /* input sample > 0 */ %% (mInBuff[j] > 0)
+		 {
+                    %<DSPFixptLibEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\                  %% mProdQuX[0] = mProdMuErr[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else /* input sample < 0 */ %% (mInBuff[j] < 0)
+		 {
+                    %<prodQuXRec.label> = 0;                                                          %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, prodMuErrRec, rndSatRec)>\                    %% mProdQuX[0] -= mProdMuErr[0]; this line and above lines mean: mProdQuX[0] = -mProdMuErr[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%else %% (WhichLmsAlgorithm == 5)  %%%%%%%%%%%%%%%%%%%%%% LMS_SIGN_SIGN %%%%%%%%%%%%%%%%%%%%%%%%%%
+                 if (%<InBuffLabel_j> == 0 || %<ErrYLabel_i> == 0)     %% (mInBuff[j] ==0 || mErrY[i] == 0) /* either error or input sample = 0 */
+		 {
+                    %<DSPFixptLibTimes( prodQuXRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] = mLeakageFactor[0] * mWgtBuff[m];
+		    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\ %% mWgtBuff[m] = mProdQuX[0];
+                 }
+                 else if ((%<InBuffLabel_j> > 0 && %<ErrYLabel_i> > 0) || (%<InBuffLabel_j> < 0 && %<ErrYLabel_i> < 0)) /* sign(error*input_sample) > 0 */   %%if ((mInBuff[j] > mTmpInSig[0] && mErrY[i] > mTmpErrZero[0]) || (mInBuff[j] < mTmpInSig[0] && mErrY[i] < mTmpErrZero[0]))
+		 {
+                    %<DSPFixptLibEquals(prodQuXRec, muRec_0, rndSatRec)>\ %% mProdQuX[0] = mMu[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+		 else /* sign(error*input_sample) < 0 */
+		 {  
+ 	            %<prodQuXRec.label> = 0;                                             %% mProdQuX[0] = 0; %% always real
+                    %<DSPFixptLibMinusEquals(prodQuXRec, muRec_0, rndSatRec)>\            %% mProdQuX[0] -= mMu[0]; this line and above lines mean: mProdQuX[0] = -mMu[0];
+		    %<FixptMAC(prodQuXRec, "+=", prodQuXTmpRec, LkgFactorRec_0, WgtBuffRec_m, rndSatRec)>\ %% mProdQuX[0] += mLeakageFactor[0] * mWgtBuff[m];
+                    %<DSPFixptLibEquals(WgtBuffRec_m, prodQuXRec, rndSatRec)>\                          %% mWgtBuff[m] = mProdQuX[0];
+		 }
+%endif
+%%%%%%%%%%%%%%%%%%%%%%%%% end of code repeated %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+               }
+          %if BlkHasAdaptInPort
+            }
+          %endif
+       }%%1
+    /* update buffer start index dwork */
+    %<LibBlockDWork(BUFF_IDX_DWORK, "", "", 0)> = BuffStartIdx;
+    %if (BlkHasWgtOutPort)
+    /* flip mWgtBuff to get mWgtY  */
+        for (j=0; j < %<FilterLength>; j++) 
+	{
+	   %<DSPFixptLibEquals(WgtYRec_j, WgtBuffRec_Flen_1_j, rndSatRec)>\  %% mWgtY[j] = mWgtBuff[mFilterLen-1-j];
+        }
+    %endif
+}
+%endfunction    %%FixPtInlineCode
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtRutimeFunctionCall
+%%
+%% FLOATING POINT CODE GENERATION (RUN TIME FUNCTION CALL)          
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtRutimeFunctionCall(block) Output
+%%
+%%Call run-time function based on data type and ftype
+    %assign AllDTnames  = ["real32_T", "creal32_T", "real_T", "creal_T"]%% Data type name
+    %assign DTsymbol   = ["R", "C", "D", "Z"]                           %% Data type symbol
+    %assign INSIG_SINGLE = (DTYPE_ID_INSIG == tSS_SINGLE)? 0 : 2        %% Double or single
+    %assign InSig_DTname    = AllDTnames[INSIG_SINGLE+INSIG_COMPLEX]	    %% Find the right DTYPE name
+    %assign DeSig_DTname    = AllDTnames[INSIG_SINGLE+DESIG_COMPLEX]	    %% Find the right DTYPE name
+    %assign nocplx_DTname    = AllDTnames[INSIG_SINGLE]	                    %% Find the right DTYPE name
+    %assign TwoLetters       = DTsymbol[INSIG_SINGLE+INSIG_COMPLEX] + DTsymbol[INSIG_SINGLE+DESIG_COMPLEX]
+    %%
+    %assign AllAlgoNames  = ["lms", "lmsn", "lmsse", "lmssd", "lmsss"]
+    %assign tmpIndex = WhichLmsAlgorithm-1 %% to avoid mac warning
+    %assign AlgoName  = AllAlgoNames[(tmpIndex>=0)? tmpIndex:0] %% index 0 based
+    %assign AdaptIP_YN   = BlkHasAdaptInPort?"ay":"an"
+    %assign WgtOP_YN     = BlkHasWgtOutPort?"wy":"wn"
+    %%
+    %assign AddressOfInportMuOrRTP = IsMuSrcInport ? LibBlockInputSignalAddr(INPORT_MU, "", "", 0) \
+                                                   : LibBlockParameterAddr(MU_RTP,"","",0)
+%%%%%%%%%%%%%%%%%%%%%%% Adapt port %%%%%%%%%%%%%%%%%
+    %if BlkHasAdaptInPort
+       %assign adaptDTName    = LibBlockInputSignalDataTypeName(inport_adapt,"")
+       %assign adaptDTID = LibBlockInputSignalDataTypeId(inport_adapt)
+       %if adaptDTID == tSS_BOOLEAN
+          const boolean_T NeedAdapt =  *(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)>;
+       %else
+          const boolean_T NeedAdapt =  ((boolean_T)(*(%<adaptDTName> *)%<LibBlockInputSignalAddr(inport_adapt, "", "", 0)> > 0));
+       %endif
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%% Reset port %%%%%%%%%%%%%%%%%
+    %if BlkHasResetInPort
+      /* check for reset */
+      if(%<CheckEventPort(block, inport_reset, ephdwork)>) 
+      {
+          %<ResetWeightBuffer(block)>
+      }
+    %endif
+%%%%%%%%%%%%%%%%%%%%%%% main function %%%%%%%%%%%%%%%%%    
+%%Create function name based on above identified types
+         MWDSP_%<AlgoName>_%<AdaptIP_YN>_%<WgtOP_YN>_%<TwoLetters>( 
+                (const %<InSig_DTname>*)%<LibBlockInputSignalAddr(INPORT_INSIG, "", "", 0)>, 
+		(const %<DeSig_DTname>*)%<LibBlockInputSignalAddr(INPORT_DESIG, "", "", 0)>, 
+		(const %<nocplx_DTname>)(*(%<nocplx_DTname> *)%<AddressOfInportMuOrRTP>), 
+		(uint32_T *)%<LibBlockDWorkAddr(BUFF_IDX_DWORK, "", "", 0)>, 
+                (%<InSig_DTname>*)%<LibBlockDWorkAddr(IN_BUFFER_DWORK, "", "", 0)>, 
+		(%<InSig_DTname>*)%<LibBlockDWorkAddr(WGT_IC_DWORK, "", "", 0)>, 
+                (int_T)%<FilterLength>, 
+		(const %<nocplx_DTname>)(*(%<nocplx_DTname> *)%<LibBlockParameterAddr(LEAKAGE_RTP,"","",0)>), 
+                (int_T)%<FrameLength>, 
+		(int_T)%<bytesPerInpElmt>, 
+		(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_SIG, "", "", 0)>, 
+		(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_ERR, "", "", 0)> 
+            %if BlkHasWgtOutPort
+		,(%<InSig_DTname>*)%<LibBlockOutputSignalAddr(OUTPORT_WGT, "", "", 0)> 
+            %endif
+	    %if BlkHasAdaptInPort   
+	        ,(const boolean_T)NeedAdapt 
+            %endif
+	    %if WhichLmsAlgorithm ==2 %%normalized lms
+	        ,(%<nocplx_DTname>*)%<LibBlockDWorkAddr(NRM_ERGY_DWORK, "", "", 0)>  
+	    %endif
+	         );
+%endfunction   %% FltPtRutimeFunctionCall
+
+    
+%% [EOF] sdsplms.tlc

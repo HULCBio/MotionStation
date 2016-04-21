@@ -1,0 +1,173 @@
+%% sdspsq.tlc
+%% Abstract: TLC for Signal Processing Blockset block to do scalar quantization. (sdspsq)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.5.4.2 $ $Date: 2004/04/12 23:09:42 $
+
+
+%implements "sdspsq" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT_DATA  = 0
+  %assign INPORT_PARAM1  = 1
+  %assign INPORT_PARAM2  = 2
+  %assign OUTPORT = 0
+  %assign OUTPORT_CW  = 1
+  %assign OUTPORT_ERR = 2
+
+  %assign dtype_in      = LibBlockInputSignalDataTypeName(INPORT_DATA,"")
+  %assign dtype_out     = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+  %assign inSingle   = (dtype_in == "real32_T") ? 1 : 0
+  %assign qmode      = %<SFcnParamSettings.QMode>
+  %assign maskSrc    = %<SFcnParamSettings.IsSourceInternal>
+  %assign binSearch  = %<SFcnParamSettings.IsSearchBinary>
+  %assign higherLvl  = %<SFcnParamSettings.UseHigherVal>
+  %assign outerr     = %<SFcnParamSettings.OutQErr>
+  %assign inputWidth = LibBlockInputSignalWidth(INPORT_DATA)
+  %assign resolution = %<SFcnParamSettings.Bits>
+  %assign binval     = %<SFcnParamSettings.Maxval>
+  
+  %assign block = block + INPORT_DATA + INPORT_PARAM1 + INPORT_PARAM2 + OUTPORT + OUTPORT_CW ...
+                        + OUTPORT_ERR + dtype_in + dtype_out+ inSingle + qmode + maskSrc + binSearch + higherLvl ...
+                        + outerr  + inputWidth + resolution + binval 
+ 
+%endfunction %% BlockInstanceSetup
+
+
+%function encodeData(block) Output
+    %assign str = (inSingle) ? "F" : ""
+    %assign operatorL = (higherLvl) ? ">=" : ">"
+    %assign operatorB = (higherLvl) ? "<" : "<="
+    %assign inData    = (inputWidth > 1) ? "data[i]" : "*data"
+    %assign outIndx   = (inputWidth > 1) ? "yidx[i]" : "*yidx"
+    %assign outCW     = (inputWidth > 1) ? "ycw[i]" : "*ycw"
+    %assign outQErr   = (inputWidth > 1) ? "yerr[i]" : "*yerr"
+    const %<dtype_in> *data      = %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    %if (maskSrc)
+      const %<dtype_in> *partition = %<LibBlockParameterAddr(Partition,"","",0)>; 
+      %assign partitionVectorSize = LibBlockParameterSize(Partition)
+      %assign partitionVectorLength = (partitionVectorSize[0] * partitionVectorSize[1])-1
+    %else
+      const %<dtype_in> *partition = %<LibBlockInputSignalAddr(INPORT_PARAM1, "", "", 0)>;
+      %assign partitionVectorLength = LibBlockInputSignalWidth(INPORT_PARAM1)-1
+    %endif
+    %<dtype_out> *yidx = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    %if binSearch
+        /* Binary search */
+        const int_T LengthPT_minus_1 = %<partitionVectorLength-1>;
+    %endif
+    %if inputWidth > 1
+      int_T i;
+      for (i = 0; i < %<inputWidth>; i++) {
+    %endif
+        %if binSearch
+            int_T val =%<binval>,a= %<binval>, indx;
+            int_T bits = %<resolution>;   /* Number of bits used to represent the index */
+            %<outIndx> = 0;
+            while (bits--) {
+                if (a < %<partitionVectorLength>) {
+                    indx = a;
+                } else {
+                    indx = LengthPT_minus_1;
+                }
+                if (%<inData> %<operatorB> partition[indx]) {  
+                  a = a - (val>>1);  /* divide val by 2 */
+                } else {
+                  a = a + (val>>1);  /* divide val by 2 */
+                  %<outIndx> += val; 
+                }
+                val = (val>>1);      /* divide val by 2 */
+            }
+            /* index */
+            if ((int_T)%<outIndx> > LengthPT_minus_1)
+                %<outIndx> = LengthPT_minus_1;
+        %else
+            %<outIndx> = 0;
+            while ((%<outIndx> < %<partitionVectorLength>) && (%<inData> %<operatorL> partition[%<outIndx>]))  { (%<outIndx>)++; }                                           
+            /* index */
+            %<outIndx> = (%<outIndx> == 0) ? 0 : (%<outIndx>-1);
+        %endif
+        %if (qmode == 3)
+            /* Quantized value */
+            %<outCW> = cb[(int_T)%<outIndx>];
+            %if outerr
+              /* Quantization error */
+              %<outQErr> = (%<inData> - %<outCW>);
+            %endif
+        %endif
+    %if inputWidth > 1
+      }
+    %endif
+%endfunction %% encodeData
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset Scalar Quantization (%<ParamSettings.FunctionName>) - '%<Name>' */
+    {
+    %if (qmode == 1)
+    %% Encoder mode
+      %<encodeData(block)>
+    %elseif (qmode == 2)
+    %% Decoder mode
+        %if (maskSrc)
+          %assign cbVectorSize = LibBlockParameterSize(Codebook)
+          %assign cbVectorLength = (cbVectorSize[0] * cbVectorSize[1])-1
+        %else
+          %assign cbVectorLength = LibBlockInputSignalWidth(INPORT_PARAM1)-1
+        %endif
+        const %<dtype_in> *uidx = %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+        %if (maskSrc)
+          const %<dtype_out> *cb        = %<LibBlockParameterAddr(Codebook,"","",0)>; 
+        %else
+          const %<dtype_out> *cb        = %<LibBlockInputSignalAddr(INPORT_PARAM1, "", "", 0)>;
+        %endif
+        %<dtype_out> *ycw = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+
+        %if inputWidth > 1
+          int_T           i;
+          for (i = 0; i < %<inputWidth>; i++) {
+              /* Making sure that the value of index is in correct range */
+              %<dtype_in> validIdx = uidx[i];
+              if ((real_T)validIdx < 0) validIdx = 0;
+              else if (validIdx > %<cbVectorLength>) validIdx = %<cbVectorLength>;
+              /* Quantized value */
+              ycw[i] = cb[(int_T)validIdx];
+          }
+        %else
+            /* Making sure that the value of index is in correct range */
+            %<dtype_in> validIdx = uidx[0];
+            if ((real_T)validIdx < 0) validIdx = 0;
+            else if (validIdx > %<cbVectorLength>) validIdx = %<cbVectorLength>;
+            /* Quantized value */
+            *ycw = cb[(int_T)validIdx];
+        %endif
+    %else
+    %% Both Encoder and Decoder mode
+    %%  err out port vs not
+        %if (maskSrc)
+          const %<dtype_in> *cb        = %<LibBlockParameterAddr(Codebook,"","",0)>; 
+        %else
+          const %<dtype_in> *cb        = %<LibBlockInputSignalAddr(INPORT_PARAM2, "", "", 0)>;
+        %endif
+        %<dtype_in> *ycw = %<LibBlockOutputSignalAddr(OUTPORT_CW, "", "", 0)>;
+        %if (outerr)
+            %<dtype_in> *yerr            = %<LibBlockOutputSignalAddr(OUTPORT_ERR, "", "", 0)>;
+        %endif
+        %<encodeData(block)>
+
+    %endif
+    }
+%endfunction %% Outputs
+
+
+%% EOF: sdspsq.tlc

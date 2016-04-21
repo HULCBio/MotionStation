@@ -1,0 +1,344 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: Relational Operator block target file
+
+%implements RelationalOperator "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode   
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% Check NON-ZERO bias
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %if y0DT.Bias != 0.0
+      %%START_ASSERT
+      %assign errTxt = "The relational operator block does not support "\ 
+        + "fixed-point output with a non-zero bias."
+      %<LibBlockReportFatalError(block,errTxt)>
+      %%END_ASSERT
+    %endif
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y = RelationalOperator(U0, U1)
+%%
+%function Outputs(block, system) Output
+  %%
+  %% First check for fixpt mode. If so, do fixpt operations and return.
+  %%
+  %if block.InFixptMode
+    %%
+    %% convert matlab inequal to c inequal
+    %%
+    %assign relOp = FixPtRelOpStr
+    %%
+    %if relOp == "~="
+      %assign relOp = "!="
+    %endif
+    %%
+    %assign y0DT  = FixPt_GetOutputDataType(0)
+    %%
+    %assign u0DT  = FixPt_GetInputDataType(0)
+    %assign u1DT  = FixPt_GetInputDataType(1)
+    %%
+    %% Check if complex
+    %%
+    %assign u0IsComplex = LibBlockInputSignalIsComplex(0)
+    %assign u1IsComplex = LibBlockInputSignalIsComplex(1)
+    %assign y0IsComplex = LibBlockOutputSignalIsComplex(0)
+    %%
+    %% ERROR OUT IF NOT == or ~= FOR FIXPT COMPARISON
+    %%
+    %if (u0IsComplex || u1IsComplex) && !(ISEQUAL(relOp,"~=") || ISEQUAL(relOp,"=="))
+      %%
+      %assign errTxt = "Only == and ~= supported for Fixed point operations"
+      %<LibBlockReportFatalError(block, errTxt)>
+      %%
+    %endif
+    %%
+    %% create header comment
+    %%
+    %openfile commentBuffer
+    * %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+    * %<relOp>
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END:  create header comment
+    %%
+    %closefile commentBuffer
+    %<LibCacheBlockComment(block,commentBuffer)>\
+    %%
+    %assign tmpLabel = "rt_tmpRelOp"
+    %assign tmpLabelC= "rt_tmpRelOpCplx"
+    %%
+    %openfile outBuffer
+    %%
+    %% Roll around signal width
+    %%
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %assign reSigIdx = tRealPart + STRING(sigIdx)
+      %%
+      %assign imSigIdx = tImagPart + STRING(sigIdx)
+      %%
+      %if u0IsComplex
+        %%
+        %assign u0Label = LibBlockInputSignal(0, "", lcv, reSigIdx)
+        %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+        %%
+      %else
+        %%
+        %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %assign u0ImLabel = 0
+        %%
+      %endif
+      %%
+      %if u1IsComplex
+        %%
+        %assign u1Label = LibBlockInputSignal(1, "", lcv, reSigIdx)
+        %assign u1ImLabel = LibBlockInputSignal(1, "", lcv, imSigIdx)
+        %%
+      %else
+        %%
+        %assign u1Label = LibBlockInputSignal(1, "", lcv, sigIdx)
+        %assign u1ImLabel = 0
+        %%
+      %endif
+      %%
+      %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %%
+      %% do comparison
+      %%
+      %if u0IsComplex || u1IsComplex
+        %%
+        {
+          %<y0DT.NativeType> %<tmpLabel>;
+          %<y0DT.NativeType> %<tmpLabelC>;
+          %%
+          %<FixPt_RelOp(tmpLabel,y0DT, ...
+            u0Label,u0DT,u1Label,u1DT, ...
+            relOp,FixPt_u0Dominant)>
+          %%
+          %<FixPt_RelOp(tmpLabelC,y0DT,   ...
+            u0ImLabel,u0DT,u1ImLabel,u1DT,...
+            relOp,FixPt_u0Dominant)>
+          %%
+          %if ISEQUAL (relOp, "==")
+          %<y0Label> = (%<tmpLabel>) && (%<tmpLabelC>);
+          %else
+            %% relOp is ~= here
+          %<y0Label> = (%<tmpLabel>) || (%<tmpLabelC>);          
+          %%
+        %endif
+        %%
+        }
+      %else
+        %%
+        %<FixPt_RelOp(y0Label,y0DT, ...
+          u0Label,u0DT,u1Label,u1DT, ...
+          relOp,FixPt_u0Dominant)>
+        %%
+      %endif
+      %%
+    %endroll
+    %closefile outBuffer
+    %return outBuffer
+  %else
+    %% All operators come out in C form except ~= 
+    %assign logicOperator = ParamSettings.Operator
+    %if ISEQUAL(logicOperator, "~=")
+      %assign op = "!="
+    %elseif ISEQUAL(logicOperator, "==")
+      %assign op = "=="
+    %else
+      %assign op = logicOperator
+    %endif
+    %if NumNonsampledZCs > 0
+      if (%<RTMIs("MajorTimeStep")>) {
+	%assign rollVars = ["U", "Mode"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u0re = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %assign u1re = LibBlockInputSignal(1, "", lcv, sigIdx)
+	  %<LibBlockMode("", lcv, sigIdx)> = (int_T)(%<u0re> %<op> %<u1re>);
+	%endroll
+      }
+      %assign rollVars = ["Y", "Mode"]
+      %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0) - 1>]
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%<LibBlockOutputSignal(0, "", lcv, sigIdx)> = \
+	(real_T)(%<LibBlockMode("", lcv, sigIdx)>);
+      %endroll
+    %else
+      %assign inputDataType  = LibBlockInputSignalDataTypeId(0)
+      %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)  
+      %assign inputIsComplex = (LibBlockInputSignalIsComplex(0) || ...
+	LibBlockInputSignalIsComplex(1))
+      %assign zero = SLibGetFormattedValueFromId(inputDataType, 0)
+      %%
+      %assign rollVars = ["U", "Y"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign u0re = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+	%%
+	%assign u1re = LibBlockInputSignal(1, "", lcv, "%<tRealPart>%<sigIdx>")
+	%if LibBlockInputSignalIsComplex(0)
+	  %assign u0im = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+	%else 
+	  %assign u0im = ""
+	%endif
+	%if LibBlockInputSignalIsComplex(1)
+	  %assign u1im = LibBlockInputSignal(1, "", lcv, "%<tImagPart>%<sigIdx>")
+	%else 
+	  %assign u1im = ""
+	%endif
+	%%
+	%assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	%%
+	%if (!inputIsComplex)
+	  %assign rhs = "(%<u0re> %<op> %<u1re>)"
+	  %<y> = \
+	  %<rhs>;
+	%else
+	  %if (u0im == "")
+	    %assign u0im = zero
+	  %elseif (u1im == "")
+	    %assign u1im = zero
+	  %endif
+	  %%
+	  %if ISEQUAL(logicOperator, "~=")
+	    %<y> = \
+	    ((%<u0re> %<op> %<u1re>) || (%<u0im> %<op> %<u1im>));
+	  %elseif ISEQUAL(logicOperator, "==")
+	    %<y> = \
+	    ((%<u0re> %<op> %<u1re>) && (%<u0im> %<op> %<u1im>));	  
+	  %else
+	    %%START_ASSERT
+	    %assign errTxt = "Unrecognized operation for complex signals."
+	    %<LibBlockReportFatalError(block, errTxt)>
+	    %%END_ASSERT
+	  %endif
+	  %%
+	%endif
+      %endroll
+    %endif
+  %endif
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %if block.InFixptMode
+    %switch retType
+      %case "Signal"
+	%%
+	%% convert matlab inequal to c inequal
+	%%
+	%assign relOp = FixPtRelOpStr
+	%%
+	%if relOp == "~="
+	  %assign relOp = "!="
+	%endif
+	%%
+	%assign y0DT  = FixPt_GetOutputDataType(0)
+	%%
+	%assign u0Label = LibBlockInputSignal(0,ucv,lcv,idx)
+	%assign u1Label = LibBlockInputSignal(1,ucv,lcv,idx)
+	%%
+	%assign relopExpr = "(%<u0Label> %<relOp> %<u1Label>)"
+	%%
+	%if !FixPt_DataTypeIsInt(y0DT)
+	  %%
+	  %% In C, the result type of a relop is always int.  If output is
+	  %% not an int, then an explicit cast will be added.
+	  %%
+	  %return "((%<y0DT.NativeType>)%<relopExpr>)"
+	  %%        
+	%else
+	  %return "(%<relopExpr>)"
+	%endif
+      %default
+	%%START_ASSERT
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+	%%END_ASSERT
+    %endswitch
+  %else
+    %switch retType
+      %case "Signal"
+	%assign logicOperator = ParamSettings.Operator
+	%if ISEQUAL(logicOperator, "~=")
+	  %assign op = "!="
+	%elseif ISEQUAL(logicOperator, "==")
+	  %assign op = "=="
+	%else
+	  %assign op = logicOperator
+	%endif
+	%assign u0 = LibBlockInputSignal(0, ucv, lcv, idx)
+	%assign u1 = LibBlockInputSignal(1, ucv, lcv, idx)
+	%return "(%<u0> %<op> %<u1>)"
+	%%START_ASSERT
+      %default
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+	%%END_ASSERT
+    %endswitch
+  %endif
+%endfunction  
+
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      NSZC[i] = U1[i] - U2[i];  use inputs for zero crossing detection
+%%
+%function ZeroCrossings(block, system) Output
+  %if !block.InFixptMode
+    /* %<Type> Block: %<Name> */
+    %if ParamSettings.InputContiguous == "yes"
+      %% Both inputs are contiguous, do run-time loop
+      %% ZC indices are always contiguous for this case
+      %assign rollVars = ["U", "NSZC"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+	%<LibBlockInputSignal(0, "", lcv, sigIdx)> - \
+	%<LibBlockInputSignal(1, "", lcv, sigIdx)>;
+      %endroll
+    %else
+      %% Input is not contiguous, do each element separately
+      %foreach idx = NumNonsampledZCs
+	%assign u0 = LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)
+	%assign u1 = LibBlockInputSignal(1, "", "", NonsampledZC[idx].MapIdx)
+	%<LibBlockNonSampledZC("","",idx)> = %<u0> - %<u1>;
+      %endforeach
+    %endif
+  %endif
+%endfunction
+ 
+%% [EOF] relop.tlc

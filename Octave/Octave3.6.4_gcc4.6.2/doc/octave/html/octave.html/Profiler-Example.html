@@ -1,0 +1,229 @@
+<html lang="en">
+<head>
+<title>Profiler Example - GNU Octave</title>
+<meta http-equiv="Content-Type" content="text/html">
+<meta name="description" content="GNU Octave">
+<meta name="generator" content="makeinfo 4.13">
+<link title="Top" rel="start" href="index.html#Top">
+<link rel="up" href="Debugging.html#Debugging" title="Debugging">
+<link rel="prev" href="Profiling.html#Profiling" title="Profiling">
+<link href="http://www.gnu.org/software/texinfo/" rel="generator-home" title="Texinfo Homepage">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<style type="text/css"><!--
+  pre.display { font-family:inherit }
+  pre.format  { font-family:inherit }
+  pre.smalldisplay { font-family:inherit; font-size:smaller }
+  pre.smallformat  { font-family:inherit; font-size:smaller }
+  pre.smallexample { font-size:smaller }
+  pre.smalllisp    { font-size:smaller }
+  span.sc    { font-variant:small-caps }
+  span.roman { font-family:serif; font-weight:normal; } 
+  span.sansserif { font-family:sans-serif; font-weight:normal; } 
+--></style>
+</head>
+<body>
+<div class="node">
+<a name="Profiler-Example"></a>
+<p>
+Previous:&nbsp;<a rel="previous" accesskey="p" href="Profiling.html#Profiling">Profiling</a>,
+Up:&nbsp;<a rel="up" accesskey="u" href="Debugging.html#Debugging">Debugging</a>
+<hr>
+</div>
+
+<h3 class="section">13.7 Profiler Example</h3>
+
+<p>Below, we will give a short example of a profiler session.  See also
+<a href="Profiling.html#Profiling">Profiling</a> for the documentation of the profiler functions in
+detail.  Consider the code:
+
+<pre class="example">     global N A;
+     
+     N = 300;
+     A = rand (N, N);
+     
+     function xt = timesteps (steps, x0, expM)
+       global N;
+     
+       if (steps == 0)
+         xt = NA (N, 0);
+       else
+         xt = NA (N, steps);
+         x1 = expM * x0;
+         xt(:, 1) = x1;
+         xt(:, 2 : end) = timesteps (steps - 1, x1, expM);
+       endif
+     endfunction
+     
+     function foo ()
+       global N A;
+     
+       initial = @(x) sin (x);
+       x0 = (initial (linspace (0, 2 * pi, N)))';
+     
+       expA = expm (A);
+       xt = timesteps (100, x0, expA);
+     endfunction
+     
+     function fib = bar (N)
+       if (N &lt;= 2)
+         fib = 1;
+       else
+         fib = bar (N - 1) + bar (N - 2);
+       endif
+     endfunction
+</pre>
+   <p>If we execute the two main functions, we get:
+
+<pre class="example">     tic; foo; toc;
+     &rArr; Elapsed time is 2.37338 seconds.
+     
+     tic; bar (20); toc;
+     &rArr; Elapsed time is 2.04952 seconds.
+</pre>
+   <p>But this does not give much information about where this time is spent;
+for instance, whether the single call to <code>expm</code> is more expensive
+or the recursive time-stepping itself.  To get a more detailed picture,
+we can use the profiler.
+
+<pre class="example">     profile on;
+     foo;
+     profile off;
+     
+     data = profile ('info');
+     profshow (data, 10);
+</pre>
+   <p>This prints a table like:
+
+<pre class="example">        #  Function Attr     Time (s)        Calls
+     ---------------------------------------------
+        7      expm             1.034            1
+        3  binary *             0.823          117
+       41  binary \             0.188            1
+       38  binary ^             0.126            2
+       43 timesteps    R        0.111          101
+       44        NA             0.029          101
+       39  binary +             0.024            8
+       34      norm             0.011            1
+       40  binary -             0.004          101
+       33   balance             0.003            1
+</pre>
+   <p>The entries are the individual functions which have been executed (only
+the 10 most important ones), together with some information for each of
+them.  The entries like &lsquo;<samp><span class="samp">binary *</span></samp>&rsquo; denote operators, while other
+entries are ordinary functions.  They include both built-ins like
+<code>expm</code> and our own routines (for instance <code>timesteps</code>).  From
+this profile, we can immediately deduce that <code>expm</code> uses up the
+largest proportion of the processing time, even though it is only called
+once.  The second expensive operation is the matrix-vector product in the
+routine <code>timesteps</code>.  <a rel="footnote" href="#fn-1" name="fnd-1"><sup>1</sup></a>
+
+   <p>Timing, however, is not the only information available from the profile. 
+The attribute column shows us that <code>timesteps</code> calls itself
+recursively.  This may not be that remarkable in this example (since it's
+clear anyway), but could be helpful in a more complex setting.  As to the
+question of why is there a &lsquo;<samp><span class="samp">binary \</span></samp>&rsquo; in the output, we can easily
+shed some light on that too.  Note that <code>data</code> is a structure array
+(<a href="Structure-Arrays.html#Structure-Arrays">Structure Arrays</a>) which contains the field <code>FunctionTable</code>. 
+This stores the raw data for the profile shown.  The number in the first
+column of the table gives the index under which the shown function can
+be found there.  Looking up <code>data.FunctionTable(41)</code> gives:
+
+<pre class="example">       scalar structure containing the fields:
+     
+         FunctionName = binary \
+         TotalTime =  0.18765
+         NumCalls =  1
+         IsRecursive = 0
+         Parents =  7
+         Children = [](1x0)
+</pre>
+   <p>Here we see the information from the table again, but have additional
+fields <code>Parents</code> and <code>Children</code>.  Those are both arrays, which
+contain the indices of functions which have directly called the function
+in question (which is entry 7, <code>expm</code>, in this case) or been called
+by it (no functions).  Hence, the backslash operator has been used
+internally by <code>expm</code>.
+
+   <p>Now let's take a look at <code>bar</code>.  For this, we start a fresh
+profiling session (<code>profile on</code> does this; the old data is removed
+before the profiler is restarted):
+
+<pre class="example">     profile on;
+     bar (20);
+     profile off;
+     
+     profshow (profile ('info'));
+</pre>
+   <p>This gives:
+
+<pre class="example">        #            Function Attr     Time (s)        Calls
+     -------------------------------------------------------
+        1                 bar    R        2.091        13529
+        2           binary &lt;=             0.062        13529
+        3            binary -             0.042        13528
+        4            binary +             0.023         6764
+        5             profile             0.000            1
+        8               false             0.000            1
+        6              nargin             0.000            1
+        7           binary !=             0.000            1
+        9 __profiler_enable__             0.000            1
+</pre>
+   <p>Unsurprisingly, <code>bar</code> is also recursive.  It has been called 13,529
+times in the course of recursively calculating the Fibonacci number in a
+suboptimal way, and most of the time was spent in <code>bar</code> itself.
+
+   <p>Finally, let's say we want to profile the execution of both <code>foo</code>
+and <code>bar</code> together.  Since we already have the run-time data
+collected for <code>bar</code>, we can restart the profiler without clearing
+the existing data and collect the missing statistics about <code>foo</code>. 
+This is done by:
+
+<pre class="example">     profile resume;
+     foo;
+     profile off;
+     
+     profshow (profile ('info'), 10);
+</pre>
+   <p>As you can see in the table below, now we have both profiles mixed
+together.
+
+<pre class="example">        #  Function Attr     Time (s)        Calls
+     ---------------------------------------------
+        1       bar    R        2.091        13529
+       16      expm             1.122            1
+       12  binary *             0.798          117
+       46  binary \             0.185            1
+       45  binary ^             0.124            2
+       48 timesteps    R        0.115          101
+        2 binary &lt;=             0.062        13529
+        3  binary -             0.045        13629
+        4  binary +             0.041         6772
+       49        NA             0.036          101
+</pre>
+   <!-- DO NOT EDIT!  Generated automatically by munge-texi.pl. -->
+<!-- Copyright (C) 1996-2012 John W. Eaton -->
+<!-- This file is part of Octave. -->
+<!-- Octave is free software; you can redistribute it and/or modify it -->
+<!-- under the terms of the GNU General Public License as published by the -->
+<!-- Free Software Foundation; either version 3 of the License, or (at -->
+<!-- your option) any later version. -->
+<!-- Octave is distributed in the hope that it will be useful, but WITHOUT -->
+<!-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or -->
+<!-- FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License -->
+<!-- for more details. -->
+<!-- You should have received a copy of the GNU General Public License -->
+<!-- along with Octave; see the file COPYING.  If not, see -->
+<!-- <http://www.gnu.org/licenses/>. -->
+   <div class="footnote">
+<hr>
+<h4>Footnotes</h4><p class="footnote"><small>[<a name="fn-1" href="#fnd-1">1</a>]</small> We only know it is the binary
+multiplication operator, but fortunately this operator appears only at
+one place in the code and thus we know which occurrence takes so much
+time.  If there were multiple places, we would have to use the
+hierarchical profile to find out the exact place which uses up the time
+which is not covered in this example.</p>
+
+   <hr></div>
+
+   </body></html>
+

@@ -1,0 +1,952 @@
+%% 
+%% $Revision: 1.1.6.3 $ 
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Discrete integrator block target file
+
+%implements "DiscreteIntegrator" "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %% cache whether or not state and output initialization is required
+  %% for the scalar expanded case
+  %assign icPortIdx = FcnExternalICPortIndex()
+  %if (!icPortIdx)
+    %<SLibSetSkipInitializationFlag(system,block,InitialCondition)>
+  %endif
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: FcnCastDoubleToSignal ============================================
+%%
+%% Abstract:
+%%      Function to cast input from double to signal
+%%
+%function FcnCastDoubleToSignal(x) Output
+  %switch LibBlockInputSignalAliasedThruDataTypeId(0) 
+    %case tSS_DOUBLE
+      %<x>\
+      %break
+      %%START_ASSERT
+    %default
+      %assign dtName = LibBlockOutputSignalDataTypeName(0, "")
+      (%<dtName>)%<x>\
+      %break
+      %%END_ASSERT
+  %endswitch
+%endfunction
+
+
+%% Function: FcnDintegDiscreteState ===========================================
+%% Abstract:
+%%      Function to return an element of a discrete integrator's state
+%%
+%function FcnDintegDiscreteState(ucv, lcv, idx) void
+  %if ParamSettings.ShowStatePort == "on"
+    %return LibBlockDiscreteState(ucv, lcv, idx)
+  %else
+    %return LibBlockDWork(DSTATE, ucv, lcv, idx)
+  %endif
+%endfunction
+
+
+%% Function: FcnDintegXd =====================================================
+%% Abstract:
+%%      Function to return rollvar element for discrete state
+%%
+%function FcnDintegXd() void
+  %if ParamSettings.ShowStatePort == "on"
+    %return "Xd"
+  %else
+    %return "<dwork>/DSTATE"
+  %endif
+%endfunction
+
+
+%% Function: FcnExternalResetPortIndex ========================================
+%% Abstract:
+%%      Function to return the reset port index
+%%
+%%      Returns 1 (port index) if reset port present
+%%      Returns 0 if reset port is not present
+%%
+%function FcnExternalResetPortIndex()
+  %if ParamSettings.ExternalReset != "none"
+    %% the reset port is always 1
+    %return 1
+  %else
+    %% the reset port is not present
+    %return 0
+  %endif
+%endfunction
+
+
+%% Function: FcnExternalICPortIndex ===========================================
+%% Abstract:
+%%      Function to return the IC port index
+%%
+%%      Returns the port index 1 or 2 if the IC port is present, where
+%%      the value of index depends on the existence of a reset port
+%%
+%%      Returns 0 if the IC port is not present
+%%
+%function FcnExternalICPortIndex()
+  %if ParamSettings.InitialConditionSource != "internal"
+    %% the IC port is present
+    %return 1 + FcnExternalResetPortIndex()
+  %else
+    %% the IC port is not present
+    %return 0
+  %endif
+%endfunction
+
+
+%% Function: FcnIntegratorComment =============================================
+%% Abstract:
+%%      Function to return main comment for block
+%%
+%function FcnIntegratorComment()
+  %if ParamSettings.LimitOutput == "on"
+    %assign limitLabel = "Limited"
+  %else
+    %assign limitLabel = "Unlimited"
+  %endif
+
+  %if ParamSettings.ShowSaturationPort == "on"
+    %assign satLabel = "w/ Saturation Port"
+  %else
+    %assign satLabel = "w/o Saturation Port"
+  %endif
+
+  %return "*    %<limitLabel>, %<satLabel>\n"
+%endfunction
+
+
+%% Function: FcnBlockSampleTime ===============================================
+%% Abstract:
+%%      Function to compute dT
+%%
+%%      Returns the sample for a block based on TID
+%%
+%function FcnBlockSampleTime()
+  %if TYPE(TID) != "Number"
+    %%START_ASSERT
+    %assign errTxt = "Can not compute dT from %<TID>."
+    %<LibBlockReportError([], errTxt)>
+    %%END_ASSERT
+  %endif
+  %return CAST("Real",CompiledModel.SampleTime[TID].PeriodAndOffset[0])
+%endfunction
+
+
+%% Function: FcnZeroCrossingCode ==============================================
+%% Abstract:
+%%      Function to compute zero-crossings
+%%
+%function FcnZeroCrossingCode(block, ndStates, icPortIdx, resetPortIdx, orInit) Output
+  %%
+  %% Setup correct zero-crossing function to call based on data type of control
+  %%
+  %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+    %case tSS_BOOLEAN
+      %assign zcFcn = tBZCFcn
+      %break
+    %case tSS_SINGLE
+      %assign zcFcn = tR32ZCFcn
+      %break
+    %case tSS_DOUBLE
+      %assign zcFcn = tRZCFcn
+      %break
+    %default
+      %%START_ASSERT
+      %assign dtName = LibBlockInputSignalDataTypeName(resetPortIdx, "")
+      %assign errTxt = "Data type %<dtName> is not supported."
+      %<LibBlockReportFatalError(block, errTxt)>
+      %break
+      %%END_ASSERT
+  %endswitch
+  {
+  ZCEventType zcEvent;
+  \
+ 
+  /* evaluate zero-crossings */
+  %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+  %if resetPortWidth == 1
+    %%
+    %% port width is 1, so reset all states
+    %%
+    %assign inputSig    = LibBlockInputSignal(resetPortIdx, "", "", 0)
+    %assign zcDirection = LibConvertZCDirection(ZCEvent.Direction)
+    %assign prevZCState = LibBlockPrevZCState("", "", 0)
+    %assign setZCStr    = ""
+    %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+      %case tSS_BOOLEAN
+	zcEvent = (%<SLibBooleanTriggerTest(zcDirection, inputSig, prevZCState, 1)>);
+	%assign setZCStr = "%<prevZCState> = (ZCSigState) %<inputSig>;\n"
+	%break
+      %case tSS_SINGLE
+      %case tSS_DOUBLE
+	zcEvent = %<zcFcn>(%<zcDirection>, &%<prevZCState>, %<inputSig>);
+	%break
+    %endswitch
+    %if ParamSettings.ExternalReset != "level"
+      %<setZCStr>\
+      if ( zcEvent  %<orInit>) {
+    %else
+      %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE ||\
+          LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_SINGLE
+	%assign rstComparison = " != 0.0"
+      %else
+	%assign rstComparison = ""
+      %endif
+      %<setZCStr>\
+      if ( zcEvent  || \
+      %<inputSig>%<rstComparison> %<orInit>) {
+    %endif  
+      %% setup roll variables
+      %if icPortIdx == 0
+        %assign rollVars = ["%<FcnDintegXd()>", "<param>/InitialCondition"]
+      %else
+        %assign rollVars = ["%<FcnDintegXd()>", "u%<icPortIdx>"]
+      %endif
+      %% roll
+      %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+        %if icPortIdx == 0
+          %% internal ic
+          %assign ic = LibBlockParameter(InitialCondition, "", xlcv, xidx)
+        %else
+          %% external ic
+          %assign ic = LibBlockInputSignal(icPortIdx, "", xlcv, xidx)
+        %endif
+        %<FcnDintegDiscreteState("", xlcv, xidx)> = %<ic>;
+      %endroll
+
+      %%
+      %% Forward Euler does not use mode vector for non-level reset
+      %%
+      %if ParamSettings.IntegratorMethod != "Forward Euler" ||\
+	ParamSettings.ExternalReset == "level"
+        %<LibBlockMode("", "", 0)> = 1;
+      %endif
+    }
+  %else
+    %%
+    %% port width is > 1, so reset states individually
+    %%
+    %if ParamSettings.ExternalReset == "level"
+      %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE ||\
+          LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_SINGLE
+	%assign rstComparison = " != 0.0"
+      %else
+	%assign rstComparison = ""
+      %endif
+    %endif
+    %if ParamSettings.IntegratorMethod != "Forward Euler" ||\
+      ParamSettings.ExternalReset == "level"
+      %assign rollVars = ["%<FcnDintegXd()>", "u%<resetPortIdx>", "PZC", "Mode"]
+    %else
+      %assign rollVars = ["%<FcnDintegXd()>", "u%<resetPortIdx>", "PZC"]
+    %endif
+    %if icPortIdx != 0
+      %% external ic required
+      %assign rollVars = rollVars + "u%<icPortIdx>"
+    %else
+      %assign rollVars = rollVars + "<param>/InitialCondition"
+    %endif
+    %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+      %assign inputSig    = LibBlockInputSignal(resetPortIdx, "", xlcv, xidx)
+      %assign zcDirection = LibConvertZCDirection(ZCEvent[0].Direction)
+      %assign prevZCState = LibBlockPrevZCState("", xlcv, xidx)
+      %assign setZCStr    = ""
+      %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+	%case tSS_BOOLEAN
+	  zcEvent = (%<SLibBooleanTriggerTest(zcDirection, inputSig, prevZCState, 1)>);
+	  %assign setZCStr = "%<prevZCState> = (ZCSigState) %<inputSig>;\n"
+	  %break
+	%case tSS_SINGLE
+	%case tSS_DOUBLE
+	  zcEvent = %<zcFcn>(%<zcDirection>, &%<prevZCState>, %<inputSig>);
+	  %break
+      %endswitch
+      %if ParamSettings.ExternalReset != "level"
+	%<setZCStr>\
+	if ( zcEvent %<orInit>) {
+      %else
+	%<setZCStr>\
+	if ( zcEvent  || \
+	%<inputSig>%<rstComparison>%<orInit> ) {
+      %endif
+      %if icPortIdx == 0
+	%% internal ic
+	%assign ic = LibBlockParameter(InitialCondition, "", xlcv, xidx)
+      %else
+	%% external ic
+	%assign ic = LibBlockInputSignal(icPortIdx, "", xlcv, xidx)
+      %endif
+      %<FcnDintegDiscreteState("", xlcv, xidx)> = %<ic>;
+      %%
+      %% Forward Euler does not use mode vector for non-level reset
+      %%
+      %if ParamSettings.IntegratorMethod != "Forward Euler" ||\
+	ParamSettings.ExternalReset == "level"
+	%<LibBlockMode("", xlcv, xidx)> = 1;
+      %endif
+        }
+
+    %endroll
+  %endif
+  %if orInit != ""
+    %<LibBlockDWork(IC_LOADING, "", "", 0)> = false;
+  %endif
+  }
+%endfunction
+
+
+%% Function: FcnLimitOutputValuesIfNeeded =====================================
+%% Abstract:
+%%      Function to limit outputs and set saturation port value if necessary
+%%
+%function FcnLimitOutputValuesIfNeeded(block, ndStates) Output
+  %if ParamSettings.LimitOutput == "on"
+    %assign rollRegions = [0:%<ndStates-1>]
+    %assign rollVars = \
+      ["y0",\
+       "<param>/UpperSaturationLimit",\
+       "<param>/LowerSaturationLimit"]
+    %if ParamSettings.ShowSaturationPort == "on"
+      %assign rollVars = rollVars + "y1"
+    %endif
+    %roll xidx = rollRegions, xlcv = 2, block, "Roller", rollVars
+      %assign ul = LibBlockParameter(UpperSaturationLimit, "", xlcv, xidx)
+      %assign ll = LibBlockParameter(LowerSaturationLimit, "", xlcv, xidx)
+      %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+      if ( %<y> >= %<ul> ) {
+        %<y> = %<ul>;
+        %if ParamSettings.ShowSaturationPort == "on"
+          %assign ySat  = LibBlockOutputSignal(1, "", xlcv, xidx)
+          %<ySat> = 1.0;
+        %endif
+      } else if ( %<y> <= %<ll> ) {
+        %<y> = %<ll>;
+        %if ParamSettings.ShowSaturationPort == "on"
+          %assign ySat  = LibBlockOutputSignal(1, "", xlcv, xidx)
+          %<ySat> = -1.0;
+        %endif
+      %if ParamSettings.ShowSaturationPort == "on"
+      } else {
+        %assign ySat  = LibBlockOutputSignal(1, "", xlcv, xidx)
+        %<ySat> = 0.0;
+      %endif
+      }
+
+    %endroll
+  %elseif ParamSettings.ShowSaturationPort == "on"
+    %assign rollRegions = [0:%<ndStates-1>]
+    %assign rollVars = ["y1"]
+    %roll xidx = rollRegions, xlcv=RollThreshold, block, "Roller", rollVars
+      %assign ySat  = LibBlockOutputSignal(1, "", xlcv, xidx)
+      %<ySat> = 0.0;
+    %endroll
+  %endif
+%endfunction
+
+
+%% Function: FcnCopyStatesToOutput ============================================
+%% Abstract:
+%%      Function to copy states to output
+%%      Y = Xd;
+%%
+%function FcnCopyStatesToOutput(block, ndStates) Output
+  %assign rollRegions = [0:%<ndStates-1>]
+  %assign rollVars = ["y0", "%<FcnDintegXd()>"]
+  %roll xidx = rollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+    %<LibBlockOutputSignal(0, "", xlcv, xidx)> \
+      = %<FcnDintegDiscreteState("", xlcv, xidx)>;
+  %endroll
+%endfunction
+
+
+%% Function: FcnLoadExternalIC ================================================
+%% Abstract:
+%%      Function to load states from external IC port 
+%%      Xd = IC;
+%%
+%function FcnLoadExternalIC(block, icPortIdx, ndStates) Output
+  %assign rollVars = ["%<FcnDintegXd()>"]
+  %assign rollVars = rollVars + "u%<icPortIdx>"
+  %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+    %<FcnDintegDiscreteState("", xlcv, xidx)> \
+      = %<LibBlockInputSignal(icPortIdx, "", xlcv, xidx)>;
+  %endroll
+%endfunction
+
+
+%% Function: FcnZeroModeVector ================================================
+%% Abstract:
+%%      Function to zero mode vector
+%%
+%function FcnZeroModeVector(block, resetPortIdx) Output
+  %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+  %if resetPortWidth == 1
+    %<LibBlockMode("", "", 0)> = 0;
+ %else
+    (void)memset(&%<LibBlockMode("","",0)>, 0, %<resetPortWidth>*sizeof(int_T));
+ %endif
+%endfunction
+
+
+%% Function: FcnYEqualsXdPlusDTTimesU =========================================
+%% Abstract:
+%%      Function to compute new output
+%%      Y = Xd + dT * U;
+%%
+%function FcnYEqualsXdPlusDTTimesU(block, ndStates, dT) Output
+  %assign rollVars = ["u0", "%<FcnDintegXd()>", "y0"]
+  %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+    %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+    %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+    %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+    %<y> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+  %endroll
+%endfunction
+
+
+%% Function: FcnYEqualsXdPlusDTTimesUPlusPrevU ================================
+%% Abstract:
+%%      Function to compute new output
+%%      Y = Xd + dT * (U + prevU);
+%%
+%function FcnYEqualsXdPlusDTTimesUPlusPrevU(block, ndStates, dT) Output
+  %assign rollVars = ["<dwork>/PREV_U", "u0", "%<FcnDintegXd()>", "y0"]
+  %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+    %assign prevU = LibBlockDWork(PREV_U, "", xlcv, xidx)
+    %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+    %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+    %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+    %<y> = %<xd> + %<FcnCastDoubleToSignal(dT)> * (%<u> + %<prevU>);
+  %endroll
+%endfunction
+
+
+%% Function: Start ==============================================================
+%% Abstract:
+%%   Start code
+%%
+%function Start(block, system) Output
+  %% Write initial condition to output if needed
+  %assign icPortIdx = FcnExternalICPortIndex()
+  %if (!icPortIdx)
+    %% Internal IC
+    %if LibBlockOutputSignalIsInBlockIO(0)
+      %if !block.SkipInitialization
+        /* %<Type> Block: %<Name> */
+	%assign rollVars   = ["y0", "<param>/InitialCondition"]
+	%assign rollRegion = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	  %if SLibXBInitRequired(system, block, InitialCondition, "", lcv, idx)
+	    %<LibBlockOutputSignal(0, "", lcv, idx)> = ...
+	      %<LibBlockParameter(InitialCondition, "", lcv, idx)>;
+	  %endif
+	%endroll
+      %endif
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: PrevZCStateSignalDataType =========================================
+%% Abstract:
+%%   Returns the data type id for the signal related to the previous zero
+%%   crossing state.
+%function PrevZCStateSignalDataType(block,system) void
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  %return LibBlockInputSignalDataTypeId(resetPortIdx)
+%endfunction
+
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%      InitialConditions
+%%
+%function InitializeConditions(block, system) Output
+  %openfile tmpBuffer
+  %assign ndStates     = LibBlockOutputSignalWidth(0)
+  %assign icPortIdx    = FcnExternalICPortIndex()
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+ 
+  %%
+  %% set initial state
+  %%
+  %if icPortIdx
+    %% external ic
+    %foreach sigIdx = ndStates
+      %assign externalX0 = ParamSettings.ExternalX0[sigIdx]
+      %<FcnDintegDiscreteState("", "", sigIdx)> \
+      = %<externalX0>;
+    %endforeach
+    %<LibBlockDWork(IC_LOADING, "", "", 0)> = true;
+  %else
+    %% internal ic
+    %if !block.SkipInitialization
+      %assign rollVars   = ["%<FcnDintegXd()>", "<param>/InitialCondition"]
+      %assign rollRegion = [0:%<LibBlockOutputSignalWidth(0)-1>]
+      %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	%if SLibXBInitRequired(system, block, InitialCondition, "", lcv, idx)
+	  %<FcnDintegDiscreteState("", lcv, idx)> = ...
+	    %<LibBlockParameter(InitialCondition, "", lcv, idx)>;
+	%endif
+      %endroll
+    %endif
+  %endif
+  %closefile tmpBuffer
+  %if !WHITE_SPACE(tmpBuffer)
+    /* %<Type> Block: %<Name> */
+    %<tmpBuffer>\
+    
+  %endif  
+%endfunction  %% InitializeConditions
+
+
+%% Function: Enable ===========================================================
+%% Abstract:
+%%      The enable method is not required for Forward Euler since
+%%      the integration routine will do the same regardless if it's
+%%      enabling or not.  In the future (2.x) we can eliminate the
+%%      dwork for enable for integrator in the root, since root
+%%      integrator are inherently enabled.
+%%
+%function Enable(block, system) Output
+  %if ParamSettings.IntegratorMethod != "Forward Euler"
+    /* %<Type> Block: %<Name> */
+    %<LibBlockDWork(SYSTEM_ENABLE, "", "", 0)> = true;
+  %endif
+
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Outputs
+%%
+%function Outputs(block, system) Output
+  %assign ndStates     = LibBlockOutputSignalWidth(0)
+  %assign icPortIdx = FcnExternalICPortIndex()
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  %<LibCacheBlockComment(block, FcnIntegratorComment())> \
+  %%
+  %% Forward Euler Integration
+  %%
+  %if ParamSettings.IntegratorMethod == "Forward Euler"
+    %%
+    %% compute zero-crossings
+    %%
+    %if resetPortIdx != 0
+      %if icPortIdx != 0
+        %assign orInit = ...
+  	  "|| %<LibBlockDWork(IC_LOADING, "", "", 0)>"
+      %else
+        %assign orInit = ""
+      %endif
+      %<FcnZeroCrossingCode(block, ndStates, icPortIdx, resetPortIdx, orInit)>\
+    %%
+    %% IC's need loading
+    %%
+    %elseif icPortIdx != 0
+      if ( %<LibBlockDWork(IC_LOADING, "", "", 0)>) {
+        %<FcnLoadExternalIC(block, icPortIdx, ndStates)>\
+        %<LibBlockDWork(IC_LOADING, "", "", 0)> = false;
+      }
+    %endif
+    %%
+    %% output
+    %%
+    %<FcnCopyStatesToOutput(block, ndStates)>\
+    %%
+    %% limit outputs and set saturation if necessary
+    %%
+    %<FcnLimitOutputValuesIfNeeded(block, ndStates)>\
+  %%
+  %% Backward Euler Integration
+  %%
+  %elseif ParamSettings.IntegratorMethod == "Backward Euler"
+    %%
+    %% zero mode vector
+    %%
+    %if resetPortIdx != 0
+      %<FcnZeroModeVector(block, resetPortIdx)>
+    %endif
+    %%
+    %% compute zero-crossings
+    %%
+    %if resetPortIdx != 0
+      %if icPortIdx != 0
+        %assign orInit = ...
+  	  "|| %<LibBlockDWork(IC_LOADING, "", "", 0)>"
+      %else
+        %assign orInit = ""
+      %endif
+      %<FcnZeroCrossingCode(block, ndStates, icPortIdx, resetPortIdx, orInit)>\
+    %%
+    %% IC's need loading
+    %%
+    %elseif icPortIdx != 0
+      if ( %<LibBlockDWork(IC_LOADING, "", "", 0)>) {
+        %<FcnLoadExternalIC(block, icPortIdx, ndStates)>\
+        %<LibBlockDWork(IC_LOADING, "", "", 0)> = false;
+      }
+    %endif
+    %%
+    %% output
+    %%
+    /* system was just enabled */
+    if ( %<LibBlockDWork(SYSTEM_ENABLE, "", "", 0)>) {
+      %<LibBlockDWork(SYSTEM_ENABLE, "", "", 0)> = false;
+      %<FcnCopyStatesToOutput(block, ndStates)>\
+    } else {
+      %if LibTriggeredTID(TID)
+	%%%  get elapse time from subsystem 
+	%assign dT = LibGetElapseTime(system)
+      %else
+        %assign dT = FcnBlockSampleTime()
+      %endif
+      %%
+      %% Integrator resets
+      %%
+      %if resetPortIdx 
+        %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+        %if resetPortWidth == 1     %% apply mode to all states
+          if ( %<LibBlockMode("", "", 0)> ) {
+            %<FcnCopyStatesToOutput(block, ndStates)>\
+          } else {
+          %<FcnYEqualsXdPlusDTTimesU(block, ndStates, dT)>\
+          }
+        %else                       %% apply modes individually
+          %assign rollVars = ["u0", "y0", "%<FcnDintegXd()>", "Mode"]
+          %roll xidx = RollRegions, xlcv = 2, block, "Roller", rollVars
+            %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+            %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+            %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+            if ( %<LibBlockMode("", xlcv, xidx)> ) {
+              %<y> = %<xd>;
+            } else {
+              %<y> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+            }
+          %endroll
+        %endif
+      %%
+      %% Integrator doesn't reset
+      %%
+      %else
+        %<FcnYEqualsXdPlusDTTimesU(block, ndStates, dT)>\
+      %endif
+    }
+    %%
+    %% limit outputs and set saturation if necessary
+    %%
+    %<FcnLimitOutputValuesIfNeeded(block, ndStates)>\
+  %%
+  %% Trapezoidal Integration
+  %%
+  %elseif ParamSettings.IntegratorMethod == "Trapezoidal"
+    %%
+    %% zero mode vector
+    %%
+    %if resetPortIdx != 0
+      %<FcnZeroModeVector(block, resetPortIdx)>
+    %endif
+    %%
+    %% compute zero-crossings
+    %%
+    %if resetPortIdx != 0
+      %if icPortIdx != 0
+        %assign orInit = ...
+  	  "|| %<LibBlockDWork(IC_LOADING, "", "", 0)>"
+      %else
+        %assign orInit = ""
+      %endif
+      %<FcnZeroCrossingCode(block, ndStates, icPortIdx, resetPortIdx, orInit)>\
+    %%
+    %% IC's need loading
+    %%
+    %elseif icPortIdx != 0
+      if ( %<LibBlockDWork(IC_LOADING, "", "", 0)>) {
+        %<FcnLoadExternalIC(block, icPortIdx, ndStates)>\
+        %<LibBlockDWork(IC_LOADING, "", "", 0)> = false;
+      }
+    %endif
+    %%
+    %% output
+    %%
+    /* system was just enabled */
+    if ( %<LibBlockDWork(SYSTEM_ENABLE, "", "", 0)>) {
+      %<LibBlockDWork(SYSTEM_ENABLE, "", "", 0)> = false;
+      %<FcnCopyStatesToOutput(block, ndStates)>\
+    } else {
+      %if LibTriggeredTID(TID)
+	%% get elapse time for subsystem
+	%assign dT = "(%<LibGetElapseTime(system)>/2.0)"
+      %else
+        %assign dT = (FcnBlockSampleTime())/2.0
+      %endif
+      %%
+      %% Trapezoidal fixed rate integration
+      %%
+      %if LibTriggeredTID(TID) == 0
+        %%
+        %% Integrator resets
+        %%
+        %if resetPortIdx 
+          %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+          %if resetPortWidth == 1   %% apply mode to all states
+            if ( %<LibBlockMode("", "", 0)> ) {
+              %<FcnCopyStatesToOutput(block, ndStates)>\
+            } else {
+              %<FcnYEqualsXdPlusDTTimesU(block, ndStates, dT)>\
+            }
+          %else                     %% apply modes individually
+            %assign rollVars = ["u0", "y0", "%<FcnDintegXd()>", "Mode"]
+            %roll xidx = RollRegions, xlcv = 2, block, "Roller", rollVars
+              %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+              %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+              %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+              if ( %<LibBlockMode("", xlcv, xidx)> ) {
+                %<y> = %<xd>;
+              } else {
+                %<y> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+              }
+            %endroll
+          %endif
+        %%
+        %% Integrator does not reset
+        %%
+        %else
+          %<FcnYEqualsXdPlusDTTimesU(block, ndStates, dT)>\
+        %endif
+      %%
+      %% Trapezoidal variable rate
+      %%
+      %else
+        %%
+        %% Integrator resets
+        %%
+        %if resetPortIdx
+          %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+          %if resetPortWidth == 1   %% apply mode to all states
+            if ( %<LibBlockMode("", "", 0)> ) {
+              %<FcnCopyStatesToOutput(block, ndStates)>\
+            } else {
+              %<FcnYEqualsXdPlusDTTimesUPlusPrevU(block, ndStates, dT)>\
+            }
+          %else                     %% apply mode individually
+            %assign rollVars = ["u0", "y0", "%<FcnDintegXd()>", "Mode", "<dwork>/PREV_U"]
+            %roll xidx = RollRegions, xlcv = 2, block, "Roller", rollVars
+              %assign prevU = LibBlockDWork(PREV_U, "", xlcv, xidx)
+              %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+              %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+              %assign y  = LibBlockOutputSignal(0, "", xlcv, xidx)
+              if ( %<LibBlockMode("", xlcv, xidx)> ) {
+                %<y> = %<xd>;
+              } else {
+                %<y> = %<xd> + %<FcnCastDoubleToSignal(dT)> * (%<u> + %<prevU>);
+              }
+            %endroll
+          %endif
+        %%
+        %% Integrator does not reset
+        %%
+        %else
+          %<FcnYEqualsXdPlusDTTimesUPlusPrevU(block, ndStates, dT)>\
+        %endif
+      %endif
+    }
+    %%
+    %% limit outputs and set saturation if necessary
+    %%
+    %<FcnLimitOutputValuesIfNeeded(block, ndStates)>\
+  %else
+    %%START_ASSERT
+    %<LibBlockReportError(block, "Unknown integration method")>
+    %%END_ASSERT
+  %endif  %% IntegrationMethod
+
+%endfunction
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      Update
+%%
+%function Update(block, system) Output
+  %assign ndStates     = LibBlockOutputSignalWidth(0)
+  %assign icPortIdx    = FcnExternalICPortIndex()
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  /* %<Type> Block: %<Name> */
+  %%
+  %% update for Forward Euler
+  %%
+  %if ParamSettings.IntegratorMethod == "Forward Euler"
+    %if LibTriggeredTID(TID)
+      %%%  get elapse time from subsystem 
+      %assign dT = LibGetElapseTime(system)
+    %else
+      %assign dT = FcnBlockSampleTime()
+    %endif
+    %if ParamSettings.ExternalReset != "level"
+      %assign rollVars = ["u0", "%<FcnDintegXd()>"]
+      %roll xidx = RollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+	%assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+	%assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+	%<xd> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+      %endroll
+    %else
+      %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE ||\
+          LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_SINGLE
+	%assign rstNot        = ""
+	%assign rstComparison = " == 0.0"
+      %else
+	%assign rstNot        = "!"
+	%assign rstComparison = ""
+      %endif
+      %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+      %if resetPortWidth == 1   %% level reset disables all updates 
+	%assign rst = LibBlockInputSignal(1, "", "", 0)
+	if (%<rstNot>%<rst>%<rstComparison>) {
+	%assign rollVars = ["u0", "%<FcnDintegXd()>"]
+	%roll xidx = RollRegions, xlcv = RollThreshold,block,"Roller",rollVars
+	  %assign u  = LibBlockInputSignal(0, "", xlcv, xidx)
+	  %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+	  %<xd> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+	%endroll
+	}
+      %else                     %% level reset disables updates individually
+	%assign rollVars = ["u0", "u1", "%<FcnDintegXd()>"]
+	%roll xidx = RollRegions, xlcv = RollThreshold,block,"Roller",rollVars
+	  %assign u   = LibBlockInputSignal(0, "", xlcv, xidx)
+	  %assign rst = LibBlockInputSignal(1, "", xlcv, xidx)
+	  %assign xd  = FcnDintegDiscreteState("", xlcv, xidx)
+	  if (%<rstNot>%<rst>%<rstComparison>) {
+	  %<xd> = %<xd> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+	  }
+	%endroll
+      %endif
+    %endif
+  %%
+  %% update for Backward Euler
+  %%
+  %elseif ParamSettings.IntegratorMethod == "Backward Euler"
+    %assign rollRegions = [0:%<ndStates-1>]
+    %assign rollVars = ["%<FcnDintegXd()>", "y0"]
+    %roll xidx = rollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+      %<FcnDintegDiscreteState("", xlcv, xidx)> \
+        = %<LibBlockOutputSignal(0, "", xlcv, xidx)>;
+    %endroll
+  %%
+  %% update for Trapezoidal Method
+  %%
+  %elseif ParamSettings.IntegratorMethod == "Trapezoidal"
+    %%
+    %% Trapezoidal variable rate
+    %%
+    %if LibTriggeredTID(TID)
+      %assign rollVars = ["<dwork>/PREV_U", "%<FcnDintegXd()>", "u0", "y0"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %<LibBlockDWork(PREV_U, "", lcv, idx)> \
+          = %<LibBlockInputSignal(0, "", lcv, idx)>;
+        %<FcnDintegDiscreteState("", lcv, idx)> \
+          = %<LibBlockOutputSignal(0, "", lcv, idx)>;
+      %endroll
+    %%
+    %% Trapezoidal fixed rate
+    %%
+    %else
+      %if ParamSettings.ExternalReset != "level"
+	%assign dT = FcnBlockSampleTime()/2.0
+	%assign rollVars = ["%<FcnDintegXd()>", "u0", "y0"]
+	%roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign y  = LibBlockOutputSignal(0, "", lcv, idx)
+	  %assign xd = FcnDintegDiscreteState("", lcv, idx)
+	  %assign u  = LibBlockInputSignal(0, "", lcv, idx)
+	  %<xd> = %<y> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+	%endroll
+      %else
+	%if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE ||\
+	    LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_SINGLE
+	  %assign rstNot        = ""
+	  %assign rstComparison = " == 0.0"
+	%else
+	  %assign rstNot        = "!"
+	  %assign rstComparison = ""
+	%endif
+	%assign resetPortWidth = DataInputPort[resetPortIdx].Width
+	/* check for level reset */
+	%if resetPortWidth == 1   %% level reset disables all updates
+	  %assign rst = LibBlockInputSignal(1, "", "", 0)
+	  if (%<rstNot>%<rst>%<rstComparison>) {
+	  %assign dT = FcnBlockSampleTime()/2.0
+	  %assign rollVars = ["%<FcnDintegXd()>", "u0", "y0"]
+	  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign y  = LibBlockOutputSignal(0, "", lcv, idx)
+	    %assign xd = FcnDintegDiscreteState("", lcv, idx)
+	    %assign u  = LibBlockInputSignal(0, "", lcv, idx)
+	    %<xd> = %<y> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+	  %endroll
+	  }
+	%else                     %% level reset disables updates individually
+	  %assign dT = FcnBlockSampleTime()/2.0
+	  %assign rollVars = ["%<FcnDintegXd()>", "u0", "u1", "y0"]
+	  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign y   = LibBlockOutputSignal(0, "", lcv, idx)
+	    %assign xd  = FcnDintegDiscreteState("", lcv, idx)
+	    %assign u   = LibBlockInputSignal(0, "", lcv, idx)
+	    %assign rst = LibBlockInputSignal(1, "", lcv, idx)
+	    if (%<rstNot>%<rst>%<rstComparison>) {
+	    %<xd> = %<y> + %<FcnCastDoubleToSignal(dT)> * %<u>;
+	    }
+	  %endroll
+	%endif
+      %endif
+    %endif
+  %else
+    %%START_ASSERT
+    %<LibBlockReportFatalError(block, "Unknown integration method")>
+    %%END_ASSERT
+  %endif
+  %%
+  %% Limit states, if necessary
+  %%   Only two configurations require limiting:
+  %%      o Forward Euler
+  %%      o Trapezoidal Method with variable sample time
+  %%
+  %if ParamSettings.LimitOutput == "on" && \
+      (ParamSettings.IntegratorMethod == "Forward Euler" || \
+      (ParamSettings.IntegratorMethod == "Trapezoidal" && \
+      (LibTriggeredTID(TID) == 0)))
+    %%
+    %% setup roll variables
+    %%
+    %assign rollRegions = [0:%<ndStates-1>]
+    %assign rollVars = \
+      ["%<FcnDintegXd()>", "<param>/UpperSaturationLimit",\
+       "<param>/LowerSaturationLimit"]
+    %% roll
+    /* limit states */
+    %roll xidx = rollRegions, xlcv = 2, block, "Roller", rollVars
+      %assign ul = LibBlockParameter(UpperSaturationLimit, "", xlcv, xidx)
+      %assign ll = LibBlockParameter(LowerSaturationLimit, "", xlcv, xidx)
+      %assign xd = FcnDintegDiscreteState("", xlcv, xidx)
+      if ( %<xd> > %<ul> ) {
+        %<xd> = %<ul>;
+      } else if ( %<xd> < %<ll> ) {
+        %<xd> = %<ll>;
+      }
+    %endroll
+  %endif
+    
+%endfunction
+
+%% [EOF] dintegrt.tlc

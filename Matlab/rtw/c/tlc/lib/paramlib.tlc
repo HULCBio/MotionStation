@@ -1,0 +1,2537 @@
+%% $Revision: 1.1.6.13 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   This TLC library file contains all the functions required for accessing
+%%   block parameters.
+%%
+
+
+%if EXISTS("_PARAMLIB_") == 0
+%assign _PARAMLIB_ = 1
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameter =========================
+%% Abstract:
+%%   Based on the parameter reference (param), the user control variable (ucv),
+%%   the loop control variable (lcv), the signal index (sigIdx), and the
+%%   state of parameter inlining, this function returns the appropriate
+%%   reference to a block parameter.  
+%%
+%%   The returned value is always a valid rvalue (right hand size expression 
+%%   value). For example,
+%%
+%%   .----+-------------------------------------------+------------------.
+%%   |Case| Function Call                             | May Produce      |
+%%   +----+-------------------------------------------+------------------+
+%%   | 1  | LibBlockParameter(Gain, "i", lcv, sigIdx) | rtP.blockname[i] |
+%%   | 2  | LibBlockParameter(Gain, "i", lcv, sigIdx) | rtP.blockname    |
+%%   | 3  | LibBlockParameter(Gain, "",  lcv, sigIdx) | p_Gain[i]        |
+%%   | 4  | LibBlockParameter(Gain, "",  lcv, sigIdx) | p_Gain           |
+%%   | 5  | LibBlockParameter(Gain, "",  lcv, sigIdx) | 4.55             |
+%%   | 6  | LibBlockParameter(Gain, "",  lcv, sigIdx) | rtP.blockname.re |
+%%   | 7  | LibBlockParameter(Gain, "",  lcv, sigIdx) | rtP.blockname.im |
+%%   `----+-------------------------------------------+------------------'
+%%
+%%   To illustrate the basic workings of this function, assume a non-complex
+%%   vector signal where Gain[0]=4.55
+%%
+%%   LibBlockParameter(Gain, "", "i", 0)
+%%
+%%   .----+---------+-----------+--------+----------------+-----------.
+%%   |Case| Rolling |  Inline   |  Type  | Result         | Required  |
+%%   |    |         | Parameter |        |                | In Memory |
+%%   +----+---------+-----------+--------+----------------+-----------+
+%%   | 1  |   0     |    1      | scalar | 4.55           |    no     |
+%%   | 2  |   1     |    1      | scalar | 4.55           |    no     |
+%%   | 3  |   0     |    1      | vector | 4.55           |    no     |
+%%   | 4  |   1     |    1      | vector | p_Gain[i]      |    yes    |
+%%   |    |         |           |        |                |           |
+%%   | 5  |   0     |    0      | scalar | rtP.blk.Gain   |    no     |
+%%   | 6  |   1     |    0      | scalar | rtP.blk.Gain   |    no     |
+%%   | 7  |   0     |    0      | vector | rtP.blk.prm[0] |    no     |
+%%   | 8  |   1     |    0      | vector | p_Gain[i]      |    yes    |
+%%   `----+---------+-----------+--------+----------------+-----------'
+%%
+%%   Note case 4.  Even though inline parameter is true, the parameter must
+%%   be placed in memory (RAM) since it's accessed inside a for-loop.
+%%
+%% Note:
+%%   This function also supports expressions when used with inlined parameters
+%%   and parameter tuning.
+%%
+%%   For example, if the parameter field had the M expression '2*a', this
+%%   function will return the C expression '(2 * a)'. The list of functions
+%%   supported by this function is determined by the functions
+%%   FcnConvertNodeToExpr and FcnConvertIdToFcn. To enhance functionality,
+%%   augment/update either of these functions.
+%%
+%%   Note that certain types of expressions are not supported such as x * y
+%%   where BOTH x and y are non-scalars.
+%%
+%%   See the Real-Time Workshop documentation about tunable parameters for
+%%   more details on the exact functions and syntax that is supported.
+%%
+%% Warning:
+%%   Never use this function to access the address of a parameter, or you
+%%   may end up referencing a number (i.e., &4.55) when the parameter is
+%%   inlined.  Avoid this situation entirely using LibBlockParameterAddr().
+%%
+%function LibBlockParameter(param, ucv, lcv, sigIdx) void
+
+  %% Determine the parameter's true size
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+  %assign width = nRows * nCols
+
+  %if TYPE(param.Value) == "Matrix"
+    %% exit if the parameter is a true matrix,
+    %% i.e., has more than one row or columns.
+    %if nRows > 1
+      %assign errTxt = "Must access parameter %<param.Name> using "...
+        "LibBlockMatrixParameter."
+      %<LibBlockReportError([], errTxt)>
+    %endif
+  %endif
+
+  %assign str = FcnGenParamExprWithCast(param.Name, param, ucv, lcv, sigIdx)
+  
+  %if str != ""
+    %return SLibProcessSafeExpression(Name, ...
+      (param.NeedParenthesis ? "(%<str>)" : str), 0)
+  %else
+    %return ""
+  %endif
+%endfunction %% LibBlockParameter
+
+
+%% Function: FcnGetCanParmArg ==================================================
+%% Abstract:
+%%    Return the canonical parameter argument definition for a given system
+%%    and parameter index. This function will also mark the returned
+%%    canonical parameter argument as accessed, so it will be part or the 
+%%    argument list of the reusable parent subsystem.
+%%
+%function FcnGetCanParmArg(sysIdx, prmIdx)
+  %assign hStrSys = System[sysIdx].HStructDeclSystemIdx  
+  %<LibAccessCanPrmArg(hStrSys, prmIdx, "")>
+  %if System[sysIdx].CrossNoArgFcnBound
+    %<LibAccessCanPrmArg(hStrSys,prmIdx,"Global")>
+  %endif
+  %return System[hStrSys].Interface.CanonicalPrmArgDef[prmIdx]
+%endfunction
+
+
+%% Function: FcnGenParamExprWithCast ===========================================
+%% Abstract:
+%%   Generate an expression including a fixed-point cast (if necessary).
+%%
+%% See Also: FcnGenExpr
+%%
+%function FcnGenParamExprWithCast(pName, param, ucv, lcv, sigIdx)
+  
+  %assign paramAST = param.ASTNode
+  
+  %if ((paramAST.IsNonTerminal == 1) && ...
+    (paramAST.ASTNode[0].IsNonTerminal == 0) && ...
+    (paramAST.ASTNode[0].Op == "M_ID") && ...
+    (paramAST.ASTNode[0].Identifier == "fixpt_cast"))
+    
+    %% This parameter requires a fixed-point cast
+    %assert (paramAST.NumChildren == 4)
+    
+    %% Get the expression that is being cast
+    %assign varAST = paramAST.ASTNode[2]
+    %assign string = ...
+      FcnGenExpr(pName, varAST, paramAST, ucv, lcv, sigIdx)
+    
+    %% Get the data types "as-stored" and "as-used" for this parameter
+    %switch (varAST.Op) 
+      %case "M_ID"
+	%assign var = ModelParameters.Parameter[varAST.ModelParameterIdx]
+	%break  
+      %case "M_CANPRM_ID"
+	%with Interface
+	  %assign var = CanonicalPrmArgDef[varAST.CanonicalPrmArgDefIdx]
+	%endwith
+	%break
+      %default
+	%error "For fixpt_cast, ASTNode must be M_ID or M_CANPRM_ID"
+	%break
+    %endswitch
+    
+    %assign asStoredDtId = var.OriginalDataTypeIdx
+    %assign asUsedDtId = param.OriginalDataTypeIdx
+    
+    %assign asStoredDT = FixPt_GetDataTypeFromIndex(asStoredDtId)
+    %assign asUsedDT = FixPt_GetDataTypeFromIndex(asUsedDtId)
+    
+    %% Generate the expression with the fixed-point cast (if possible)
+    %assign string = FixPt_Fix2Fix_Param_Expr(asUsedDT, string, asStoredDT)
+  %else
+    %assign string = ...
+      FcnGenExpr(pName, paramAST, paramAST, ucv, lcv, sigIdx)
+  %endif
+  %return (string)
+%endfunction %% FcnGenParamExprWithCast
+
+
+%% Function: FcnGenExpr =======================================================
+%% Abstract:
+%%   Given a root ASTNode and the other arguments, this function
+%%   recursively traverses the AST and generates a language expression
+%%   that it returns.
+%%   
+%%   Arguments:
+%%     pName      - parameter name string (must be a valid identifier)
+%%     ASTNode    - Root node of AST which is to be converted to an 
+%%               expression
+%%     ParentNode - Parent node of AST node (ASTNode is THE root, pass in
+%%               ASTNode for ParentNode also)
+%%     ucv        - See description in LibBlockParameter
+%%     lcv        - See description in LibBlockParameter
+%%     sigIdx     - See description in LibBlockParameter
+%%
+%function FcnGenExpr(pName, ASTNode, ParentNode, ucv, lcv, sigIdx) void
+  %%
+  %assign retstr = ""
+  %if (ASTNode.IsNonTerminal == 1)
+    %% Non-terminal
+    %foreach i = ASTNode.NumChildren
+      %assign this_node_str = ...
+	"%<FcnGenExpr(pName, ASTNode.ASTNode[i], ASTNode, ucv, lcv, sigIdx)>"
+      %if (this_node_str == "")
+        %% Can only have a null string if caller requested imaginary part of a
+        %% real expression/quantity.  Since we currently do not support code
+        %% generation for complex parameters in expressions, we can just
+        %% jump out early and let the caller handle the situation as
+        %% it wants.
+        %return("")
+      %endif
+      %assign retstr = retstr + this_node_str
+    %endforeach
+    %if (ASTNode.Op == "Unary_2" || ...
+      ASTNode.Op == "Unary_3" || ...
+      ASTNode.Op == "Unary_4")
+      %return ("(%<retstr>)")
+    %else
+      %return (retstr)
+    %endif
+  %else
+    %% Terminal
+    %assign retstr = ...
+      "%<FcnConvertTerminalNodeToExpr(pName, ASTNode, ParentNode, ucv, lcv, sigIdx)>"
+    %return (retstr)
+  %endif
+%endfunction %% FcnGenExpr
+
+
+%% Function: FcnConvertTerminalNodeToExpr ======================================
+%% Abstract:
+%%      Given a terminal ASTNode, generates a C/Ada language expression and
+%%      return it.
+%%
+%%      Arguments:
+%%        pName      - parameter name string (must be a valid identifier)
+%%        ASTNode    - Terminal node that is to be converted to an expression
+%%        ParentNode - Non-terminal parent of this node
+%%        ucv        - See description in LibBlockParameter
+%%        lcv        - See description in LibBlockParameter
+%%        sigIdx     - See description in LibBlockParameter
+%%
+%function FcnConvertTerminalNodeToExpr(pName, ASTNode, ParentNode, ...
+  ucv, lcv, sigIdx)
+
+  %switch(ASTNode.Op)
+    %case "M_CANPRM_ID"
+      %assign canPrmArg = ...
+        FcnGetCanParmArg(BlockIdx[0],ASTNode.CanonicalPrmArgDefIdx)      
+      %assign cross = System[BlockIdx[0]].CrossNoArgFcnBound
+      %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+      %assign reim    = tmpVect[0]
+      %assign idx     = tmpVect[1]
+      %assign answer  = canPrmArg.Identifier
+      %assign width   = LibBlockParameterWidth(canPrmArg)
+      %assign indexer = SLibGet1DArrayIndexer(width, ucv, lcv, idx)
+      %assign global  = cross ? "%<GetGlobalPrefix()>CP_" : ""
+      
+      %if canPrmArg.ComplexSignal == "yes" && reim != ""
+	%return("%<global>%<canPrmArg.Identifier>%<indexer>.%<reim>")
+      %elseif canPrmArg.ComplexSignal == "no" && reim == tImagPart
+	%return ""
+      %else
+	%return("%<global>%<canPrmArg.Identifier>%<indexer>")
+      %endif
+      
+      %break
+      
+    %case "M_ID"
+      %% If this is an ID node with an Identifier like
+      %% int8 or sqrt, we will want to return the mapping of the MATLAB
+      %% function to the C function.
+      %if (!EXISTS("ASTNode.ModelParameterIdx"))
+        %return("%<FcnConvertIDToFcn(ASTNode.Identifier)>")
+      %endif
+
+      %% Fall through since rest of computation is identical as for other
+      %% parameter types
+
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %assign mdlParam = ModelParameters.Parameter[ASTNode.ModelParameterIdx]
+      %assign answer = SLibModelParameter(pName, mdlParam, ucv, lcv, sigIdx)
+
+      %return(answer)
+      %break
+
+    %default
+      %assign answer = FcnConvertOperatorNodeToExpr(ASTNode)
+      %return(answer)
+      %break
+
+  %endswitch
+%endfunction  %% FcnConvertTerminalNodeToExpr
+
+
+%% Function: LibPrepParameter ==================================================
+%% Abstract:
+%%   Collapse singleton dimensions of parameters and if boolean flag is set,
+%%   convert the values to TLC boolean.
+%%
+%%     mdlParam    a block parameter record with fields
+%%                 Value and DataTypeIdx
+%%
+%function LibPrepParameter(param) void
+  %if ISSLDATAREF(param.Value)
+    %return param.Value
+  %endif
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+  %%
+  %assign prmClass = TYPE(param.Value)
+  %if prmClass == "Vector"
+    %if nCols == 1
+      %assign prmVal = param.Value[0]
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %assign prmVal = (prmVal == 1)
+      %endif
+    %else
+      %assign prmVal = param.Value
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %foreach idx = nCols
+          %assign prmVal[idx] = (prmVal[idx] == 1)
+        %endforeach
+      %endif
+    %endif
+  %elseif prmClass == "Matrix"
+    %if nRows == 1 && nCols == 1
+      %assign prmVal = param.Value[0][0] 
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %assign prmVal = (prmVal == 1)
+      %endif
+    %elseif nRows == 1
+      %assign prmVal = [0:%<nCols-1>]               
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %foreach idx = nCols
+          %assign prmVal[idx] = (param.Value[0][idx] == 1)
+        %endforeach
+      %else
+        %foreach idx = nCols
+          %assign prmVal[idx] = param.Value[0][idx]
+        %endforeach
+      %endif
+    %elseif nCols == 1
+      %assign prmVal = [0:%<nRows-1>]
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %foreach idx = nRows
+          %assign prmVal[idx] = (param.Value[idx][0] == 1)
+        %endforeach
+      %else
+        %foreach idx = nRows
+          %assign prmVal[idx] = param.Value[idx][0]
+        %endforeach
+      %endif
+    %else
+      %assign prmVal = param.Value
+      %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+        %foreach rowIdx = nRows
+          %foreach colIdx = nCols
+            %assign prmVal[rowIdx][colIdx] = (prmVal[rowIdx][colIdx] == 1)
+          %endforeach
+        %endforeach
+      %endif
+    %endif
+  %else
+    %if LibGetDataTypeIdAliasedThruToFromId(param.DataTypeIdx) == tSS_BOOLEAN
+      %assign prmVal = (prmVal == 1)
+    %else
+      %assign prmVal = param.Value
+    %endif
+  %endif
+  %%
+  %%
+  %return prmVal
+%endfunction  %% LibPrepParameter
+  
+
+%% Function: SLibModelParameter ================================================
+%% Abstract:
+%%   Given a model parameter, generate a C/Ada expression string to access 
+%%   the desired element (as indicated by ucv, lcv, and sigIdx).
+%%   
+%%   Arguments:
+%%     pName      - parameter name string (must be a valid identifier)
+%%     mdlParam   - Parameter record from ModelParameters table
+%%     ucv        - See description in LibBlockParameter
+%%     lcv        - See description in LibBlockParameter
+%%     sigIdx     - See description in LibBlockParameter
+%%
+%function SLibModelParameter(pName, mdlParam, ucv, lcv, sigIdx)
+  %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+  %assign reim    = tmpVect[0]
+  %assign idx     = tmpVect[1]
+
+  %assign value   = mdlParam.Value
+  %assign complex = mdlParam.ComplexSignal
+  %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx)
+
+  %% The imaginary part of a non-complex parameter is always NULL
+  %if !complex && reim == tImagPart
+    %% Note: SLibModelParameter always returns the empty string if the caller
+    %% requested the imaginary part of a non-complex parameter.  However,
+    %% if calling the context of an expression, the caller might prefer to use
+    %% '0' instead.
+    %return ""
+  %endif
+  
+  %if ucv != ""
+    %assign idx = 0
+  %endif
+  %assign nCols        = SIZE(value, 1)
+  %assign sigIndexer   = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %if dTypeId == tSS_DOUBLE || dTypeId == tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(mdlParam.Identifier,"ModelParameter")>
+    %endif
+  %endif
+
+  %if (ucv != "") && (nCols > 1)
+    %if LibHasCustomStorage(mdlParam)
+      %return LibCustomData(mdlParam,"contents",sigIndexer,reim)
+    %endif
+    %assign answer = FcnGenerateNonEmptyUcvParameter(mdlParam, sigIndexer, reim)
+  %elseif InlineParameters
+    %% Inlining parameter
+    %assign answer = FcnGenerateInlinedParameter(pName, mdlParam, ...
+      sigIndexer, lcv, idx, reim)
+  %else
+    %assign answer = FcnGenerateNonInlinedParameter(pName, mdlParam, ...
+      sigIndexer, lcv, reim)
+  %endif
+  %return(answer)
+%endfunction  %% SLibModelParameter
+
+
+%% Function: LibModelParameterAddr =============================================
+%% Abstract:
+%%   Given a model parameter record (mdlParam) from the ModelParameters 
+%%   table, ucv, lcv, and sigIdx, return the C/Ada expression to access 
+%%   the address of the parameter in an expression.
+%%
+%function LibModelParameterAddr(mdlParam, ucv, lcv, sigIdx)
+  %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+  %assign reim    = tmpVect[0]
+  %assign idx     = tmpVect[1]
+
+  %assign value   = mdlParam.Value
+  %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx)
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %if dTypeId == tSS_DOUBLE || dTypeId == tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(mdlParam.Identifier,"ModelParameter")>
+    %endif
+  %endif
+
+  %assign storageClass = mdlParam.StorageClass
+
+  %if ucv != ""
+    %assign idx = 0
+  %endif
+  %assign nCols      = SIZE(value, 1)
+  %assign sigIndexer = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+  %if storageClass == "Custom"
+    %return LibCustomData(mdlParam,"address",sigIndexer,reim)
+  %else
+    %return "&%<FcnAccessModelParameter(mdlParam, sigIndexer)>"
+  %endif
+%endfunction  %% LibModelParameterAddr
+
+
+%% Function: FcnConvertIDToFcn ================================================
+%% Abstract:
+%%       Convert the given M string identifier to a C/Ada function name
+%%
+%% Example:
+%%       FcnConvertIDToFcn("sqrt") returns "sqrt"
+%%       FcnConvertIDToFcn("int8") returns "(int8_T)"
+%%
+%function FcnConvertIDToFcn(id)
+  %switch(id)
+    %case ("int8")
+      %return ("(int8_T)")
+
+    %case ("int16")
+      %return ("(int16_T)")
+
+    %case ("int32")
+      %return ("(int32_T)")
+
+    %case ("uint8")
+      %return ("(uint8_T)")
+
+    %case ("uint16")
+      %return ("(uint16_T)")
+
+    %case ("uint32")
+      %return ("(uint32_T)")
+
+    %case ("single")
+      %return ("(real32_T)")
+
+    %case ("double")
+      %return ("(real_T)")
+      
+    %case ("boolean")
+      %return ("(boolean_T)")
+
+    %case ("sin")
+      %return ("sin")
+
+    %case ("cos")
+      %return ("cos")
+
+    %case ("tan")
+      %return ("tan")
+
+    %case ("asin")
+      %return ("asin")
+
+    %case ("acos")
+      %return ("acos")
+
+    %case ("atan")
+      %return ("atan")
+
+    %case ("atan2")
+      %% have mdlhdr.tlc include rtlibsrc.h
+      %assign ::CompiledModel.IncludeLibsrc = 1
+      %return ("rt_atan2")
+
+    %case ("sinh")
+      %return ("sinh")
+
+    %case ("cosh")
+      %return ("cosh")
+
+    %case ("tanh")
+      %return ("tanh")
+
+    %case ("sqrt")
+      %return ("sqrt")
+
+    %case ("exp")
+      %return ("exp")
+
+    %case ("log")
+      %return ("log")
+
+    %case ("log10")
+      %return ("log10")
+
+    %case ("abs")
+      %return("fabs")
+
+    %case ("floor")
+        %return ("floor")
+
+    %case ("ceil")
+        %return ("ceil")
+
+    %case ("rem")
+        %return("fmod")
+
+    %case ("sign")
+      %% have mdlhdr.tlc include rtlibsrc.h
+      %assign ::CompiledModel.IncludeLibsrc = 1
+      %return "rt_SGN"
+
+    %default
+      %return (id)
+
+  %endswitch
+%endfunction %% FcnConvertIDToFcn
+
+
+%% Function: FcnGenerateNonEmptyUcvParameter ==================================
+%% Abstract:
+%%   Returns appropriate code for a model parameter with the assumption that
+%%   ucv != "".
+%%   
+%%   sigIndexer is the result of a call to SLibGet1DArrayIndexer e.g.
+%%   
+%%   %assign sigIndexer = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+%%   
+%%   Arguments:
+%%     mdlParam - Parameter from ModelParameters record
+%%     sigIndexer - Generated by SLibGet1DArrayIndexer
+%%     reim     - %<tRealPart> or %<tImagPart> or ""
+%%
+%function FcnGenerateNonEmptyUcvParameter(mdlParam, sigIndexer, reim)
+  %assign answer = FcnAccessModelParameter(mdlParam, sigIndexer)
+  %if mdlParam.ComplexSignal && reim != ""
+    %assign answer = answer + ".%<reim>"
+  %endif
+  %return (answer)
+%endfunction %% FcnGenerateNonEmptyUcvParameter
+
+
+%% Function: FcnGenerateInlinedParameter ======================================
+%% Abstract:
+%%    Generate code for a parameter assuming inline parameters is on.
+%%    Returns appropriate code for a model parameter with the assumption that
+%%    inline parameters are on.
+%%   
+%%    sigIndexer is the result of a call to SLibGet1DArrayIndexer e.g.
+%%   
+%%    %assign sigIndexer = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+%%   
+%%    Arguments:
+%%      pName      - parameter name string (must be a valid identifier)
+%%      mdlParam   - Parameter from ModelParameters record
+%%      sigIndexer - Generated by SLibGet1DArrayIndexer
+%%      lcv        - See description in LibBlockParameter
+%%      idx        - See description in LibBlockParameter
+%%      reim       - %<tRealPart> or %<tImagPart> or ""
+%%
+%function FcnGenerateInlinedParameter(pName, mdlParam, sigIndexer, ...
+  lcv, idx, reim)
+  %assign storageClass = mdlParam.StorageClass
+  %assign value        = mdlParam.Value
+  %assign complex      = mdlParam.ComplexSignal
+
+  %assign nCols        = SIZE(value, 1)
+
+  %if (lcv != "" && nCols > 1)
+    %% Parameter is a vector and it's being rolled. Use the local variable
+    %% name that rolllib uses for the parameter.
+    %% The parameter must exist in memory if not generating dead code
+
+    %if mdlParam.Tunable == "yes"
+      %assign varName = "p_%<mdlParam.Identifier>"
+    %else
+      %assign varName = "p_%<pName>"
+    %endif
+    %assign answer = "%<varName>%<sigIndexer>"
+  %elseif complex && reim == ""
+    %% The parameter is complex and it's being accessed as a structure
+    %% (i.e., not accessing the real or the imaginary part directly).
+    %% The parameter must exist in memory if not generating dead code.
+
+    %if storageClass == "Auto"
+    %elseif storageClass == "Custom"
+      %% Note: ucv is null if we are in this function
+      %return LibCustomData(mdlParam,"contents",sigIndexer,reim)
+    %elseif storageClass == "ImportedExtern" || ...
+      storageClass == "ImportedExternPointer"
+      %% Disallow imported complex parameters (for now)
+      %assign errTxt = "Imported complex parameters not supported.  " ...
+        "This occurred in parameter %<mdlParam.Identifier>."
+      %<LibBlockReportError([], errTxt)>
+    %endif
+    %assign answer = FcnAccessModelParameter(mdlParam, sigIndexer)
+    
+  %elseif (mdlParam.Tunable == "yes")
+    %% Normally we would inline the parameter value, however, this is a
+    %% tunable parameter.  Therefore, interface the parameter by name
+    %% instead of by value.
+    %if storageClass == "Custom"
+      %% Note: ucv is null if we are in this function
+      %return LibCustomData(mdlParam,"contents",sigIndexer,reim)
+    %endif
+    %assign answer = FcnAccessModelParameter(mdlParam, sigIndexer)
+    
+  %else
+    %% Return the actual value of parameter, scalar expanding on the input
+    %% index if necessary.
+    %assign pIdx = (nCols > 1) ? idx : 0
+    
+    %return SLibGenModelConstPrmMacroAccess(mdlParam, [%<pIdx>], complex, reim, ...
+      "Vector")
+  %endif
+
+  %if complex && reim != ""
+    %assign answer = answer + ".%<reim>"
+  %endif
+
+  %return(answer)
+%endfunction  %% FcnGenerateInlinedParameter
+
+
+%% Function: FcnGenerateNonInlinedParameter ====================================
+%% Abstract:
+%%   Generate code for a parameter assuming inline parameters is off
+%%   Returns appropriate code for a model parameter with the assumption that
+%%   inline parameters are off.
+%%   
+%%   sigIndexer is the result of a call to SLibGet1DArrayIndexer e.g.
+%%   
+%%   %assign sigIndexer = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+%%   
+%%   Arguments:
+%%     pName      - parameter name string (must be a valid identifier)
+%%     mdlParam   - Parameter from ModelParameters record
+%%     sigIndexer - Generated by SLibGet1DArrayIndexer
+%%     lcv        - See description in LibBlockParameter
+%%     reim       - %<tRealPart> or %<tImagPart> or ""
+%%
+%function FcnGenerateNonInlinedParameter(pName, mdlParam, sigIndexer, lcv, reim)
+  %% Don't have to check storage class of mdlParam since inline parameters is
+  %% assumed to be off ==> storage class is Auto
+    
+  %assign nCols = SIZE(mdlParam.Value, 1)
+  %if lcv != "" && nCols > 1
+    %% rolling
+    %if mdlParam.Tunable == "yes"
+      %assign varName = "p_%<mdlParam.Identifier>"
+    %else
+      %assign varName = "p_%<pName>"
+    %endif
+    %assign answer = "%<varName>%<sigIndexer>"
+  %else
+    %% not rolling
+    %assign answer = FcnAccessModelParameter(mdlParam, sigIndexer)
+  %endif
+  %if mdlParam.ComplexSignal && reim != ""
+    %assign answer = answer + ".%<reim>"
+  %endif
+  %return (answer)
+%endfunction %% FcnGenerateNonInlinedParameter
+
+
+%% Function: FcnConvertOperatorNodeToExpr ======================================
+%% Abstract:
+%%   Given a terminal ASTNode that is an operator, generates a C/Ada
+%%   language expression.
+%%   
+%%   An "operator" means that the node is not an M_ID, SL_INLINED,
+%%   SL_NOT_INLINED, or SL_CALCULATED.
+%%   
+%%   Arguments:
+%%     ASTNode - Terminal node that is to be converted to an expression
+%%               Assumed to be an "operator" (see Description)
+%%
+%%
+%function FcnConvertOperatorNodeToExpr(ASTNode)
+  %switch(ASTNode.Op)
+    %case "M_NUMBER"
+      %return(%<ASTNode.Value>)
+      %break
+
+    %case "M_STRING"
+      %return(%<ASTNode.Value>)
+      %break
+      
+    %case "M_MUL"
+    %case "M_DOTMUL"
+      %return " * "
+      %break
+
+    %case "M_DIV"
+    %case "M_DOTDIV"
+      %return " / "
+      %break
+
+    %case "M_ADD"
+      %% Don't have any spaces around '+'; This takes care of Unary cases also.
+      %% Else you have to look at ParentNode and determine output based on its
+      %% value.
+      %return "+"
+      %break
+
+    %case "M_SUB"
+      %% See comment for M_ADD
+      %% Might still need to consider unary minus for Ada but this would have
+      %% to be at non-terminal node level.
+      %return "-"
+      %break
+
+    %case "M_LT"
+      %return " < "
+      %break
+
+    %case "M_LTEQ"
+      %return " <= "
+      %break
+
+    %case "M_GT"
+      %return " > "
+      %break
+
+    %case "M_GTEQ"
+      %return " >= "
+      %break
+
+    %case "M_EQEQ"
+      %return " == "
+      %break
+
+    %case "M_NOTEQ"
+      %return " != "
+      %break
+
+    %case "M_AND"
+      %return " && "
+      %break
+
+    %case "M_OR"
+      %return " || "
+      %break
+
+    %case "M_NOT"
+      %return " !"
+      %break
+
+    %case "M_LRB"
+      %return "( "
+      %break
+
+    %case "M_RRB"
+      %return " )"
+      %break
+
+    %default
+      %assign errTxt = "Unrecognized Identifier: %<ASTNode.Op>"
+      %<LibBlockReportFatalError([], errTxt)>
+      %return " "
+      %break
+  %endswitch
+%endfunction %% FcnConvertOperatorNodeToExpr
+
+
+%% FcnBlockParameterAddr =======================================================
+%% Abstract:
+%%   Workhorse function for LibBlockParameterAddr.  Returns the address of a
+%%   block parameter.
+%%
+%function FcnBlockParameterAddr(param, ucv, lcv, idx, simpleForm) void
+
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+
+  %if nRows > 1
+    %assign errTxt = "Number of rows greater than 1.  Must " ...
+      "access parameter %<param.Name> using LibBlockMatrixParameterAddr."
+    %<LibBlockReportError([], errTxt)>
+  %endif
+
+  %if ucv != ""
+    %% idx is ignored when ucv is non-null
+    %assign idx = 0
+  %endif
+  
+  %assign sigIndexer   = SLibGet1DArrayIndexer(nCols, ucv, lcv, idx)
+  
+  %assign ASTNode = param.ASTNode
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %assign paramIdx = [%<ASTNode.ModelParameterIdx>, 0] 
+      %% not a canonical parameter
+      %break
+
+    %default
+      %% In this case, slightly more complicated
+      %% First, ensure that only terminal node in the entire AST
+      %% is a single M_ID
+      %% If it is not, error out.
+      %assign paramIdx = FcnGetUniqueNode(ASTNode)
+      %if (paramIdx[0] == -1)
+        %assign errTxt = "Cannot access the address of expression, "...
+        "(%<param.String>), in %<param.Name>."
+        %<LibBlockReportError([], errTxt)>
+      %endif
+      %% RTW Assert: (ASTNode.Value == param.Value)
+      %break
+
+  %endswitch
+
+  %if paramIdx[1] %% Is canonical parameter ?    
+    %assign canPrmArg = FcnGetCanParmArg(BlockIdx[0],paramIdx[0])      
+    %assign cross = System[BlockIdx[0]].CrossNoArgFcnBound
+    %assign global = cross ? "%<GetGlobalPrefix()>CP_" : ""
+    %return "&%<global>%<canPrmArg.Identifier>%<sigIndexer>"
+  %endif
+  
+  %assign mdlParam = ModelParameters.Parameter[paramIdx[0]]
+  %assign storageClass = mdlParam.StorageClass
+    
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx)
+    %if dTypeId == tSS_DOUBLE || dTypeId ==tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"Parameter")>
+    %endif
+  %endif
+  
+  %if (storageClass == "ImportedExternPointer") && (nCols == 1)
+    %return "%<mdlParam.Identifier>"
+  %elseif storageClass == "Custom"
+    %return LibCustomData(mdlParam,"address",sigIndexer,"")
+  %else
+    %if simpleForm && storageClass != "Auto_SFCN"
+      %assign c = ""
+      %assign sigIndexer = ""
+    %else
+      %assign c = "&"
+    %endif
+    %return "%<c>%<FcnAccessModelParameter(mdlParam, sigIndexer)>"
+  %endif
+
+%endfunction  %% FcnBlockParameterAddr
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterAddr =====================
+%% Abstract:
+%%   Returns the address of a block parameter.
+%%
+%%   Using LibBlockParameterAddr to access a parameter when the global
+%%   InlineParameters variable is equal to one will cause the variable
+%%   to be declared "const" in RAM instead of being inlined.
+%%
+%%   Also, trying to access the address of an expression when inline
+%%   parameters is on and the expression has multiple tunable/rolled
+%%   variables in it, will result in an error.
+%%
+%function LibBlockParameterAddr(param, ucv, lcv, idx) void
+
+  %% See Also:
+  %%      LibBlockParameter, LibBlockInputSignalAddr, LibBlockOutputSignalAddr,
+  %%      LibBlockParameterBaseAddr
+  %%
+  
+  %if LibBlockOutputSignalIsNonConstExpr(0)
+    %assign errTxt = "The use of LibBlockParameterAddr in the outputs " ...
+      "function violates expression folding rules.  Try using " ...
+      "LibBlockParameterBaseAddr."
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %return FcnBlockParameterAddr(param, ucv, lcv, idx, 0)
+  
+%endfunction  %% LibBlockParameterAddr
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterBaseAddr =================
+%% Abstract:
+%%   Returns the base address of a block parameter.
+%%
+%%   Using LibBlockParameterBaseAddr to access a parameter when the global
+%%   InlineParameters variable is equal to one will cause the variable
+%%   to be declared "const" in RAM instead of being inlined.
+%%
+%%   Also, trying to access the address of an expression when inline
+%%   parameters is on and the expression has multiple tunable/rolled
+%%   variables in it, will result in an error.
+%%
+%function LibBlockParameterBaseAddr(param) void
+
+  %% See Also:
+  %%      LibBlockParameter, LibBlockInputSignalAddr, LibBlockOutputSignalAddr,
+  %%      LibBlockParameterAddr
+  %%
+  
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+
+  %if (nRows * nCols) > 1
+    %% vectors and matrices can drop the "&" and "[0]"
+    %assign simpleForm = 1
+  %else
+    %% scalars do not drop the "&"
+    %assign simpleForm = 0
+  %endif
+
+  %return FcnBlockParameterAddr(param,"","",0,simpleForm)  
+  
+%endfunction  %% LibBlockParameterAddr
+
+
+%% Function: LibBlockParameterValue ============================================
+%% Abstract:
+%%   Determine the numeric value of a parameter.
+%%
+%%   If you are accessing the parameter value(s), you should probably convert
+%%   the parameter to a ParamSetting. This will produce more efficient code.
+%%
+%%   Note:
+%%     This numeric value returned from this function may be manipulated within 
+%%     TLC.
+%%  
+%%     If you only access a parameter value using LibBlockParameterValue,
+%%     it may be better to declare this parameter as a ParamSetting since
+%%     its value is read only during code generation, not during run-time.
+%%  
+%%   Example:
+%%     If you want to generate code for a different integrator depending
+%%     on a block's parameter, you could use the following:
+%%  
+%%     %assign mode = LibBlockParameterValue(Integrator, 0)
+%%     %switch (mode)
+%%       %case 1
+%%         %<CodeForIntegrator1>
+%%         %break
+%%       %case 2
+%%         %<CodeForIntegrator2>
+%%         %break
+%%       %default
+%%         Error: Unrecognized integrator value.
+%%         %break
+%%     %endswitch
+%%
+%function LibBlockParameterValue(param, elIdx) void
+
+  %% See Also:
+  %%   LibBlockParameter
+  %%
+
+  %% Split the overloaded idx
+  
+  %assign idNum = SLibGetReimAndIdx(elIdx)
+  %assign reim  = idNum[0]
+  %assign idx   = idNum[1]
+
+  %% If complex, must ask specifically for real or imaginary part
+  
+  %if SLibGetRecordIsComplex(param)
+    %if reim != tRealPart && reim != tImagPart
+      %assign errTxt = "The parameter %<param.Name> is complex.  Hence, " ...
+        "the caller should specify whether the real part or the imaginary  " ...
+        "part is to be returned."
+      %<LibBlockReportError([],errTxt)>
+    %endif
+  %elseif reim == tImagPart
+    %% imaginary part of a non-complex parameter is NULL
+    %return ""
+  %endif
+
+  %% Determine true size
+  
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+  %assign value = param.Value
+
+  %if TYPE(param.Value) == "Matrix"
+    %if nRows > 1
+      %assign errTxt = "Must access the parameter %<param.Name> via "...
+        "LibBlockMatrixParameterValue."
+      %<LibBlockReportError([], errTxt)>
+    %endif
+    %assign value = param.Value[0]
+  %endif
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(SLibGetRecordDataTypeId(param))
+    %if dTypeId == tSS_DOUBLE || dTypeId ==tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"Parameter")>
+    %endif
+  %endif
+  
+  %%
+  %% Scalar expand the parameter if necessary, and correct for the index if the
+  %% parameter is complex.
+  %%
+  %assign pIdx = (nCols > 1) ? idx : 0
+
+  %if SLibGetRecordIsComplex(param)
+    %if reim == tRealPart
+      %assign pValue = REAL(value[pIdx])
+    %elseif reim == tImagPart
+      %assign pValue = IMAG(value[pIdx])
+    %else
+      %assign errTxt = "Invalid input argument (%<elIdx>).  Expecting " ...
+        "either %<tRealPart> or %<tImagPart>."
+      %<LibBlockReportError([], errTxt)>
+    %endif
+  %else
+    %assign pValue = value[pIdx]
+  %endif
+
+  %% Inform the code generator of any non-finites, etc.
+  %<LibCheckValue(0, pValue)>
+  
+  %%
+  %% Return the numeric value
+  %%
+  %return SLibGetCastedValue(param, pValue)
+
+%endfunction  %% LibBlockParameterValue
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterSize =====================
+%% Abstract:
+%%   Returns a vector of size two in the format [nRows, nCols] where nRows is
+%%   the number of rows and nCols is the number of columns.
+%%
+%%   See LibBlockParameterDimensions to obtain the original parameter
+%%   data size.
+%%
+%function LibBlockParameterSize(param) void
+  
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+
+  %return [%<nRows>, %<nCols>]
+
+%endfunction %% LibBlockParameterSize
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterDimensions ===============
+%% Abstract:
+%%   Returns a row vector of length N, N >= 1 giving the dimensions of the
+%%   parameter data. For example:
+%%
+%%        %assign dims  = LibBlockParameterDimensions("paramName")
+%%        %assign nDims = SIZE(dims,1)
+%%        %foreach i=nDims
+%%           /* Dimension %<i+1> = %<dims[i]> */
+%%        %endforeach
+%%
+%%   This function differs from LibBlockParameterSize in that it returns the 
+%%   dimensions of the parameter data prior to performing collapsing the
+%%   Matrix parameter to a column-major vector.  The collapsing occurs
+%%   for run-time parameters that have specified their outputAsMatrix
+%%   field as false.
+%%
+%function LibBlockParameterDimensions(param) void
+  
+  %return param.Dimensions
+
+%endfunction %% LibBlockParameterDimensions
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterWidth ===================
+%% Abstract:
+%%   Returns the number of elements (width) of a parameter.
+%%
+%function LibBlockParameterWidth(param) void
+  
+  %assign dims = LibBlockParameterDimensions(param)
+  %assign width = 1
+  
+  %foreach dimsIdx = SIZE(dims, 1)
+    %assign width = width*dims[dimsIdx]
+  %endforeach
+  
+  %return width
+
+%endfunction %% LibBlockParameterWidth
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterIsComplex ================
+%% Abstract:
+%%   Returns 1 if the specified block parameter is complex, 0 otherwise.
+%%
+%function LibBlockParameterIsComplex(param) void  
+  %% See Also:
+  %%   LibBlockInputSignalIsComplex
+  %%   LibBlockOutputSignalIsComplex
+  %%
+  %return param.ComplexSignal == "yes"
+%endfunction
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterDataTypeId ===============
+%% Abstract:
+%%   Returns the numeric ID corresponding to the data type of the specified
+%%   block parameter.
+%%
+%function LibBlockParameterDataTypeId(param) void  
+  %% See Also:
+  %%   LibBlockParameterDataTypeName
+  %%   LibBlockOutputSignalDataTypeId
+  %%   LibBlockInputSignalDataTypeId
+  %%
+  %return param.DataTypeIdx
+%endfunction
+
+
+%% DocFunction{Parameter Functions}: LibBlockParameterDataTypeName =============
+%% Abstract:
+%%   Returns the name of the data type corresponding to the specified block
+%%   parameter.
+%%
+%function LibBlockParameterDataTypeName(param, reim) void
+  %% See Also:
+  %%   LibBlockParameterDataTypeId
+  %%   LibBlockOutputSignalDataTypeName
+  %%   LibBlockInputSignalDataTypeName
+  %%
+  %return SLibGetRecordDataTypeName(param, reim)
+%endfunction
+
+
+%% Function: LibBlockParameterString ===========================================
+%% Abstract:
+%%   Returns the specified block parameter interpreted as a string, i.e., this
+%%   function returns:
+%%
+%%      STRINGOF(param.Value[0])  if the parameter is a row matrix
+%%      STRINGOF(param.Value)     otherwise
+%%
+%%   Note:
+%%     It is an error to invoke this function with a matrix-valued parameter
+%%     with more than one row.
+%%
+%%   If you are accessing the parameter value(s), you should probably convert
+%%   the parameter to a ParamSetting. This will produce more efficient code.
+%%
+%function LibBlockParameterString(param) void
+
+  %% See Also:
+  %%   Built-in TLC function STRINGOF()
+  
+  %assign nRows = SIZE(param.Value, 0)
+
+  %if SLibGetRecordIsComplex(param) || nRows > 1 
+    %assign errTxt = "Cannot access the parameter %<param.Name> as a " ...
+      "string because it is either complex valued or is a matrix (or both)."
+    %<LibBlockReportError([], errTxt)>
+  %endif
+
+  %if TYPE(param.Value) == "Matrix"
+    %return STRINGOF(param.Value[0])
+  %else
+    %return STRINGOF(param.Value)
+  %endif
+  
+%endfunction %% LibBlockParameterString
+
+
+%% DocFunction{Parameter Functions}: LibBlockMatrixParameter ===================
+%% Abstract:
+%%   This function returns the appropriate matrix parameter for a block given
+%%   the row and column user control variables (rucv, cucv), loop control 
+%%   variables (rlcv, clcv), and indices (ridx, cidx). Generally blocks should 
+%%   use LibBlockParameter. If you have a matrix parameter, you should write it
+%%   as a column major vector and access it via LibBlockParameter.
+%%
+%%   Note:
+%%     Loop rolling is currently not supported, and will generate an error
+%%     if requested (i.e., if either rlcv or clcv is not equal to "").
+%%  
+%%     The row and column index arguments are similar to the arguments for
+%%     LibBlockParameter.  The column index (cidx) is overloaded to handle
+%%     complex numbers.
+%%
+%function LibBlockMatrixParameter(param,rucv,rlcv,ridx,cucv,clcv,cidx) void
+  %% See Also:
+  %%      LibBlockParameter, LibBlockMatrixParameterAddr
+  %%
+
+  %% Use expression folding indices
+  %if LibBlockOutputSignalIsNonConstExpr(0)
+    %assign errTxt = "The use of LibBlockMatrixParameter in the outputs " ...
+      "function violates expression folding rules."
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %assign str = FcnGenParamExprWithCastForMatrix(param, rucv, rlcv, ridx, ...
+    cucv, clcv, cidx)
+  %return (str)
+%endfunction %% LibBlockMatrixParameter
+
+
+%% Function: FcnGenParamExprWithCastForMatrix ==================================
+%% Abstract:
+%%   Generate an expression including a fixed-point cast (if necessary).
+%%
+%% See Also: FcnGenExprForMatrix
+%%
+%function FcnGenParamExprWithCastForMatrix(param, rucv, rlcv, ridx, ...
+  cucv, clcv, cidx)
+  
+  %assign paramAST = param.ASTNode
+  
+  %if ((paramAST.IsNonTerminal == 1) && ...
+    (paramAST.ASTNode[0].IsNonTerminal == 0) && ...
+    (paramAST.ASTNode[0].Op == "M_ID") && ...
+    (paramAST.ASTNode[0].Identifier == "fixpt_cast"))
+    
+    %% This parameter requires a fixed-point cast
+    %assert (paramAST.NumChildren == 4)
+    
+    %% Get the expression that is being cast
+    %assign varAST = paramAST.ASTNode[2]
+    %assign string = ...
+      FcnGenExprForMatrix(varAST, rucv, rlcv, ridx, cucv, clcv, cidx)
+    
+    %% Get the data types "as-stored" and "as-used" for this parameter
+    %switch (varAST.Op) 
+      %case "M_ID"
+	%assign var = ModelParameters.Parameter[varAST.ModelParameterIdx]
+	%break  
+      %case "M_CANPRM_ID"
+	%with System[HStructDeclSystemIdx].Interface
+	  %assign var = CanonicalPrmArgDef[varAST.CanonicalPrmArgDefIdx]
+	%endwith
+	%break
+      %default
+	%error "For fixpt_cast, ASTNode must be M_ID or M_CANPRM_ID"
+	%break
+    %endswitch
+    
+    %assign asStoredDtId = var.OriginalDataTypeIdx
+    %assign asUsedDtId = param.OriginalDataTypeIdx
+    
+    %assign asStoredDT = FixPt_GetDataTypeFromIndex(asStoredDtId)
+    %assign asUsedDT = FixPt_GetDataTypeFromIndex(asUsedDtId)
+    
+    %% Generate the expression with the fixed-point cast (if possible)
+    %assign string = FixPt_Fix2Fix_Expr(asUsedDT, string, asStoredDT)
+  %else
+    %assign string = ...
+      FcnGenExprForMatrix(paramAST, rucv, rlcv, ridx, cucv, clcv, cidx)
+  %endif
+  %return (string)
+%endfunction %% FcnGenParamExprWithCastForMatrix
+
+
+%% Function: FcnGenExprForMatrix ==============================================
+%% Abstract:
+%%   Given a root ASTNode and the other arguments, this function
+%%   recursively traverses the AST and generates a language expression.
+%%   
+%%   This function (as compared to FcnGenExpr) explicitly assumes that the
+%%   parameters that it is operating on are matrices and hence requires
+%%   both row and column accessor indices.
+%%   
+%%   Arguments:
+%%     ASTNode - Root node of AST which is to be converted to an expression
+%%     rucv    - See description in LibBlockMatrixParameter
+%%     rlcv    - See description in LibBlockMatrixParameter
+%%     ridx    - See description in LibBlockMatrixParameter
+%%     cucv    - See description in LibBlockMatrixParameter
+%%     clcv    - See description in LibBlockMatrixParameter
+%%     cidx    - See description in LibBlockMatrixParameter
+%%
+%function FcnGenExprForMatrix(ASTNode, rucv, rlcv, ridx, cucv, clcv, cidx)
+  %% See Also:
+  %%        LibBlockMatrixParameter, FcnGenExpr
+  %%
+  
+  %assign retstr = ""
+  %if (ASTNode.IsNonTerminal == 1)
+    %% Non-terminal
+    %foreach i = ASTNode.NumChildren
+      %assign this_node_str = ...
+	"%<FcnGenExprForMatrix(ASTNode.ASTNode[i],rucv,rlcv,ridx,cucv,clcv,cidx)>"
+      %if (this_node_str == "")
+        %% Can only have a null string if caller requested imaginary part of a
+        %% real expression/quantity.  Since we currently do not support code
+        %% generation for complex parameters in expressions, we can just
+        %% jump out early and let the caller handle the situation as
+        %% it wants.
+        %return("")
+      %endif
+      %assign retstr = retstr + this_node_str
+    %endforeach
+    %return ("(%<retstr>)")
+  %else
+    %% Terminal
+    %assign retstr = ...
+      "%<FcnConvertTerminalNodeToExprForMatrix(ASTNode,rucv,rlcv,ridx,cucv,clcv,cidx)>"
+    %return (retstr)
+  %endif
+%endfunction
+
+
+%% Function: FcnConvertTerminalNodeToExprForMatrix =============================
+%% Abstract:
+%%   Given a terminal ASTNode, generates a C/Ada language expression
+%%   
+%%   This function (as compared to FcnConvertTerminalNodeToExpr)
+%%   explicitly assumes that the parameters that it is operating on are
+%%   matrices and hence requires both row and column accessor indices.
+%%   
+%%   Arguments:
+%%     ASTNode - Terminal AST node which is to be converted to an 
+%%               expression
+%%     rucv    - See description in LibBlockMatrixParameter
+%%     rlcv    - See description in LibBlockMatrixParameter
+%%     ridx    - See description in LibBlockMatrixParameter
+%%     cucv    - See description in LibBlockMatrixParameter
+%%     clcv    - See description in LibBlockMatrixParameter
+%%     cidx    - See description in LibBlockMatrixParameter
+%%
+%function FcnConvertTerminalNodeToExprForMatrix(ASTNode,rucv,rlcv,ridx,cucv, ...
+  clcv,cidx) void
+  %% See Also:
+  %%        FcnGenExpr, FcnConvertTerminalNodeToExpr
+  %%
+  %% Loop rolling not supported
+  %if rlcv != "" || clcv != ""
+    %assign errTxt = "Loop rolling not supported for matrix parameters."
+    %<LibBlockReportError([], errTxt)>
+  %endif
+
+  %% Split the overloaded cidx
+  %assign idNum = SLibGetReimAndIdx(cidx)
+  %assign reim  = idNum[0]
+  %assign idx   = idNum[1]
+  
+  %% The imaginary part of a non-complex parameter is always NULL
+
+  %switch(ASTNode.Op)
+    %case "M_CANPRM_ID"
+      %assign canPrmArg = ...
+        FcnGetCanParmArg(BlockIdx[0],ASTNode.CanonicalPrmArgDefId)      
+      %assign cross = System[BlockIdx[0]].CrossNoArgFcnBound    
+      %assign global = cross ? "%<GetGlobalPrefix()>CP_" : ""
+      %assign complex = canPrmArg.ComplexSignal == "yes"
+      %if (rucv != "" || cucv != "" || (reim != "" && complex))
+        %% Determine size
+	%assign nRows = canPrmArg.Dimensions[0]
+	%assign nCols = canPrmArg.Dimensions[1]
+	%assign indexStr = SLibGet2DArrayIndexer(0, nRows, rucv, "", ridx, ...
+	  nCols, cucv, "", idx)
+      %else
+	%assign indexStr = ""
+      %endif
+      %return("%<global>%<canPrmArg.Identifier>%<indexStr>")
+      %break  
+      
+    %case "M_ID"
+      %% If this is an ID node with an Identifier like
+      %% int8 or sqrt, we will want to return the mapping of the MATLAB
+      %% function to the C function.  For now, we will just return
+      %% the Identifier itself (i.e. the MATLAB <--> C mapping is 1:1)
+      %if (!EXISTS("ASTNode.ModelParameterIdx"))
+        %return("%<FcnConvertIDToFcn(ASTNode.Identifier)>")
+      %endif
+
+      %% Fall through since remaining code is same as for other parameter types
+
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+
+      %assign mdlParam = ModelParameters.Parameter[ASTNode.ModelParameterIdx]
+      %assign complex  = mdlParam.ComplexSignal
+      %assign value    = mdlParam.Value
+      %assign dTypeId  = LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx)
+
+      %% Check for floating-point types if integer only code
+      %if PurelyIntegerCode
+        %if dTypeId == tSS_DOUBLE || dTypeId ==tSS_SINGLE
+          %<SLibCacheIntegerOnlyWarning(Name,"Parameter")>
+        %endif
+      %endif
+      
+      %% The imaginary part of a non-complex parameter is always NULL
+      %if !complex && reim == tImagPart
+        %return ""
+      %endif
+
+      %if (rucv != "" || cucv != "" || (reim != "" && complex) || ...
+          (mdlParam.Tunable == "yes") || !InlineParameters)
+
+        %% Determine size
+        %assign nRows    = SIZE(value, 0)
+        %assign nCols    = SIZE(value, 1)
+	%assign indexStr = SLibGet2DArrayIndexer(0, nRows, rucv, "", ridx, ...
+	  nCols, cucv, "", idx)
+
+	%if LibHasCustomStorage(mdlParam)
+	  %return LibCustomData(mdlParam,"contents",indexStr,reim)
+	%endif
+        %assign answer = FcnGenerateNonEmptyUcvOrNonInlinedMatrixParameter(mdlParam, indexStr, reim)
+      %else
+        %% Return the actual value of the parameter with the appropriate data type
+        %% format.
+        %assign answer = FcnGenerateInlinedMatrixParameter(mdlParam, ridx, cidx, idx, reim)
+      %endif
+
+      %return answer
+      %break
+
+    %default
+      %assign answer = FcnConvertOperatorNodeToExpr(ASTNode)
+      %return(answer)
+      %break
+  %endswitch
+
+%endfunction %% FcnConvertTerminalNodeToExprForMatrix
+
+
+
+%% Function: FcnGenerateNonEmptyUcvOrNonInlinedMatrixParameter ================
+%% Abstract:
+%%   Generate code for a matrix parameter assuming either one of the ucv
+%%   (row or column) is not equal to "", inline parameters is on, or the 
+%%   parameter is complex or tunable.
+%%   
+%%   Arguments:
+%%     mdlParam - Parameter from ModelParameters record
+%%     indexStr - String generated by calls to SLibGet1DArrayIndexer
+%%     reim     - %<tRealPart> or %<tImagPart> or ""
+%%
+%function FcnGenerateNonEmptyUcvOrNonInlinedMatrixParameter(mdlParam, ...
+  indexStr, reim)
+  %% See Also:
+  %%      FcnGenerateNonInlinedParameter, FcnGenerateNonEmptyUcvParameter
+  
+  %assign answer = FcnAccessModelParameter(mdlParam, indexStr)
+  %if mdlParam.ComplexSignal && reim != ""
+    %assign answer = answer + ".%<reim>"
+  %endif
+  
+  %return (answer)
+%endfunction %% FcnGenerateNonEmptyUcvOrNonInlinedMatrixParameter
+
+
+%% Function: FcnGenerateInlinedMatrixParameter =================================
+%% Abstract:
+%%   Returns appropriate code for a model parameter with the assumption that
+%%   inline parameters are on and this parameter is a matrix.
+%%   
+%%   Arguments:
+%%     mdlParam - Parameter from ModelParameters record
+%%     cidx     - See description in LibBlockParameter
+%%     ridx     - See description in LibBlockParameter
+%%     idx      - See description in LibBlockParameter
+%%     reim     - %<tRealPart> or %<tImagPart> or ""
+%%
+%function FcnGenerateInlinedMatrixParameter(mdlParam, ridx, cidx, idx, reim)
+  %% See Also:
+  %%      FcnGenerateInlinedParameter
+  %%
+  
+  %return SLibGenModelConstPrmMacroAccess(mdlParam, [%<ridx>, %<idx>], ...
+    mdlParam.ComplexSignal, reim, "Matrix")
+
+%endfunction %% FcnGenerateInlinedMatrixParameter
+
+
+%% Function: FcnBlockMatrixParameterAddr =======================================
+%% Abstract:
+%%   Workhorse function for LibBlockMatrixParameterAddr.
+%%
+%function FcnBlockMatrixParameterAddr(param, ...
+  rucv,rlcv,ridx,cucv,clcv,cidx,simpleForm) void
+
+  %if rlcv != "" && clcv != ""
+    %assign errTxt = "Nested loop rolling not supported for matrix " ...
+      "parameter %<param.Name>"
+    %<LibBlockReportError([], errTxt)>
+  %endif
+
+  %assign ASTNode = param.ASTNode
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %assign paramIdx = [%<ASTNode.ModelParameterIdx>, 0]
+      %break
+
+    %default
+      %% In this case, slightly more complicated
+      %% First, ensure that only terminal node in the entire AST
+      %% is a single M_ID
+      %% If it is not, error out.
+      %assign paramIdx = FcnGetUniqueNode(ASTNode)
+      %if (paramIdx[0] == -1)
+        %assign errTxt = "Can't access the address of an expression " ...
+        "(%<param.String>) in %<param.Name>"
+        %<LibBlockReportError([], errTxt)>
+      %endif
+      %% RTW Assert: (ASTNode.Value == param.Value)
+      %break
+
+  %endswitch
+
+  %if paramIdx[1] %% Is canonical parameter ?
+    %assign canPrmArg = FcnGetCanParmArg(BlockIdx[0],paramIdx[0])      
+    %assign cross = System[BlockIdx[0]].CrossNoArgFcnBound
+    %assign nRow = canPrmArg.Dimensions[0]
+    %assign nCol = canPrmArg.Dimensions[1]
+    %assign indexStr = ...
+      SLibGet2DArrayIndexer(0,nRow,rucv,rlcv,ridx,nCol,cucv,clcv,cidx)
+    %assign global = cross ? "%<GetGlobalPrefix()>CP_" : ""
+    %return "&%<global>%<canPrmArg.Identifier>%<indexStr>"
+  %endif
+  
+  %assign mdlParam = ModelParameters.Parameter[paramIdx[0]]
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(mdlParam.DataTypeIdx)
+    %if dTypeId == tSS_DOUBLE || dTypeId ==tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"Parameter")>
+    %endif
+  %endif
+  
+  %assign nRows = SIZE(mdlParam.Value, 0)
+  %assign nCols = SIZE(mdlParam.Value, 1)
+  %assign storageClass = mdlParam.StorageClass
+  
+  %assign indexStr = SLibGet2DArrayIndexer(0,nRows,rucv,rlcv,ridx, ...
+    nCols,cucv,clcv,cidx)
+  %if (storageClass == "ImportedExternPointer") && (nRows == 1) && (nCols == 1)
+    %return "%<mdlParam.Identifier>"
+  %elseif storageClass == "Custom"
+    %return LibCustomData(mdlParam,"address",indexStr,"")
+  %else
+    %if simpleForm && storageClass != "Auto_SFCN"
+      %assign c = ""
+      %assign indexStr = ""
+    %else
+      %assign c = "&"	
+    %endif
+    %return "%<c>%<FcnAccessModelParameter(mdlParam, indexStr)>"
+  %endif
+
+%endfunction %% FcnBlockMatrixParameterAddr
+
+
+%% DocFunction{Parameter Functions}: LibBlockMatrixParameterAddr ===============
+%% Abstract:
+%%   Returns the address of a matrix parameter.
+%%
+%%   Note, LibBlockMatrixParameterAddr returns the address of a matrix 
+%%   parameter. Loop rolling is not supported (i.e. rlcv and clcv should both
+%%   be the empty string).
+%%
+%function LibBlockMatrixParameterAddr(param,rucv,rlcv,ridx,cucv,clcv,cidx) void
+
+  %% See Also:
+  %%   LibBlockMatrixParameter, LibBlockMatrixParameterValue,
+  %%   LibBlockMatrixParameterBaseAddr
+  %%
+  
+  %if LibBlockOutputSignalIsNonConstExpr(0)
+    %assign errTxt = "The use of LibBlockMatrixParameterAddr in the " ...
+      "outputs function violates expression folding rules.  Try using " ...
+      "LibBlockMatrixParameterBaseAddr."
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %return FcnBlockMatrixParameterAddr(param,rucv,rlcv,ridx,cucv,clcv,cidx,0)
+  
+%endfunction %% LibBlockMatrixParameterAddr
+
+
+%% DocFunction{Parameter Functions}: LibBlockMatrixParameterBaseAddr ===========
+%% Abstract:
+%%   Returns the base address of a matrix parameter.
+%%
+%function LibBlockMatrixParameterBaseAddr(param) void
+
+  %% See Also:
+  %%   LibBlockMatrixParameter, LibBlockMatrixParameterValue,
+  %%   LibBlockMatrixParameterAddr
+  %%
+  
+  %assign nRows = SIZE(param.Value, 0)
+  %assign nCols = SIZE(param.Value, 1)
+
+  %if (nRows * nCols) > 1
+    %% vectors and matrices can drop the "&" and "[0]"
+    %assign simpleForm = 1
+  %else
+    %% scalars do not drop the "&"
+    %assign simpleForm = 0
+  %endif
+
+  %return FcnBlockMatrixParameterAddr(param,"","",0,"","",0,simpleForm)
+  
+%endfunction %% LibBlockMatrixParameterBaseAddr
+
+
+%% Function: FcnGetMatrixPrmValue ==============================================
+%% Abstract:
+%%   Get the value of the matrix parameter.
+%%
+%function FcnGetMatrixPrmValue(value, dTypeId, complex, ridx, cidx) void
+
+  %% Split the overloaded cidx
+  %assign idNum = SLibGetReimAndIdx(cidx)
+  %assign reim  = idNum[0]
+  %assign idx   = idNum[1]
+  
+  %% The imaginary part of a non-complex parameter is always NULL
+  %if complex
+    %if reim != tRealPart && reim != tImagPart
+      %assign errTxt = ...
+      "Since the value is complex, the caller should " ...
+      "specify whether the real part or the imaginary part is to be returned."
+      %<LibBlockReportFatalError([], errTxt)>
+    %endif
+  %elseif reim == tImagPart
+    %return ""
+  %endif
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_DOUBLE || ...
+      LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"Parameter")>
+    %endif
+  %endif
+  
+  %% Determine size
+  %assign nRows = SIZE(value,0)
+  %assign nCols = SIZE(value,1)
+
+  %% gracefully handle vectors as 1xN matrices
+  %if TYPE(value) == "Matrix"
+    %assign pValue = value[ridx][idx]
+  %elseif (TYPE(value) == "Vector" && nCols > 1)
+    %assign pValue = value[idx]
+  %elseif (TYPE(value) == "Vector")
+    %assign pValue = value[0]
+  %else
+    %assign pValue = value
+  %endif
+
+  %if complex
+    %if reim == tRealPart
+      %assign pValue = REAL(pValue)
+    %elseif reim == tImagPart
+      %assign pValue = IMAG(pValue)
+    %else
+      %assign errTxt = "Invalid input argument (%<cidx>).  Expecting " ...
+        "either %<tRealPart> or %<tImagPart>."
+      %<LibBlockReportFatalError([], errTxt)>
+    %endif
+  %endif
+
+  %% Inform the code generator of any non-finites, etc.
+  %<LibCheckValue(0, pValue)>
+  
+  %%
+  %% Return the numeric value
+  %%
+  %return SLibGetCastedValueFromId(dTypeId, pValue)
+
+%endfunction %% FcnGetMatrixPrmValue
+  
+
+%% Function: LibBlockMatrixParameterValue ======================================
+%% Abstract:
+%%   Returns the numeric value of a matrix parameter.
+%%   If you are accessing the parameter value(s), you should probably convert
+%%   the parameter to a ParamSetting. This will produce more efficient code.
+%%
+%function LibBlockMatrixParameterValue(param, ridx, cidx) void
+
+  %% See Also:
+  %%   LibBlockMatrixParameter, LibBlockParameterValue
+  %%
+  
+  %return FcnGetMatrixPrmValue(param.Value, ...
+    SLibGetRecordDataTypeId(param), SLibGetRecordIsComplex(param), ...
+    ridx, cidx)
+
+%endfunction %% LibBlockMatrixParameterValue
+
+
+%% Function: SLibParameterValue ================================================
+%% Abstract:
+%%   Determine the numeric value of a matrix parameter, formatted 
+%%    according to its data type.
+%%   
+%%   Arguments:
+%%        value:   A matrix of values
+%%        dTypeId: Data type Id of values in matrix
+%%        complex: Complexity of values in matrix
+%%        ridx:    Row index into the parameter matrix
+%%        cidx:    Column index into the parameter matrix
+%%
+%function SLibParameterValue(value, dTypeId, complex, ridx, cidx) void
+
+  %% See Also:
+  %%      LibBlockMatrixParameterValue, LibBlockMatrixParameter
+  %%
+  
+  %return FcnGetMatrixPrmValue(value, dTypeId, complex, ridx, cidx)
+  
+%endfunction %% SLibParameterValue
+
+
+%% Function: SLibParameterFormattedValue =======================================
+%% Abstract:
+%%   Determine the numeric value of a matrix parameter and format it
+%%   according to its data type.
+%%   
+%%   Arguments:
+%%        value:   A matrix of values
+%%        dTypeId: Data type Id of values in matrix
+%%        complex: Complexity of values in matrix
+%%        ridx:    Row index into the parameter matrix
+%%        cidx:    Column index into the parameter matrix
+%%
+%function SLibParameterFormattedValue(value, dTypeId, complex, ridx, cidx) void
+
+  %% See Also:
+  %%      LibBlockMatrixParameterFormattedValue, LibParameterValue
+  %%
+  
+  %assign lvalue = LibParameterValue(value, dTypeId, complex, ridx, cidx)
+  %return SLibGetFormattedValueFromId(dTypeId, lvalue)
+%endfunction %% SLibParameterFormattedValue
+
+
+%% Function: SLibSetParamDefSideComment ========================================
+%% Abstract:
+%%   Specify a parameter's side comment in model.h.  For example,
+%%   
+%%     struct Parameters_tag {
+%%       real_T K;              /* txtStr */
+%%        :
+%%     } Parameters;
+%%   
+%%   Arguments:
+%%     param:  Reference to a block parameter
+%%     txtStr: Comment (text only, i.e., do not include /* */)
+%%
+%function SLibSetParamDefSideComment(param, txtStr) void
+  %if (param.ASTNode.IsNonTerminal == 1)
+    %<LibReportFatalError("Cannot install a comment for an expression")>
+  %endif
+
+  %% Terminal node
+  %assign ASTNode = param.ASTNode
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %assign paramIdx = ASTNode.ModelParameterIdx
+      %break
+
+    %default
+      %% In this case, slightly more complicated
+      %% First, ensure that only terminal node in the entire AST
+      %% is a single M_ID
+      %% If it is not, error out.
+      %assign paramIdx = FcnGetUniqueNode(ASTNode)
+      %if (paramIdx[0] == -1)
+        %<LibReportFatalError("Cannot install a comment for an expression")>
+      %elseif paramIdx[1] %% Is canonical parameter ?
+	%return
+      %endif
+      %break
+
+  %endswitch
+
+  %assign mdlParam = ModelParameters.Parameter[paramIdx[0]]
+
+  %if !EXISTS("mdlParam.DefSideComment")
+    %assign DefSideComment = ""
+    %assign mdlParam = mdlParam + DefSideComment
+  %endif
+  %assign mdlParam.DefSideComment = "/* %<STRING(txtStr)> */"
+%endfunction %% SLibSetParamDefSideComment
+
+%% Function: SLibSetParamInstSideComment =======================================
+%% Abstract:
+%%   Specify a parameter's side comment in model.prm.  For example,
+%%   
+%%     Parameters rtP = {
+%%        :
+%%       567,  /* side comment for row i, column j */
+%%       534,  /* side comment for row i, column j+1 */
+%%        :
+%%     };
+%%   
+%%   Arguments:
+%%        param:  Reference to a block parameter
+%%        rIdx:   Row index
+%%        cIdx:   Column index
+%%        txtStr: Comment (text only, i.e., do not include /* */)
+%%
+%function SLibSetParamInstSideComment(param, rIdx, cIdx, txtStr) void
+  %if (param.ASTNode.IsNonTerminal == 1)
+    %<LibReportFatalError("Cannot install a comment for an expression")>
+  %endif
+
+  %% Terminal node
+  %assign ASTNode = param.ASTNode
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %assign paramIdx = ASTNode.ModelParameterIdx
+      %break
+
+    %default
+      %% In this case, slightly more complicated
+      %% First, ensure that only terminal node in the entire AST
+      %% is a single M_ID
+      %% If it is not, error out.
+      %assign paramIdx = FcnGetUniqueNode(ASTNode)
+      %if (paramIdx[0] == -1)
+        %<LibReportFatalError("Cannot install a comment for an expression")>
+      %elseif paramIdx[1] %% Is canonical parameter ?
+	%return           %% need to add first parameter index in order not
+      %endif              %% to return empty
+      %break
+
+  %endswitch
+
+  %assign mdlParam = ModelParameters.Parameter[paramIdx[0]]
+
+  %if !EXISTS("mdlParam.InstSideComment")
+    %switch TYPE(mdlParam.Value)
+      %case "Matrix"
+        %assign InstSideComment = mdlParam.Value
+        %break
+      %case "Vector"
+        %assign nCols = SIZE(mdlParam.Value, 1)
+        %assign InstSideComment = Matrix(1, %<nCols>) [%<mdlParam.Value>;]
+        %break
+      %default
+        %assign InstSideComment = Matrix(1, 1) [[%<mdlParam.Value>];]
+        %break
+    %endswitch
+    %assign mdlParam = mdlParam + InstSideComment
+  %endif
+  %assign mdlParam.InstSideComment[rIdx][cIdx] = "/* %<STRING(txtStr)> */"
+%endfunction %% SLibSetParamInstSideComment
+
+%%-------------------------------------------
+%% Model parameter related functions follow %
+%%-------------------------------------------
+
+%% Function: LibModelParameterDataTypeName ====================================
+%% Abstract:
+%%   Return the data type name of the given model parameter record
+%%   (mdlParam is a record in ModelParameters table) taking into 
+%%   account the complexity of the model parameter.
+%%
+%function LibModelParameterDataTypeName(mdlParam)
+  %if mdlParam.ComplexSignal
+    %assign dtype = LibGetDataTypeComplexNameFromId(mdlParam.DataTypeIdx)
+  %else
+    %assign dtype = LibGetDataTypeNameFromId(mdlParam.DataTypeIdx)
+  %endif
+  %return (dtype)
+%endfunction %% LibModelParameterDataTypeName
+
+
+%% Function: SLibGetModelParameterStorageClass =================================
+%% Abstract:
+%%   SLibGetModelParameterStorageClass returns the specified parameter's
+%%   storage class. Where mdlParam is a reference to a parameter record 
+%%   from ModelParameters table
+%%
+%function SLibGetModelParameterStorageClass(mdlParam) void
+  %return mdlParam.StorageClass
+%endfunction %% SLibGetModelParameterStorageClass
+
+
+%% Function: SLibGetModelParameterTypeQualifier ===============================
+%% Abstract:
+%%   SLibGetModelParameterTypeQualifier returns the parameter's
+%%   type qualifier. Where mdlParam is a reference to a parameter record 
+%%   from ModelParameters table.
+%%
+%function SLibGetModelParameterTypeQualifier(mdlParam) void
+  %return mdlParam.TypeQualifier
+%endfunction %% SLibGetModelParameterTypeQualifier
+
+
+%% Function: SLibGetModelParameterIdentifier ==================================
+%% Abstract:
+%%   Get a model parameter's identifier where 
+%%   mdlParam is a reference to a parameter record from ModelParameters table
+%%
+%function SLibGetModelParameterIdentifier(mdlParam) void
+  %return mdlParam.Identifier
+%endfunction %% SLibGetModelParameterIdentifier
+
+
+%% Function: SLibGetModelParameterTunable ======================================
+%% Abstract:
+%%   Determine if specified model parameter is tunable.
+%%
+%function SLibGetModelParameterTunable(mdlParam) void
+  %return mdlParam.Tunable
+%endfunction %% SLibGetModelParameterTunable
+
+
+%% Function: SLibGetModelParameterTunable =====================================
+%% Abstract:
+%%   SLibGetModelParameterDataTypeId returns the parameter's data type id,
+%%   where mdlParam is a reference to a parameter record from 
+%%   ModelParameters table.
+%%
+%function SLibGetModelParameterDataTypeId(mdlParam) void
+  %return mdlParam.DataTypeIdx
+%endfunction %% SLibGetModelParameterDataTypeId
+
+
+%% Function: SLibGetModelParameterComplex =====================================
+%% Abstract:
+%% Purpose:
+%%   Get a model parameter's complexity where
+%%   mdlParam is a reference to a parameter record from ModelParameters table
+%%
+%function SLibGetModelParameterComplex(mdlParam) void
+  %return mdlParam.ComplexSignal
+%endfunction %% SLibGetModelParameterComplex
+
+
+%% Function: FcnAccessModelParameter ===========================================
+%% Abstract:
+%%   FcnAccessModelParameter returns the proper reference for a parameter
+%%   according to its storage class, where 
+%%   mdlParam is a reference to a parameter record from ModelParameters table
+%%   and sigIndexer is the optional width (index) specifier.
+%%
+%function FcnAccessModelParameter(mdlParam, sigIndexer) void
+  %assign mdlParam.WasAccessedAsVariable = 1
+  
+  %switch mdlParam.StorageClass
+    %case "Auto_SFCN"
+      %assign dtName = ...
+        LibGetDataTypeNameFromId(SLibGetModelParameterDataTypeId(mdlParam))
+      %if !WHITE_SPACE(sigIndexer)
+        %return "(((%<dtName> *)mxGetData(%<mdlParam.Identifier>" + ...
+	  "(%<RTMGetModelSS()>)))%<sigIndexer>)"
+      %else
+        %return "(*(%<dtName> *)(mxGetData(%<mdlParam.Identifier>" + ...
+	  "(%<RTMGetModelSS()>))))"
+      %endif
+      
+    %case "Auto"
+      %assign prmIdentifier = FcnGetAutoParamIdentifier(mdlParam)
+      %return prmIdentifier + sigIndexer
+            
+    %case "ExportedGlobal"
+
+      %return "%<mdlParam.Identifier>%<sigIndexer>"
+      
+    %case "ImportedExtern"
+      
+      %return "%<mdlParam.Identifier>%<sigIndexer>"
+      
+    %case "ImportedExternPointer"
+      
+      %assign nRows = SIZE(mdlParam.Value, 0)
+      %assign nCols = SIZE(mdlParam.Value, 1)
+      %if (nRows == 1) && (nCols == 1)
+	%return "(*%<mdlParam.Identifier>)"
+      %else
+	%return "%<mdlParam.Identifier>%<sigIndexer>"
+      %endif
+      
+    %case "Custom"
+
+      %<LibReportFatalError("Assert: Should not be here")>
+            
+    %default
+      
+      %assign errTxt = "Unknown storage class in FcnAccessModelParameter: " ...
+        "%<mdlParam.StorageClass>"
+      %<LibReportFatalError(errTxt)>
+      
+  %endswitch
+%endfunction %% FcnAccessModelParameter
+
+
+%% Function: FcnGetLocalParametersPath =========================================
+%% Abstract:
+%%   This function return the identifier path for a Parameters element.
+%%   (e.g. "rtP.sub1.sub2., localP->sub1.sub2.")
+%%
+%% Arguments:
+%%     
+%%       sysIdx - Where does the signal live ?
+%%        csIdx - Which instance do you want see ?
+%% accessSysIdx - Where do want to see the signal ?
+%%
+%function FcnGetLocalParametersPath(sysIdx, csIdx, accessSysIdx, cross) void
+  %if sysIdx == GetBaseSystemIdx()
+    %if ::BlockFcn == "Unknown"
+      %% Called from the ERT s-function code tunable parameters code
+       %assert (GenerateErtSFunction == 1)
+      %return "%<tParameters>%<IOQualifier>"
+    %endif
+    %% 
+    %% Mark the root parameter argument as accessed 
+    %% 
+    %if !IsModelReferenceTarget()
+      %<LibAccessArg(System[sysIdx].Interface.PrmArgDef)>
+    %endif
+    %assign ::BlockFcnAccessed.P = 1
+    %%
+    %return "%<tParameters>%<PQualifier>"
+  %elseif sysIdx == accessSysIdx
+    %<LibAccessArg(System[sysIdx].Interface.PrmArgDef)>
+    %if cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.PrmArgDef)>
+      %return "%<GetGlobalPrefix()>P_%<sysIdx>->"
+    %else
+      %return "localP->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return  FcnGetLocalParametersPath(cs[0], cs[1], accessSysIdx, cross)
+    %else
+      %return  FcnGetLocalParametersPath(cs[0], cs[1], accessSysIdx, cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else %% (sysIdx > accessSysIdx) paramerte is accessed via the root system
+    %return FcnGetLocalParametersPath(sysIdx, csIdx, NumSystems-1, cross)
+  %endif
+%endfunction
+
+
+%% Function: FcnGetAutoParamIdentifier =========================================
+%% Abstract:
+%%   This function returns a identifier without indexer for parameters of auto
+%%   storage class.
+%%
+%function FcnGetAutoParamIdentifier(mdlParam)
+  %if SLibGenConstRTPForPrm(mdlParam)
+    %return "%<tConstParamStruct>%<ConstPQualifier>%<mdlParam.Identifier>"
+  %elseif SLibGenConstPrmWithInit(mdlParam)
+    %return "%<tConstParamWithInitStruct>%<ConstPQualifier>%<mdlParam.Identifier>"
+  %elseif SLibAreSimulinkGlobalParamsUnstructured()
+    %return "%<tParameters>_%<mdlParam.Identifier>"
+  %else
+    %assign sigSrc = mdlParam.OwnerSysIdx
+    %if EXISTS("HStructDeclSystemIdx")
+      %assign prmArgDef = System[HStructDeclSystemIdx].Interface.PrmArgDef
+      %%
+      %% Does a passthrough parameter structure argument exists ?
+      %%
+      %if prmArgDef.PassthroughSystemIdx > -1
+	%<LibAccessArg(System[HStructDeclSystemIdx].Interface.PrmArgDef)>
+	%%
+	%% Return the parameter idenfifier of a passthrough parameter argument
+	%%
+	%assign prmPath = ...
+	   FcnGetLocalParametersPath(sigSrc[0], sigSrc[1], ...
+	                             prmArgDef.PassthroughSystemIdx, 0)
+      %else
+	%assign prmPath = ...
+	  FcnGetLocalParametersPath(sigSrc[0], sigSrc[1], HStructDeclSystemIdx, ...
+          CrossNoArgFcnBound)
+      %endif
+    %else
+      %%
+      %% If a parameter identifier is generated outside of a system scope
+      %% (e.g. ert s-function) we generate the full identifier path
+      %%
+      %assign baseSysIdx = GetBaseSystemIdx()
+      %assign prmPath = ...
+	FcnGetLocalParametersPath(sigSrc[0], sigSrc[1], baseSysIdx, 0)
+    %endif
+    %return prmPath + mdlParam.Identifier
+  %endif
+%endfunction
+
+
+%% Function: SLibGenBlockPrmReference ==========================================
+%% Abstract:
+%%   Used mainly by the fixed-point blockset to generate a reference to 
+%%   a block parameter
+%function SLibGenBlockPrmReference(blockParam, sigIndexer) void
+  %assign paramIdx = FcnGetModelParamIdxFromBlockParam(blockParam)
+  %if (paramIdx == -1)
+    %assign errTxt = "Cannot access identifier of expression " ...
+      "%<blockParam.String>."
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+  %assign mdlParam = ModelParameters.Parameter[paramIdx]
+  %assert (mdlParam.StorageClass == "Auto")
+  %return FcnAccessModelParameter(mdlParam, sigIndexer)
+%endfunction
+
+
+%%------------------------------------------%
+%% Block parameter related functions follow %
+%%------------------------------------------%
+
+%% Function: SLibGetBlockParameterStorageClass =================================
+%% Abstract:
+%%   Get a block parameter's storage class where
+%%   blockParam is a reference to a block parameter.
+%%
+%function SLibGetBlockParameterStorageClass(blockParam) void
+  %assign paramIdx = FcnGetModelParamIdxFromBlockParam(blockParam)
+  %if (paramIdx == -1)
+    %assign errTxt = "Cannot access storage class of expression " ...
+      "%<blockParam.String>."
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign mdlParam = ModelParameters.Parameter[paramIdx]
+  %return (SLibGetModelParameterStorageClass(mdlParam))
+%endfunction %% SLibGetBlockParameterStorageClass
+
+
+%% Function: SLibGetBlockParameterTypeQualifier ================================
+%% Abstract:
+%%   Get a block parameter's type qualifier where
+%%   blockParam is a reference to a block parameter.%%
+%%
+%function SLibGetBlockParameterTypeQualifier(blockParam) void
+  %assign paramIdx = FcnGetModelParamIdxFromBlockParam(blockParam)
+  %if (paramIdx == -1)
+    %assign errTxt = "Cannot access type qualifier of expression " ...
+      "%<blockParam.String>"
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign mdlParam = ModelParameters.Parameter[paramIdx]
+  %return (SLibGetModelParameterTypeQualifier(mdlParam))
+%endfunction %% SLibGetBlockParameterTypeQualifier
+
+
+%% Function: SLibGetBlockParameterIdentifier ==================================
+%% Abstract:
+%%   Get a block parameter's identifier where
+%%   blockParam is a reference to a block parameter
+%%
+%function SLibGetBlockParameterIdentifier(blockParam) void
+  %assign paramIdx = FcnGetModelParamIdxFromBlockParam(blockParam)
+  %if (paramIdx == -1)
+    %assign errTxt = "Cannot access identifier of expression " ...
+      "%<param.String>."
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign mdlParam = ModelParameters.Parameter[paramIdx]
+  %return (SLibGetModelParameterIdentifier(mdlParam))
+%endfunction %% SLibGetBlockParameterIdentifier
+
+
+%% Function: SLibBlockParameterIsTunable =======================================
+%% Abstract:
+%%   To be called by a block method (e.g. the Outputs function) to determine
+%%   if the specified parameter is tunable. This always returns true (1)
+%%   if inline parameters is off, otherwise for inline parameters on,
+%%   it will return true if the parameter field has a reference to
+%%   a tunable parameter. 
+%%
+%%   For example: Inline parameters on and parameter contains 'a'*'b' where
+%%   either 'a' or 'b' or both are in the tunable parameters dialog
+%%   then the specified parameter is considered tunable (1).
+%%
+%function SLibBlockParameterIsTunable(blockParam) void
+  %assign paramIdx = FcnGetModelParamIdxFromBlockParam(blockParam)
+  %if (paramIdx == -1)
+    %% This can only occur when we have a multiple references to
+    %% tunable parameters (inline parameters has to be on for
+    %% this to occur).
+    %return 1
+  %endif
+
+  %return ModelParameters.Parameter[paramIdx].Tunable == "yes"
+  
+%endfunction %% SLibBlockParameterIsTunable
+
+
+%% Function: FcnGetModelParamIdxFromBlockParam ================================
+%% Abstract:
+%% Purpose:
+%%   Given a block parameter, return the parameter's index into the model
+%%   parameter table.  If the parameter corresponds to an AST for an
+%%   expression, then return -1.
+%%
+%%   Arguments:
+%%     blockParam: Reference to a block parameter
+%%
+%function FcnGetModelParamIdxFromBlockParam(blockParam) void
+  %assign ASTNode = blockParam.ASTNode
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_NOT_INLINED"
+    %case "SL_CALCULATED"
+      %return ASTNode.ModelParameterIdx
+
+    %default
+      %% In this case, slightly more complicated
+      %% First, ensure that only terminal node in the entire AST
+      %% is a single M_ID
+      %% If it is not, error out.
+      %assign paramIdx = FcnGetUniqueNode(ASTNode)
+      %if paramIdx[1] %% Is canonical parameter
+	%return (-1)
+      %else
+	%return paramIdx[0]
+      %endif
+  %endswitch
+
+%endfunction %% FcnGetModelParamIdxFromBlockParam
+
+
+%% Function: SLibGetAllASTParamsForBlockParam =================================
+%% Abstract:
+%%   SLibGetAllASTParamsForBlockParam generates a vector with the model 
+%%   parameter index of all parameters in the AST of the given block
+%%   parameter.
+%%
+%function SLibGetAllASTParamsForBlockParam(blockParam)
+  %return(%<FcnGetAllParamsFromASTNode(blockParam.ASTNode)>)
+%endfunction %% SLibGetAllASTParamsForBlockParam
+
+
+%% Function: FcnGetAllParamsFromASTNode =======================================
+%% Abstract:
+%%   FcnGetAllParamsFromASTNode generates a vector with the model 
+%%   parameter index of all parameters in the given AST.
+%%
+%function FcnGetAllParamsFromASTNode(ASTNode)
+  %if (ASTNode.IsNonTerminal == 1)
+    %% Non-terminal
+    %assign allParams = []
+    %foreach i = ASTNode.NumChildren
+      %% Get parameters from i'th child
+      %assign childParams = FcnGetAllParamsFromASTNode(ASTNode.ASTNode[i])
+      %if (TYPE(childParams) == "Vector")
+        %foreach j = SIZE(childParams, 1)
+          %% Check each entry.  If it's -1, then ignore it. Else, add it
+          %% to our list.
+          %if (childParams[j] != -1)
+            %assign allParams = allParams + childParams[j]
+          %endif
+        %endforeach
+      %else
+        %% If the child simply returned a scalar, check it's value and add it
+        %% to our list if appropriate
+        %if (childParams != -1)
+          %assign allParams = allParams + childParams
+        %endif
+      %endif
+    %endforeach
+    %% Remove duplicate parameters in array
+    %assign returnParams = []
+    %foreach i = SIZE(allParams, 1)
+      %assign found = 0
+      %foreach j = SIZE(returnParams, 1)
+        %if (returnParams[j] == allParams[i])
+          %assign found = 1
+        %endif
+      %endforeach
+      %if (!found)
+        %assign returnParams = returnParams + allParams[i]
+      %endif
+    %endforeach
+    %% Return our list to the parent (or caller, as appropriate)
+    %return(returnParams)
+  %else
+    %% Terminal
+    %switch(ASTNode.Op)
+      %case "M_ID"
+      %case "M_CANPRM_ID"
+      %case "SL_INLINED"
+      %case "SL_NOT_INLINED"
+      %case "SL_CALCULATED"
+        %% These are the only nodes that can contain parameters
+        %if (EXISTS("ASTNode.ModelParameterIdx"))
+          %return(ASTNode.ModelParameterIdx)
+        %else
+          %% One could have an M_ID field like 'int8' or 'sin'
+          %% but these are not parameters
+          %return(-1)
+        %endif
+        %break
+
+      %default
+        %return(-1)
+        %break
+
+    %endswitch
+  %endif
+%endfunction %% FcnGetAllParamsFromASTNode
+
+
+%%-----------------------------------%
+%% AST Node related functions follow %
+%%-----------------------------------%
+
+%% Function: LibBlockParameterIsExpression ====================================
+%% Abstract:
+%%   This function determines if the parameter is an expression.
+%%
+%function LibBlockParameterIsExpression(param)
+  %assign ASTNode  = param.ASTNode
+  %assign paramIdx = FcnGetUniqueNode(ASTNode)
+  %if (paramIdx[0] == -1 || paramIdx[1])
+    %% Ensure that it's not an SL_INLINED, SL_CALCULATED, or SL_NOT_INLINED
+    %% node
+    %if ((ASTNode.Op == "SL_INLINED") || ...
+         (ASTNode.Op == "SL_NOT_INLINED") || ...
+	 (ASTNode.Op == "SL_CALCULATED") || ...
+	 (ASTNode.Op == "M_CANPRM_ID"))
+      %assign isExpr = 0
+    %else
+      %assign isExpr = 1
+    %endif
+  %else
+    %assign isExpr = 0
+  %endif
+  %return (isExpr)
+%endfunction %% LibIsExpression
+
+
+%% Function: SLibGetASTNodeIdentifier =========================================
+%% Abstract:
+%%   Accessor function to get identifier of an AST node
+%%
+%function SLibGetASTNodeIdentifier(ASTNode)
+  %if (EXISTS("ASTNode.ModelParameterIdx"))
+    %assign mdlParamIdx = ASTNode.ModelParameterIdx
+    %assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+    %return mdlParam.Identifier
+  %else
+    %return ""
+  %endif
+%endfunction  %% SLibGetASTNodeIdentifier
+
+
+%% Function: SLibGetASTNodeIsComplex ==========================================
+%% Abstract:
+%%   Return the complexity of an ASTNode. Note, even if the AST node is a
+%%   function such as '+' or 'sin', this function will return 0.
+%%
+%function SLibGetASTNodeIsComplex(ASTNode)
+  %if (EXISTS("ASTNode.ModelParameterIdx"))
+    %assign mdlParamIdx = ASTNode.ModelParameterIdx
+    %assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+    %return mdlParam.ComplexSignal
+  %else
+    %return 0
+  %endif
+%endfunction %% SLibGetASTNodeIsComplex
+
+
+%% Function: SLibGetASTNodeDataTypeId =========================================
+%% Abstract:
+%%   Accessor function to get data type of an AST node.
+%%   Note, if the AST node is a function such as '+' or 'sin', this function
+%%   will return tSS_DOUBLE.
+%function SLibGetASTNodeDataTypeId(ASTNode)
+  %if (EXISTS("ASTNode.ModelParameterIdx"))
+    %assign mdlParamIdx = ASTNode.ModelParameterIdx
+    %assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+    %return mdlParam.DataTypeIdx
+  %else
+    %return(tSS_DOUBLE)
+  %endif
+%endfunction %% SLibGetASTNodeDataTypeId
+
+
+%% Function: SLibGetASTNodeStorageClass =======================================
+%% Abstract:
+%%   Accessor function to get storage class of an AST node
+%%   
+%%   Note, if the AST node is a function such as '+' or 'sin', this function
+%%   will return "Auto".
+%%
+%function SLibGetASTNodeStorageClass(ASTNode)
+  %if (EXISTS("ASTNode.ModelParameterIdx"))
+    %assign mdlParamIdx = ASTNode.ModelParameterIdx
+    %assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+    %return mdlParam.StorageClass
+  %else
+    %return("Auto")
+  %endif
+%endfunction %% SLibGetASTNodeStorageClass
+
+
+%% Function: SLibGetASTNodeTunable ============================================
+%% Abstract:
+%%   Determines if an AST node parameter was marked as tunable in Simulink
+%%   
+%%   Note, if the AST node is a function such as '+' or 'sin', this function
+%%   will return 0.
+%%
+%function SLibGetASTNodeTunable(ASTNode)
+  %if (EXISTS("ASTNode.ModelParameterIdx"))
+    %assign paramIdx = ASTNode.ModelParameterIdx
+    %assign param    = ModelParameters.Parameter[paramIdx]
+    %return (param.Tunable == "yes")
+  %else
+    %return 0
+  %endif
+%endfunction %% SLibGetASTNodeTunable
+
+
+%% Function: FcnGetUniqueNode =================================================
+%% Abstract:
+%%   Searches an AST for model parameter and canonical identifier nodes.  
+%%     
+%%   This function return:
+%%  
+%%   [                   -1, 0] if the AST has more than one terminal 
+%%                              node (is an expression).
+%%   [model parameter index, 0] if the AST has only one terminal node and
+%%                              the terminal node is the identifier of a
+%%                              model wide parameter
+%%   [canonical param index, 1] if the AST has only one terminal node and
+%%                              the terminal node is the identifier of a
+%%                              canonical parameter (passed to the system
+%%                              as an argument)
+%%
+%function FcnGetUniqueNode(ASTNode)
+  %assign idx = [-1, 0]
+  %if (ASTNode.IsNonTerminal == 1)
+    %% Non-terminal
+    %foreach i = ASTNode.NumChildren
+      %assign origIdx = idx
+      %% Search children
+      %assign idx = FcnGetUniqueNode(ASTNode.ASTNode[i])
+      %%
+      %if (idx[0] == -1)
+        %% Found a non M_ID node; Generate an error
+        %return [-1, 0]
+      %elseif (origIdx[0] != -1 && idx[0] != -1)
+        %% Found two identifiers in this tree; Generate an error
+        %return [-1, 0]
+      %endif
+    %endforeach
+    %return(idx)
+  %else
+    %% Terminal
+    %if (ASTNode.Op != "M_ID" && ASTNode.Op != "M_CANPRM_ID")
+      %return [-1, 0]
+    %else
+      %% Node is an identifier, but it might be a function name like 'int8'
+      %if (EXISTS("ASTNode.ModelParameterIdx"))
+        %return [%<ASTNode.ModelParameterIdx>, 0]
+      %elseif (EXISTS("ASTNode.CanonicalPrmArgDefIdx"))
+	%return [%<ASTNode.CanonicalPrmArgDefIdx>, 1]
+      %else
+        %return [-1, 0]
+      %endif
+    %endif
+  %endif
+%endfunction %% FcnGetUniqueNode
+
+
+%endif %% _PARAMLIB_
+
+%% [EOF] paramlib.tlc

@@ -1,0 +1,134 @@
+%% File: sfun_can_frame_builder.tlc
+%%
+%% Abstract:
+%%   
+%%
+%% $Revision: 1.15.6.3 $
+%% $Date: 2004/04/19 01:19:54 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+
+%implements sfun_can_frame_builder "C"
+
+%include "canincludes.tlc"
+
+%function Start(block,system) Output
+   /*------------ %<Type> Block: %<Name> ------------*/
+   %% if output is in the block I/O (rather than being inlined)
+   %% then we may need to initialise the invarient parts of the output 
+   %if (LibBlockOutputSignalIsInBlockIO(0))
+      %if !SLibCodeGenForSim()
+         %% For RT mode, we may apply the following optimisations
+         %% Set this invariant data in the Start function
+         %% NOTE: For accelerator mode, PIL etc, we need to set this info, in the Outputs fcn.
+         %if SFcnParamSettings.ID != -1
+            %% ID is invariant
+            %<LibBlockOutputSignal(0,"","",0)>.ID = %<SFcnParamSettings.ID>;
+         %endif
+         %<LibBlockOutputSignal(0,"","",0)>.LENGTH = %<SFcnParamSettings.LENGTH>;
+         %<LibBlockOutputSignal(0,"","",0)>.type = %<SFcnParamSettings.TYPE>;
+      %endif
+   %endif
+%endfunction 
+
+%function BlockTypeSetup(block,system) void
+   %<SetupCanDataTypes(block)>
+%endfunction
+
+%function BlockInstanceSetup(block, system) void
+   %% we do not support the packing of multiword datatypes
+   %% owing to toolchain specific storage with such datatypes
+   %% check that the input datatype is no wider than the target
+   %% wordsize
+   %assign TARGET_WORD_LENGTHS = GetRTWWordLengths()
+
+   %assign dtypeID   = LibBlockInputSignalDataTypeId(0)
+   %% get the datatype size in bytes
+   %assign dtypeSize = SLibGetDataTypeSizeFromId(dtypeID)
+   %if (dtypeSize * 8) > TARGET_WORD_LENGTHS.WordSize
+      %openfile buffer
+A signal to pack is %<dtypeSize * 8> bits wide, but the target processor word size
+is only %<TARGET_WORD_LENGTHS.WordSize>.
+
+Multi-word signals cannot be packed owing to the possibility of toolchain specific memory storage of such signals.
+
+Please choose input datatypes that are at most as wide as the target processor word size.
+      %closefile buffer
+      %assign handle = FEVAL("errordlg", buffer, "CAN Message Packing Error", "modal")
+      %exit "CAN Message Packing Error" 
+   %endif
+%endfunction
+
+%function Outputs(block,system) Output  
+   /*------------ %<Type> Block: %<Name> ------------*/
+   %assign uCharAddr = LibBlockInputSignalAddr(0,"","",0)
+   %assign frame = LibBlockOutputSignal(0,"","",0)
+   %assign portWidth = LibBlockInputSignalWidth(0)
+   %assign dtypeName = LibBlockInputSignalDataTypeName(0,"")
+   %assign dtypeID   = LibBlockInputSignalDataTypeId(0)
+
+   %% Make hardware info available to TLC
+   %assign TARGET_C_IMPLEMENTATION = GetRTWCImplementation() 
+
+   /*--- Pack  %<portWidth>, %<dtypeName> signals into the data ----*/
+   %assign signal_endian = EndianParamString(CAST("Number",SFcnParamSettings.Endian))
+   %%
+
+   %if (SFcnParamSettings.ID == -1) 
+      %% id is dynamic - we must set it
+      %<LibBlockOutputSignal(0,"","",0)>.ID = %<LibBlockInputSignal(1,"","",0)>;
+   %endif         
+
+   %if SLibCodeGenForSim()
+      %% apply the invarient settings in Outputs fcn - this deals with Accelerator mode
+      %<LibBlockOutputSignal(0,"","",0)>.LENGTH = %<SFcnParamSettings.LENGTH>;
+      %<LibBlockOutputSignal(0,"","",0)>.type = %<SFcnParamSettings.TYPE>;   
+      %if (SFcnParamSettings.ID != -1) 
+         %% ID is invariant
+         %<LibBlockOutputSignal(0,"","",0)>.ID = %<SFcnParamSettings.ID>;
+      %endif
+   %endif
+   
+    %if ISEQUAL(dtypeName,"uint8_T") || ISEQUAL(dtypeName,"int8_T")
+      /* Signal datatype is either UINT8 or INT8, which are
+         byte datatypes.   Processor endianess does not effect
+         how these signal are packed into the CAN Frame.  No need
+         to reverse the bytes */
+        %assign length = "%<portWidth> * sizeof(%<dtypeName>)" 
+        memcpy((%<frame>.DATA),%<uCharAddr>,%<length>);
+   %else
+      %% Handle endianess issues
+      %if TARGET_C_IMPLEMENTATION.Endianess == signal_endian
+         /* The processor is the same endianess as the desired signal endian. 
+            No need to reverse the bytes in each signal */
+         %assign length = "%<portWidth> * sizeof(%<dtypeName>)" 
+         memcpy((%<frame>.DATA),%<uCharAddr>,%<length>); 
+      %else
+         /* The processor is the opposite endianess to the desired signal endian
+            Reverse the bytes in each signal */
+         {
+         uint8_T * source, * sink;
+         %assign rollThreshold = LibBlockGetRollThreshold(block,RollThreshold)
+         %assign region = [0:%<portWidth-1>]
+         %assign rollVars = []
+         %assign dtypeSize = SLibGetDataTypeSizeFromId(dtypeID)
+         sink   = & (((uint8_T *)(%<frame>.DATA))[0]);
+         source = & (((uint8_T *)%<uCharAddr>)[%<dtypeSize-1>]);
+         %roll signal = region, lcv=rollThreshold, block, "Roller",rollVars
+            /* -- Signal %<signal> -- */
+            %foreach idx = dtypeSize
+               *(sink ++) = *(source --);
+            %endforeach
+            source += %<2*dtypeSize>;
+         %endroll
+         }
+      %endif
+   %endif
+%endfunction
+
+
+%% Function: BlockInitialValues ================================================
+%%
+%function BlockInitialValues(block, system, vectType) void
+   %return CAN_BlockInitialValues(block,system,vectType)
+%endfunction  %% BlockInitialValues

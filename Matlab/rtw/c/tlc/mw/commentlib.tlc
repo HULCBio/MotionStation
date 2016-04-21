@@ -1,0 +1,443 @@
+%% $Revision: 1.1.6.8 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+
+%selectfile NULL_FILE
+
+%if EXISTS("_COMMENTLIB_") == 0
+%assign _COMMENTLIB_ = 1
+
+%function LibCacheBlockComment(block, buf) void
+  %if !HaveBlockComment && (!ExprFolding || GenerateComments)
+    %addtorecord block BlockComment buf
+    %<SETFIELD(block,"HaveBlockComment",1)>
+  %endif
+%endfunction
+
+%function LibBlockParameterForComment(param) void
+  %if !ExprFolding || GenerateComments
+    %assign size = LibBlockParameterSize(param)
+    %assign width = size[0] * size[1]
+    %if width == 1
+      %return LibBlockParameter(param,"","",0)
+    %elseif param.String != ""
+      %return param.String
+    %elseif param.StringTransformed != ""
+      %return param.StringTransformed
+    %elseif width < 5
+      %return "Computed value %<param.Value>"
+    %else
+      %return "<Computed>"
+    %endif
+  %else
+    %return ""
+  %endif
+%endfunction
+
+%% Function: FcnGetBlockDescription ============================================
+%% Abstract:
+%%   Used to add block descriptions in generated code
+%%
+%function FcnGetBlockDescription(block) void
+  %assert(InsertBlockDesc)
+  %if !ISFIELD(block,"DescriptionWritten")
+    %addtorecord block DescriptionWritten 1
+  %endif
+  %return (...
+    "*\n" + ...
+    "* Block description for '%<SLibBlkName(block)>':\n" + ...
+    block.Description ...
+    )
+%endfunction
+
+
+%% Function: FcnGetBlockRequirements ============================================
+%% Abstract:
+%%   
+%%
+%function FcnGetBlockRequirements(block) void
+  %assert(ReqsInCode)
+  %if !ISFIELD(block,"RequirementsWritten")
+    %addtorecord block RequirementsWritten 1
+  %endif
+  %assign reqStr = ""
+  %if ISFIELD(block,"Requirements") && (SIZE(block.Requirements,1) > 0)
+    %assign reqStr = reqStr + ...
+                     "*\n* Requirements for '%<SLibBlkName(block)>':\n" + ...
+                     block.Requirements
+  %endif
+  %if ISFIELD(block,"InheritedRequirements") && (SIZE(block.InheritedRequirements,1) > 0)
+    %assign reqStr = reqStr +block.InheritedRequirements
+  %endif
+  %return reqStr
+%endfunction
+
+
+%% Function: SLibGenerateNonExprOutput =========================================
+%% Description:
+%%   Generate the outputs code for a block, accounting for block description,
+%%   and expression folding.
+%%
+%function SLibGenerateNonExprOutput(block,system) Output
+  %openfile retBuf
+  %if !block.SkipBlockFcn
+    %openfile tmpBuf
+
+    %<GENERATE(block, "Outputs", system)>
+  
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %if GenerateComments && block.Type != "Opaque"
+	%<FcnWriteExprComment(block)>\
+      %endif
+      %<tmpBuf>\
+    %endif
+    %<FcnWriteReducedBlocksComment(block)>\
+  %endif
+  %closefile retBuf
+  
+  %return retBuf
+%endfunction
+
+
+%% Function: SLibGenerateNonExprOutputForTID ===================================
+%% Description:
+%%   Generate the outputs code of a block for specific TID, accounting for block
+%%   description, and expression folding.
+%%
+%function SLibGenerateNonExprOutputForTID(block,system, sfuncName, tid) Output
+  %openfile retBuf
+  %if !block.SkipBlockFcn
+    %openfile tmpBuf
+    %if sfuncName != ""
+      %<GENERATE_TYPE(block, "OutputsForTID", sfuncName, system, tid)>
+    %else
+      %<GENERATE(block, "OutputsForTID", system, tid)>
+    %endif
+  
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %if GenerateComments
+	%<FcnWriteExprComment(block)>\
+      %endif
+      %<tmpBuf>\
+    %endif
+    %<FcnWriteReducedBlocksComment(block)>\
+  %endif
+  %closefile retBuf
+  
+  %return retBuf
+%endfunction
+%% Function: SLibAddToExprCommentList ==========================================
+%% Description:
+%%   Add record information to the expression comment list (in a way that
+%%   FcnWriteExprComment will understand).
+%%
+%function SLibAddToExprCommentList(commInfo, record, srcPort) void
+  %assign recName = "%<record.Identifier>___%<srcPort>__"
+  %if TYPE(record) == "Scope" && !ISFIELD(commInfo, recName)
+    %addtorecord commInfo %<recName> 1
+    %switch record.RecordType
+      %case "ExternalInput"
+	%assign extInp = record
+	%assign commInfo.SysIdxList  = commInfo.SysIdxList + "U"
+	%assign commInfo.BlkIdxList  = commInfo.BlkIdxList + extInp
+        %assign commInfo.PortIdxList = commInfo.PortIdxList + srcPort
+	%break
+      %case "Block"
+	%assign srcBlk = record
+	%assign commInfo.SysIdxList  = commInfo.SysIdxList  + srcBlk.BlockIdx[0]
+	%assign commInfo.BlkIdxList  = commInfo.BlkIdxList  + srcBlk.BlockIdx[2]
+        %assign commInfo.PortIdxList = commInfo.PortIdxList + srcPort
+	%break
+      %default
+	%assign errTxt = "%<record.RecordType> record not handled"
+	%<LibReportFatalError(errTxt)>
+    %endswitch
+  %endif
+%endfunction  
+
+%function SLibBlkType(block) void
+  %if block.Type == "S-Function"
+    %if block.ParamSettings.FunctionName == "stateflow"
+      %if ISFIELD(block, "StateflowChartType")
+         %return block.StateflowChartType
+      %else
+         %return "Stateflow"
+      %endif
+    %else
+      %return "%<block.Type> (%<block.ParamSettings.FunctionName>)"
+    %endif
+  %elseif block.Type == "SubSystem" && ISFIELD(block, "MaskType") && ...
+    block.MaskType == "Stateflow"
+      %if ISFIELD(block, "StateflowChartType")
+         %return block.StateflowChartType
+      %else
+         %return "Stateflow"
+      %endif
+  %else
+    %return block.Type
+  %endif
+%endfunction
+
+%function SLibBlkName(block) void
+  %if block.Type == "S-Function"
+    %if block.ParamSettings.FunctionName == "stateflow"
+      %return LibParentMaskBlockName(block)
+    %else
+      %return block.Name
+    %endif
+  %else
+    %return block.Name
+  %endif
+%endfunction
+
+%function SLibSSIsInlined(block) void
+  %assign ss = CompiledModel.System[block.ParamSettings.SystemIdx]
+  %return LibSystemIsInlined(ss)
+%endfunction
+  
+%% Function: FcnWriteExprComment ===============================================
+%% Description:
+%%   Write out a comment listing all the blocks folded into the expression
+%%   for block.  Also, write their block description fields.
+%%
+%function FcnWriteExprComment(block) void
+
+  %assign text = ""
+
+  %if !TLCExprCompliant
+      
+    %if HaveBlockComment
+      %assign text = text + ...
+	"\n/*\n" + BlockComment
+      %assign text = text + " */\n"
+    %endif
+    
+  %elseif !ExprFolding
+      
+    %assign text = text + ...
+      "\n/* %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'"
+    %if HaveBlockComment
+      %assign text = text + "\n" + BlockComment
+    %endif
+    %assign text = text + " */\n"
+    
+  %elseif block.Type == "SubSystem" && SLibSSIsInlined(block) && ...
+    ISFIELD(block, "MaskType") && block.MaskType == "Stateflow"
+    %%  do not return any thing
+  %else
+      
+    %assign endedWithNewline = 0
+    %assign multilineComment = 0
+    
+    %% open comment
+    %assign text = text + "\n/* "
+    
+    %% describe master block
+    %assign text = text + "%<SLibBlkType(block)>: '%<SLibBlkName(block)>'"
+    
+    %assign numBlksInExpr = SIZE(block.ExprCommentInfo.BlkIdxList,1)
+    
+    %if numBlksInExpr > 0
+      %assign text = text + " incorporates:"
+      %assign multilineComment = 1
+      %assign endedWithNewline = 0
+    %endif
+    
+    %foreach idx = numBlksInExpr
+      
+      %assign text = text + "\n"
+      
+      %if ISEQUAL(ExprCommentInfo.SysIdxList[idx],"U")
+	
+	%% Root inport
+	
+	%assign extInp = ExprCommentInfo.BlkIdxList[idx]
+	%assign text = text + ...
+	  "*   Inport: '%<extInp.BlockName>'"
+	
+      %else
+	
+	%% Standard block
+	
+	%assign origSysIdx = ExprCommentInfo.SysIdxList[idx]
+	%assign origBlkIdx = ExprCommentInfo.BlkIdxList[idx]
+	%assign origBlk = System[origSysIdx].Block[origBlkIdx]
+	
+        %if origBlk.Type == "Opaque"
+          %assign portIdx = ExprCommentInfo.PortIdxList[idx]
+          %assign tmpBuff = GENERATE(origBlk, "BlockOutputComment", portIdx)
+          %if !WHITE_SPACE(tmpBuff)
+            %assign text = text + tmpBuff
+          %endif
+        %else
+          %assign text = text + ...
+            "*  %<SLibBlkType(origBlk)>: '%<SLibBlkName(origBlk)>'"
+        %endif
+      %endif
+      
+    %endforeach
+    
+    %if HaveBlockComment
+      %if !endedWithNewline
+	%assign text = text + "\n"
+      %endif
+      %assign text = text + ...
+	"*\n" + ...
+	"* Regarding '%<SLibBlkName(block)>':\n" + ...
+	BlockComment
+      %assign endedWithNewline = 1  %% block comment ends with newline
+      %assign multilineComment = 1
+    %endif
+    
+    %% incorporated block comments
+    %foreach idx = numBlksInExpr
+      %if !ISEQUAL(ExprCommentInfo.SysIdxList[idx],"U")
+	%assign origSysIdx = ExprCommentInfo.SysIdxList[idx]
+	%assign origBlkIdx = ExprCommentInfo.BlkIdxList[idx]
+	%assign origBlk = System[origSysIdx].Block[origBlkIdx]
+	
+	%if origBlk.HaveBlockComment
+	  %if !endedWithNewline
+	    %assign text = text + "\n"
+	  %endif
+	  %assign text = text + ...
+	    "*\n" + ...
+	    "* Regarding '%<SLibBlkName(origBlk)>':\n" + ...
+	    origBlk.BlockComment
+	  %assign endedWithNewline = 1  %% block comment ends with newline
+	  %assign multilineComment = 1
+	%endif
+      %endif
+    %endforeach
+    
+    %% block descriptions
+
+    %if InsertBlockDesc 
+      %if SIZE(block.Description,1) > 0 && ...
+	!ISFIELD(block,"DescriptionWritten")
+	%%
+	%assign writeDesc = 1
+	%if block.Type == "SubSystem" 
+	  %assign writeDesc = System[block.ParamSettings.SystemIdx].DescInCallSite      
+	%endif
+	%%
+	%if writeDesc
+	  %if !endedWithNewline
+	    %assign text = text + "\n"
+	  %endif
+	  %assign text = text + FcnGetBlockDescription(block)
+	  %assign multilineComment = 1
+	  %assign endedWithNewline = 0
+	%endif
+      %endif
+      
+      %foreach idx = numBlksInExpr
+	%if !ISEQUAL(ExprCommentInfo.SysIdxList[idx],"U")
+	  %assign origSysIdx = ExprCommentInfo.SysIdxList[idx]
+	  %assign origBlkIdx = ExprCommentInfo.BlkIdxList[idx]
+	  %assign origBlk = System[origSysIdx].Block[origBlkIdx]
+          
+          %if origBlk.Type == "Opaque"
+            %assign portIdx = ExprCommentInfo.PortIdxList[idx]
+            %assign tmpBuff = GENERATE(origBlk,"BlockOutputDescription",portIdx)
+            %if !WHITE_SPACE(tmpBuff)
+              %if !endedWithNewline
+                %assign text = text + "\n"
+              %endif
+              %assign text = text + tmpBuff
+              %assign multilineComment = 1
+              %assign endedWithNewline = 0
+            %endif
+          %elseif SIZE(origBlk.Description,1) > 0 && ...
+	    !ISFIELD(origBlk,"DescriptionWritten")
+	    %%
+	    %assign writeDesc = 1
+	    %if origBlk.Type == "SubSystem" 
+	      %assign writeDesc = System[origBlk.ParamSettings.SystemIdx].DescInCallSite      
+	    %endif
+	    %%
+	    %if writeDesc	  
+	      %if !endedWithNewline
+		%assign text = text + "\n"
+	      %endif
+	      %assign text = text + FcnGetBlockDescription(origBlk)
+	      %assign multilineComment = 1
+	      %assign endedWithNewline = 0
+	    %endif
+	  %endif
+	%endif
+      %endforeach    
+    %endif
+
+
+	%if   ReqsInCode ...
+	   && !ISFIELD(block,"RequirementsWritten") ...
+	   && (   (ISFIELD(block,"Requirements")          && (SIZE(block.Requirements,1)>0)) ...
+	       || (ISFIELD(block,"InheritedRequirements") && (SIZE(block.InheritedRequirements,1) > 0)) ...
+	       )
+
+		%% Add new line if needed
+		%if !endedWithNewline
+			%assign text = text + "\n"
+		%endif
+
+		%% Cat requirements to comment
+		%assign text = text + FcnGetBlockRequirements(block)
+
+		%assign multilineComment = 1
+		%assign endedWithNewline = 0
+	%endif
+
+    %% optional newline
+    
+    %if multilineComment && !endedWithNewline
+      %assign text = text + "\n"
+    %endif
+    
+    %% close comment
+    %assign text = text + " */"
+    
+  %endif  %% ExprFolding
+    
+  %return text
+  
+%endfunction
+
+
+%% Function: FcnWriteReducedBlocksComment ======================================
+%% Description:
+%%   Write out comments for blocks reduced at this blocks outports
+%%
+%function FcnWriteReducedBlocksComment(block) void
+  %assign text = ""
+  %if (ShowEliminatedStatements)
+
+    %assign numReducedBlksAtOutports = SIZE(block.ReducedBlocksConnected,1)
+    %foreach idx = numReducedBlksAtOutports
+      
+      %assign reducedBlockIdx = block.ReducedBlocksConnected[idx]
+      %assign reducedBlk = CompiledModel.ReducedBlocks.Block[reducedBlockIdx]
+      %if reducedBlk.InComment == 0
+	%assign text = text + ...
+	  "/* %<reducedBlk.Type> Block: '%<reducedBlk.Name>'\n" + ...
+	  "*\n" + ...
+	  "* Regarding '%<reducedBlk.Name>':\n" + ...
+	  "*   %<reducedBlk.OptimizationInfo>\n" + ...
+	  "*/\n\n"
+	%assign reducedBlk.InComment = 1
+      %endif
+    %endforeach
+
+  %endif
+  %return text
+  
+%endfunction
+
+
+
+%endif %% _COMMENTLIB_
+
+%% [EOF] commentlib.tlc

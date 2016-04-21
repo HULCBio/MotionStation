@@ -1,0 +1,271 @@
+%% $RCSfile: sfix_abs.tlc,v $
+%% $Revision: 1.11 $
+%% $Date: 2002/06/17 13:10:31 $
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Fixed-point Absolute Value and Unary Minus
+
+%implements sfix_abs "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%% 	Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %%
+      %assign u0DT = FixPt_GetInputDataType(0)
+      %assign y0DT = FixPt_GetOutputDataType(0)
+      %%
+      %assign y0IsFloat = FixPt_DataTypeIsFloat(y0DT)
+      %%
+      %if y0IsFloat
+	%%
+        %% if the output is floating point then saturation is not used
+        %% 
+        %assign localFixPtSaturationMode = "Wrap"
+      %else
+        %assign localFixPtSaturationMode = FixPtSaturationMode    
+      %endif
+      %%
+      %if localFixPtSaturationMode == "Saturate"
+	%%
+	%assign outMax = FixPt_GetMaxStr(y0DT)
+        %assign outMin = SPow2NegStr(y0DT.RequiredBits-1)
+      %endif
+      %%
+      %assign uiLabel = LibBlockInputSignal(0,ucv,lcv,idx)
+      %%
+      %if SFIX_OP_ID == "ABS"
+	%%
+	%if y0IsFloat || y0DT.IsSigned
+	  %%
+	  %% nonzero bias is NOT supported
+	  %%
+	  %assign outExpr = "( ( %<uiLabel> < 0 ) ? " 
+	  %%
+	  %if localFixPtSaturationMode == "Saturate"
+	    %%
+	    %assign outExpr = outExpr + "( ( %<uiLabel> <= %<outMin> ) ? %<outMax> : (-%<uiLabel>) ) " 
+	    %%
+	  %else
+	    %%
+	    %assign outExpr = outExpr + "(-%<uiLabel>) " 
+	    %%
+	  %endif
+	  %%
+	  %assign outExpr = outExpr + ": %<uiLabel> )" 
+	  %%
+	%else %% Unsigned, ie STUPID Case to apply ABS
+	  %%
+	  %assign outExpr = uiLabel 
+	  %%
+	%endif
+	%%
+      %else %% if SFIX_OP_ID == "NEG"
+	%%
+	%% non zero biases are supported, but
+	%%   output.Bias == -1*input.Bias
+	%% so the bias part always cancels
+	%%
+	%if localFixPtSaturationMode == "Saturate"
+	  %%
+	  %assign outExpr = "( ( %<uiLabel> <= %<outMin> ) ? %<outMax> : (-%<uiLabel>) )" 
+	  %%
+	%else
+	  %%
+	  %assign outExpr = "(-%<uiLabel>)" 
+	  %%
+	%endif
+	%%
+      %endif
+      %%
+      %return FixPt_ProtectDataTypeOfExpression(outExpr, y0DT, u0DT)
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+  %endswitch
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%   This block can operate only have a single inport and a single outport
+%% and these must be of equal length
+%% Each scalar input is converted to the data type of the output and stored
+%% in the corresponding output scalar
+%%
+%function Outputs(block, system) Output
+    %%
+    %% Roll around signal width
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %if SFIX_OP_ID == "ABS"
+        %%
+        %assign nameForComment = "Fixed-Point Absolute Value"
+        %%
+    %else  %% SFIX_OP_ID == "NEG"
+        %%
+        %assign nameForComment = "Fixed-Point Unary Minus"
+        %%
+    %endif
+    %%
+    %% create header comment
+    %%
+    /* %<nameForComment>: %<MaskBlockName>
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+     */
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %assign y0IsFloat = FixPt_DataTypeIsFloat(y0DT)
+    %%
+    %if y0IsFloat
+        %%
+        %% if the output is floating point then saturation is not used
+        %% 
+        %assign localFixPtSaturationMode = "Wrap"
+    %else
+        %assign localFixPtSaturationMode = FixPtSaturationMode    
+    %endif
+    %%
+    %if localFixPtSaturationMode == "Saturate"
+        %%
+        %assign outMax = FixPt_GetMaxStr(y0DT)
+%%        %assign outMin = FixPt_GetMinStr(y0DT)
+        %assign outMin = SPow2NegStr(y0DT.RequiredBits-1)
+    %endif
+    %%
+    %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+    %%
+    %%
+    %% if input (and Output) are complex then two cases to handle
+    %% otherwise only one
+    %%
+    %assign casesToHandle = 1 + LibBlockOutputSignalIsComplex(0)
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %%
+        %foreach iCase = casesToHandle
+            %%
+            %if iCase == 0
+                %%
+                %assign riSigIdx = tRealPart + STRING(sigIdx)
+                %%
+            %else
+                %%
+                %assign riSigIdx = tImagPart + STRING(sigIdx)
+                %%
+            %endif
+            %%
+            %% Get input
+            %%  PROCESS THE SECOND INPUT!!!!
+            %%
+            %assign uiLabel = LibBlockInputSignal(0, "", lcv, riSigIdx)
+            %%
+            %% Get output
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", lcv, riSigIdx)
+            %%
+            %% Handle operation
+            %%
+            %if SFIX_OP_ID == "ABS"
+                %%
+                %if y0IsFloat || y0DT.IsSigned
+                    %%
+                    %% nonzero bias is NOT supported
+                    %%
+                    if ( %<uiLabel> < 0 )
+                    {
+                    %%
+                    %if localFixPtSaturationMode == "Saturate"
+                        if ( %<uiLabel> <= %<outMin> )
+                        {
+                            %<y0Label> = %<outMax>;
+                        }
+                        else
+                        {
+                            %<y0Label> = -%<uiLabel>;
+                        }
+                    %else
+                        %<y0Label> = -%<uiLabel>;
+                    %endif
+                    %%
+                    }
+                    %%
+                    %if (uDestPort != 0)
+                        else
+                        {
+                            %<y0Label> = %<uiLabel>;
+                        }
+                    %endif
+                %else %% Unsigned, ie STUPID Case to apply ABS
+                    %%
+                    %if (uDestPort != 0)
+                        %%
+                        %<y0Label> = %<uiLabel>;
+                        %%
+                    %else
+                        /* Abs block does NOT need to do anything here */
+                    %endif
+                %endif
+                %%
+            %else %% if SFIX_OP_ID == "NEG"
+                %%
+                %% non zero biases are supported, but
+                %%   output.Bias == -1*input.Bias
+                %% so the bias part always cancels
+                %%
+                %if localFixPtSaturationMode == "Saturate"
+                    if ( %<uiLabel> <= %<outMin> )
+                    {
+                        %<y0Label> = %<outMax>;
+                    }
+                    else
+                    {
+                        %<y0Label> = -%<uiLabel>;
+                    }
+                %else
+                    %<y0Label> = -%<uiLabel>;
+                %endif
+                %%
+            %endif
+            %%
+            %<FixPt_EmulationSignExt(y0Label,y0DT)>\
+            %%
+        %endforeach
+        %%
+    %endroll
+    %%
+    %% blank line for formating
+
+%endfunction  %% Outputs
+
+%% [EOF] sfix_abs.tlc

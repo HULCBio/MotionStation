@@ -1,0 +1,321 @@
+Overview
+--------
+
+Octcl is a Tcl extension which allows you to use Octave as a 
+compute engine.
+
+The current implementation is based on a socket interface to octave, 
+but regardless of what mechanism is used you need to do the same 
+operations:
+	send data to octave, 
+	receive data from octave,
+	evaluate octave expressions from tcl, 
+	evaluate tcl expressions from octave, 
+	wait for octave to complete
+	interrupt octave
+To create a pretty console interface to octave, you also need to be 
+able to capture the output of an octave command.
+
+Please read demo/matrix.tcl for a sample octave.tcl application.
+Please read octave-forge/main/miscellaneous/server.txt for a description
+of the protocol.
+
+To connect to octave, you must first start run octave as a server process 
+listening to connections on a port:
+
+	$ octave
+	> server(3132)
+
+When it receives a new connection, octave forks and lets the child
+process interpret the octave commands.  Only after octave is listening
+can you run you tcl application.  By default only connections from
+127.0.0.1 (localhost) are accepted.  Instead of localhost, you can
+specify any four part numeric host id.
+
+This is a design document.  Not all features are implemented.
+
+Tcl Reference
+-------------
+
+octave connect ?host:?port ?-as command?
+
+	Connect to the octave daemon listening to the host:port 
+	internet socket.  Address defaults to localhost:3132.  You 
+	only need colon if specifying both host and port.
+
+	You can connect to multiple octave interpreters by giving the
+	command name by which you want to communicate with each
+	interpreter using "-as command".
+
+octave close
+
+	Close the connection.  This aborts all current and pending
+	operations within the octave engine and cancels all outstanding
+	sync calls.
+
+octave sync
+octave timeout ?timeout ?query
+
+	The command octave sync waits for octave to complete the 
+	currently pending computations before continuing with the 
+	callback 'thread'.  The wait has a time-out (whose duration
+	is set by the octave timeout command) so that it doesn't 
+	block indefinitely.  Returns 1 if the sync was successful, 
+	or 0 if it times out.
+
+	If the timeout is triggered and query is true, then the user
+	is warned that octave has timed out, and is asked to continue
+	waiting or to cancel.  If the user chooses to cancel then all
+	pending syncs are cancelled.  Your application will need to
+	allow the user to restart octave and restore its state in case
+	this happens.
+
+octave sync callback args
+
+	One common use of the sync call is at the end of a callback
+	e.g., for a mouse move event, to make sure that the current
+	callback is complete before the next one is invoked.  Normally
+	the tcl event loop will combine all mouse move events which
+	happen while the interpreter is not waiting in the event loop
+	into a single mouse move event, but this will not work for us
+	because tcl enters the event loop before receiving a response
+	from octave (as it has too --- the response arrives via a file
+	event triggered from the event loop).  Octave sync callback
+	achieves the same effect by only invoking the callback with the
+	most recent args when octave is ready.
+
+octave send tcl_variable octave_lhs
+
+	Sets the octave variable on the toplevel from the tcl variable on
+	the toplevel.  The octave variable can be any single valid octave left 
+	hand side, for example including r.x but excluding [x, y, z].
+
+	If the tcl variable is a BLT vector, then the entire vector is
+	sent.  If the tcl variable is an array, then the entire array is
+	sent to an octave structure variable (be sure that the array indices
+	are valid octave identifiers if you do this).  Otherwise, the tcl
+	variable is sent as a string.  If no octave variable is supplied, it
+	defaults to the name of the tcl variable.
+
+	Note that there is no need to send a tcl expression rather than
+	a tcl variable since it is easy enough to say:
+		octave eval "octave_variable = $tcl_expression"
+
+octave recv tcl_variable octave_rhs
+
+	Requests that the octave expression evaluated on the toplevel be sent
+	to tcl variable on the toplevel.  Returns immediately.  If you need
+	the results of the expression for further calculations in tcl, then
+	you must do vwait tcl_variable or octave sync.
+
+	The octave expression can be any single valid octave right hand 
+	side, for example including r.x.  Functions which return multiple 
+	values will have to be sent in pieces.  E.g.,
+		octave eval { [b,a]=butter(5,0.2); }
+		octave recv b
+		octave recv a
+
+	If tcl_variable is a BLT vector, then octave_expression is converted
+	to a vector.  If tcl_variable is a photo image, then octave_expression
+	is converted to a photo image using the indexed values in the 
+	current colormap.  Use imagesc(x) if x is not an indexed image. If the
+	tcl variable is the name of an array, then the octave expression should
+	return a structure.  If the tcl variable is undefined, then the
+	result is sent as a scalar or a list.
+
+octave eval statements
+
+	Evaluate the octave statement block.  This doesn't return any 
+	values or capture any output.  Any errors in the octave code
+	will raise a background error in tcl. Use octave sync after 
+	eval if you need to be sure that octave has completed before
+	continuing.
+
+	Eval can be used to send data to octave:
+
+	* scalar 
+		octave eval "x=$y"
+
+	* list of numbers in data 
+		octave eval "x=sscanf('$data','%f',Inf)"
+	  The obvious alternative "x=\[ $data ]" is very slow.
+
+	* BLT vector data
+		octave eval "x=sscanf('$data(:)','%f',Inf)"
+
+	* matrix, e.g., as data read from a file
+		# get the first line from data (fails if there is none)
+		set line [string range $data 0 [string first \n $data ]]
+		# count the columns
+		set nc [regexp -all "\\S+" $line]
+		# convert the data
+		octave eval "x=sscanf('$data','%f',\[$nc,Inf])'"
+
+	* string
+		octave eval "x='[string map { ' '' } $s]'"
+
+	Eval can also be used to request data from octave:
+
+	* scalar
+		octave eval { send(sprintf('set y %.15g', x)) }
+
+	* list of numbers in data
+		octave eval { send(['set data {',sprintf('%.15g ',x),'}']) }
+
+	* BLT vector data
+		octave eval { send('data',x) }
+	  or if you don't want to rely on the binary representation of
+	  doubles being the same on the two machines:
+		octave eval { send(['data set {',sprintf('%.15g ',x),'}']) }
+
+	* matrix, e.g., as data ready for writing to a file
+		octave eval {
+			# count the columns
+			n = columns(x);
+			# convert to numbers, one space after each
+			str = sprintf("%.15g ", x');
+			# replace every nth space to end-of-line
+			idx = find (str == " ");
+			str(idx(n:n:length(idx))) = "\n";
+			# send the string
+			send(['set data ', str]);
+		}
+	* string
+		octave eval { send(['set s {',x,'}']) }
+			
+
+
+octave capture statements result
+	** not implemented **
+
+	Evaluate the octave statement block and capture any output to
+	standard output and standard error.  The output is sent to the
+	variable named result.  Use vwait result if you need 
+	synchronization.  Use "trace var result w moreresults" to call
+	moreresults whenever more results are returned from the capture.
+	E.g.,
+		trace var result w capture_out
+		proc capture_out { args } { puts $::result }
+		proc octave_echo { body } {
+		    puts $body
+		    octave capture $body ::result
+		}
+		octave_echo {
+	          1
+		  2
+		  3
+	        }
+		octave_echo { 4 }
+
+octave console ?widget
+	** not implemented **
+
+	Provide a console interface to octave from tcl.  Includes command
+	line editting and command history.  With the octave function 
+	completion_matches, even tab completion is possible.  If widget
+	is specified then the console is packed into the given widget,
+	otherwise it is packed into toplevel .octave.
+
+octave cancel
+	** not implemented **
+
+	Cancel the current and any pending octave commands.  All pending
+	sync calls will return false.
+
+
+Octave Reference
+----------------
+
+server(port)
+	listen for connections on the given port.
+
+send('expression')
+	Send the expression back to the connecting interpreter.  Presumably
+	the interpreter will be able to interpret it.  So for example, if
+	connecting from a tcl interpreter, send tcl commands.  If connecting
+	from an octave interpreter, send octave commands.
+
+send('variable',value)
+	Send the octave matrix value as the named variable.  The interpreter 
+	will convert it to an appropriate value for that type.
+
+Eventually there will be a whole fleet of functions which implement the
+current octave plotting capabilities.  For now, though, all the user 
+interface has to be in tcl.
+
+Issues
+------
+
+1) *** Security is not implemented !!! ***
+
+The present implementation relies on the firewall to block access
+to the port you select.
+
+There is a very simplistic host-based access scheme implemented.
+If you specify server(port,hostid) where hostid is a string
+containing the four part numeric host address, then only connections
+from that host are accepted.  By default hostid is 127.0.0.1, so
+only localhost connections are allowed.  I have no idea how easy
+it is to spoof this using IP header forgery.
+
+One option is to limit connections to localhost.  If you are
+connecting remotely, you will have to use an ssh tunnel with
+port forwarding:
+	ssh -L port:host:port userid@host
+You may need to use this in conjunction with X11 style authentication.
+In order to connect to octave you will have to present a cookie.  This
+cookie will be generated when listen is called and stored in
+/tmp/octical-pid with mode 600.  It may be necessary to use this
+in conjunction with ssh to avoid session hijacking or packet
+sniffing to find the magic cookie.
+	
+Alternatively, you can run a safe version of octave by removing
+dangerous commands (e.g., system, fork, exec, ls, cd, pwd, fopen,
+...) and let the world use it.
+
+2) Both ends of the connection must use ieee fp.
+
+I detect byte order reversal on connect by sending a 1 and seeing if it
+is received as a 1, but this won't help if the numbers otherwise have
+different binary representations.  Consider sending all data as ascii
+since that is safe.
+
+3) Because computations can take an indeterminate time, your GUI has to
+be careful how it uses the results of the computation.  In particular,
+you should try to avoid depending on the results of a computation being
+available to the callback that requests them.  Instead, you should have
+octave send its answer back to a tcl variable and rely on tk's ability
+to automatically update a widget when the underlying variable has
+changed.  This doesn't solve the entire problem.  You also want to avoid
+queueing new requests while the current request is being processed.
+Otherwise you will for example continue to receive screen updates
+long after the mouse has stopped moving.  Ideally you would do fast
+approximations when the mouse is moving, but generate accurate results
+when it stops.
+
+4) Making sure the engine gets closed when the socket closes, and allowing
+the application to signal the engine with cancel are tricky to implement.
+If the octave process is busy, it will not be able to process messages.  
+Instead it will have to receive a signal from somewhere.  Since the tcl 
+client is not necessarily running with the same pid or even on the
+same host as the octave server, the signal will have to come over
+a socket connection.  
+
+	A) Use a new connection.  When you open a new connection on the
+	socket, first check if it is a new engine request or existing
+	engine signal.  Need some way to associate clients with pids. Need 
+	some assurances that the signal is coming from the correct client.
+
+	B) Channel all messages through the server.  The server
+	can buffer the messages until the engine is ready.  This allows
+	it to peek ahead in the message queue for signalling messages,
+	and use normal ipc to send a signal to the engine.
+
+5) The fact that octave is running on a separate host brings up some file
+system issues.  For example, how can the client add a new octave function
+to the interpreter?  The server should be checking the client's LOADPATH
+much as it does the remote path whenever it looks for a new function.
+Similarly load and save will operate on server files, but more than likely
+the user will want to operate on files on the client machine.  Then there
+are system commands such as cd and ls and all the low-level file operations.
+

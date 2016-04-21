@@ -1,0 +1,281 @@
+function varargout = commblkpbndcpfskmod(block, action, varargin)
+% COMMBLKPBNDCPFSKMOD Mask dynamic dialog function for CPFSK modulator block
+% Copyright 1996-2002 The MathWorks, Inc.
+%   $Revision: 1.6 $  $Date: 2002/04/14 16:28:24 $
+
+
+if(nargin == 2)
+    if(ishandle(block))
+        varargout{1} = errorhandler(block, action);
+        return;
+    end;
+end;
+
+%*********************************************************************
+% --- Action switch -- Determines which of the callback functions is called
+%*********************************************************************
+
+switch(action)
+    
+%*********************************************************************
+% Function Name:     init
+% Description:       Main initialization code
+% Inputs:            current block and any parameters from the mask 
+%                    required for parameter calculation.
+% Return Values:     params - Parameter structure
+%********************************************************************
+case 'init'
+    % --- Ensure that the mask and subsystem are correct
+    maskpropupdate('CPM Modulator Passband','inputType');
+    maskpropupdate('CPM Modulator Passband','mappingType');
+
+    % --- Exit code and error message definitions
+    eStr.ecode = 0;
+    eStr.emsg  = '';
+    
+    % --- Output assignments
+    varargout{1} = eStr;
+    varargout{2} = {};
+
+% --- End of case 'init'
+
+%----------------------------------------------------------------------
+%   Callback interfaces
+%----------------------------------------------------------------------
+case 'cbInputType'
+    cbInputType(block);
+
+%----------------------------------------------------------------------
+%   Setup/Utility functions
+%----------------------------------------------------------------------
+
+%*********************************************************************
+% Function Name:    'default'
+% Description:      Set the block defaults (development use only)
+% Inputs:           current block
+% Return Values:    none
+%*********************************************************************
+case 'default'
+    % --- Set Field index numbers and mask variable data
+    setallfieldvalues(block);
+                 
+    Cb{idxMnum}                  = '';
+    Cb{idxInputType}             = [mfilename '(gcb,''cbInputType'');'];
+    Cb{idxMappingType}           = '';
+    Cb{idxModIdx}                = '';
+    Cb{idxNumSamp}               = '';
+    Cb{idxFc}                    = '';
+    Cb{idxPh}                    = '';
+    Cb{idxOutSamp}               = '';
+    Cb{idxTd}                    = '';
+   
+    En{idxMnum}                  = 'on';
+    En{idxInputType}             = 'on';
+    En{idxMappingType}           = 'off';
+    En{idxModIdx}                = 'on';
+    En{idxNumSamp}               = 'on';
+    En{idxFc}                    = 'on';
+    En{idxPh}                    = 'on';
+    En{idxOutSamp}               = 'on';
+    En{idxTd}                    = 'on';
+                                 
+    Vis{idxMnum}                 = 'on';
+    Vis{idxInputType}            = 'on';
+    Vis{idxMappingType}          = 'on';
+    Vis{idxModIdx}               = 'on';
+    Vis{idxNumSamp}              = 'on';
+    Vis{idxFc}                   = 'on';
+    Vis{idxPh}                   = 'on';
+    Vis{idxOutSamp}              = 'on';
+    Vis{idxTd}                   = 'on';
+
+    % --- Get the MaskTunableValues 
+    Tunable = get_param(block,'MaskTunableValues');
+    Tunable{idxMnum}             = 'on';
+    Tunable{idxInputType}        = 'on';
+    Tunable{idxMappingType}      = 'on';
+    Tunable{idxModIdx}           = 'on';
+    Tunable{idxNumSamp}          = 'on';
+    Tunable{idxFc}               = 'off';
+    Tunable{idxPh}               = 'off';
+    Tunable{idxOutSamp}          = 'off';
+    Tunable{idxTd}               = 'off';
+
+
+    % --- Set Callbacks, enable status, visibilities and tunable values
+    set_param(block,'MaskCallbacks',Cb,'MaskEnables',En,'MaskVisibilities',Vis, 'MaskTunableValues', Tunable);
+
+    % --- Set the startup values.  '' Indicates that the default saved will be used
+
+    Vals{idxMnum}                = '4';
+    Vals{idxInputType}           = 'Integer';
+    Vals{idxMappingType}         = 'Binary';
+    Vals{idxModIdx}              = '.5';
+    Vals{idxNumSamp}             = '8';
+    Vals{idxFc}                  = '3000';
+    Vals{idxPh}                  = '0';
+    Vals{idxOutSamp}             = '1/8000';
+    Vals{idxTd}                  = '1/100';
+
+    % --- update Vals
+    MN = get_param(block,'MaskNames');
+    for n=1:length(Vals)
+        if(~isempty(Vals{n}))
+            set_param(block,MN{n},Vals{n});
+        end;
+    end;
+
+    % --- Update the Vals field with the actual values
+    Vals = get_param(block, 'maskvalues');
+
+    % --- Ensure that the block operates correctly from a library
+    set_param(block,'MaskSelfModifiable','on');
+
+% --- End of case 'default'
+
+%*********************************************************************
+% Function Name:    show all
+% Description:      Show all of the widgets
+% Inputs:           current block
+% Return Values:    none
+% Notes:            This function is for development use only and allows
+%                   All fields to be displayed
+%********************************************************************
+case 'showall'
+
+    Vis = get_param(block, 'maskvisibilities');
+    En  = get_param(block, 'maskenables');
+
+    Cb = {};
+    for n=1:length(Vis)
+        Vis{n} = 'on';
+        En{n} = 'on';
+        Cb{n} = '';
+    end;
+
+    set_param(block,'MaskVisibilities',Vis,'MaskEnables',En,'MaskCallbacks',Cb);
+
+end; % End of switch(action)
+
+% ----------------
+% --- Subfunctions
+% ----------------
+
+%*********************************************************************
+% Function Name:    cbInputType
+% Description:      Deal with the different input modes
+% Inputs:           current block
+% Return Values:    None
+%********************************************************************
+function cbInputType(block)
+
+    % --- Field data
+    Vals = get_param(block, 'maskvalues');
+    En   = get_param(block, 'maskenables');
+    
+    % --- Set the field index numbers
+    setfieldindexnumbers(block);
+
+    prevEn = En{idxMappingType};
+    
+    switch Vals{idxInputType}
+    case 'Integer'
+        En{idxMappingType} = 'off';
+    case 'Bit'
+        En{idxMappingType} = 'on';
+    otherwise
+        error('Unknown input type.');
+    end;
+    
+    if ( ~isequal(prevEn, En{idxMappingType}) )
+        set_param(block,'MaskEnables',En);
+    end
+    
+return;
+
+
+% --- ISINTEGER
+%     Are all members of the vector/matrix integers
+function ecode = isinteger(Vec)
+    Vec   = abs(Vec(:));
+    ecode = all((Vec - floor(Vec)) == 0);
+return;
+
+% --- ISSCALAR
+function ecode = isscalar(Vec)
+   if(ndims(Vec) == 2)
+      if(all([size(Vec,1)>1 size(Vec,2)>1]))
+         ecode = 0; % Matrix
+      else
+         ecode = all([size(Vec,1)==1 size(Vec,2)==1]);
+      end;
+   else
+      ecode = 0;
+   end;
+return;
+
+% --- ISVECTOR
+function ecode = isvector(Vec)
+   if(ndims(Vec) == 2)
+      if(all([size(Vec,1)>1 size(Vec,2)>1]))
+         ecode = 0; % Matrix
+      else
+         ecode = any([size(Vec,1)>1 size(Vec,2)>1]);
+      end;
+   else
+      ecode = 0;
+   end;
+return;
+
+% --- ISMATRIX
+function ecode = ismatrix(Vec)
+   if(ndims(Vec) == 2)
+      if(all([size(Vec,1)>1 size(Vec,2)>1]))
+         ecode = 1; % Matrix
+      else
+         ecode = 0;
+      end;
+   else
+      ecode = 1;
+   end;
+return;
+
+
+
+%*********************************************************************
+% Function Name:    errorhandler
+% Description:      Deal with errors in the block
+% Inputs:           block handle and ID
+% Return Values:    New message
+%*********************************************************************
+function newMsg = errorhandler(block,ID)
+   
+    lastErr = sllasterror;
+    emsg    = lastErr.Message;
+    
+    newMsg = '';
+% --- Error parsing
+%    if(findstr(emsg,'Check Signal Attributes'))
+%        newMsg = 'The input must be a complex scalar or column vector';
+%    elseif(findstr(emsg,'Port complexity propagation error'))
+%        newMsg = 'The input must be a complex scalar or column vector';
+%    end;
+    
+    if(isempty(newMsg))
+        key = 'MATLAB error message:';
+        idx = min(findstr(emsg, key));
+
+        if(isempty(idx))
+            key = ':';
+            idx = min(findstr(emsg, key));
+        end;
+
+        if(isempty(idx))
+            newMsg = emsg;
+        else
+            newMsg = emsg(idx+length(key):end);
+        end;
+
+    end;
+
+return;

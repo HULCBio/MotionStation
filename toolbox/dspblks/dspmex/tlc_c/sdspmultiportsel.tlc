@@ -1,0 +1,171 @@
+%% $RCSfile: sdspmultiportsel.tlc,v $
+%% $Revision: 1.11.4.3 $
+%% $Date: 2004/04/12 23:09:14 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Multi-port Selector block RTW ANSI-C code generation file
+
+%implements sdspmultiportsel "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+%%
+%%  CONVENTION USED:
+%%
+%%    UPPERCASE = TLC constants required outside of this function
+%%    mixedCase = TLC variables only used inside this function
+%%
+%assign INPORT       = 0
+%assign INP_CPLX     = LibBlockInputSignalIsComplex(INPORT)
+%assign DTYPE_STR    = LibBlockInputSignalDataTypeName(INPORT,"%<tRealPart>")
+%%
+%assign numInDims    = LibBlockInputSignalNumDimensions(INPORT)
+%assign inputDims    = LibBlockInputSignalDimensions(INPORT)
+%assign NUM_INP_ROWS = inputDims[0]
+%assign NUM_INP_COLS = (numInDims == 2) ? inputDims[1] : 1
+%%
+%assign SELECT_ROWS   = (SFcnParamSettings.ROWS_OR_COLS_MODE == 1)
+%assign NUM_FLAT_IDXS = SFcnParamSettings.NUM_FLAT_INDICES
+%assign NUM_OUTPORTS  = SFcnParamSettings.NUM_OUTPUT_PORTS
+%%
+%assign block = block + INPORT + INP_CPLX + DTYPE_STR \
+                      + NUM_INP_ROWS + NUM_INP_COLS \
+                      + SELECT_ROWS + NUM_FLAT_IDXS + NUM_OUTPORTS
+%%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Multi-port Selector (%<ParamSettings.FunctionName>) - '%<Name>' */
+    {
+        const byte_T *u      = (byte_T *)%<LibBlockInputSignalAddr(INPORT, "", "", 0)>; /* input port */
+        const int32_T  *index  = (const int32_T *)%<LibBlockParameterAddr(INDEX_ARRAY_FLAT,"","",0)>;
+        const int32_T  *length = (const int32_T *)%<LibBlockParameterAddr(LEN_ARRAY_FLAT,"","",0)>;
+      %if (NUM_OUTPORTS > 1)
+        byte_T       *outPortAddr[%<NUM_OUTPORTS>]; /* Local array of pointers to the output port locations */
+        int_T         outIdx;
+        %foreach outPortIdx = NUM_OUTPORTS
+        outPortAddr[%<outPortIdx>] = (byte_T *)%<LibBlockOutputSignalAddr(outPortIdx, "", "", 0)>;
+        %endforeach
+
+        /* Loop over each output port and copy bytes */
+        for (outIdx = 0; outIdx < %<NUM_OUTPORTS>; outIdx++) {
+      %endif
+          %if SELECT_ROWS
+            %%
+            %% Select Rows mode
+            %%
+            %<GenCoreCodeForRowSelection(block)>
+            %%
+          %else
+            %%
+            %% Select Columns mode
+            %%
+            %<GenCoreCodeForColSelection(block)>
+            %%
+          %endif %% SELECT_ROWS vs. SELECT_COLS
+      %if (NUM_OUTPORTS > 1)
+        } /* output port loop */
+      %endif
+    } /* end %<Name> */
+
+%% NOTE: ONE LINE OF INTENTIONAL SPACE JUST ABOVE THIS LINE
+%endfunction
+
+
+%% Function: GenCoreCodeForRowSelection =======================================
+%%
+%function GenCoreCodeForRowSelection(block) Output
+            const int_T numRowsThisOutput = *length++;
+          %if INP_CPLX
+            const int_T bytesPerElement   = 2 * sizeof(%<DTYPE_STR>);
+          %else
+            const int_T bytesPerElement   = sizeof(%<DTYPE_STR>);
+          %endif
+            const int_T bytesPerOutCol    = numRowsThisOutput * bytesPerElement;
+          %if (NUM_OUTPORTS > 1)
+            byte_T *y = outPortAddr[outIdx];
+          %else
+            byte_T *y = (byte_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>;
+          %endif
+            int_T ctr;
+
+            /* Loop over each row of current output port index */
+            for (ctr = 0; ctr < numRowsThisOutput; ctr++) {
+              int_T inputRowIdx          = *index++;
+              int_T inputRowOffsetBytes;
+              int_T outputRowOffsetBytes;
+              int_T       sampleIdx;
+
+        /* Clip bad index */
+          if (inputRowIdx < 0) {                
+            inputRowIdx = 0;         
+          } else if (inputRowIdx > %<NUM_INP_ROWS-1>) {    
+            inputRowIdx = %<NUM_INP_ROWS-1>;               
+          }
+               inputRowOffsetBytes  = inputRowIdx * bytesPerElement;
+               outputRowOffsetBytes = ctr * bytesPerElement;
+                /* Copy one sample at a time from each input column */
+                for (sampleIdx = 0; sampleIdx < %<NUM_INP_COLS>; sampleIdx++) {
+                  %if (NUM_INP_ROWS > 1)
+                    memcpy(
+                        (y + (sampleIdx * bytesPerOutCol) + outputRowOffsetBytes),
+                        (u + (sampleIdx * (%<NUM_INP_ROWS> * bytesPerElement)) + inputRowOffsetBytes),
+                        bytesPerElement );
+                  %else
+                    memcpy(
+                        (y + (sampleIdx * bytesPerOutCol)  + outputRowOffsetBytes),
+                        (u + (sampleIdx * bytesPerElement) + inputRowOffsetBytes),
+                        bytesPerElement );
+                  %endif
+                }
+            } /* output row loop */
+%endfunction
+
+
+%% Function: GenCoreCodeForColSelection =======================================
+%%
+%function GenCoreCodeForColSelection(block) Output
+            const int_T numColsThisOutput = *length++;
+          %if (NUM_OUTPORTS > 1)
+            byte_T *y = outPortAddr[outIdx];
+          %else
+            byte_T *y = (byte_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>;
+          %endif
+          %%
+          %if INP_CPLX
+            const int_T bytesPerElement = 2 * sizeof(%<DTYPE_STR>);
+          %else
+            const int_T bytesPerElement = sizeof(%<DTYPE_STR>);
+          %endif
+            int_T ctr;
+
+            /* Loop over each column of current output port index */
+            for (ctr = 0; ctr < numColsThisOutput; ctr++) {
+                int_T inputColIdx = *index++;
+
+        /* Clip bad index */
+          if (inputColIdx < 0) {                
+            inputColIdx = 0;         
+          } else if (inputColIdx > %<NUM_INP_COLS-1>) {    
+            inputColIdx = %<NUM_INP_COLS-1>;               
+          }
+
+                /* Copy an entire column worth of bytes
+                 * offset input ptr to start of column index "inputColIdx"
+                 */
+                %if (NUM_INP_ROWS > 1)
+                  memcpy( y, (u + inputColIdx * (%<NUM_INP_ROWS> * bytesPerElement)), (%<NUM_INP_ROWS> * bytesPerElement) );
+                  y += (%<NUM_INP_ROWS> * bytesPerElement);  /* next output column */
+                %else
+                  memcpy( y, (u + inputColIdx * bytesPerElement), bytesPerElement );
+                  y += bytesPerElement;  /* next output column */
+                %endif
+            } /* output column loop */
+%endfunction
+
+%% [EOF] sdspmultiportsel.tlc

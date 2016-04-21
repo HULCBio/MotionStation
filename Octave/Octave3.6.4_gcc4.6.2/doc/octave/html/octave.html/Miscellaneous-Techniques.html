@@ -1,0 +1,142 @@
+<html lang="en">
+<head>
+<title>Miscellaneous Techniques - GNU Octave</title>
+<meta http-equiv="Content-Type" content="text/html">
+<meta name="description" content="GNU Octave">
+<meta name="generator" content="makeinfo 4.13">
+<link title="Top" rel="start" href="index.html#Top">
+<link rel="up" href="Vectorization-and-Faster-Code-Execution.html#Vectorization-and-Faster-Code-Execution" title="Vectorization and Faster Code Execution">
+<link rel="prev" href="Accumulation.html#Accumulation" title="Accumulation">
+<link rel="next" href="Examples.html#Examples" title="Examples">
+<link href="http://www.gnu.org/software/texinfo/" rel="generator-home" title="Texinfo Homepage">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<style type="text/css"><!--
+  pre.display { font-family:inherit }
+  pre.format  { font-family:inherit }
+  pre.smalldisplay { font-family:inherit; font-size:smaller }
+  pre.smallformat  { font-family:inherit; font-size:smaller }
+  pre.smallexample { font-size:smaller }
+  pre.smalllisp    { font-size:smaller }
+  span.sc    { font-variant:small-caps }
+  span.roman { font-family:serif; font-weight:normal; } 
+  span.sansserif { font-family:sans-serif; font-weight:normal; } 
+--></style>
+</head>
+<body>
+<div class="node">
+<a name="Miscellaneous-Techniques"></a>
+<p>
+Next:&nbsp;<a rel="next" accesskey="n" href="Examples.html#Examples">Examples</a>,
+Previous:&nbsp;<a rel="previous" accesskey="p" href="Accumulation.html#Accumulation">Accumulation</a>,
+Up:&nbsp;<a rel="up" accesskey="u" href="Vectorization-and-Faster-Code-Execution.html#Vectorization-and-Faster-Code-Execution">Vectorization and Faster Code Execution</a>
+<hr>
+</div>
+
+<h3 class="section">19.5 Miscellaneous Techniques</h3>
+
+<p><a name="index-execution-speed-2157"></a><a name="index-speedups-2158"></a><a name="index-optimization-2159"></a>
+Here are some other ways of improving the execution speed of Octave
+programs.
+
+     <ul>
+<li>Avoid computing costly intermediate results multiple times. 
+Octave currently does not eliminate common subexpressions.  Also, certain
+internal computation results are cached for variables.  For instance, if
+a matrix variable is used multiple times as an index, checking the
+indices (and internal conversion to integers) is only done once.
+
+     <li>Be aware of lazy copies (copy-on-write). 
+<a name="index-copy_002don_002dwrite-2160"></a><a name="index-COW-2161"></a><a name="index-memory-management-2162"></a>When a copy of an object is created, the data is not immediately copied, but
+rather shared.  The actual copying is postponed until the copied data needs to
+be modified.  For example:
+
+     <pre class="example">          a = zeros (1000); # create a 1000x1000 matrix
+          b = a; # no copying done here
+          b(1) = 1; # copying done here
+</pre>
+     <p>Lazy copying applies to whole Octave objects such as matrices, cells,
+struct, and also individual cell or struct elements (not array
+elements).
+
+     <p>Additionally, index expressions also use lazy copying when Octave can
+determine that the indexed portion is contiguous in memory.  For example:
+
+     <pre class="example">          a = zeros (1000); # create a 1000x1000 matrix
+          b = a(:,10:100);  # no copying done here
+          b = a(10:100,:);  # copying done here
+</pre>
+     <p>This applies to arrays (matrices), cell arrays, and structs indexed
+using &lsquo;<samp><span class="samp">()</span></samp>&rsquo;.  Index expressions generating comma-separated lists can also
+benefit from shallow copying in some cases.  In particular, when <var>a</var> is a
+struct array, expressions like <code>{a.x}, {a(:,2).x}</code> will use lazy
+copying, so that data can be shared between a struct array and a cell array.
+
+     <p>Most indexing expressions do not live longer than their parent
+objects.  In rare cases, however, a lazily copied slice outlasts its
+parent, in which case it becomes orphaned, still occupying unnecessarily
+more memory than needed.  To provide a remedy working in most real cases,
+Octave checks for orphaned lazy slices at certain situations, when a
+value is stored into a "permanent" location, such as a named variable or
+cell or struct element, and possibly economizes them.  For example:
+
+     <pre class="example">          a = zeros (1000); # create a 1000x1000 matrix
+          b = a(:,10:100);  # lazy slice
+          a = []; # the original a array is still allocated
+          c{1} = b; # b is reallocated at this point
+</pre>
+     <li>Avoid deep recursion. 
+Function calls to m-file functions carry a relatively significant overhead, so
+rewriting a recursion as a loop often helps.  Also, note that the maximum level
+of recursion is limited.
+
+     <li>Avoid resizing matrices unnecessarily. 
+When building a single result matrix from a series of calculations, set the
+size of the result matrix first, then insert values into it.  Write
+
+     <pre class="example">          result = zeros (big_n, big_m)
+          for i = over:and_over
+            ridx = ...
+            cidx = ...
+            result(ridx, cidx) = new_value ();
+          endfor
+</pre>
+     <p class="noindent">instead of
+
+     <pre class="example">          result = [];
+          for i = ever:and_ever
+            result = [ result, new_value() ];
+          endfor
+</pre>
+     <p>Sometimes the number of items can not be computed in advance, and
+stack-like operations are needed.  When elements are being repeatedly
+inserted or removed from the end of an array, Octave detects it as stack
+usage and attempts to use a smarter memory management strategy by
+pre-allocating the array in bigger chunks.  This strategy is also applied
+to cell and struct arrays.
+
+     <pre class="example">          a = [];
+          while (condition)
+            ...
+            a(end+1) = value; # "push" operation
+            ...
+            a(end) = []; # "pop" operation
+            ...
+          endwhile
+</pre>
+     <li>Avoid calling <code>eval</code> or <code>feval</code> excessively. 
+Parsing input or looking up the name of a function in the symbol table are
+relatively expensive operations.
+
+     <p>If you are using <code>eval</code> merely as an exception handling mechanism, and not
+because you need to execute some arbitrary text, use the <code>try</code>
+statement instead.  See <a href="The-try-Statement.html#The-try-Statement">The try Statement</a>.
+
+     <li>Use <code>ignore_function_time_stamp</code> when appropriate. 
+If you are calling lots of functions, and none of them will need to change
+during your run, set the variable <code>ignore_function_time_stamp</code> to
+<code>"all"</code>.  This will stop Octave from checking the time stamp of a function
+file to see if it has been updated while the program is being run. 
+</ul>
+
+   </body></html>
+

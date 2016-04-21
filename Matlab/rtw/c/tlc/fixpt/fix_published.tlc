@@ -1,0 +1,539 @@
+%% $RCSfile: fix_published.tlc,v $
+%% $Revision: 1.1.6.2 $
+%% $Date: 2003/04/19 05:45:49 $
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: This TLC library file contains library routines in support
+%%           code generation for user written fixed-point C S-functions.
+%%
+%% Usage:
+%%    This file should be included near the top of the tlc file
+%% corresponding to user written C S-functions.
+%%
+%%    The TLC functions given here parrallel the C functions and
+%% definitions given in fixedpoint.h.  Some of the definitions and
+%% functions that are useful for Simulink simulations are moot or not
+%% supported in the TLC phase of Real Time Workshop code generation.
+%% These items are noted below.
+%%
+
+%if EXISTS("_FIX_PUBLISHED_") == 0
+%assign _FIX_PUBLISHED_ = 1
+
+%% Note: Container changes
+%%
+%% The container used in Simulink simulation is not necessarily the same
+%% container used in the generated code.  In generated code the following 
+%% rules apply.  A signal is always stored using a native C data type.
+%% This includes C's types floating point types double and float.
+%% For fixed point types, there are C's signed and unsigned versions of
+%% int, long, short, and char.
+%%    Among the integer containers, the smallest one that will hold the
+%% signal is used.  If a fixed-point data type used in a model is too big to 
+%% fit inside a long, then code generation will error out.  Code generation
+%% does not support multi-word fixed-point signals.  
+%%
+%% Note: Emulation in larger containers is supported in TLC.
+%%
+%% Because it is very valuable for rapid-prototyping, the emulation of
+%% smaller signals inside larger containers is supported in code generation.
+%% For example, a signal specified to have 29 bits is supported in code
+%% generation if there is a C data type, such as int or long, that has
+%% at least 32 bits.
+%%
+%% In a Simulink simulation, if a 29 bit signal is emulated inside a 32
+%% bit container, then the extra bits are at the most significant end.  These
+%% extra bits must always have the value of a sign extension.  If the number,
+%% is non-negative, then the sign extension bits are cleared to zero.  If
+%% the number is strictly negative, then the sign extension bits are set to
+%% one.  Code generation follow these same rules.  ChunkArrays are not
+%% supported in code generation, so there emulation rules are never
+%% pertinent in generated code.
+%%
+%% Note: Emulation in simulation does not imply emulation in generated code.
+%%
+%% In Simulink simulation a 24 bit fixed-point signal would be emulated
+%% inside a 32 bit container.  The fact that emulation was used in simulation
+%% does not automatically imply that emulation will be used when code is generated
+%% for a particular target.  When generating code for most microprocessors, the
+%% available integer sizes are some combination of 8, 16, 32, and 64 bits.
+%% When generating code for target like this, the 24 bit signal would 
+%% indeed be emulated inside a larger 32 bit container.  In contrast,
+%% some DSP chips have native support for 24 bit signals.  For these
+%% targets, the C compiler can define the C data type int or long to be
+%% exactly 24 bits.  When generating code for these 24 bit DSPs, the
+%% 24 bit Simulink signal would be put into a 24 bit container instead of
+%% the 32 bit container used in simulations.  No emulation for this DSP target.
+%%
+%% Conversely, signal that was not emulated in Simulink simulation might
+%% need to be emulated in generated code.  For example, several floating point
+%% DSP have minimal support for integers.  On such chips, int, long, short, and
+%% yes even char are defined to be 32 bits.  To do fixed-point rapid prototyping
+%% on these chips, it is necessary to emulate 8 and 16 bit fixed-point data
+%% types even though they are native sizes in Simulink.  This type of 
+%% emulation is supported because of its importance in rapid prototyping.
+%%
+%% Note: Are ChunkArrays supported in TLC?  No, but maybe yes.
+%%
+%% As noted above, multi-word fixed-point data types are not supported
+%% in generated code.  However, it was also stated above that fixed-point
+%% signals are put into the smallest container int, long, short, or char
+%% that will hold them.  Signals that use multi-word ChunkArrays in
+%% simulation are supported in code generation if and only if they fit
+%% in a long for the target compiler.
+%%
+%% An example is 64 bit signals.  Some compilers define long to be 64 bits.  
+%% For these targets, the signal would be put in a long rather than the 
+%% ChunkArray simulation used.  However, many compilers used in code generation 
+%% define long to be just 32 bits.  For these targets, Simulink models containing 
+%% 33+ bit signals would error out when generating code.  A similar common example
+%% are 40 bit signals.  For some DSP chip compilers, 40 bits is a native C integer
+%% data type.  When generating code for these targets, 40 bit signals are put into
+%% the native 40 bit type.
+%%
+%% Note: Parameter have different limitations.
+%%
+%% Real Time Workshop provides many services for handling Simulink Run Time
+%% Parameters.  Most of the work in managing these parameters during the code
+%% generation processes is automatically handled by Real Time Workshop.  This
+%% saves an S-function author lots of work.  However, Simulink currently limits
+%% fixed-point parameters to 32 bits or less.  
+%%
+%% Fortunately, most designs don't need parameters with more than 32 bits.
+%% This is true even for parameters with signals larger than 32 bits.  For
+%% example, suppose a DSP chip supports data types with 40 bits.  This 40
+%% bit type is usually employed as an accumulator.  Accumulators are
+%% places where intermediate calculations are temporarily stored.  This
+%% calculation is derived from the calculations on smaller signals and
+%% parameters.  In the case of a 40 bit accumulator, the signals and 
+%% parameters involved would almost always be 16 bits, so the parameters
+%% are actually less than half the size for the accumulator.
+%%
+%% If design really must have parameters larger than 32 bits, then users
+%% should not use Run Time Parameters for these.  Instead users must do
+%% all the work to manage these parameters throughout the code generation 
+%% process.  This is a very advanced topic and beyond the scope of
+%% the API for user written fixed-point C S-functions.
+%%
+%% Note: Container Category not directly supported in TLC
+%%
+%% As noted above, the storage containers used for fixed-point data types
+%% can change in generated code.  In fact, new categories such as 24, 40, and 64
+%% bit containers can appear.  For this reason, the fxpStorageContainerCategory
+%% enum and functions that use it are not supported in TLC
+%%
+%% The functions below replace the roles that container category filled.
+
+%% The closest replacement for storage container category is "NativeType".
+%% This is a string that can be used in variable declarations, in type casts,
+%% and sizeof calls.  Usually, it is a string that will be typedef'd 
+%% to a standard C type.  Real Time Workshop infrastructures handles the
+%% work of getting the typedef statement into the generated code.
+%%    Some examples are "real_T" which is usually typedef'd to "double".
+%% "real32_T" is usually typedef'd to "float".  Fixed-point types may 
+%% return things like "int8_T", "uint24_T", etc.  This are typedef'd as
+%% appropriate to int, long, short, or char.
+%%
+%function FixPt_DataTypeNativeType( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.NativeType
+  %%
+%endfunction
+
+
+%% Alternate replacements for storage container category
+%% are given below.  These return a true or false indicating whether or
+%% not a particular standard C type is used to hold a given data type.
+%% 
+%% To prevent confusion, it should be recalled that the C integer data types
+%% are not unique.  The C standard requires
+%%    sizeof(char) <= sizeof(short) <= sizeof(int) <= sizeof(long)
+%% None of these inequalities are strict.  One or more of these integer data 
+%% types can and very often are the same.  For example, most compilers for
+%% Pentium chips define both int and long to be 32 bits.  For many 16 bit
+%% embedded microprocessors, short and int are both 16 bits.  As noted above,
+%% there are compilers for floating point DSPs where int, long, short, and
+%% yes even char are 32 bits.  Because of the potential overlap in sizes,
+%% the functions below do not necessarily give mutually exclusive answers.
+%% For example, a data type code be stored in both UInt and ULong if 
+%% int and long integers have the same size.
+
+%function FixPt_DataTypeStorageDouble( block, dataTypeId )
+  %%
+  %return dataTypeId == tSS_DOUBLE
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageSingle( block, dataTypeId )
+  %%
+  %return dataTypeId == tSS_SINGLE
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageScaledDouble( block, dataTypeId )
+  %%
+  %if dataTypeId == tSS_DOUBLE || dataTypeId == tSS_SINGLE
+    %%
+    %return 0
+  %else
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return ( dataType.NativeType == "real_T" || dataType.NativeType == "real32_T" )
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageSInt( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return  dataType.IsSigned && dataType.RequiredBits == IntegerSizes.IntNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageUInt( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return !dataType.IsSigned && dataType.RequiredBits == IntegerSizes.IntNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageSLong( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return  dataType.IsSigned && dataType.RequiredBits == IntegerSizes.LongNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageULong( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return !dataType.IsSigned && dataType.RequiredBits == IntegerSizes.LongNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageSShort( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return  dataType.IsSigned && dataType.RequiredBits == IntegerSizes.ShortNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageUShort( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return !dataType.IsSigned && dataType.RequiredBits == IntegerSizes.ShortNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageSChar( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return  dataType.IsSigned && dataType.RequiredBits == IntegerSizes.CharNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+%function FixPt_DataTypeStorageUChar( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+    %%
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return !dataType.IsSigned && dataType.RequiredBits == IntegerSizes.CharNumBits    
+    %%
+  %else
+    %return 0
+  %endif
+  %%
+%endfunction
+
+
+
+%% Note: Registration of data types not supported in TLC
+%%
+%% All the data types required should be registered in Simulink.  During
+%% mdlInitializeSizes, mdlSetInputPortDataType, mdlSetOutputPortDataType, or
+%% mdlSetWorkWidths, the S-function should call ssRegisterDataTypeFxpBinaryPoint
+%% or ssRegisterDataTypeFxpSlopeBias to Register any special data types
+%% required.
+%% 
+
+
+%% Note: check for API compatibility not supported in TLC
+%%
+%% During mdlInitializeSizes, mdlSetInputPortDataType, mdlSetOutputPortDataType, 
+%% or mdlSetWorkWidths, the S-function should call ssGetDataTypeIsFxpFltApiCompat
+%% to make sure that all the data types are supported.  When the TLC phase
+%% of code generation is reached, it is assumed by the API that the block
+%% is only handling supported data types.
+
+
+%% ssGetDataTypeStorageContainerSize
+%%
+%% The storage container size is given by the function below.  Unlikely, the
+%% simulation version this function does not return an integer like 1 or 4.  
+%% Instead, it returns a string like "sizeof(int16_T)".  This string is
+%% suitable and desireable for generating code like
+%%    memcpy( pDst, pSrc, 8*sizeof(int16_T) )
+%% 
+%function FixPt_GetDataTypeStorageContainerSize( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return "(sizeof(%<dataType.NativeType>)"
+  %%
+%endfunction
+
+
+%% ssGetDataTypeIsFixedPoint
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeIsFixedPoint( block, dataTypeId )
+  %%
+  %if dataTypeId == tSS_DOUBLE || dataTypeId == tSS_SINGLE
+    %%
+    %return 0
+  %else
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return ( dataType.NativeType != "real_T" && dataType.NativeType != "real32_T" )
+  %endif
+  %%
+%endfunction
+
+
+%% ssGetDataTypeIsFloatingPoint
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeIsFloatingPoint( block, dataTypeId )
+  %%
+  %return dataTypeId == tSS_DOUBLE || dataTypeId == tSS_SINGLE
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFxpWordLength ===============================
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFxpWordLength( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFloatingPoint( block, dataTypeId )
+    %%
+    %<LibBlockReportFatalError(block,"Word Length not supported for true floating point types.")>
+    %%
+  %else
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return dataType.RequiredBits
+  %endif
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFxpContainWordLen ===============================
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFxpContainWordLen( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFloatingPoint( block, dataTypeId )
+    %%
+    %<LibBlockReportFatalError(block,"Storage Container Word Length not supported for true floating point types.")>
+    %%
+  %elseif FixPt_DataTypeStorageScaledDouble( block, dataTypeId )
+    %%
+    %<LibBlockReportFatalError(block,"Storage Container Word Length not supported for Scaled-Double types.")>
+    %%
+  %else
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return dataType.ActualBits
+  %endif
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFxpIsSigned ===============================
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFxpIsSigned( block, dataTypeId )
+  %%
+  %if FixPt_DataTypeIsFloatingPoint( block, dataTypeId )
+    %%
+    %<LibBlockReportFatalError(block,"Word Length not supported for true floating point types.")>
+    %%
+  %else
+    %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+    %%
+    %return dataType.ActualBits
+  %endif
+  %%
+%endfunction
+
+
+
+%% ssGetDataTypeIsScalingTrivial
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeIsScalingTrivial( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.FixedExp == 0 && dataType.FracSlope == 1.0 && dataType.Bias == 0.0
+  %%
+%endfunction
+
+
+%% ssGetDataTypeIsScalingPow2
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeIsScalingPow2( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.FracSlope == 1.0 && dataType.Bias == 0.0
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFractionLength
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFractionLength( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return -1*dataType.FixedExp
+  %%
+%endfunction
+
+
+%% ssGetDataTypeTotalSlope
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeTotalSlope( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.FracSlope * FixPt_Pow2(dataType.FixedExp)
+  %%
+%endfunction
+
+
+%% ssGetDataTypeBias
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeBias( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.Bias
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFracSlope
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFracSlope( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.FracSlope
+  %%
+%endfunction
+
+
+%% ssGetDataTypeFixedExponent
+%%
+%% The equivalent function is given below.
+%%
+%function FixPt_DataTypeFixedExponent( block, dataTypeId )
+  %%
+  %assign dataType = FixPt_GetDataTypeFromIndex(dataTypeId)
+  %%
+  %return dataType.FixedExp
+  %%
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% The following functions are obsolete.  The term DoublesOverride
+%% is confusing and is no longer used.  The clearer terms is
+%% scaled doubles
+
+%function FixPt_DataTypeStorageDoublesOverride( block, dataTypeId )
+  %%
+  %assign retVal = FixPt_DataTypeStorageScaledDouble( block, dataTypeId )
+  %%
+  %return retVal
+  %%
+%endfunction
+
+
+
+
+%endif %% _FIX_PUBLISHED_
+
+%% [EOF] %% $RCSfile: fix_published.tlc,v $

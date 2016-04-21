@@ -1,0 +1,261 @@
+%% ============================================================================
+%% 
+%% $Revision: 1.1.6.3 $ 
+%% 
+%%
+%% Abstract:
+%%
+%%   This system file generates the model_targ_data_map.m file containing
+%%   the mapping info from the global memory map so that SL can create the
+%%   data type transition tables.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%if EXISTS("_EXTMODEMAPLIB_") == 0
+%assign _EXTMODEMAPLIB_ = 1
+
+
+%% Function: FcnDumpExtModeHostMapBody =========================================
+%% Abstract:
+%%  Dumps the data type transition information for signals or parameters to
+%%  an m-file.
+%%
+%function FcnDumpExtModeHostMapBody(type) Output
+  %with GlobalMemoryMap
+    %assign structuredData     = SLibGetMapStructData(type)
+    %assign nTotSects          = SLibGetMapNumDataSections(type)
+    %switch(type)
+      %case "parameter"
+	%assign map           = "paramMap"
+	%assign structureName = "%<tParameters>"
+	%assign sectIdxOffset = 0
+	%break
+      %case "signal"
+	%assign map           = "sigMap"
+	%assign structureName = "%<tBlockIO>"
+	%assign sectIdxOffset = 0
+	%break
+      %case "dwork"
+	%assign map           = "dworkMap"
+	%assign structureName = "%<tDWork>"
+	%assign sectIdxOffset = SLibGetMapNumDataSections("signal")
+	%break
+      %default
+	%assert TLC_FALSE
+	%break
+    %endswitch
+    %assign globalSectIdx = 1
+    
+    nTotData      = 0; %add to this count as we go
+    nTotSects     = %<nTotSects>;
+    sectIdxOffset = %<sectIdxOffset>;
+    
+    ;%
+    ;% Define dummy sections & preallocate arrays
+    ;%
+    dumSection.nData = -1;  
+    dumSection.data  = [];
+    
+    dumData.logicalSrcIdx = -1;
+    dumData.dtTransOffset = -1;
+    
+    ;%
+    ;% Init/prealloc %<map>
+    ;%
+    %<map>.nSections           = nTotSects;
+    %<map>.sectIdxOffset       = sectIdxOffset;
+    %if (%<nTotSects> > 0)
+      %<map>.sections(nTotSects) = dumSection; %prealloc
+    %endif
+    %<map>.nTotData            = -1;
+    
+    ;%
+    ;% Auto data (%<structureName>)
+    ;%
+    %if !EXISTS(structuredData.NumSections)
+      %assign numSections = 0
+    %else
+      %assign numSections = structuredData.NumSections
+    %endif
+    %foreach sectionIdx = numSections
+      %assign section = structuredData.Section[sectionIdx]
+      section.nData     = %<section.NumData>;
+      section.data(%<section.NumData>)  = dumData; %prealloc
+      
+      %foreach dataIdx = section.NumData
+	%assign data = section.Data[dataIdx]
+	%if ISFIELD(data,"SL_LogicalSrc")
+	  %assign mIdx = dataIdx + 1 %% '1' based indexing for M
+	  ;% %<data.Name>
+	  %assign varName = "data.SL_LogicalSrc"
+	  %assign var = %<varName>
+	  %assign dtTransOffset = CAST("Number",data.OffsetFromBaseAddr)
+	  %if section.IsComplex
+	    %assign dtTransOffset = dtTransOffset/2
+	  %endif
+	  section.data(%<mIdx>).logicalSrcIdx = %<var>;
+	  section.data(%<mIdx>).dtTransOffset = %<dtTransOffset>;
+	%endif
+	
+      %endforeach
+      nTotData = nTotData + section.nData;
+      %<map>.sections(%<globalSectIdx>) = section;
+      clear section
+      
+      %assign globalSectIdx = globalSectIdx + 1
+    %endforeach
+    
+    %if ISFIELD(GlobalMemoryMap,"UnstructuredData")
+      ;%
+      ;% Non-auto Data (%<type>)
+      ;%
+      %assign nData = UnstructuredData.NumData
+      %foreach dataIdx = nData
+	%assign data = UnstructuredData.Data[dataIdx]
+	%if data.SL_ExtModeType == type
+	  %% Any data record without the SL_LogicalSrc field does not
+	  %% correspond to an element of the Simulink BIO or Aggregate
+	  %% Parameter tables and can not be included in the data type
+	  %% tranistion table or the target data map file.  An example
+	  %% is a signal declared as an "exported global".  The function
+	  %% SLibGetMapNumDataSections() in globalmaplib.tlc performs
+	  %% the same check to return the correct number of data sections.
+	  %if ISFIELD(data,"SL_LogicalSrc")
+	      
+	    ;% %<data.Name>
+	    section.nData = 1;
+	    %assign varName = "data.SL_LogicalSrc"
+	    %assign var = %<varName>
+	    section.data(1).logicalSrcIdx = %<var>;
+	    section.data(1).dtTransOffset = 0;
+	  
+	    nTotData = nTotData + section.nData;
+	    %<map>.sections(%<globalSectIdx>) = section;
+	    clear section
+	  
+	    %assign globalSectIdx = globalSectIdx + 1
+	  %endif
+	%endif
+      %endforeach
+    %endif
+    
+    %if ISFIELD(GlobalMemoryMap,"CustomData")
+      ;%
+      ;% Custom Data (%<type>)
+      ;%
+      %assign nDataRecs = NumCustomData
+      %foreach dataRecIdx = nDataRecs
+	%assign customDataRec = CustomData[dataRecIdx]
+	%assign nData         = customDataRec.NumData
+	
+      %foreach dataIdx = nData
+	  %if nData == 1
+	    %assign data = customDataRec.Data
+	  %else
+	    %assign data = customDataRec.Data[dataIdx]
+	  %endif
+	
+	  %if data.SL_ExtModeType == type && data.NumDimensions != -1
+	    %% Any data record without the SL_LogicalSrc field does not
+	    %% correspond to an element of the Simulink BIO or Aggregate
+	    %% Parameter tables and can not be included in the data type
+	    %% tranistion table or the target data map file.  An example
+	    %% is a signal declared as an "exported global".  The function
+	    %% SLibGetMapNumDataSections() in globalmaplib.tlc performs
+	    %% the same check to return the correct number of data sections.
+	    %if ISFIELD(data,"SL_LogicalSrc")
+	  
+	      ;% %<data.Name>
+	      section.nData = 1;
+	      %assign varName = "data.SL_LogicalSrc"
+	      %assign var = %<varName>
+	      section.data(1).logicalSrcIdx = %<var>;
+	      section.data(1).dtTransOffset = 0;
+	  
+	      nTotData = nTotData + section.nData;
+	      %<map>.sections(%<globalSectIdx>) = section;
+	      clear section
+	  
+	      %assign globalSectIdx = globalSectIdx + 1
+	    %endif
+	  %endif
+	%endforeach
+      %endforeach
+    %endif
+
+    ;%
+    ;% Add final counts to struct.
+    ;%
+    %<map>.nTotData = nTotData;
+    
+  %endwith
+%endfunction
+
+
+%% Function: SLibWriteExtModeHostMapFile =======================================
+%% Abstract:
+%%  The output of this file is the interface to simulink for data mapping.
+%%
+%%   This prototype contains the following assumptions.  The ERT team
+%%   would need to maintain this and generalize this to cover Kai's changes.
+%%
+%%     o all data defined in Simulink appears in the map (but doesn't matter
+%%       where as long as this function is written correctly)
+%%     o all structured param data is in rtP
+%%     o all structured block i/o data is in rtB
+%%     o data types specified in Simulink are respected by ERT
+%%
+%%   Notes
+%%     o To view the generated m-file with proper indentation, try loading it
+%%       into the m-file editor or emacs with the m editing mode.
+%%
+%function SLibWriteExtModeHostMapFile() void
+
+  %openfile f = "%<Name>_targ_data_map.m"
+  function targMap = targDataMap(),
+
+  ;%***********************
+  ;% Create Parameter Map *
+  ;%***********************
+  %<FcnDumpExtModeHostMapBody("parameter")>
+
+  ;%**************************
+  ;% Create Block Output Map *
+  ;%**************************
+  %<FcnDumpExtModeHostMapBody("signal")>
+
+  ;%*******************
+  ;% Create DWork Map *
+  ;%*******************
+  %<FcnDumpExtModeHostMapBody("dwork")>
+
+  ;%
+  ;% Add individual maps to base struct.
+  ;%
+
+  targMap.paramMap  = paramMap;    
+  targMap.signalMap = sigMap;
+  targMap.dworkMap  = dworkMap;
+  
+  ;%
+  ;% Add checksums to base struct.
+  ;%
+
+  %assign ModelChecksum0 = SPRINTF("%u", %<ModelChecksum[0]>)
+  %assign ModelChecksum1 = SPRINTF("%u", %<ModelChecksum[1]>)
+  %assign ModelChecksum2 = SPRINTF("%u", %<ModelChecksum[2]>)
+  %assign ModelChecksum3 = SPRINTF("%u", %<ModelChecksum[3]>)
+
+  targMap.checksum0 = %<ModelChecksum0>;
+  targMap.checksum1 = %<ModelChecksum1>;
+  targMap.checksum2 = %<ModelChecksum2>;
+  targMap.checksum3 = %<ModelChecksum3>;
+
+  %closefile f
+
+%endfunction %% SLibWriteExtModeHostMapFile
+
+
+%endif %% _EXTMODEMAPLIB_
+
+%% [EOF] extmodemaplib.tlc

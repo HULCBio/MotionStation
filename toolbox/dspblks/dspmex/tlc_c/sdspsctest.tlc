@@ -1,0 +1,110 @@
+%%
+%% $RCSfile: sdspsctest.tlc,v $
+%% Abstract:
+%%   Target file for the Schur-Cohn Stability Test block
+%%   S-Function in the Signal Processing Blockset.
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.7.4.2 $ $Date: 2004/04/12 23:09:38 $
+
+%implements "sdspsctest" "C"
+%include "dsplib.tlc"
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract: Determine if roots are all inside unit circle
+%%
+%function Outputs(block, system) Output
+    /* Schur-Cohn Stability Test (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %assign INPORT     = 0
+    %assign OUTPORT    = 0
+    %assign c0         = LibBlockInputSignalIsComplex(INPORT)
+    %assign in_dtype   = LibBlockInputSignalDataTypeName(INPORT,"")
+    %assign IS_BOOLEAN = (LibBlockOutputSignalDataTypeId(OUTPORT) == tSS_BOOLEAN)
+    %assign dTrue      = IS_BOOLEAN ? "TRUE" : "1.0"
+    %assign dFalse     = IS_BOOLEAN ? "FALSE" : "0.0"
+    %assign nRows      = CAST("Number", SFcnParamSettings.nRows)
+    %assign nChans     = CAST("Number", SFcnParamSettings.nChans)
+    %%
+    %if nRows == 1
+        %%
+        %% Scalar input
+        %%
+        /* Scalar input - root is always inside unit circle: */
+        %if nChans > 1
+            {
+              int_T j = %<nChans>; /* # of channels */
+              while(--j > 0) %<LibBlockOutputSignal(OUTPORT,"j","", 0)> = %<dTrue>;
+            }
+        %else
+            %<LibBlockOutputSignal(OUTPORT,"","", 0)> = %<dTrue>;
+        %endif
+    %else
+        %%
+        %% Vector/matrix input
+        %%
+        {
+            %if nChans > 1
+                const int_T nChans = %<nChans>;
+                int_T j = nChans;
+                while(--j >= 0) %<LibBlockOutputSignal(OUTPORT,"j","", 0)> = %<dTrue>;
+            %else
+                %% Defer to after variables are declared below:
+                %% %<LibBlockOutputSignal(OUTPORT,"","", 0)> = %<dTrue>;
+            %endif
+            
+            %if nChans > 1
+                %assign jN = "j*N"
+                %assign jout = "j"
+                %%
+                for(j=0; j < nChans; j++) {
+            %else
+                %assign jN = ""
+                %assign jout = ""
+            %endif
+                    %<in_dtype> *p1 = %<LibBlockDWorkAddr(PolyBuf1,"","",0)>;
+                    %<in_dtype> *p2 = %<LibBlockDWorkAddr(PolyBuf2,"","",0)>;
+                    int_T N = %<nRows>;  /* # of coeffs in polynomial */
+
+                    %if nChans == 1
+                       %<LibBlockOutputSignal(OUTPORT,"","", 0)> = %<dTrue>;
+
+                    %endif
+                    %%
+                    memcpy(p1,     /* Copy all elements to temp storage */
+                           %<LibBlockInputSignalAddr(INPORT, jN, "", 0)>,
+                           N * sizeof(%<in_dtype>));
+
+                    while(--N > 0) {
+                        const %<in_dtype> k1 = p1[0];
+                        const %<in_dtype> k2 = p1[N];
+                        %if c0
+                            if (CMAGSQ(k1) <= CMAGSQ(k2)) {
+                        %else
+                            if (k1*k1 <= k2*k2) {
+                        %endif
+                            %<LibBlockOutputSignal(OUTPORT,jout,"", 0)> = %<dFalse>;
+                            break;
+                        }
+                        {
+                            int_T i;
+                            for(i=0; i<N; i++) {
+                                %if c0
+                                    p2[i].re = CMULT_RE(k1,p1[i]) - CMULT_YCONJ_RE(k2,p1[N-i]);
+                                    p2[i].im = CMULT_IM(k1,p1[i]) - CMULT_YCONJ_IM(k2,p1[N-i]);
+                                %else
+                                    p2[i] = k1*p1[i] - k2*p1[N-i];
+                                %endif
+                            }
+                        }
+                        {%<in_dtype> *tmp=p1; p1=p2; p2=tmp;}  /* Swap p1 and p2 pointers */
+                    }
+            %if nChans > 1
+                }
+            %endif
+        }
+    %endif
+
+%endfunction %% Outputs
+
+%% EOF: sdspsctest.tlc

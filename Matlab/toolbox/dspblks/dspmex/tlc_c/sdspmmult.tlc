@@ -1,0 +1,392 @@
+%% $RCSfile: sdspmmult.tlc,v $
+%% $Revision: 1.14.4.2 $ 
+%% $Date: 2004/04/12 23:09:02 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix multiply
+
+%implements sdspmmult "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Asize")>
+  %<LibRenameParameter(block, P2, "Bcols")>
+  %%
+%endfunction 
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Multiply (%<ParamSettings.FunctionName>) - %<Name> */
+  {
+    %assign INPORT0 = 0
+    %assign INPORT1 = 1
+    %assign OUTPORT = 0
+    %%
+    %assign contig0 = IsInputPortContiguous(block, INPORT0)
+    %assign contig1 = IsInputPortContiguous(block, INPORT1)
+    %assign cplx_A  = (LibBlockInputSignalIsComplex(INPORT0) != 0)
+    %assign cplx_B  = (LibBlockInputSignalIsComplex(INPORT1) != 0)
+    %assign cplx_Y  = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+    %assign dtype_A = cplx_A ? "creal_T" : "real_T"
+    %assign dtype_B = cplx_B ? "creal_T" : "real_T"
+    %assign dtype_Y = cplx_Y ? "creal_T" : "real_T"
+    %assign width_A = LibDataInputPortWidth(INPORT0)
+    %assign width_B = LibDataInputPortWidth(INPORT1)
+    %%
+    %assign ii = CAST("Number",LibBlockParameterValue(Asize,0))
+    %assign jj = CAST("Number",LibBlockParameterValue(Asize,1))
+    %assign kk = CAST("Number",LibBlockParameterValue(Bcols,0))
+    %%
+    %%
+    %if (width_A == 1) && (width_B == 1)      
+      %%
+      %% Scalar * Scalar
+      %%
+      /* Scalar x Scalar */
+      %%
+      %assign A    = LibBlockInputSignal(INPORT0,  "", "", 0)
+      %assign B    = LibBlockInputSignal(INPORT1,  "", "", 0) 
+      %assign A_re = LibBlockInputSignal(INPORT0,  "", "", "%<tRealPart>0")
+      %assign A_im = LibBlockInputSignal(INPORT0,  "", "", "%<tImagPart>0") 
+      %assign B_re = LibBlockInputSignal(INPORT1,  "", "", "%<tRealPart>0")
+      %assign B_im = LibBlockInputSignal(INPORT1,  "", "", "%<tImagPart>0")
+      %assign Y_re = LibBlockOutputSignal(OUTPORT, "", "", "%<tRealPart>0")
+      %assign Y_im = LibBlockOutputSignal(OUTPORT, "", "", "%<tImagPart>0")
+      %%
+      %if !cplx_A && !cplx_B
+	%<Y_re> = %<A_re> * %<B_re>;
+      %elseif !cplx_A && cplx_B
+	%<Y_re> = %<A_re> * %<B_re>;
+	%<Y_im> = %<A_re> * %<B_im>;
+      %elseif cplx_A && !cplx_B
+	%<Y_re> = %<A_re> * %<B_re>;
+	%<Y_im> = %<A_im> * %<B_re>;
+      %else %%cplx_A && cplx_B
+	%<Y_re> = CMULT_RE(%<A>,%<B>);
+	%<Y_im> = CMULT_IM(%<A>,%<B>);
+      %endif
+      %%
+    %elseif (width_A == 1) && (width_B != 1)  || (width_A != 1) && (width_B == 1) 
+      %%
+      %if width_A == 1
+	%% A is scalar, B is not
+	%%
+	%% Scalar * Matrix
+	%% Scalar * Vector
+	%%
+	/* Scalar x Matrix */
+	%%
+	%assign width = width_B
+      %else
+	%% B is scalar, A is not
+	%%
+	%% Matrix * Scalar
+	%% Vector * Scalar
+	%%
+	/* Matrix x Scalar */
+	%%
+	%% Reverse the port assignment:
+	%%
+	%assign INPORT0 = 1
+	%assign INPORT1 = 0
+	%%
+	%assign cplx_tmp = cplx_A	
+	%assign cplx_A   = cplx_B
+	%assign cplx_B   = cplx_tmp
+	%%
+	%assign width    = width_A
+      %endif
+      %%
+      %%
+      %%int_T i;
+      %% for(i=0; i<%<width>; i++) 
+      %assign rollVars = ["u0","u1","Y"]
+      %roll sigIdx = RollRegions, \
+	lcv = RollThreshold, block, "Roller", rollVars      	
+	%% At this point, A is *always* the scalar in the TLC code below
+	%assign A    = LibBlockInputSignal(INPORT0,  "", "", 0)
+	%assign A_re = LibBlockInputSignal(INPORT0,  "", "", "%<tRealPart>0")
+	%assign A_im = LibBlockInputSignal(INPORT0,  "", "", "%<tImagPart>0") 
+	%assign B    = LibBlockInputSignal(INPORT1,  "", lcv, %<sigIdx>) 
+	%assign B_re = LibBlockInputSignal(INPORT1,  "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign B_im = LibBlockInputSignal(INPORT1,  "", lcv, "%<tImagPart>%<sigIdx>")
+	%assign Y_re = LibBlockOutputSignal(OUTPORT, "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign Y_im = LibBlockOutputSignal(OUTPORT, "", lcv, "%<tImagPart>%<sigIdx>")
+	
+	%if !cplx_A && !cplx_B
+	  %<Y_re> = %<A_re> * %<B_re>;
+	%elseif !cplx_A && cplx_B
+	  %<Y_re> = %<A_re> * %<B_re>;
+	  %<Y_im> = %<A_re> * %<B_im>;
+	%elseif cplx_A && !cplx_B
+	  %<Y_re> = %<A_re> * %<B_re>;
+	  %<Y_im> = %<A_im> * %<B_re>;
+	%else %%cplx_A && cplx_B
+	  %<Y_re> = CMULT_RE(%<A>,%<B>);
+	  %<Y_im> = CMULT_IM(%<A>,%<B>);
+	%endif
+      %endroll
+      %%
+    %elseif (width_A != 1) && (width_B != 1)
+      %%
+      %if (ii==1 && jj>1 && kk==1)
+      %%
+      %% Vector * Vector  -> Inner Product
+      %%      
+      /* Inner product */
+      %assign Y_re0 = LibBlockOutputSignal(OUTPORT, "", "", "%<tRealPart>0")
+      %assign Y_im0 = LibBlockOutputSignal(OUTPORT, "", "", "%<tImagPart>0")
+      %%      
+      %<Y_re0> = 0.0;	
+      %if cplx_Y
+	%<Y_im0> = 0.0;	
+      %endif
+      
+      %assign rollVars = ["u0","u1","Y"]
+      %roll sigIdx = RollRegions, \
+	lcv = RollThreshold, block, "Roller", rollVars      
+	%assign A     = LibBlockInputSignal(INPORT0,  "", lcv, "%<sigIdx>")
+	%assign A_re  = LibBlockInputSignal(INPORT0,  "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign A_im  = LibBlockInputSignal(INPORT0,  "", lcv, "%<tImagPart>%<sigIdx>") 
+	%assign B     = LibBlockInputSignal(INPORT1,  "", lcv, "%<sigIdx>")
+	%assign B_re  = LibBlockInputSignal(INPORT1,  "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign B_im  = LibBlockInputSignal(INPORT1,  "", lcv, "%<tImagPart>%<sigIdx>")
+	%assign Y_re  = LibBlockOutputSignal(OUTPORT, "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign Y_im  = LibBlockOutputSignal(OUTPORT, "", lcv, "%<tImagPart>%<sigIdx>")	
+	%%
+        %if !cplx_A && !cplx_B
+	  %<Y_re> += %<A_re> * %<B_re>;
+	%elseif !cplx_A && cplx_B
+	  %<Y_re> += %<A_re> * %<B_re>;
+	  %<Y_im> += %<A_re> * %<B_im>;
+	%elseif cplx_A && !cplx_B
+	  %<Y_re> += %<A_re> * %<B_re>;
+	  %<Y_im> += %<A_im> * %<B_re>;
+	%else %%cplx_A && cplx_B
+	  %<Y_re> += CMULT_RE(%<A>,%<B>);
+	  %<Y_im> += CMULT_IM(%<A>,%<B>);
+	%endif	
+      %endroll
+      %%
+    %elseif (ii>1 && jj==1 && kk>1)
+      %%
+      %% Vector *  Vector -> Outer Product
+      %%
+      %if !contig0 || !contig1
+	%<LibDiscontiguousInputError(block)>    
+      %endif
+      %%
+      /* Outer Product */
+      %assign A     = LibBlockInputSignal(INPORT0,  "i", "", 0)
+      %assign A_re  = LibBlockInputSignal(INPORT0,  "i", "", "%<tRealPart>0")
+      %assign A_im  = LibBlockInputSignal(INPORT0,  "i", "", "%<tImagPart>0")
+      %assign B     = LibBlockInputSignal(INPORT1,  "j", "", 0)
+      %assign B_re  = LibBlockInputSignal(INPORT1,  "j", "", "%<tRealPart>0")
+      %assign B_im  = LibBlockInputSignal(INPORT1,  "j", "", "%<tImagPart>0")
+      %%
+      %<dtype_Y> *y  = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+      int_T j;
+      for(j=0; j<%<kk>; j++) {
+	int_T i;
+	for(i=0; i<%<ii>; i++) {
+	  %if !cplx_A && !cplx_B
+	    *y++ = %<A_re> * %<B_re>;
+	  %elseif !cplx_A && cplx_B
+	    y->re     = %<A_re> * %<B_re>;
+	    (y++)->im = %<A_re> * %<B_im>;
+	  %elseif cplx_A && !cplx_B
+	    y->re     = %<A_re> * %<B_re>;
+	    (y++)->im = %<A_im> * %<B_re>;
+	  %else %%cplx_A && cplx_B
+	    y->re     = CMULT_RE(%<A>,%<B>);
+	    (y++)->im = CMULT_IM(%<A>,%<B>);
+          %endif  	
+        }
+      }
+      
+      %elseif (ii==1 && jj>1 && kk>1)
+      %%
+      %% Vector * Matrix  
+      %%
+      %if !contig0 || !contig1
+	%<LibDiscontiguousInputError(block)>    
+      %endif
+      %%
+      /* Vector x Matrix */
+      %%
+      %<dtype_A> *AA = %<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dtype_B> *BB = %<LibBlockInputSignalAddr(INPORT1, "", "", 0)>;
+      %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      int_T k;
+      for(k=%<kk>; k-- > 0; ) {
+	 %<dtype_A> *A2 = AA;
+	 %<dtype_B> *B1 = BB;
+	 %if !cplx_Y
+	   real_T  acc = 0.0;        /* Clear multiply accumulator */
+	 %else
+	   creal_T acc = {0.0, 0.0}; /* Clear multiply accumulator */ 
+	 %endif
+	 %%
+	 int_T   j;	  
+	 for(j=%<jj>; j-- > 0; ) {
+	   %if !cplx_A && !cplx_B
+	     %%
+	     acc += (*A2++) * (*(B1++));
+	     %%
+	   %elseif cplx_A && cplx_B
+	     %%
+	     const creal_T  A2_val = *A2++;
+	     const creal_T  B1_val = *B1++;
+	     acc.re += CMULT_RE(A2_val, B1_val);
+	     acc.im += CMULT_IM(A2_val, B1_val);
+	     %%
+	   %elseif cplx_A && !cplx_B
+	     %%
+	     creal_T A2_val = *A2++;
+	     acc.re += *B1 * A2_val.re;
+	     acc.im += (*B1++) * A2_val.im;
+	     %%
+	   %else %% !cplx_A && cplx_B
+	     %%
+	     creal_T B1_val = *B1++;
+	     acc.re += *A2 * B1_val.re;
+	     acc.im += (*A2++) * B1_val.im;	  
+	   %endif
+	 }
+	 *y++ = acc;
+	 BB += %<jj>;
+      }
+
+      %elseif (ii>1 && jj>1 && kk==1)
+      %%
+      %% Matrix * Vector  
+      %%
+      %if !contig0 || !contig1
+	%<LibDiscontiguousInputError(block)>    
+      %endif
+      %%
+      /* Matrix x Vector */
+      %%
+      %<dtype_A> *AA = %<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dtype_B> *BB = %<LibBlockInputSignalAddr(INPORT1, "", "", 0)>;
+      %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      int_T i;
+      for(i=%<ii>; i-- > 0; ) {
+	%<dtype_A> *A2 = AA++;
+	%<dtype_B> *B1 = BB;
+	%if !cplx_Y
+	  real_T  acc = 0.0;        /* Clear multiply accumulator */
+	%else
+	  creal_T acc = {0.0, 0.0}; /* Clear multiply accumulator */ 
+	%endif
+	%%
+	int_T   j;
+	
+	for(j=%<jj>; j-- > 0; ) {
+	  %if !cplx_A && !cplx_B
+	    %%
+	    acc += (*A2) * (*(B1++));
+	    %%
+	  %elseif cplx_A && cplx_B
+	    %%
+	    const creal_T  A2_val = *A2;
+	    const creal_T  B1_val = *B1++;
+	    acc.re += CMULT_RE(A2_val, B1_val);
+	    acc.im += CMULT_IM(A2_val, B1_val);
+	    %%
+	  %elseif cplx_A && !cplx_B
+	    %%
+	    creal_T A2_val = *A2;
+	    acc.re += *B1 * A2_val.re;
+	    acc.im += (*B1++) * A2_val.im;
+	    %%
+	  %else %% !cplx_A && cplx_B
+	    %%
+	    creal_T B1_val = *B1++;
+	    acc.re += *A2 * B1_val.re;
+	    acc.im += *A2 * B1_val.im;	  
+	  %endif	  
+	  A2 += %<ii>;
+	}
+	*y++ = acc;
+      }
+      %elseif (ii>1 && jj>1 && kk>1)
+      %%
+      %% Matrix * Matrix
+      %%
+      %if !contig0 || !contig1
+	%<LibDiscontiguousInputError(block)>    
+      %endif
+      %%
+      /* Matrix x Matrix */
+      %%
+      %<dtype_A> *AA = %<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dtype_B> *BB = %<LibBlockInputSignalAddr(INPORT1, "", "", 0)>;
+      %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      int_T k;      
+      for(k=%<kk>; k-- > 0; ) {
+	%<dtype_A> *A1 = AA;
+	int_T i;
+	
+	for(i=%<ii>; i-- > 0; ) {
+	  %<dtype_A> *A2 = A1++;
+	  %<dtype_B> *B1 = BB;
+	  %if !cplx_Y
+	    real_T  acc = 0.0;        /* Clear multiply accumulator */
+	  %else
+	    creal_T acc = {0.0, 0.0}; /* Clear multiply accumulator */ 
+	  %endif
+	  %%
+	  int_T   j;
+	  
+	  for(j=%<jj>; j-- > 0; ) {
+	    %if !cplx_A && !cplx_B
+	      %%
+	      acc += (*A2) * (*(B1++));
+	      %%
+	    %elseif cplx_A && cplx_B
+	      %%
+	      const creal_T  A2_val = *A2;
+	      const creal_T  B1_val = *B1++;
+	      acc.re += CMULT_RE(A2_val, B1_val);
+	      acc.im += CMULT_IM(A2_val, B1_val);
+	      %%
+	    %elseif cplx_A && !cplx_B
+	      %%
+	      creal_T A2_val = *A2;
+	      acc.re += *B1 * A2_val.re;
+	      acc.im += (*B1++) * A2_val.im;
+	      %%
+	    %else %% !cplx_A && cplx_B
+	      %%
+	      creal_T B1_val = *B1++;
+	      acc.re += *A2 * B1_val.re;
+	      acc.im += *A2 * B1_val.im;	  
+	    %endif
+	    A2 += %<ii>;
+	  }
+	  *y++ = acc;
+	}
+	BB += %<jj>;
+      }
+      %else
+	%%
+	%error Unhandled input size for matrix multiply block
+	%%
+      %endif %% end matrix vector cases
+    %endif   %% end port width tests
+  }
+
+%endfunction
+
+%% [EOF] sdspmmult.tlc

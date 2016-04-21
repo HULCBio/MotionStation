@@ -1,0 +1,186 @@
+%% ============================================================================
+%% $RCSfile: srtreg.tlc,v $
+%% $Revision: 1.22.4.3 $
+%% $Date: 2004/04/14 23:48:57 $
+%%
+%% Abstract:
+%%   This system file creates model_reg.h for RTW's RealTime code format.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%selectfile NULL_FILE
+
+%% ============================================================================
+%% The static real-time file model_reg.h is created as follows:
+%%
+%% /* File banner */
+%%
+%% User code ..................... LibRegFileCustomCode(buffer, "header")
+%%
+%% MdlInitializeSizes()
+%% MdlInitializeSampleTimes()
+%%
+%% SimStruct *model()
+%% {
+%%   Initialize SimStruct
+%%   {
+%%     RTW declarations
+%%     Model registration
+%%     Non-finite assignments .... LibCacheNonFiniteAssignment(buffer)
+%%     {
+%%       Block instance data ..... BlockInstanceData(block, system)
+%%     }
+%%     Non-inlined S-Function
+%%     registration
+%%     {
+%%       User declarations ....... LibMdlRegCustomCode(buffer, "declaration")
+%%       User entry code ......... LibMdlRegCustomCode(buffer, "execution")
+%%       User exit code .......... LibMdlRegCustomCode(buffer, "trailer")
+%%     }
+%%   }
+%%   return rtS
+%% }
+%%
+%% User code ..................... LibRegFileCustomCode(buffer, "trailer")
+%%
+%% /* [EOF] model_reg.h */
+
+%if EXISTS("_SRTREG_") == 0
+%assign _SRTREG_ = 1
+
+%realformat "CONCISE"
+
+%assign opFile = SLibAddModelFile("SystemBody","Simulink", Name)
+
+%assign rtModelObj     = RTMGetModelSS()
+%assign rtModelObjType = tSimStructType
+
+%% ==========================================================================
+%% Dump buffers to output
+%%
+
+%openfile includesBuf
+%% ============================================================================
+%% Data type transition map for external mode
+%%
+%if ExtMode == 1
+
+  #include "%<Name>_dt.h"
+%endif
+%% ============================================================================
+%% Parameter Tuning and Block IO Signals need map.
+%%
+%if ParameterTuning == 1 || BlockIOSignals == 1
+
+  #include "mdl_info.h"
+%endif
+%% ============================================================================
+%% Block IO Signals information to map signals.
+%%
+%if BlockIOSignals == 1
+  
+  #include "%<Name>_bio.c"
+%endif
+%% ============================================================================
+%% Parameter Tuning information to map parameters.
+%%
+%if ParameterTuning == 1
+  
+  #include "%<Name>_pt.c"
+%endif
+%closefile includesBuf
+
+%<SLibSetModelFileAttribute(opFile, "Includes", includesBuf)>
+
+%%
+%% ============================================================================
+%% Top of registration file custom code
+%%
+%openfile tmpBuf
+%<LibDumpTopOfRegFileUserCode()>\
+%closefile tmpBuf
+%<SLibSetModelFileAttribute(opFile, "UserTop", tmpBuf)>
+
+%openfile fcnsBuf
+%% ============================================================================
+%% Initialize function
+%%
+
+%% MdlInitializeSizes
+%%
+/* Function to initialize sizes */
+void MdlInitializeSizes(void)
+{
+  %<LibDumpModelInitializeSizes()>\
+}
+
+%% ============================================================================
+%% MdlInitializeSampleTimes
+%%
+/* Function to initialize sample times */
+void MdlInitializeSampleTimes(void)
+{
+  %<LibDumpModelInitializeSampleTimes()>\
+}
+
+%% ============================================================================
+%% Output registration function
+%%
+/* Function to register the model */
+%<rtModelObjType> *%<CompiledModel.Name>(void)
+{
+  %% These RTW variables are always declared
+  %%
+  %if !GenRTModel
+    static struct _ssMdlInfo mdlInfo;
+  %endif
+  (void)memset((char *)%<rtModelObj>, 0, sizeof(%<rtModelObjType>));
+  %if !GenRTModel
+    (void)memset((char *)&mdlInfo, 0, sizeof(struct _ssMdlInfo));
+    %<RTMSet("MdlInfoPtr", "&mdlInfo")>;
+  %endif
+  
+  %<LibDumpModelRegistration(1)>\
+  %<LibDumpNonFiniteAssignmentCache()>\
+  %<LibDumpBlockInstanceData()>\
+  %<LibDumpSFunctionRegistration()>\
+  %% user code
+  %if !LibRegFcnUserDeclarationIsEmpty()
+    %<"{">
+    %<LibDumpRegFcnUserDeclarationCode()>
+  %endif
+  %<LibDumpRegFcnUserEntryCode()>\
+  %<LibDumpRegFcnUserExitCode()>\
+  %if !LibRegFcnUserDeclarationIsEmpty()
+    %<"}">
+  %endif
+  
+  return %<rtModelObj>;
+}
+
+%closefile fcnsBuf
+
+%<SLibSetModelFileAttribute(opFile, "Functions", fcnsBuf)>
+%% Access TFL for nonfinites, the init call is done by static main.c
+%assign dummy = LibGenMathFcnCall("initnonfinite",...
+  FcnGetDataTypeIdFromName("double"), "sizeof(real_T)", "")
+
+%%
+%% ============================================================================
+%% Custom trailer code
+%%
+%openfile tmpBuf
+%<LibDumpBottomOfRegFileUserCode()>\
+%closefile tmpBuf
+%<SLibSetModelFileAttribute(opFile, "UserBottom", tmpBuf)>
+
+%selectfile NULL_FILE
+
+%% ============================================================================
+%% Undef aliases for consistency checking
+%%
+%undef S
+
+%endif %% _SRTREG_
+
+%% [EOF] srtreg.tlc

@@ -1,0 +1,868 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Fitting Custom Univariate Distributions</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-17">
+      <meta name="m-file" content="customdist1demo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Fitting Custom Univariate Distributions</h1>
+      <introduction>
+         <p>This demo shows some examples of using the Statistics Toolbox function <tt>MLE</tt> to fit custom distributions to univariate data.  Using <tt>MLE</tt>, you can compute maximum likelihood parameter estimates, and estimate their precision, for many kinds of distributions beyond
+            those for which the Toolbox provides specific fitting functions.
+         </p>
+         <p>To do this, you need to define the distribution using one or more M functions.  In the simplest cases, you can write code
+            to compute the probability density function (PDF) for the distribution that you want to fit, and <tt>MLE</tt> will do most of the remaining work for you.  This demo covers those cases.  In problems with censored data, you must also
+            write code to compute the cumulative distribution function (CDF) or the survival function (SF).  In some other problems, it
+            may be advantageous to define the log-likelihood function (LLF) itself.  The second part of this demo, <a href="customdist2demo.html">Fitting Custom Univariate Distributions, Part 2</a>, covers both of those latter cases.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Fitting custom distributions:  a zero-truncated Poisson example</a></li>
+            <li><a href="#11">Supplying additional values to the distribution function: a truncated normal example</a></li>
+            <li><a href="#21">Fitting a more complicated distribution: a mixture of two normals</a></li>
+            <li><a href="#29">Using nested functions: a normal example with unequal precisions</a></li>
+            <li><a href="#38">Using a parameter transformation: the normal example (continued)</a></li>
+         </ul>
+      </div>
+      <h2>Fitting custom distributions:  a zero-truncated Poisson example<a name="1"></a></h2>
+      <p>Count data are often modelled using a Poisson distribution, and you can use the Statistics Toolbox function <tt>POISSFIT</tt> to fit a Poisson model. However, in some situations, counts that are zero do not get recorded in the data, and so fitting
+         a Poisson distribution is not straight-forward because of those "missing zeros".  This example will show how to fit a Poisson
+         distribution to zero-truncated data, using the function <tt>MLE</tt>.
+      </p>
+      <p>For this example, we'll use simulated data from a zero-truncated Poisson distribution.  First, we generate some random Poisson
+         data.
+      </p><pre class="codeinput">randn(<span class="string">'state'</span>,0); rand(<span class="string">'state'</span>,0);
+n = 75;
+lambda = 1.75;
+x = poissrnd(lambda,n,1);
+</pre><p>Next, we remove all the zeros from the data to simulate the truncation.</p><pre class="codeinput">x = x(x &gt; 0);
+length(x)
+</pre><pre class="codeoutput">
+ans =
+
+    68
+
+</pre><p>Here's a histogram of these simulated data.  Notice that the data look reasonably like a Poisson distribution, except that
+         there are no zeros. We will fit them with a distribution that is identical to a Poisson on the positive integers, but that
+         has no probability at zero.  In this way, we can estimate the Poisson parameter lambda while accounting for the "missing zeros".
+      </p><pre class="codeinput">hist(x,[0:1:max(x)+1]);
+</pre><img vspace="5" hspace="5" src="customdist1demo_01.png"> <p>The first step is to define the zero-truncated Poisson distribution by its probability function (PF).  We will create a function
+         to compute the probability for each point in x, given a value for the Poisson distribution's mean parameter lambda.  The PF
+         for a zero-truncated Poisson is just the usual Poisson PF, renormalized so that it sums to one.  With zero truncation, the
+         renormalization is just 1-Pr{0}.  The easiest way to create a function for the PF is to use an anonymous function.
+      </p><pre class="codeinput">pf_truncpoiss = @(x,lambda) poisspdf(x,lambda) ./ (1-poisscdf(0,lambda));
+</pre><p>For simplicity, we have assumed that all the x values given to this function will be positive integers, with no checks.  Error
+         checking, or a more complicated distribution, would probably take more a single line of code, suggesting that the function
+         should be defined in a separate M-file.
+      </p>
+      <p>The next step is to provide a reasonable rough first guess for the parameter lambda.  In this case, we'll just use the sample
+         mean.
+      </p><pre class="codeinput">start = mean(x)
+</pre><pre class="codeoutput">
+start =
+
+    2.1029
+
+</pre><p>We provide <tt>MLE</tt> with the data, and with the anonymous function, using the 'pdf' parameter. (The Poisson is discrete, so this is really a
+         probability function, not a PDF.)  Because the mean parameter of the Poisson distribution must be positive, we also specify
+         a lower bound for lambda.  <tt>MLE</tt> returns the maximum likelihood estimate of lambda, and, optionally, approximate 95% confidence intervals for the parameters.
+      </p><pre class="codeinput">[lambdaHat,lambdaCI] = mle(x, <span class="string">'pdf'</span>,pf_truncpoiss, <span class="string">'start'</span>,start, <span class="string">'lower'</span>,0)
+</pre><pre class="codeoutput">
+lambdaHat =
+
+    1.7302
+
+
+lambdaCI =
+
+    1.3721
+    2.0883
+
+</pre><p>Notice that the parameter estimate is smaller than the sample mean. That's just as it should be, because the maximum likelihood
+         estimate accounts for the missing zeros not present in the data.
+      </p>
+      <p>We can also compute a standard error estimate for lambda, using the large-sample variance approximation returned by <tt>MLECOV</tt>.
+      </p><pre class="codeinput">avar = mlecov(lambdaHat, x, <span class="string">'pdf'</span>,pf_truncpoiss);
+stderr = sqrt(avar)
+</pre><pre class="codeoutput">
+stderr =
+
+    0.1827
+
+</pre><h2>Supplying additional values to the distribution function: a truncated normal example<a name="11"></a></h2>
+      <p>It sometimes also happens that continuous data are truncated.  For example, observations larger than some fixed value might
+         not be recorded because of limitations in the way data are collected.  This example will show how to fit a normal distribution
+         to truncated data, using the function <tt>MLE</tt>.
+      </p>
+      <p>For this example, we simulate data from a truncated normal distribution. First, we generate some random normal data.</p><pre class="codeinput">n = 75;
+mu = 1;
+sigma = 3;
+x = normrnd(mu,sigma,n,1);
+</pre><p>Next, we'll remove any observations that fall beyond the truncation point, xTrunc.  Throughout this example, we'll assume
+         that xTrunc is known, and does not need to be estimated.
+      </p><pre class="codeinput">xTrunc = 4;
+x = x(x &lt; xTrunc);
+length(x)
+</pre><pre class="codeoutput">
+ans =
+
+    64
+
+</pre><p>Here's a histogram of these simulated data.  We will fit them with a distribution that is identical to a normal for x &lt; xTrunc,
+         but that has zero probability above xTrunc.  In this way, we can estimate the normal parameters mu and sigma while accounting
+         for the "missing tail".
+      </p><pre class="codeinput">hist(x,[-10:.5:4]);
+</pre><img vspace="5" hspace="5" src="customdist1demo_02.png"> <p>As in the previous example, we will define the truncated normal distribution by its PDF, and create a function to compute
+         the probability density for each point in x, given values for the parameters mu and sigma.  With the truncation point fixed
+         and known, the PDF for a truncated normal is just the usual normal PDF, truncated, and then renormalized so that it integrates
+         to one.  The renormalization is just the CDF evaluated at xTrunc.  For simplicity, we'll assume that all x values are less
+         than xTrunc, without checking.  We'll use an anonymous function to define the PDF.
+      </p><pre class="codeinput">pdf_truncnorm = @(x,mu,sigma) normpdf(x,mu,sigma) ./ normcdf(xTrunc,mu,sigma);
+</pre><p>The truncation point, xTrunc, is not being estimated, and so it is not among the distribution parameters in the PDF function's
+         input argument list. xTrunc is also not part of the data vector input argument.  With an anonymous function, we can simply
+         refer to the variable xTrunc that has already been defined in the workspace, and there is no need to worry about passing it
+         in as an additional argument.
+      </p>
+      <p>We also need to provide a rough starting guess for the parameter estimates.  In this case, because the truncation is not too
+         extreme, the sample mean and standard deviation will probably work well.
+      </p><pre class="codeinput">start = [mean(x),std(x)]
+</pre><pre class="codeoutput">
+start =
+
+    0.4491    2.3565
+
+</pre><p>We provide <tt>MLE</tt> with the data, and with the anonymous function, using the 'pdf' parameter.  Because sigma must be positive, we also specify
+         lower parameter bounds.  <tt>MLE</tt> returns the maximum likelihood estimates of mu and sigma as a single vector, as well as a matrix of approximate 95% confidence
+         intervals for the two parameters.
+      </p><pre class="codeinput">[paramEsts,paramCIs] = mle(x, <span class="string">'pdf'</span>,pdf_truncnorm, <span class="string">'start'</span>,start, <span class="string">'lower'</span>,[-Inf 0])
+</pre><pre class="codeoutput">
+paramEsts =
+
+    1.7136    3.1553
+
+
+paramCIs =
+
+   -0.0614    2.0716
+    3.4885    4.2390
+
+</pre><p>Notice that the estimates of mu and sigma are quite a bit larger than the sample mean and standard deviation.  This is because
+         the model fit has accounted for the "missing" upper tail of the distribution.
+      </p>
+      <p>We can compute an approximate covariance matrix for the parameter estimates using <tt>MLECOV</tt>.  The approximation is usually reasonable in large samples, and the standard errors of the estimates can be approximated
+         by the square roots of the diagonal elements.
+      </p><pre class="codeinput">acov = mlecov(paramEsts, x, <span class="string">'pdf'</span>,pdf_truncnorm)
+stderr = sqrt(diag(acov))
+</pre><pre class="codeoutput">
+acov =
+
+    0.8201    0.4051
+    0.4051    0.3057
+
+
+stderr =
+
+    0.9056
+    0.5529
+
+</pre><h2>Fitting a more complicated distribution: a mixture of two normals<a name="21"></a></h2>
+      <p>Some datasets exhibit bimodality, or even multimodality, and fitting a standard distribution to such data is usually not appropriate.
+         However, a mixture of simple unimodal distributions can often model such data very well.  In fact, it may even be possible
+         to give an interpretation to the source of each component in the mixture, based on application-specific knowledge.
+      </p>
+      <p>In this example, we will fit a mixture of two normal distributions to some simulated data.  This mixture might be described
+         with the following constructive definition for generating a random value:
+      </p><pre>  First, flip a biased coin.  If it lands heads, pick a value at random
+  from a normal distribution with mean mu_1 and standard deviation
+  sigma_1. If the coin lands tails, pick a value at random from a normal
+  distribution with mean mu_2 and standard deviation sigma_2.</pre><p>For this example, we'll generate data from a mixture of Student's t distributions rather than using the same model as we are
+         fitting.  This is the sort of thing you might do in a Monte-Carlo simulation to test how robust a fitting method is to departures
+         from the assumptions of the model being fit.  Here, however, we'll fit just one simulated data set.
+      </p><pre class="codeinput">x = [trnd(20,1,50) trnd(4,1,100)+3];
+hist(x,-2.25:.5:7.25);
+</pre><img vspace="5" hspace="5" src="customdist1demo_03.png"> <p>As in the previous examples, we'll define the model to fit by creating a function that computes the probability density. 
+         The PDF for a mixture of two normals is just a weighted sum of the PDFs of the two normal components, weighted by the mixture
+         probability.  This PDF is simple enough to create using an anonymous function.  The function takes six inputs:  a vector of
+         data at which to evaluate the PDF, and the distribution's five parameters.  Each component has parameters for its mean and
+         standard deviation; the mixture probability makes a total of five.
+      </p><pre class="codeinput">pdf_normmixture = @(x,p,mu1,mu2,sigma1,sigma2) <span class="keyword">...</span>
+                         p*normpdf(x,mu1,sigma1) + (1-p)*normpdf(x,mu2,sigma2);
+</pre><p>We'll also need an initial guess for the parameters.  The more parameters a model has, the more a reasonable starting point
+         matters.  For this example, we'll start with an equal mixture (p = 0.5) of normals, centered at the two quartiles of the data,
+         with equal standard deviations.  The starting value for standard deviation comes from the formula for the variance of a mixture
+         in terms of the mean and variance of each component.
+      </p><pre class="codeinput">pStart = .5;
+muStart = quantile(x,[.25 .75])
+sigmaStart = sqrt(var(x) - .25*diff(muStart).^2)
+start = [pStart muStart sigmaStart sigmaStart];
+</pre><pre class="codeoutput">
+muStart =
+
+    0.2776    3.3135
+
+
+sigmaStart =
+
+    1.1368
+
+</pre><p>Finally, we need to specify bounds of zero and one for the mixing probability, and lower bounds of zero for the standard deviations.
+          The remaining elements of the bounds vectors are set to +Inf or -Inf, to indicate no restrictions.
+      </p><pre class="codeinput">lb = [0 -Inf -Inf 0 0];
+ub = [1 Inf Inf Inf Inf];
+
+paramEsts = mle(x, <span class="string">'pdf'</span>,pdf_normmixture, <span class="string">'start'</span>,start, <span class="string">'lower'</span>,lb, <span class="string">'upper'</span>,ub)
+</pre><pre class="codeoutput">Warning: Maximum likelihood estimation did not converge.  Iteration limit exceeded.
+
+paramEsts =
+
+    0.3480   -0.1840    3.0076    0.9276    1.2146
+
+</pre><p>With five parameters to optimize over, the maximum likelihood optimization has exceeded its default iteration limit.  The
+         default for custom distributions is 200 iterations.
+      </p><pre class="codeinput">statset(<span class="string">'mlecustom'</span>)
+</pre><pre class="codeoutput">
+ans = 
+
+        Display: 'off'
+    MaxFunEvals: 400
+        MaxIter: 200
+         TolBnd: 1.0000e-006
+         TolFun: 1.0000e-006
+           TolX: 1.0000e-006
+        GradObj: 'off'
+      DerivStep: 6.0555e-006
+    FunValCheck: 'on'
+
+</pre><p>We'll need to override that default, using an options structure created with <tt>STATSET</tt> function.  We'll also increase the (PDF) function evaluation limit.
+      </p><pre class="codeinput">options = statset(<span class="string">'MaxIter'</span>,300, <span class="string">'MaxFunEvals'</span>,600);
+paramEsts = mle(x, <span class="string">'pdf'</span>,pdf_normmixture, <span class="string">'start'</span>,start, <span class="keyword">...</span>
+                          <span class="string">'lower'</span>,lb, <span class="string">'upper'</span>,ub, <span class="string">'options'</span>,options)
+</pre><pre class="codeoutput">
+paramEsts =
+
+    0.3480   -0.1840    3.0076    0.9276    1.2146
+
+</pre><p>It appears that the final iterations to convergence mattered only in the last few digits of the result.  Nonetheless, it is
+         always a good idea to make sure that convergence has been reached.
+      </p>
+      <p>Finally, we can plot the fitted density against a probability histogram of the raw data, to check the fit visually.</p><pre class="codeinput">bins = -2.5:.5:7.5;
+h = bar(bins,histc(x,bins)/(length(x)*.5),<span class="string">'histc'</span>);
+set(h,<span class="string">'FaceColor'</span>,[.9 .9 .9]);
+xgrid = linspace(1.1*min(x),1.1*max(x),200);
+pdfgrid = pdf_normmixture(xgrid,paramEsts(1),paramEsts(2),paramEsts(3),paramEsts(4),paramEsts(5));
+hold <span class="string">on</span>; plot(xgrid,pdfgrid,<span class="string">'-'</span>); hold <span class="string">off</span>
+xlabel(<span class="string">'x'</span>); ylabel(<span class="string">'Probability Density'</span>);
+</pre><img vspace="5" hspace="5" src="customdist1demo_04.png"> <h2>Using nested functions: a normal example with unequal precisions<a name="29"></a></h2>
+      <p>It sometimes happens when data are collected that each observation was made with a different precision or reliability.  For
+         example, if several experimenters each make a number of independent measurements of the same quantity, but each reports only
+         the average of their measurements, the reliability of each reported data point will depend on the number of raw observations
+         that went into it.  If the original raw data are not available, an estimate of their distribution must account for the fact
+         that the data that are available, the averages, each have different variances.  This model actually has an explicit solution
+         for maximum likelihood parameter estimates.  However, for the purposes of illustration, we will use <tt>MLE</tt> to estimate the parameters.
+      </p>
+      <p>Assume that we have 10 data points, where each one is actually the average of anywhere from 1 to 8 observations.  Those original
+         observations are not available, but we know how many there were for each of our data points.  We need to estimate the mean
+         and standard deviation of the raw data.
+      </p><pre class="codeinput">x = [0.25 -1.24 1.38 1.39 -1.43 2.79 3.52 0.92 1.44 1.26];
+m = [   8     2    1    3     8    4    2    5    2    4];
+</pre><p>The variance of each data point is inversely proportional to the number of observations that went into it, so we will use
+         1/m to weight the variance of each data point in a maximum likelihood fit.
+      </p><pre class="codeinput">w = 1 ./ m
+</pre><pre class="codeoutput">
+w =
+
+    0.1250    0.5000    1.0000    0.3333    0.1250    0.2500    0.5000    0.2000    0.5000    0.2500
+
+</pre><p>In the model we're fitting here, we could define the distribution by its PDF, but using a log PDF is somewhat more natural,
+         because the normal PDF is of the form
+      </p>
+      <p>c .* exp(-0.5 .* z.^2),</p>
+      <p>and <tt>MLE</tt> would have to take the log of the PDF anyway, to compute the log-likelihood.  So instead, we will create a function that
+         computes the log PDF directly.
+      </p>
+      <p>The log PDF function has to compute the log of the probability density for each point in x, given values for mu and sigma.
+          It will also need to account for the different variance weights.  Unlike the previous examples, this distribution function
+         is a little more complicated than a one-liner, and is most clearly written as a separate function in its own M-file. Because
+         the log PDF function needs the observation counts as additional data, the most straight-forward way to accomplish this fit
+         is to use nested functions.
+      </p>
+      <p>We've created a separate M-file for a function called <a href="matlab:edit('wgtnormfit.m')"><tt>wgtnormfit.m</tt></a>.  This function contains data initialization, a nested function for the log PDF in the weighted normal model, and a call
+         to the <tt>MLE</tt> function to actually fit the model. Because sigma must be positive, we must specify lower parameter bounds. The call to <tt>MLE</tt> returns the maximum likelihood estimates of mu and sigma in a single vector.
+      </p><pre class="codeinput">type <span class="string">wgtnormfit.m</span>
+</pre><pre class="codeoutput">
+function paramEsts = wgtnormfit
+%WGTNORMFIT Fitting demo for a weighted normal distribution.
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/03/22 23:55:37 $
+x = [0.25 -1.24 1.38 1.39 -1.43 2.79 3.52 0.92 1.44 1.26];
+m = [   8     2    1    3     8    4    2    5    2    4];
+
+    function logy = logpdf_wn(x,mu,sigma)
+        v = sigma.^2 ./ m;
+        logy = -(x-mu).^2 ./ (2.*v) - .5.*log(2.*pi.*v);
+    end
+
+paramEsts = mle(x, 'logpdf',@logpdf_wn, 'start',[mean(x),std(x)], 'lower',[-Inf,0]);
+
+end
+
+</pre><p>In <tt>wgtnormfit.m</tt>, we pass <tt>MLE</tt> a handle to the nested function <tt>LOGPDF_WN</tt>, using the 'logpdf' parameter.  That nested function refers to the observation counts, m, in the computation of the weighted
+         log PDF.  Because the vector m is defined in its parent function, <tt>LOGPDF_WN</tt> has access to it, and there is no need to worry about passing m in as an explicit input argument.
+      </p>
+      <p>We need to provide a rough first guess for the parameter estimates.  In this case, the unweighted sample mean and standard
+         deviation should be ok, and that's what <tt>wgtnormfit.m</tt> uses.
+      </p><pre class="codeinput">start = [mean(x),std(x)]
+</pre><pre class="codeoutput">
+start =
+
+    1.0280    1.5490
+
+</pre><p>To fit the model, we run the fitting function.</p><pre class="codeinput">paramEsts = wgtnormfit
+</pre><pre class="codeoutput">
+paramEsts =
+
+    0.6244    2.8823
+
+</pre><p>Notice that the estimate of mu is less than two-thirds that of the sample mean.  That's just as it should be:  the estimate
+         is be influenced most by the most reliable data points, i.e., the ones that were based on the the largest number of raw observations.
+          In this dataset, those points tend to pull the estimate down from the unweighted sample mean.
+      </p>
+      <h2>Using a parameter transformation: the normal example (continued)<a name="38"></a></h2>
+      <p>In maximum likelihood estimation, confidence intervals for the parameters are usually computed using a large-sample normal
+         approximation for the distribution of the estimators.  This is often a reasonable assumption, but with small sample sizes,
+         it is sometimes advantageous to improve that normal approximation by transforming one or more parameters.  In this example,
+         we have a location parameter and a scale parameter.  Scale parameters are often transformed to their log, and we will do that
+         here with sigma.  First, we'll create a new log PDF function, and then recompute the estimates using that parameterization.
+      </p>
+      <p>The new log PDF function is created as a nested function within the function <a href="matlab:edit('wgtnormfit2.m')"><tt>wgtnormfit2.m</tt></a>.  As in the first fit, this M-file contains data initialization, a nested function for the log PDF in the weighted normal
+         model, and a call to the <tt>MLE</tt> fuction to actually fit the model.  Because sigma can be any positive value, log(sigma) is unbounded, and we no longer need
+         to specify lower or upper bounds.  Also, the call to <tt>MLE</tt> in this case returns both the parameter estimates and confidence intervals.
+      </p><pre class="codeinput">type <span class="string">wgtnormfit2.m</span>
+</pre><pre class="codeoutput">
+function [paramEsts,paramCIs] = wgtnormfit2
+%WGTNORMFIT2 Fitting demo for a weighted normal distribution (log(sigma) parameterization).
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/03/22 23:55:38 $
+x = [0.25 -1.24 1.38 1.39 -1.43 2.79 3.52 0.92 1.44 1.26];
+m = [   8     2    1    3     8    4    2    5    2    4];
+
+    function logy = logpdf_wn2(x,mu,logsigma)
+        v = exp(logsigma).^2 ./ m;
+        logy = -(x-mu).^2 ./ (2.*v) - .5.*log(2.*pi.*v);
+    end
+
+[paramEsts,paramCIs] = mle(x, 'logpdf',@logpdf_wn2, 'start',[mean(x),log(std(x))]);
+
+end
+
+</pre><p>Notice that <tt>wgtnormfit2.m</tt> uses the same starting point, transformed to the new parameterization, i.e., take the log of the sample standard deviation.
+      </p><pre class="codeinput">start = [mean(x),log(std(x))]
+</pre><pre class="codeoutput">
+start =
+
+    1.0280    0.4376
+
+</pre><pre class="codeinput">[paramEsts,paramCIs] = wgtnormfit2
+</pre><pre class="codeoutput">
+paramEsts =
+
+    0.6244    1.0586
+
+
+paramCIs =
+
+   -0.2802    0.6203
+    1.5290    1.4969
+
+</pre><p>Since the parameterization uses log(sigma), we have to transform back to the original scale to get an estimate and confidence
+         interval for sigma. Notice that the estimates for both mu and sigma are the same as in the first fit, because maximum likelihood
+         estimates are invariant to parameterization.
+      </p><pre class="codeinput">muHat = paramEsts(1)
+sigmaHat = exp(paramEsts(2))
+</pre><pre class="codeoutput">
+muHat =
+
+    0.6244
+
+
+sigmaHat =
+
+    2.8823
+
+</pre><pre class="codeinput">muCI = paramCIs(:,1)
+sigmaCI = exp(paramCIs(:,2))
+</pre><pre class="codeoutput">
+muCI =
+
+   -0.2802
+    1.5290
+
+
+sigmaCI =
+
+    1.8596
+    4.4677
+
+</pre><p class="footer">Copyright 1984-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Fitting Custom Univariate Distributions
+% This demo shows some examples of using the Statistics Toolbox function
+% |MLE| to fit custom distributions to univariate data.  Using |MLE|, you
+% can compute maximum likelihood parameter estimates, and estimate their
+% precision, for many kinds of distributions beyond those for which the
+% Toolbox provides specific fitting functions.
+%
+% To do this, you need to define the distribution using one or more M
+% functions.  In the simplest cases, you can write code to compute the
+% probability density function (PDF) for the distribution that you want to
+% fit, and |MLE| will do most of the remaining work for you.  This demo
+% covers those cases.  In problems with censored data, you must also write
+% code to compute the cumulative distribution function (CDF) or the
+% survival function (SF).  In some other problems, it may be advantageous
+% to define the log-likelihood function (LLF) itself.  The second part of
+% this demo, <customdist2demo.html Fitting Custom Univariate Distributions,
+% Part 2>, covers both of those latter cases.
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.2 $  $Date: 2004/04/01 16:23:35 $
+
+
+%% Fitting custom distributions:  a zero-truncated Poisson example
+% Count data are often modelled using a Poisson distribution, and you can
+% use the Statistics Toolbox function |POISSFIT| to fit a Poisson model.
+% However, in some situations, counts that are zero do not get recorded in
+% the data, and so fitting a Poisson distribution is not straight-forward
+% because of those "missing zeros".  This example will show how to fit a
+% Poisson distribution to zero-truncated data, using the function |MLE|.
+
+%%
+% For this example, we'll use simulated data from a zero-truncated Poisson
+% distribution.  First, we generate some random Poisson data.
+randn('state',0); rand('state',0);
+n = 75;
+lambda = 1.75;
+x = poissrnd(lambda,n,1);
+
+%%
+% Next, we remove all the zeros from the data to simulate the truncation.
+x = x(x > 0);
+length(x)
+
+%%
+% Here's a histogram of these simulated data.  Notice that the data look
+% reasonably like a Poisson distribution, except that there are no zeros.
+% We will fit them with a distribution that is identical to a Poisson on
+% the positive integers, but that has no probability at zero.  In this
+% way, we can estimate the Poisson parameter lambda while accounting for
+% the "missing zeros".
+hist(x,[0:1:max(x)+1]);
+
+%%
+% The first step is to define the zero-truncated Poisson distribution by
+% its probability function (PF).  We will create a function to compute the
+% probability for each point in x, given a value for the Poisson
+% distribution's mean parameter lambda.  The PF for a zero-truncated
+% Poisson is just the usual Poisson PF, renormalized so that it sums to
+% one.  With zero truncation, the renormalization is just 1-Pr{0}.  The
+% easiest way to create a function for the PF is to use an anonymous
+% function.
+pf_truncpoiss = @(x,lambda) poisspdf(x,lambda) ./ (1-poisscdf(0,lambda));
+
+%%
+% For simplicity, we have assumed that all the x values given to this
+% function will be positive integers, with no checks.  Error checking, or a
+% more complicated distribution, would probably take more a single line of
+% code, suggesting that the function should be defined in a separate M-file.
+
+%%
+% The next step is to provide a reasonable rough first guess for the
+% parameter lambda.  In this case, we'll just use the sample mean.
+start = mean(x)
+
+%%
+% We provide |MLE| with the data, and with the anonymous function, using
+% the 'pdf' parameter. (The Poisson is discrete, so this is really a
+% probability function, not a PDF.)  Because the mean parameter of the
+% Poisson distribution must be positive, we also specify a lower bound for
+% lambda.  |MLE| returns the maximum likelihood estimate of lambda, and,
+% optionally, approximate 95% confidence intervals for the parameters.
+[lambdaHat,lambdaCI] = mle(x, 'pdf',pf_truncpoiss, 'start',start, 'lower',0)
+
+%%
+% Notice that the parameter estimate is smaller than the sample mean.
+% That's just as it should be, because the maximum likelihood estimate
+% accounts for the missing zeros not present in the data.
+
+%%
+% We can also compute a standard error estimate for lambda, using the
+% large-sample variance approximation returned by |MLECOV|.
+avar = mlecov(lambdaHat, x, 'pdf',pf_truncpoiss);
+stderr = sqrt(avar)
+
+
+%% Supplying additional values to the distribution function: a truncated normal example
+% It sometimes also happens that continuous data are truncated.  For
+% example, observations larger than some fixed value might not be recorded
+% because of limitations in the way data are collected.  This example will
+% show how to fit a normal distribution to truncated data, using the
+% function |MLE|.
+
+%%
+% For this example, we simulate data from a truncated normal distribution.
+% First, we generate some random normal data.
+n = 75;
+mu = 1;
+sigma = 3;
+x = normrnd(mu,sigma,n,1);
+
+%%
+% Next, we'll remove any observations that fall beyond the truncation
+% point, xTrunc.  Throughout this example, we'll assume that xTrunc is
+% known, and does not need to be estimated.
+xTrunc = 4;
+x = x(x < xTrunc);
+length(x)
+
+%%
+% Here's a histogram of these simulated data.  We will fit them with a
+% distribution that is identical to a normal for x < xTrunc, but that has
+% zero probability above xTrunc.  In this way, we can estimate the normal
+% parameters mu and sigma while accounting for the "missing tail".
+hist(x,[-10:.5:4]);
+
+%%
+% As in the previous example, we will define the truncated normal
+% distribution by its PDF, and create a function to compute the probability
+% density for each point in x, given values for the parameters mu and
+% sigma.  With the truncation point fixed and known, the PDF for a
+% truncated normal is just the usual normal PDF, truncated, and then
+% renormalized so that it integrates to one.  The renormalization is just
+% the CDF evaluated at xTrunc.  For simplicity, we'll assume that all x
+% values are less than xTrunc, without checking.  We'll use an anonymous
+% function to define the PDF.
+pdf_truncnorm = @(x,mu,sigma) normpdf(x,mu,sigma) ./ normcdf(xTrunc,mu,sigma);
+
+%%
+% The truncation point, xTrunc, is not being estimated, and so it is not
+% among the distribution parameters in the PDF function's input argument list.
+% xTrunc is also not part of the data vector input argument.  With an
+% anonymous function, we can simply refer to the variable xTrunc that has
+% already been defined in the workspace, and there is no need to worry
+% about passing it in as an additional argument.
+
+%%
+% We also need to provide a rough starting guess for the parameter
+% estimates.  In this case, because the truncation is not too extreme, the
+% sample mean and standard deviation will probably work well.
+start = [mean(x),std(x)]
+
+%%
+% We provide |MLE| with the data, and with the anonymous function, using the
+% 'pdf' parameter.  Because sigma must be positive, we also specify lower
+% parameter bounds.  |MLE| returns the maximum likelihood estimates of mu and
+% sigma as a single vector, as well as a matrix of approximate 95%
+% confidence intervals for the two parameters.
+[paramEsts,paramCIs] = mle(x, 'pdf',pdf_truncnorm, 'start',start, 'lower',[-Inf 0])
+
+%%
+% Notice that the estimates of mu and sigma are quite a bit larger than the
+% sample mean and standard deviation.  This is because the model fit has
+% accounted for the "missing" upper tail of the distribution.
+
+%%
+% We can compute an approximate covariance matrix for the parameter
+% estimates using |MLECOV|.  The approximation is usually reasonable in large
+% samples, and the standard errors of the estimates can be approximated by
+% the square roots of the diagonal elements.
+acov = mlecov(paramEsts, x, 'pdf',pdf_truncnorm)
+stderr = sqrt(diag(acov))
+
+
+%% Fitting a more complicated distribution: a mixture of two normals
+% Some datasets exhibit bimodality, or even multimodality, and fitting a
+% standard distribution to such data is usually not appropriate. However, a
+% mixture of simple unimodal distributions can often model such data very
+% well.  In fact, it may even be possible to give an interpretation to the
+% source of each component in the mixture, based on application-specific
+% knowledge.
+%
+% In this example, we will fit a mixture of two normal distributions to
+% some simulated data.  This mixture might be described with the following
+% constructive definition for generating a random value:
+%
+%    First, flip a biased coin.  If it lands heads, pick a value at random
+%    from a normal distribution with mean mu_1 and standard deviation
+%    sigma_1. If the coin lands tails, pick a value at random from a normal
+%    distribution with mean mu_2 and standard deviation sigma_2.
+
+%%
+% For this example, we'll generate data from a mixture of Student's t
+% distributions rather than using the same model as we are fitting.  This
+% is the sort of thing you might do in a Monte-Carlo simulation to test how
+% robust a fitting method is to departures from the assumptions of the
+% model being fit.  Here, however, we'll fit just one simulated data set.
+x = [trnd(20,1,50) trnd(4,1,100)+3];
+hist(x,-2.25:.5:7.25);
+
+%%
+% As in the previous examples, we'll define the model to fit by creating a
+% function that computes the probability density.  The PDF for a mixture of
+% two normals is just a weighted sum of the PDFs of the two normal
+% components, weighted by the mixture probability.  This PDF is simple
+% enough to create using an anonymous function.  The function takes six
+% inputs:  a vector of data at which to evaluate the PDF, and the
+% distribution's five parameters.  Each component has parameters for its
+% mean and standard deviation; the mixture probability makes a total of five.
+pdf_normmixture = @(x,p,mu1,mu2,sigma1,sigma2) ...
+                         p*normpdf(x,mu1,sigma1) + (1-p)*normpdf(x,mu2,sigma2);
+
+%%
+% We'll also need an initial guess for the parameters.  The more parameters
+% a model has, the more a reasonable starting point matters.  For this
+% example, we'll start with an equal mixture (p = 0.5) of normals, centered
+% at the two quartiles of the data, with equal standard deviations.  The
+% starting value for standard deviation comes from the formula for the
+% variance of a mixture in terms of the mean and variance of each component.
+pStart = .5;
+muStart = quantile(x,[.25 .75])
+sigmaStart = sqrt(var(x) - .25*diff(muStart).^2)
+start = [pStart muStart sigmaStart sigmaStart];
+
+%%
+% Finally, we need to specify bounds of zero and one for the mixing
+% probability, and lower bounds of zero for the standard deviations.  The
+% remaining elements of the bounds vectors are set to +Inf or -Inf, to
+% indicate no restrictions.
+lb = [0 -Inf -Inf 0 0];
+ub = [1 Inf Inf Inf Inf];
+
+paramEsts = mle(x, 'pdf',pdf_normmixture, 'start',start, 'lower',lb, 'upper',ub)
+
+%%
+% With five parameters to optimize over, the maximum likelihood
+% optimization has exceeded its default iteration limit.  The default for
+% custom distributions is 200 iterations.
+statset('mlecustom')
+
+%%
+% We'll need to override that default, using an options structure created
+% with |STATSET| function.  We'll also increase the (PDF) function evaluation
+% limit.
+options = statset('MaxIter',300, 'MaxFunEvals',600);
+paramEsts = mle(x, 'pdf',pdf_normmixture, 'start',start, ...
+                          'lower',lb, 'upper',ub, 'options',options)
+
+%%
+% It appears that the final iterations to convergence mattered only in the
+% last few digits of the result.  Nonetheless, it is always a good idea to
+% make sure that convergence has been reached.
+%
+% Finally, we can plot the fitted density against a probability histogram
+% of the raw data, to check the fit visually.
+bins = -2.5:.5:7.5;
+h = bar(bins,histc(x,bins)/(length(x)*.5),'histc');
+set(h,'FaceColor',[.9 .9 .9]);
+xgrid = linspace(1.1*min(x),1.1*max(x),200);
+pdfgrid = pdf_normmixture(xgrid,paramEsts(1),paramEsts(2),paramEsts(3),paramEsts(4),paramEsts(5));
+hold on; plot(xgrid,pdfgrid,'-'); hold off
+xlabel('x'); ylabel('Probability Density');
+
+
+%% Using nested functions: a normal example with unequal precisions
+% It sometimes happens when data are collected that each observation was
+% made with a different precision or reliability.  For example, if several
+% experimenters each make a number of independent measurements of the same
+% quantity, but each reports only the average of their measurements, the
+% reliability of each reported data point will depend on the number of raw
+% observations that went into it.  If the original raw data are not
+% available, an estimate of their distribution must account for the fact
+% that the data that are available, the averages, each have different
+% variances.  This model actually has an explicit solution for maximum
+% likelihood parameter estimates.  However, for the purposes of
+% illustration, we will use |MLE| to estimate the parameters.
+
+%%
+% Assume that we have 10 data points, where each one is actually the
+% average of anywhere from 1 to 8 observations.  Those original
+% observations are not available, but we know how many there were for each
+% of our data points.  We need to estimate the mean and standard deviation
+% of the raw data.
+x = [0.25 -1.24 1.38 1.39 -1.43 2.79 3.52 0.92 1.44 1.26];
+m = [   8     2    1    3     8    4    2    5    2    4];
+
+%%
+% The variance of each data point is inversely proportional to the number
+% of observations that went into it, so we will use 1/m to weight the
+% variance of each data point in a maximum likelihood fit.
+w = 1 ./ m
+
+%%
+% In the model we're fitting here, we could define the distribution by its
+% PDF, but using a log PDF is somewhat more natural, because the normal PDF
+% is of the form
+%
+% c .* exp(-0.5 .* z.^2),
+%
+% and |MLE| would have to take the log of the PDF anyway, to compute the
+% log-likelihood.  So instead, we will create a function that computes the
+% log PDF directly.
+
+%%
+% The log PDF function has to compute the log of the probability density
+% for each point in x, given values for mu and sigma.  It will also need to
+% account for the different variance weights.  Unlike the previous
+% examples, this distribution function is a little more complicated than a
+% one-liner, and is most clearly written as a separate function in its own
+% M-file. Because the log PDF function needs the observation counts as
+% additional data, the most straight-forward way to accomplish this fit is
+% to use nested functions.
+%
+% We've created a separate M-file for a function called
+% <matlab:edit('wgtnormfit.m') |wgtnormfit.m|>.  This function contains
+% data initialization, a nested function for the log PDF in the weighted
+% normal model, and a call to the |MLE| function to actually fit the model.
+% Because sigma must be positive, we must specify lower parameter bounds.
+% The call to |MLE| returns the maximum likelihood estimates of mu and
+% sigma in a single vector.
+type wgtnormfit.m
+
+%%
+% In |wgtnormfit.m|, we pass |MLE| a handle to the nested function |LOGPDF_WN|,
+% using the 'logpdf' parameter.  That nested function refers to the observation
+% counts, m, in the computation of the weighted log PDF.  Because the vector
+% m is defined in its parent function, |LOGPDF_WN| has access to it, and there
+% is no need to worry about passing m in as an explicit input argument.
+
+%%
+% We need to provide a rough first guess for the parameter estimates.  In
+% this case, the unweighted sample mean and standard deviation should be
+% ok, and that's what |wgtnormfit.m| uses.
+start = [mean(x),std(x)]
+
+%%
+% To fit the model, we run the fitting function.
+paramEsts = wgtnormfit
+
+%%
+% Notice that the estimate of mu is less than two-thirds that of the sample
+% mean.  That's just as it should be:  the estimate is be influenced most
+% by the most reliable data points, i.e., the ones that were based on the
+% the largest number of raw observations.  In this dataset, those points
+% tend to pull the estimate down from the unweighted sample mean.
+
+
+%% Using a parameter transformation: the normal example (continued)
+% In maximum likelihood estimation, confidence intervals for the parameters
+% are usually computed using a large-sample normal approximation for the
+% distribution of the estimators.  This is often a reasonable assumption,
+% but with small sample sizes, it is sometimes advantageous to improve that
+% normal approximation by transforming one or more parameters.  In this
+% example, we have a location parameter and a scale parameter.  Scale
+% parameters are often transformed to their log, and we will do that
+% here with sigma.  First, we'll create a new log PDF function, and
+% then recompute the estimates using that parameterization.
+%
+% The new log PDF function is created as a nested function within the
+% function <matlab:edit('wgtnormfit2.m') |wgtnormfit2.m|>.  As in the
+% first fit, this M-file contains data initialization, a nested function
+% for the log PDF in the weighted normal model, and a call to the |MLE|
+% fuction to actually fit the model.  Because sigma can be any positive
+% value, log(sigma) is unbounded, and we no longer need to specify lower or
+% upper bounds.  Also, the call to |MLE| in this case returns both the
+% parameter estimates and confidence intervals.
+type wgtnormfit2.m
+
+%%
+% Notice that |wgtnormfit2.m| uses the same starting point, transformed to
+% the new parameterization, i.e., take the log of the sample standard
+% deviation.
+start = [mean(x),log(std(x))]
+
+%%
+[paramEsts,paramCIs] = wgtnormfit2
+
+%%
+% Since the parameterization uses log(sigma), we have to transform back to
+% the original scale to get an estimate and confidence interval for sigma.
+% Notice that the estimates for both mu and sigma are the same as in the
+% first fit, because maximum likelihood estimates are invariant to
+% parameterization.
+muHat = paramEsts(1)
+sigmaHat = exp(paramEsts(2))
+%%
+muCI = paramCIs(:,1)
+sigmaCI = exp(paramCIs(:,2))
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

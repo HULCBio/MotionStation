@@ -1,0 +1,712 @@
+%% $RCSfile: c6x1x_csl.tlc,v $
+%% $Revision: 1.1.6.3 $ $Date: 2004/04/01 16:14:59 $
+%% Copyright 2002-2004 The MathWorks, Inc.
+
+
+%% ==========================================================================
+%% Function: render_Core_CSL_Defines
+%% Abstract:
+
+%function render_Core_CSL_Defines() void
+%openfile buff
+
+/**************************** CONTROL REGISTERS *******************************/
+
+extern cregister volatile unsigned int AMR;     /* Address Mode Register      */
+extern cregister volatile unsigned int CSR;     /* Control Status Register    */
+extern cregister volatile unsigned int IFR;     /* Interrupt Flag Register    */
+extern cregister volatile unsigned int ISR;     /* Interrupt Set Register     */
+extern cregister volatile unsigned int ICR;     /* Interrupt Clear Register   */
+extern cregister volatile unsigned int IER;     /* Interrupt Enable Register  */
+extern cregister volatile unsigned int ISTP;    /* Interrupt Service Tbl Ptr  */
+extern cregister volatile unsigned int IRP;     /* Interrupt Return Pointer   */
+extern cregister volatile unsigned int NRP;     /* Non-maskable Int Return Ptr*/
+extern cregister volatile unsigned int IN;      /* General Purpose Input Reg  */
+extern cregister volatile unsigned int OUT;     /* General Purpose Output Reg */
+
+%if (LinkerCommandFile == "Full_memory_map")
+	/* Define Cache Configuration Registers  */
+	#define CCFG    *(volatile unsigned int *) (0x01840000)    /* Cache configuration register */
+	#define L2CBAR  *(volatile unsigned int *) (0x01844010)    /* Cache flush register */
+	#define L2CWC   *(volatile unsigned int *) (0x01844014)    /* Cache clean register */
+	#define L2FLUSH *(volatile unsigned int *) (0x01845000)    /* Cache flush register */
+	#define L2CLEAN *(volatile unsigned int *) (0x01845004)    /* Cache clean register */
+%endif
+
+/* Define Interrupt Registers */
+#define IMH             0x19c0000   /* Address of Interrupt Multiplexer High*/
+#define IML             0x19c0004   /* Address of Interrupt Multiplexer Low */
+
+/* Define Timer0 Registers */
+#define TIMER0_CTRL     0x1940000	/* Address of timer0 control reg.       */
+#define TIMER0_PRD      0x1940004	/* Address of timer0 period reg.        */
+#define TIMER0_COUNT    0x1940008	/* Address of timer0 counter reg.       */
+
+/* Define Timer1 Registers */
+#define TIMER1_CTRL     0x1980000	/* Address of timer1 control reg.       */
+#define TIMER1_PRD      0x1980004	/* Address of timer1 period reg.        */
+#define TIMER1_COUNT    0x1980008	/* Address of timer1 counter reg.       */
+
+/* Define EDMA Registers */
+#define PQSR			0x01A0FFE0	/* Address of priority queue status     */
+#define CIPR			0x01A0FFE4	/* Address of channel interrupt pending */
+#define CIER			0x01A0FFE8	/* Address of channel interrupt enable  */
+#define CCER			0x01A0FFEC	/* Address of channel chain enable      */
+#define ER				0x01A0FFF0	/* Address of event register            */
+#define EER				0x01A0FFF4	/* Address of event enable register     */
+#define ECR				0x01A0FFF8	/* Address of event clear register      */
+#define ESR				0x01A0FFFC	/* Address of event set register        */
+
+%closefile buff
+%return buff
+%endfunction %% render_Core_CSL_Defines
+
+
+
+%% ==========================================================================
+%% Function: render_EDMA_ISR
+%% Abstract:
+
+%function render_EDMA_ISR() void
+%openfile buff
+
+/* Function: EDMA_isr ----------------------------------------
+ *
+ * Abstract:
+ *      This function services interrupts posted by EDMA
+ */
+
+%if !useDSPBIOS
+interrupt void EDMA_isr()
+%else
+void EDMA_isr()
+%endif
+{
+%if (!useDSPBIOS) && CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    unsigned int temp_irp;
+    unsigned int temp_amr;
+    unsigned int temp_sat;
+
+    temp_irp = IRP;
+    SAVE_AMR(temp_amr);
+    SAVE_SAT(temp_sat);
+%endif
+
+   /*
+	This ISR is called under 4 conditions.  EDMA Pending is used to determine
+	the cause of the interrupt.
+
+	1. Ping_RX Buffer has completed filling.        CIPR = 10h
+	2. Pong_RX Buffer has completed filling.        CIPR = 20h
+	3. Pong_TX Buffer has been transmitted.         CIPR = 40h
+	4. Ping_TX Buffer has been transmitted.         CIPR = 80h
+	
+	EDMA parameters for the next transfer are automatically configured using
+	reload registers. ISR is used to provide signalling to processing code.
+    */
+
+	if		(EDMA_intTest(4))				/* Action= Ping_RX full	*/
+	{
+%if (IRInfo.timerStopCnt != 0)		
+        TIMER_resume(hTimer1);		
+%endif 	
+        EDMA_intClear(4);				    /* Reset Pending Flag	*/
+		edmaBufferReady	|= RX_PING_FLAG;
+	}
+	else if	(EDMA_intTest(5))				/* Action= Pong_RX full	*/
+	{
+%if (IRInfo.timerStopCnt != 0)		
+        TIMER_resume(hTimer1);		
+%endif    
+		EDMA_intClear(5);					/* Reset Pending Flag	*/
+		edmaBufferReady	|= RX_PONG_FLAG; 
+	}
+	else if	(EDMA_intTest(6))				/* Action= Pong_TX full	*/
+	{                                               
+		EDMA_intClear(6);					/* Reset Pending Flag	*/
+		edmaBufferReady	|= TX_PONG_FLAG; 
+	}
+	else if	(EDMA_intTest(7))				/* Action= Ping_TX full	*/
+	{
+		EDMA_intClear(7);					/* Reset Pending Flag	*/
+		edmaBufferReady	|= TX_PING_FLAG;        
+	}
+	else
+	{
+		/* Reset Pending Flag	*/
+	}                            
+	
+	/* Check If Both Receive and Transmit Buffers Ready             */
+
+	if ( ((edmaBufferReady & RX_PING_FLAG) == RX_PING_FLAG) && 
+		 ((edmaBufferReady & TX_PONG_FLAG) == TX_PONG_FLAG) ) 
+	{										
+		adcBuffPtr = (void *) &ping_RX[0];	/* Set-up Source / Dest	*/
+		dacBuffPtr = (void *) &pong_TX[0];	/* -for Processing func	*/
+		pendingInterrupt = TRUE;
+		edmaBufferReady	 = NOT_READY;	    /* Clear ISR edma flag	*/  
+	}
+
+	if ( ((edmaBufferReady & RX_PONG_FLAG) == RX_PONG_FLAG) && 
+		 ((edmaBufferReady & TX_PING_FLAG) == TX_PING_FLAG) ) 
+	{										
+		adcBuffPtr = (void *) &pong_RX[0];	/* Set-up Source / Dest	*/
+		dacBuffPtr = (void *) &ping_TX[0];	/* -for Processing func	*/
+		pendingInterrupt = TRUE;
+		edmaBufferReady	 = NOT_READY;	    /* Clear ISR edma flag	*/
+	}
+	
+%if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+    %if useDSPBIOS
+        if (pendingInterrupt) {
+            %if (BoardType=="C6416DSK")
+                singleRateStep();
+            %else
+                SWI_post(&SWI_0);
+            %endif
+    	}
+    %endif
+%else  %% Multitasking:
+    if (pendingInterrupt) {
+        pendingInterrupt = FALSE;
+        %if useDSPBIOS
+            singleRateStep();
+        %else
+            rt_OneStep();
+        %endif
+    }
+%endif
+%if (!useDSPBIOS) && CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    RESTORE_SAT(temp_sat);
+    RESTORE_AMR(temp_amr);
+    IRP = temp_irp;
+%endif
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_EDMA_ISR
+
+
+
+%% ==========================================================================
+%% Function: render_Timer1_ISR
+%% Abstract:
+
+%function render_Timer1_ISR() void
+%openfile buff
+
+/* Function: Timer1_ISR() -------------------------------------
+ *
+ * Abstract:
+ *      This function services interrupts posted by timer # 1
+ */
+
+%if useDSPBIOS  
+void Timer1_ISR (Uint32 Mailbox) 
+%else
+interrupt void Timer1_ISR () 
+%endif
+{
+%if (IRInfo.timerStopCnt != 0)
+    static volatile int cntr = 0;              
+%endif
+%if (!useDSPBIOS) && CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    unsigned int temp_irp;
+    unsigned int temp_amr;
+    unsigned int temp_sat;
+
+    temp_irp = IRP;
+    SAVE_AMR(temp_amr);
+    SAVE_SAT(temp_sat);
+%endif
+%if (IRInfo.timerStopCnt != 0)
+
+    /* Pause timer so that timer interrupt does not collide with DMA interrupt */
+    if (++cntr == (int)(%<IRInfo.timerStopCnt>)) {     
+        TIMER_pause(hTimer1);  
+        cntr = 0;
+    }
+%endif
+%if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+    pendingInterrupt = TRUE;
+    %if useDSPBIOS    
+        SWI_post(&SWI_0);
+    %else
+        ICR = IFR | 0x8000;
+    %endif          
+%else  %% Multitasking:
+    %if useDSPBIOS
+        singleRateStep();
+    %else
+        rt_OneStep();
+    %endif
+%endif
+
+%if (!useDSPBIOS) && CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    RESTORE_SAT(temp_sat);
+    RESTORE_AMR(temp_amr);
+    IRP = temp_irp;
+%endif
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_Timer1_ISR
+
+
+%% ==========================================================================
+%% Function: render_ISVT_Function   (Only used for C6711, because the cache overlaps with 
+%%                                                                  address 0  on this board)
+%% Abstract:
+
+%function render_ISVT_Function() void
+%openfile buff
+
+/* Function: relocate_ISVT() --------------------------------
+ *
+ * Abstract:
+ *      This function relocates ISVT (interrrupt service vector table)
+ */
+
+void relocate_ISVT()
+{  
+    /* Copy ISVT to a new location */	
+    memcpy ((void*)0x80000000, (void*)0x0, 0x300);
+
+    /* Set ISTB according to the new address */	
+    IRQ_setVecs((void*)0x80000000);
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_ISVT_Function
+
+
+
+%% ==========================================================================
+%% Function: render_L2CacheFunctions
+%% Abstract:
+
+%function render_L2CacheFunctions(codecType) void
+%openfile buff
+
+/* Function: turnOn_L2Cache() --------------------------------
+ *
+ * Abstract:
+ *      This function turns on L2 cache
+ */
+ 
+void turnOn_L2Cache()
+{  
+    /* Turn on L2 cache and enable caching for CE0 */
+%if (BoardType=="C6416DSK")
+    CACHE_setL2Mode (CACHE_256KCACHE);  
+    CACHE_enableCaching (CACHE_EMIFA_CE00);
+%elseif (BoardType=="C6713DSK" || BoardType=="C6711DSK")
+    CACHE_setL2Mode (CACHE_64KCACHE);
+    CACHE_enableCaching (CACHE_CE00);
+%endif
+}
+
+%if (IRInfo.DMAIntNeeded)
+
+
+/* Function: clean_adc_L2Cache() ---------------------------------
+ *
+ * Abstract:
+ *      This function cleans L2 cache
+ */
+ 
+void clean_adc_L2Cache()
+{
+%if BoardType=="C6711DSK"
+    %%  Codec could be on-board AD535 or the daughtercard.
+    %if (codecType == "320AD535")
+        CACHE_clean(CACHE_L2,(void*) adcBuffPtr, FRAME_SIZE/2 + FRAME_SIZE%2); 
+    %elseif (codecType == "TMDX326040")
+        CACHE_clean(CACHE_L2,(void*) ping_RX, FRAME_SIZE); 
+        CACHE_clean(CACHE_L2,(void*) pong_RX, FRAME_SIZE); 
+    %endif	
+%elseif (BoardType=="C6713DSK" || BoardType=="C6416DSK")
+    %% AIC23 Codec
+    %if (CodecDataFormat == "16BIT")
+        %% Number of words to clean:  
+        %%      SimulinkFrameSize * (2 16BitWordsPerSample) 
+        %%       / (2 16BitWordsPer32BitWord)
+        CACHE_clean(CACHE_L2,(void*) ping_RX, FRAME_SIZE);
+        CACHE_clean(CACHE_L2,(void*) pong_RX, FRAME_SIZE);
+    %else   
+        %% For AIC23_IWL = 20, 24, or 32 bits, we always have 32-bit words, 
+        %%   one for L and another for R.
+        CACHE_clean(CACHE_L2,(void*) ping_RX, FRAME_SIZE*2);
+        CACHE_clean(CACHE_L2,(void*) pong_RX, FRAME_SIZE*2);
+    %endif
+%endif
+}
+
+
+
+/* Function: flush_dac_L2Cache() ---------------------------------
+ *
+ * Abstract:
+ *      This function flushes L2 cache
+ */
+
+void flush_dac_L2Cache()
+{   
+%if BoardType=="C6711DSK"
+    %if (codecType == "320AD535")
+        CACHE_flush(CACHE_L2,(void*) dacBuffPtr, FRAME_SIZE/2 + FRAME_SIZE%2); 
+    %elseif (codecType == "TMDX326040")
+        CACHE_clean(CACHE_L2,(void*) ping_TX, FRAME_SIZE); 
+        CACHE_clean(CACHE_L2,(void*) pong_TX, FRAME_SIZE); 
+    %endif	    
+%elseif (BoardType=="C6713DSK" || BoardType=="C6416DSK")
+    %if (CodecDataFormat == "16BIT")
+        %% Number of words to clean:  
+        %%      SimulinkFrameSize * (2 16BitWordsPerSample) 
+        %%       / (2 16BitWordsPer32BitWord)
+        CACHE_clean(CACHE_L2,(void*) ping_TX, FRAME_SIZE);
+        CACHE_clean(CACHE_L2,(void*) pong_TX, FRAME_SIZE);
+    %else   
+        %% For AIC23_IWL = 20, 24, or 32 bits, we always have 32-bit words, 
+        %%   one for L and another for R.
+        CACHE_clean(CACHE_L2,(void*) ping_TX, FRAME_SIZE*2);
+        CACHE_clean(CACHE_L2,(void*) pong_TX, FRAME_SIZE*2);
+    %endif
+%endif
+}
+
+%endif  %%  if (IRInfo.DMAIntNeeded)
+
+%closefile buff
+%return buff
+%endfunction %% render_L2CacheFunctions
+
+
+
+%% ==========================================================================
+%% Function: render_EDMAFunctions
+%% Abstract:
+
+%function render_EDMAFunctions() void
+%openfile buff
+
+/* Function: initDMABuffers ----------------------------------
+ *
+ * Abstract:
+ *      Initialize all buffer data to zero
+ */
+ 
+void initDMABuffers(void)
+{
+     int index;
+     /* Initialize all buffer data to zero */
+    %if (BoardType=="C6711DSK")
+         for( index=0; index < FRAME_SIZE; index++ )
+         {
+             ping_RX[index] = 0x0000;
+             pong_RX[index] = 0x0000;
+             ping_TX[index] = 0x0000;
+             pong_TX[index] = 0x0000;
+         }
+    %elseif (BoardType=="C6713DSK" || BoardType=="C6416DSK")
+        %%  AIC23
+        for( index=0; index < 2*FRAME_SIZE; index++ )
+         {
+            %if (CodecDataFormat == "16BIT")
+                 ping_RX[index] = 0x0000;
+                 pong_RX[index] = 0x0000;
+                 ping_TX[index] = 0x0000;
+                 pong_TX[index] = 0x0000;
+            %else
+                 ping_RX[index] = 0x00000000;
+                 pong_RX[index] = 0x00000000;
+                 ping_TX[index] = 0x00000000;
+                 pong_TX[index] = 0x00000000;
+            %endif
+         }
+    %endif
+}
+
+
+ 
+/* Function: initDMAInterrupts -------------------------------
+ *
+ * Abstract:
+ *      This function enables DMA interrupts
+ */
+ 
+void initDMAInterrupts(void)
+{
+	config_DMA();
+	EDMA_setChannel(hEdma_xmt);		/* Start Tx Buffer */
+}
+
+
+/* Function: disableDMA --------------------------------------
+ *
+ * Abstract:
+ *      This function disables EDMA events
+ */
+ 
+void disable_DMA()
+{
+    %if (BoardType=="C6416DSK")
+        EDMA_disableChannel(EDMA_CHA_REVT2);
+        EDMA_disableChannel(EDMA_CHA_XEVT2);
+    %elseif (BoardType=="C6713DSK")
+        EDMA_disableChannel(EDMA_CHA_REVT1);
+        EDMA_disableChannel(EDMA_CHA_XEVT1);
+    %elseif (BoardType=="C6711DSK")
+        EDMA_disableChannel(EDMA_CHA_REVT0);
+        EDMA_disableChannel(EDMA_CHA_XEVT0);
+    %endif
+    EDMA_resetAll();                         
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_EDMAFunctions
+
+
+
+%% ==========================================================================
+%% Function: render_disable_interrupts
+%% Abstract:
+
+%function render_disable_interrupts() void
+%openfile buff
+
+/* Function: disable_interrupts ------------------------------
+ *
+ * Abstract:
+ *      Disable all DSP interrupts
+ */
+ 
+void disable_interrupts()
+{      
+  IRQ_globalDisable();    
+  IRQ_resetAll();                          
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_disable_interrupts
+
+
+
+%% ==========================================================================
+%% Function: render_enable_interrupts
+%% Abstract:
+
+%function render_enable_interrupts() void
+%openfile buff
+
+/* Function: enable_interrupts -------------------------------
+ *
+ * Abstract:
+ *      Enable the all DMA and DSP interrupts
+ */
+ 
+void enable_interrupts()
+{ 
+%if (IRInfo.DMAIntNeeded)
+	initDMAInterrupts();
+%endif	
+	IRQ_nmiEnable();				        /* enable non-maskable interrupts */
+%if (IRInfo.DMAIntNeeded)	
+	IRQ_map(IRQ_EVT_EDMAINT, 8);
+%endif	
+	IRQ_globalEnable();				        /* global interrupt enable  */   
+%if (IRInfo.DMAIntNeeded)	
+	IRQ_enable(IRQ_EVT_EDMAINT);	        /* enable EDMA-to-CPU interrupt   */	
+%endif	
+%if (IRInfo.timerIntNeeded)	
+    %if !useDSPBIOS  
+        hTimer1 = TIMER_Open(TIMER_DEV1, TIMER_OPEN_RESET); 
+        TIMER_ConfigB (hTimer1, 
+                       TimerControl,
+                       (int) (%<IRInfo.timerIntPeriod>), 
+                       0x00000000 
+                       );  
+    %endif
+    
+	TimerEventId1 = TIMER_getEventId(hTimer1);
+	IRQ_enable(TimerEventId1);	
+	%if (!IRInfo.DMAIntNeeded)
+        TIMER_start(hTimer1);
+    %endif
+    
+    ICR = IFR | 0x8000;
+    IER |= 0x8002;                        /* enable timer interrupt (# 15)  */
+    CSR |= 1;
+%endif  	
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_enable_interrupts
+
+
+
+%% ==========================================================================
+%% Entry point for chip support library tlc
+
+%if (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+    %assign codecType = "AIC23"
+%elseif (BoardType=="C6711DSK")
+    %assign codecType = "320AD535"
+    %with CompiledModel
+        %if EXISTS("NumSFunctionNameCounts")
+    		%foreach k = NumSFunctionNameCounts
+                %if SFunctionNameCount[k].Name == "tmdx326040_adc" || SFunctionNameCount[k].Name == "tmdx326040_dac"
+                    %assign codecType = "TMDX326040"
+                    %break
+                %endif	
+    		%endforeach
+        %endif
+    %endwith
+%endif
+
+
+%if (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+    %assign CodecDataFormat = IRInfo.codecDataFormat[0]
+    %assign ::CompiledModel = ::CompiledModel + CodecDataFormat
+%endif
+
+%% First, generate header file
+
+%openfile hdrFile = "MW_c6xxx_csl.h" 
+%openfile cslFile = "MW_c6xxx_csl.c"
+%selectfile hdrFile
+%%
+%<render_Core_CSL_Defines()>
+%%
+%% Now, generate source file
+%%
+%selectfile cslFile
+%%
+#define _C6XCHIP_SOURCE_FILE_
+
+#include <std.h>
+#include <csl.h>
+#include <csl_edma.h>
+#include <csl_mcbsp.h>
+%if (IRInfo.timerIntNeeded && !useDSPBIOS)
+    #include <csl_timer.h>
+    #include <csl_legacy.h>
+%endif
+#include <csl_irq.h>
+#include <csl_cache.h>
+#include "MW_c6xxx_csl.h"
+#include "rtwtypes.h"
+#include "%<CompiledModel.Name>.h"
+#include "%<CompiledModel.Name>_private.h"
+%if useDSPBIOS
+    #include "%<CompiledModel.Name>cfg.h"
+%endif
+#include <c6x.h>
+
+%if (BoardType=="C6711DSK")
+    MCBSP_Handle hMcbsp;
+%endif
+%if (IRInfo.DMAIntNeeded)
+
+	EDMA_Handle hEdma_xmt;			
+	EDMA_Handle hEdma_rcv;			
+	EDMA_Handle hEdma_rld_ping_xmt;	
+	EDMA_Handle hEdma_rld_pong_xmt;	
+	EDMA_Handle hEdma_rld_ping_rcv;	
+	EDMA_Handle hEdma_rld_pong_rcv;
+	
+#pragma DATA_ALIGN (ping_RX, 128);
+#pragma DATA_ALIGN (pong_RX, 128);	
+#pragma DATA_ALIGN (ping_TX, 128);	
+#pragma DATA_ALIGN (pong_TX, 128);	
+
+%if (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+    %if (CodecDataFormat == "16BIT")
+        %assign bufDataType = "int16_T"
+    %else
+        %assign bufDataType = "int32_T"
+    %endif    
+	volatile %<bufDataType> ping_RX [ 2*FRAME_SIZE ];
+	volatile %<bufDataType> pong_RX [ 2*FRAME_SIZE ];
+	volatile %<bufDataType> ping_TX [ 2*FRAME_SIZE ];
+	volatile %<bufDataType> pong_TX [ 2*FRAME_SIZE ];
+%elseif  (BoardType=="C6711DSK")
+	%if (codecType == "320AD535")
+        %assign bufDataType = "int16_T"
+	%elseif (codecType == "TMDX326040")
+        %assign bufDataType = "int32_T"
+	%endif	
+	volatile %<bufDataType> ping_RX [ FRAME_SIZE ];
+	volatile %<bufDataType> pong_RX [ FRAME_SIZE ];
+	volatile %<bufDataType> ping_TX [ FRAME_SIZE ];
+	volatile %<bufDataType> pong_TX [ FRAME_SIZE ];
+%endif
+
+%endif   %% if (IRInfo.DMAIntNeeded)
+%%
+%if (IRInfo.timerIntNeeded)
+
+    static Uint32 TimerEventId1;
+    %if !useDSPBIOS     
+		static TIMER_HANDLE hTimer1;
+		
+		static UINT32 TimerControl = TIMER_MK_CTL(
+          TIMER_CTL_FUNC_GPIO,
+          TIMER_CTL_INVOUT_NO,
+          TIMER_CTL_DATOUT_0,
+          TIMER_CTL_PWID_ONE,
+          TIMER_CTL_GO_NO,
+          TIMER_CTL_HLD_YES,
+          TIMER_CTL_CP_PULSE,
+      %if BoardType=="C6416DSK"
+          TIMER_CTL_CLKSRC_CPUOVR8,
+      %else
+          TIMER_CTL_CLKSRC_CPUOVR4,
+      %endif
+          TIMER_CTL_INVINP_NO
+		); 
+    %endif
+%endif %%  if (IRInfo.timerIntNeeded)
+
+extern void rt_OneStep(void);
+
+%if (IRInfo.DMAIntNeeded)
+    volatile int_T edmaBufferReady = NOT_READY;
+%endif
+%%
+volatile int pendingInterrupt  = FALSE;
+
+%if (LinkerCommandFile == "Full_memory_map")
+    %if (BoardType=="C6711DSK")
+        %<render_ISVT_Function()>
+    %else
+        %%   (not needed for this chip, because
+        %%    cache never overlaps with addr 0 )
+    %endif
+    %<render_L2CacheFunctions(codecType)>
+%endif
+%%
+%if (IRInfo.DMAIntNeeded)
+
+    %<render_EDMAFunctions()>
+    %<render_EDMA_ISR()>
+%endif
+%%
+%if (IRInfo.timerIntNeeded)
+
+    %<render_Timer1_ISR()>
+%endif
+
+%<render_enable_interrupts()>
+%<render_disable_interrupts()>
+
+%closefile hdrFile
+%closefile cslFile
+
+%% [EOF] c6x1x_csl.tlc

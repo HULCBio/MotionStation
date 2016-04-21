@@ -1,0 +1,2041 @@
+%% 
+%% $Revision: 1.1.6.15 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Library to support the notion of an RTModel object
+%%
+
+%if EXISTS("_RTMDLLIB_") == 0
+%assign _RTMDLLIB_ = 1
+
+%include "rtmspecmacs.tlc"
+%include "rtmisreqfcns.tlc"
+%include "rtmdllib_obs.tlc"
+
+%%------------------------------------------------------------------------------
+%% RTM record creation SECTION:
+%%------------------------------------------------------------------------------
+%%  Has support for creating a TLC records that:
+%%  - know about the data fields in an rtModel
+%%  - know about special inline operations to rtModel data fields
+%%------------------------------------------------------------------------------
+
+
+%% Function: RTMCreateRTModelRecShell ==========================================
+%% Abstract:
+%%   Create a shell to hold the rtModel records.
+%%
+%function RTMCreateRTModelRecShell() void
+  %if !EXISTS(RootRTMdlRecs)
+    %assign ::RootRTMdlRecNum = 1
+    %createrecord ::RootRTMdlRecs {}
+    %return 1
+  %else
+    %return 0
+  %endif
+%endfunction %% RTMCreateRTModelRecShell
+
+
+%% Function: RTMGetRTModelRecShell =============================================
+%% Abstract:
+%%   Create a shell to hold the rtModel records.
+%%
+%function RTMGetRTModelRecShell() void
+  %return ::RootRTMdlRecs
+%endfunction %% RTMGetRTModelRecShell
+
+
+%% Function: FcnNeedRTMInMacroArg =============================================
+%% Abstract:
+%%   Does the macro need the rtModel in the argment list?  In certain cases
+%%   when using the global timing engine for model reference, we do not
+%%   need the rtModel in the argument list.
+%function FcnNeedRTMInMacroArg(theRec)
+  %if !::ModelReferenceTargetWithGlobalTiming || ...
+    (theRec.UseRTModelForMR == 2) || ((theRec.UseRTModelForMR == 1) && ...
+    IsModelReferenceForASimstructBasedTarget())
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction %%FcnNeedRTMInMacroArg
+
+
+%% Function: FcnRTMCreateBaseRec ===============================================
+%% Abstract:
+%%   Creates a base data record for the rtModel. 
+%%
+%%   The record contains information such as:
+%%   name of variable in rtModel struct, place in the rtModel hierarchy for
+%%   the field, the datatype, data qualifier, and whether or not the
+%%   field is required to be present unconditionally in the rtModel.
+%%   
+%%   In addition to all of the above information, the record also has 
+%%   information on whether or not it needs a specialized macro for 
+%%   forwarding accesses to SimStructs of child S-functions to the rtModel.
+%%   Such macros are necessary because in the era of the root SimStruct,
+%%   child S-functions would sometimes reach into the root SimStruct for
+%%   the information (e.g. ssGetT). Such accesses need to now be forwarded
+%%   to the rtModel.
+%% 
+%function FcnRTMCreateBaseRec(rtRec, rName, vName, parent, dType, qual, ...
+  ertMac, isReqFcn) void
+  
+  %if qual != "" && qual != "CONST"
+    %assign errTxt = "%<qual> is not a valid Qualifier for record '%<rName>'"...
+      " in the rtModel object"
+    %<LibReportError(errTxt)>
+  %endif
+  
+  %addtorecord rtRec ...
+  %<rName> {                       \
+    RecType       "Variable";      \
+    VarRecNumber  RootRTMdlRecNum; \
+    VarName       vName;           \
+    Parent        parent;          \
+    DataType      dType;           \
+    Qualifier     qual;            \
+    ERTMacro      ertMac;          \
+    StorageType   "";              \
+    ArrayDims     [];              \
+    IsRequiredFcn isReqFcn;        \
+    NumSet        0;               \
+    NumGet        0;               \
+    TypeStr       ""               \
+  }
+  
+  %assign ::RootRTMdlRecNum = RootRTMdlRecNum + 1
+  
+%endfunction %% FcnRTMCreateBaseRec
+
+
+%% Function: RTMAddRecSclr =====================================================
+%% Abstract:
+%%   Creates a scalar data record for the rtModel
+%% 
+%function RTMAddRecSclr(rName, vName, parent, dType, qual, ertMac, ...
+  isReqFcn) void
+  %assign rtRec = RTMGetRTModelRecShell()
+  %<FcnRTMCreateBaseRec(rtRec,rName,vName,parent,dType,qual,ertMac,isReqFcn)>
+  %assign rtRec.%<rName>.StorageType = "SCALAR"
+%endfunction %% RTMAddRecSclr
+
+
+%% Function: RTMAddRecPntr =====================================================
+%% Abstract:
+%%   Creates a pointer data record for the rtModel
+%% 
+%function RTMAddRecPntr(rName, vName, parent, dType, qual, ertMac, ...
+  isReqFcn) void
+  %assign rtRec = RTMGetRTModelRecShell()
+  %<FcnRTMCreateBaseRec(rtRec,rName,vName,parent,dType,qual,ertMac,isReqFcn)>
+  %assign rtRec.%<rName>.StorageType = "POINTER"
+%endfunction %% RTMAddRecPntr
+
+%% Function: RTMAddRecPntrPntr =================================================
+%% Abstract:
+%%   Creates a pointer pointer data record for the rtModel
+%% 
+%function RTMAddRecPntrPntr(rName, vName, parent, dType, qual, ertMac, ...
+  isReqFcn) void
+  %assign rtRec = RTMGetRTModelRecShell()
+  %<FcnRTMCreateBaseRec(rtRec,rName,vName,parent,dType,qual,ertMac,isReqFcn)>
+  %assign rtRec.%<rName>.StorageType = "POINTERPOINTER"
+%endfunction %% RTMAddRecPntrPntr
+
+%% Function: RTMAddRecArry ======================================================
+%% Abstract:
+%%   Creates an array data record for the rtModel
+%% 
+%function RTMAddRecArry(rName, vName, parent, dType, qual, ertMac, ...
+  dims, isReqFcn) void
+  %assign rtRec = RTMGetRTModelRecShell()
+  
+  %<FcnRTMCreateBaseRec(rtRec,rName,vName,parent,dType,qual,ertMac,isReqFcn)>
+  %assign rtRec.%<rName>.StorageType = "ARRAY"
+  %assign rtRec.%<rName>.ArrayDims   = dims
+%endfunction %% RTMAddRecArry
+
+
+%% Function: RTMAddRecIdxedAccs ================================================
+%% Abstract:
+%%   Add a record that indicates how to generated an indexed inline access of
+%%   a vector rtModel field.
+%%
+%%   The record contains information such as:
+%%   - name of variable in rtModel struct that is being accessed
+%%   - information on whether or not we need to generate a macro for the
+%%     given field into the rtmodel.h file. The macro will be of the form
+%%     rtmGetSampleTime. It is used by files in the rtw/c/src directory.
+%%     (The reason we use macros in  rtw/c/src/ is that these files retain the
+%%      ability to run based on the root SimStruct instead of the rtModel. 
+%%      If we are using the root SimStruct, the rtm macros automatically
+%%      get mapped to macros for the root SimStruct).
+%%   - information on whether or not it needs a specialized macro for 
+%%     forwarding accesses to SimStructs of child S-functions to the rtModel.
+%% 
+%function RTMAddRecIdxedAccs(rName, accessedRec) void
+  %assign rtRec    = RTMGetRTModelRecShell()
+  
+  %createrecord \
+  %<rName> {                      \
+    RecType       "IndexedAccess";\
+    AccessedRec   accessedRec;    \
+    NumGet        0;              \
+    NumSet        0               \
+  }
+  
+  %assign rtRec = rtRec + %<rName>
+%endfunction %% RTMAddRecIdxedAccs
+
+
+%% Function: RTMAddRecSpecialAccs ==============================================
+%% Abstract:
+%%   Add a record that indicates how to generated an special inline access of
+%%   a vector rtModel field.
+%%
+%%   The record contains information such as:
+%%   - names of the fields in rtModel struct that are being accessed
+%%   - other args used in the access
+%%   - the specific access method to call in the case of a 'set', 'get',
+%%     or 'is' access. 
+%%   - information on whether or not we need to generate a macro for the
+%%     given field into the rtmodel.h file. 
+%%   - information on whether or not it needs a specialized macro for 
+%%     forwarding accesses to SimStructs of child S-functions to the rtModel.
+%%   - For the modelreference target with GlobalTimingEngine, the field
+%%     UseRTModelForMR specifies whether the macros have rtModel in the argument
+%%     list.  This has no effect for non-model reference targets.
+%% 
+%function RTMAddRecSpecialAccs(rName, getFcn, setFcn, isFcn, oFcn, sva, ...
+  nArgs, args, useRTModelForMR, ertMac) void
+
+  %assign rtRec    = RTMGetRTModelRecShell()
+  
+  %createrecord \
+  %<rName> {                           \
+    RecType          "SpecialAccess";  \
+    ERTMacro         ertMac;           \
+    GetFcn           getFcn;           \
+    SetFcn           setFcn;           \
+    IsFcn            isFcn;            \
+    OtherFcn         oFcn;             \
+    SetHasValArg     sva;              \
+    NumArgs          nArgs;            \
+    Args             args;             \
+    NumGet           0;                \
+    NumSet           0;                \
+    UseRTModelForMR  useRTModelForMR;  \
+    Name             rName             \
+  }
+  
+  %assign rtRec = rtRec + %<rName>
+%endfunction %% RTMAddRecSpecialAccs
+
+
+%% Function: RTMAddRecDummy ====================================================
+%% Abstract:
+%%   Add a dummy record that forwards old SimStruct accesses to never-never
+%%   land
+%% 
+%function RTMAddRecDummy(rName) void
+  %assign rtRec = RTMGetRTModelRecShell()
+
+  %createrecord \
+  %<rName> {                     \
+    RecType       "Dummy"        \
+  }
+  
+  %assign rtRec = rtRec + %<rName>
+%endfunction %% RTMAddRecDummy
+
+
+%%------------------------------------------------------------------------------
+%% RTM access SECTION:
+%%------------------------------------------------------------------------------
+%% This section is devoted to methods that are called from all over the TLC code
+%% to access a field of the RTModel. The appropriate access is generated from
+%% the information in the corresponding TLC record for the RTModel.
+%%------------------------------------------------------------------------------
+
+
+%% Function: FcnRTMGenErr ======================================================
+%% Abstract:
+%%   Generate an RTM Error
+%% 
+%function FcnRTMGenErr(errKey, recName) void
+  %switch(errKey)
+    %case "ACCESSREC_NOT_FOUND"
+      %assign errTxt = "RT_MODEL record %<recName> does not have a matching "...
+	"access record"
+      %break
+    %case "RECTYPE_NOT_FOUND"
+      %assign errTxt = "RT_MODEL record %<recName> has unknown RecType"
+      %break
+    %case "FIELD_NOT_FOUND"
+      %assign errTxt = "RT_MODEL record %<recName> not found"
+      %break
+    %case "WRONGTYPE"
+      %assign errTxt = "RT_MODEL record %<recName> processed using " ...
+	"incorrect TLC function"
+      %break
+    %case "BADSPECIALACCS"
+      %assign errTxt = "RT_MODEL record %<recName> accessed with " ...
+	"incorrect special access"
+      %break
+    %default
+      %assign errTxt = "Unknown error occurred in RT_MODEL generation"
+      %break
+  %endswitch
+  %<LibReportError(errTxt)>
+%endfunction
+
+
+%% Function: FcnGenFieldAccessString ===========================================
+%% Abstract: 
+%%   Generates a string for the access of a plain field
+%%
+%function FcnGenFieldAccessString(theRec,forGetOrSet,optIdx,optSetVal,...
+  rtmName) void
+  
+  %assign parent    = theRec.Parent
+  %assign parentStr = (parent == "") ? "" : "%<parent>."
+  %assign derefStr  = "->"
+  %assign retStr    = "%<rtmName>%<derefStr>%<parentStr>%<theRec.VarName>"
+  %assign idxStr    = (optIdx == "") ? "" : "[%<optIdx>]"
+  %assign retStr    = retStr + idxStr
+  
+  %if forGetOrSet == "set"
+    %assign retStr = retStr + " = (%<optSetVal>)"
+  %endif
+  
+  %return retStr
+%endfunction %% FcnGenFieldAccessString
+
+
+%% Function: FcnUpdateRecUsage =================================================
+%% Abstract:
+%%   Update the usage info for a record
+%% 
+%function FcnUpdateRecUsage(theRec, accessType) void
+  %switch (accessType)
+    %case "get"
+      %assign theRec.NumGet = theRec.NumGet + 1
+      %break
+    %case "is"
+    %case "set"
+      %assign theRec.NumSet = theRec.NumSet + 1      
+      %break
+  %endswitch
+%endfunction %% FcnUpdateRecUsage
+
+
+%% Function: FcnUpdateRTModelInterfaceArg =====================================
+%% Abstract:
+%%   Update the interface for a system to include the rtModel.
+%% 
+%function FcnUpdateRTModelInterfaceArg(system, rtmName) void
+  %% We now put the rtModel as an argument in all reusable functions
+  %% if it is used.  Previously we only did this for MultiInstanceERTCode.
+  %% Guard this with (MultiInstanceERTCode || GenerateSFunction) to get the
+  %% old behavior
+  %assign outRTMName = rtmName
+  %if ::BlockFcn != "Unknown"
+    %% We may pass in the HStructDeclSystem when calling this
+    %% function, but we want to know the actual system that the
+    %% caller lives in.  We can get this information if SystemIdx
+    %% is in scope.
+    %if EXISTS(SystemIdx)
+      %assign ownersys = System[SystemIdx]
+    %else
+      %assign ownersys = system
+    %endif
+    %if ownersys.CrossNoArgFcnBound
+      %assign hstructDeclSys = System[ownersys.HStructDeclSystemIdx]
+      %<LibAccessGlobalArg(hstructDeclSys.Interface.RTMArgDef)>
+      %assign outRTMName = "%<GetGlobalPrefix()>RTM_%<ownersys.HStructDeclSystemIdx>"
+    %endif
+    %<LibAccessArg(system.Interface.RTMArgDef)>
+  %endif
+  %return outRTMName
+%endfunction %% FcnUpdateRTModelInterfaceArg
+
+%% Function: FcnGenPlainAccess =================================================
+%% Abstract:
+%%   Generate a plain access to an data field in the rtModel.
+%%
+%function FcnGenPlainAccess(system, recordName, fcnGetOrSet, optIdx, ...
+  optSetVal, rtmName) void
+  
+  %assign rtRecs = RTMGetRTModelRecShell()
+  %assign retStr = "ACCESS_ERROR" %% assume
+  %assign theRec = rtRecs.%<recordName>
+
+  %% Update the rtModel interface argument
+  %assign rtmName = FcnUpdateRTModelInterfaceArg(system, rtmName)
+  
+  %%
+  %% Error check to make sure the function is called for the appropriate
+  %% record
+  %%
+  %if (theRec.RecType != "Variable")
+    %<FcnRTMGenErr("WRONGTYPE", theRec)>
+  %endif
+  
+  %%
+  %% Increment access numbers
+  %%
+  %<FcnUpdateRecUsage(theRec, fcnGetOrSet)>
+  
+  %%
+  %% Generate the actual access
+  %%
+  %assign retStr = FcnGenFieldAccessString(theRec,fcnGetOrSet,...
+    optIdx, optSetVal, rtmName)
+    
+  %return retStr
+%endfunction %% FcnGenPlainAccess
+
+
+%% Function: FcnGenIndexedAccess ===============================================
+%% Abstract:
+%%   Generate an indexed access to an data field in the rtModel.
+%%
+%function FcnGenIndexedAccess(system, recordName, fcnGetOrSet, optIdx, ...
+  optSetVal, rtmName) void
+  %assign rtRecs = RTMGetRTModelRecShell()
+  %assign theRec = rtRecs.%<recordName>
+
+  %% Update the rtModel interface argument
+  %assign rtmName = FcnUpdateRTModelInterfaceArg(system, rtmName)
+
+  %%
+  %% Error check to make sure the function is called for the appropriate
+  %% record
+  %%
+  %if (theRec.RecType != "IndexedAccess")
+    %<FcnRTMGenErr("WRONGTYPE", theRec)>
+  %endif
+  
+  %%
+  %% Increment access numbers
+  %%
+  %<FcnUpdateRecUsage(theRec, fcnGetOrSet)>
+  
+  %%
+  %% Generate the actual access
+  %%
+  %assign refRec = rtRecs.%<theRec.AccessedRec>
+  %assign retStr =  FcnGenFieldAccessString(refRec,fcnGetOrSet,...
+    optIdx, optSetVal, rtmName)
+  
+  %return retStr
+%endfunction %% FcnGenIndexedAccess
+
+
+%% Function: FcnGenSpecialAccess ===============================================
+%% Abstract:
+%%   Generate a special access
+%% 
+%function FcnGenSpecialAccess(system, recordName, accessType, nArgs, args, ...
+  optSetVal, rtmName) void
+  
+  %assign rtRecs = RTMGetRTModelRecShell()
+  %assign theRec = rtRecs.%<recordName>
+  
+  %% Update the rtModel interface argument if it is being used in the macro
+  %if FcnNeedRTMInMacroArg(theRec)
+  %assign rtmName = FcnUpdateRTModelInterfaceArg(system, rtmName)
+  %endif
+
+  %%
+  %% Error check to make sure the function is called for the appropriate
+  %% record
+  %%
+  %if (theRec.RecType != "SpecialAccess")
+    %<FcnRTMGenErr("WRONGTYPE", theRec)>
+  %endif
+  
+  %%
+  %% Increment access numbers
+  %%
+  %<FcnUpdateRecUsage(theRec, accessType)>  
+  
+  %%
+  %% Get the name of the macro
+  %%
+  %assign accFcn = ""
+  %switch accessType
+    %case "is"
+      %assign accFcn = "Is"
+      %break
+    %case "get"
+      %assign accFcn = "Get"
+      %break
+    %case "set"
+      %assign accFcn = "Set"
+      %break
+    %case "other"
+      %assign accFcn = ""
+      %break
+  %endswitch
+  
+  %assign comma = ""
+  %if FcnNeedRTMInMacroArg(theRec)
+    %assign retStr = "rtm%<accFcn>%<recordName>(%<rtmName>"
+    %assign comma = ", "
+  %else
+    %assign retStr = "rtm%<accFcn>%<recordName>("
+  %endif
+
+  %%
+  %% Check that we have the correct number of other args
+  %%
+  %if theRec.NumArgs != nArgs
+    %<FcnRTMGenErr("BADSPECIALACCS", theRec)>
+  %endif
+  
+  %foreach argIdx = theRec.NumArgs
+    %assign retStr  = retStr + comma
+    %assign thisarg = args[argIdx]
+    %assign retStr  = retStr + thisarg
+    %assign comma = ", "
+  %endforeach
+  
+  %if accessType == "set"
+    %assign retStr = retStr + ", " + optSetVal
+  %endif
+  
+  %assign retStr = retStr + ")"
+
+  %return retStr
+%endfunction %% FcnGenSpecialAccess
+
+
+%<LibAddToCompiledModel("RealTimeModelAccessed", 0)>
+
+%% Function: RTMDispatchToAccessFcn ============================================
+%% Abstract: 
+%%   Dispatch to the appropriate access function 
+%%
+%function RTMsDispatchToAccessFcn(system, recordName, fcnGetOrSet, optIdx, ...
+  optSetVal, rtmName) void
+  
+  %assign rtRecs = RTMGetRTModelRecShell()
+
+  %if !ISFIELD(rtRecs, recordName)
+    %<FcnRTMGenErr("FIELD_NOT_FOUND", recordName)>
+  %endif
+  
+  %assign theRec = rtRecs.%<recordName>
+  
+  %% Check if we are using a macro that does not need
+  %% the RTMODEL in the argument list.  This is true for
+  %%   - clockTick%<idx>
+  %%   - clockTickH%<idx>
+  %%   - taskTime
+  %%   - T
+  %%   - TPtr
+  %%   - firstInitCond
+  %%   - special sample hit
+  %% This is specified in the field useRTModelForMR in the special
+  %% access macro definition in rtmdldefs.tlc
+  %if theRec.RecType != "SpecialAccess" || FcnNeedRTMInMacroArg(theRec)
+    %assign CompiledModel.RealTimeModelAccessed = 1
+  %endif
+
+  %switch (theRec.RecType)
+    %case "Variable"
+      %assign retStr = FcnGenPlainAccess(system, recordName, fcnGetOrSet, ...
+        optIdx, optSetVal, rtmName)
+      %break
+    %case "IndexedAccess"
+      %assign retStr = FcnGenIndexedAccess(system, recordName, fcnGetOrSet, ...
+	optIdx, optSetVal, rtmName)
+      %break
+    %case "SpecialAccess"
+      %assign nArgs = (optIdx == "") ? 0 : 1
+      %assign retStr = FcnGenSpecialAccess(system, recordName, fcnGetOrSet, ...
+	nArgs, ["%<optIdx>"], optSetVal, rtmName)
+      %break
+    %case "Dummy"
+    %default
+      %% Do nothing
+      %assign retStr = ""
+      %break
+  %endswitch
+  %return retStr
+%endfunction
+
+
+%% Function: RTMSet ============================================================
+%% Abstract:
+%%   Return code for doing a "set" on a field in the rtModel
+%% 
+%function RTMsSet(system, recordName, initVal) void
+  
+  %if GenRTModel
+    %%
+    %% Take care of the case where people may have given a TLC numeric index
+    %%
+    %if TYPE(initVal) != "String"
+      %assign initVal = "%<initVal>"
+    %endif
+    
+    %assign setStr = RTMsDispatchToAccessFcn(system, recordName, "set", "", ...
+      initVal, tSimStruct)
+  %else
+    %assign setStr = "ssSet" + recordName + "(%<tSimStruct>, %<initVal>)"
+  %endif
+  
+  %return setStr
+%endfunction %% RTMSet
+
+
+%% Function: RTMuSet ===========================================================
+%% Abstract:
+%%   Return code for doing a "set" on a field in the rtModel. This function
+%%   is different from RTMSet in that it appends an underscore in front
+%%   of the SimStruct access. When we move to the actual rtModel, this 
+%%   function can be obsoleted.
+%% 
+%function RTMsuSet(system, recordName, initVal) void
+  %assign setStr = RTMsSet(system, recordName, initVal)
+  %if !GenRTModel
+    %assign setStr = "_%<setStr>"
+  %endif
+  %return setStr
+%endfunction %% RTMuSet
+
+
+%% Function: RTMSetIdxed =======================================================
+%% Abstract:
+%%   Return code for doing a "set" on a field in the rtModel. This function
+%%   is used when an indexing variable is also specified.
+%% 
+%function RTMsSetIdxed(system, recordName, fldIdx, initVal) void
+  %if GenRTModel
+    %%
+    %% Take care of the case where people may have given a TLC numeric index
+    %%
+    %if TYPE(fldIdx) != "String"
+      %assign fldIdx = "%<fldIdx>"
+    %endif
+    %%
+    %% Take care of the case where people may have given a TLC numeric index
+    %%
+    %if TYPE(initVal) != "String"
+      %assign initVal = "%<initVal>"
+    %endif
+    
+    %assign setStr = RTMsDispatchToAccessFcn(system, recordName, "set", fldIdx, ...
+      initVal, tSimStruct)
+  %else
+    %assign setStr = "ssSet" + recordName + "(%<tSimStruct>, " ...
+      "%<fldIdx>, %<initVal>)"
+  %endif
+  %return setStr
+%endfunction %% RTMSetIdxed
+
+
+%% Function: RTMuSetIdxed =======================================================
+%% Abstract:
+%%   Return code for doing a "set" on a field in the rtModel. This function
+%%   is different from RTMSet in that it appends an underscore in front
+%%   of the SimStruct access. When we move to the actual rtModel, this 
+%%   function can be obsoleted.
+%% 
+%function RTMsuSetIdxed(system, recordName, fldIdx, initVal) void
+  %assign setStr = RTMsSetIdxed(system, recordName, fldIdx, initVal)
+  %if !GenRTModel
+    %assign setStr = "_%<setStr>"
+  %endif
+  %return setStr
+%endfunction %% RTMuSetIdxed
+
+
+%% Function: RTMGet ============================================================
+%% Abstract:
+%%   Return code for doing a "get" on a field in the rtModel
+%% 
+%function RTMsGet(system, recordName) void
+  %if GenRTModel
+    %assign fldStr = RTMsDispatchToAccessFcn(system, recordName,"get","","",tSimStruct)
+    %assign getStr = "%<fldStr>"
+  %else
+    %assign getStr = "ssGet" + recordName + "(%<tSimStruct>)"
+  %endif
+  %return getStr
+%endfunction %% RTMGet
+
+
+%% Function: RTMuGet ===========================================================
+%% Abstract:
+%%   Return code for doing a "get" on a field in the rtModel. This function
+%%   is different from RTMGet in that it appends an underscore in front
+%%   of the SimStruct access. When we move to the actual rtModel, this 
+%%   function can be obsoleted.
+%% 
+%function RTMsuGet(system, recordName) void
+  %assign getStr = RTMsGet(system, recordName)
+  %if !GenRTModel
+    %assign getStr = "_%<getStr>"
+  %endif
+  %return getStr
+%endfunction %% RTMuGet
+
+
+%% Function: RTMGetIdxed =======================================================
+%% Abstract:
+%%   Return code for doing a "get" on a field in the rtModel. This function
+%%   is used when an indexing variable is also specified.
+%% 
+%function RTMsGetIdxed(system, recordName, fldIdx) void
+  %if GenRTModel
+    %%
+    %% Take care of the case where people may have given a TLC numeric index
+    %%
+    %if TYPE(fldIdx) != "String"
+      %assign fldIdx = "%<fldIdx>"
+    %endif
+    
+    %assign fldStr = RTMsDispatchToAccessFcn(system, recordName, "get", fldIdx, ...
+      "", tSimStruct)
+    %assign getStr = "%<fldStr>"
+  %else
+    %assign getStr = "ssGet" + recordName + "(%<tSimStruct>, %<fldIdx>)"
+  %endif
+  
+  %return getStr
+%endfunction %% RTMGetIdxed
+
+
+%% Function: RTMIs =============================================================
+%% Abstract:
+%%   Return code for doing a "is" on a field in the rtModel
+%% 
+%function RTMsIs(system, recordName) void
+  %if GenRTModel
+    %assign isStr = FcnGenSpecialAccess(system, recordName, "is", 0, ...
+      [], "", tSimStruct)
+  %else
+    %assign isStr = "ssIs" + recordName + "(%<tSimStruct>)"
+  %endif
+  %return isStr
+%endfunction %% RTMIs
+
+%% Function: RTMsGetTaskTimeCounterForTID ==============================================
+%% Abstract:
+%%   Return call to get task time counter for given TID
+%% 
+%function RTMsGetTaskTimeCounterForTID(system, tid) void
+  %assign retVal = RTMsGetTaskTimeCounterForTIDGivenRTM(system, tSimStruct, tid)
+  %return retVal
+%endfunction %% RTMsGetTaskTimeCounterForTID
+
+
+%% Function: RTMsGetTaskTimeCounterForTIDGivenRTM ======================================
+%% Abstract:
+%%   Return call to get task time counter
+%%   for given TID given the rtModel
+%% 
+%function RTMsGetTaskTimeCounterForTIDGivenRTM(system, rtm, tid) void
+  %assert GenRTModel && ...
+    CodeFormat == "Embedded-C" 
+
+  %if SLibClockTickIsUnit32Pair(tid) && !PurelyIntegerCode
+    %% PurelyIntegerCode does not support timer data type tSS_TIMER_UINT32_PAIR
+    %assign getStr1 = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", "",...
+      "", rtm) + " + " 
+    %assign getStr2 = RTMDispatchToAccessFcn("ClockTickH%<tid>", "get", "",...
+      "", rtm) + "* 4294967296.0"
+    %assign getStr = "(" + getStr1 + getStr2 + ")"
+  %else
+    %assign getStr = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", "",...
+      "", rtm) 
+  %endif
+  
+  %return getStr
+%endfunction %% RTMsGetTaskTimeCounterForTIDGivenRTM
+
+
+%% Function: RTMsGetTaskTimeForTID ==============================================
+%% Abstract:
+%%   Return call to get task time for given TID
+%% 
+%function RTMsGetTaskTimeForTID(system, tid) void
+  %assign retVal = RTMsGetTaskTimeForTIDGivenRTM(system, tSimStruct, tid)
+  %return retVal
+%endfunction %% RTMsGetTaskTimeForTID
+
+
+%% Function: RTMGetTaskTimeForTIDGivenRTM ======================================
+%% Abstract:
+%%   Return call to get task time for given TID given the rtModel
+%% 
+%function RTMsGetTaskTimeForTIDGivenRTM(system, rtm, tid) void
+  %if GenRTModel
+    %%
+    %% Take care of the case where people may have given a TLC numeric index
+    %%
+    %if CodeFormat == "Embedded-C" && !GenerateGRTWrapper
+      %<SLibSetNeedAbsoluteTime(tid)>
+    %endif
+
+    %assign tidStr = (TYPE(tid) != "String") ? "%<tid>" : tid
+ 
+    %if CodeFormat != "Embedded-C" 
+      %assign getStr = RTMsDispatchToAccessFcn(system,"TaskTime","get",tidStr,"",rtm)
+    %else
+      %if ::ModelReferenceTargetWithGlobalTiming
+	%if IsModelReferenceForASimstructBasedTarget()
+	  %assign getStr = RTMsDispatchToAccessFcn(system,"TaskTime","get",tidStr,"",rtm)
+	%else
+          %if ISFIELD(SampleTime[tid], "needFloatTime") 
+            %assign base = "%<::tMdlRefTimingBridge>->taskTime"
+            %assign indx = "%<::tMdlRefGlobalTID>[%<tid>]"
+            %return "( *((real_T *)(%<base>[%<indx>])) )"      
+          %else
+            %assign res = PurelyIntegerCode ? "" : "* %<SampleTime[tid].ClockTickStepSize>"
+            %assign tic = RTMGet("ClockTick%<tid>")
+            %if SLibClockTickIsUnit32Pair(tid) && !PurelyIntegerCode
+	      %% PurelyIntegerCode does not support timer data type tSS_TIMER_UINT32_PAIR
+              %assign highTic = RTMGet("ClockTickH%<tid>")
+              %assign tic = "( %<tic> + %<highTic>*4294967296.0 )"
+            %endif
+            %assign getStr = "%<tic>%<res>"
+            %assign offset = SampleTime[tid].PeriodAndOffset[1]
+            %if offset != 0
+              %assign getStr = "%<getStr> + %<offset>"
+            %endif
+            %assign getStr = "(%<getStr>)"  
+          %endif
+	%endif
+      %elseif IsModelReferenceForASimstructBasedTarget() && LibIsContinuous(tid)
+	%assign simS = RTMsGet(system, "MdlRefSfcnS")
+	%assign getStr =  "ssGetTaskTime(%<simS>, %<tid>)"
+      %elseif ISFIELD(SampleTime[tid], "needFloatTime") 
+	%if RTMTaskTimeIsReqFcnForTID(tid)
+	  %assign getStr = RTMDispatchToAccessFcn("TaskTime%<tid>", "get", "", ...
+	    "", rtm)
+	%else
+	  %assert RTMTimePtrIsReqFcn()
+	  %assign getStr = RTMDispatchToAccessFcn("TimePtr", "get", "","", rtm)
+	  %assign getStr = getStr + "[%<tid>]"
+	%endif
+      %else
+	%% Integer base time. Calculate tasktime from 
+	%% integer counter and resulution. 
+	%assign t_resolution = PurelyIntegerCode || ...
+	  SampleTime[tidStr].ClockTickDataTypeId == tSS_DOUBLE ? ...
+	  "" : "* %<SampleTime[tidStr].ClockTickStepSize>"
+	%assign getStr = "(" + ...
+	  RTMsGetTaskTimeCounterForTIDGivenRTM(system, rtm, tid) + ...
+	  ") %<t_resolution> "
+	%if (SampleTime[tidStr].Asynchronous == "no" && ...
+	  SampleTime[tidStr].PeriodAndOffset[1] != 0)
+	  %assign getStr = "((" + getStr + ") + " + ...
+	    "%<SampleTime[tidStr].PeriodAndOffset[1]>)"
+	%endif
+      %endif
+    %endif
+  %else
+    %assign getStr = "ssGetTaskTime(%<rtm>,%<tid>)"
+  %endif
+  %return getStr
+%endfunction %% RTMGetTaskTimeForTIDGivenRTM
+
+
+%% Function: RTMGetTaskTime ====================================================
+%% Abstract:
+%%   Return call to get task time
+%% 
+%function RTMsGetTaskTime(system) void
+  %return RTMsGetTaskTimeForTID(system, LibTID())
+%endfunction %% RTMGetTaskTime
+
+
+%% Function: RTMIsContinuousTask ===============================================
+%% Abstract:
+%%   Return call to check if continous task
+%% 
+%function RTMsIsContinuousTask(system) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %assign isStr ="ssIsContinuousTask(%<simS>, %<LibTID()>)"
+  %else 
+    %if GenRTModel
+      %assign isStr = FcnGenSpecialAccess(system, "ContinuousTask", "is", 1, ...
+	["%<LibTID()>"], "", tSimStruct)
+    %else
+      %assign isStr = "ssIsContinuousTask(%<tSimStruct>, %<LibTID()>)"
+    %endif
+  %endif
+  %return isStr
+%endfunction %% RTMIsContinuousTask
+
+
+%% Function: RTMIsSampleHit ====================================================
+%% Abstract:
+%%   Return call to check if sample hit
+%% 
+%function RTMsIsSampleHit(system, tid) void
+  %if GenRTModel
+    %assign isStr = FcnGenSpecialAccess(system, "SampleHit", "is", 2, ...
+      ["%<tid>", "%<LibTID()>"], "", tSimStruct)
+  %else
+    %assign isStr = "ssIsSampleHit(%<tSimStruct>, %<tid>, %<LibTID()>)"
+  %endif
+  %return isStr
+%endfunction %% RTMIsSampleHit
+
+
+%% Function: RTMIsSpecialSampleHit =============================================
+%% Abstract:
+%%   Return call to check if special sample hit
+%% 
+%function RTMsIsSpecialSampleHit(system, sti, tid) void
+  %if GenRTModel
+    %assign isStr = FcnGenSpecialAccess(system, "SpecialSampleHit", "is", 3, ...
+      ["%<sti>", "%<tid>", "%<LibTID()>"], "", tSimStruct)
+  %else
+    %assign isStr = "ssIsSpecialSampleHit(%<tSimStruct>,%<sti>,%<tid>,%<LibTID()>)"
+  %endif
+  %return isStr
+%endfunction %% RTMIsSpecialSampleHit
+
+
+%% Function: RTMChkMemAndReturnIfErr ===========================================
+%% Abstract:
+%%   Return a call for validating memory in the rtModel
+%% 
+%function RTMsChkMemAndReturnIfErr(system, ptr) void
+  %assign vStr = "rt_VALIDATE_MEMORY(%<tSimStruct>," + ptr + ")"
+  %return vStr
+%endfunction %% RTMChkMemAndReturnIfErr
+
+
+%% Function: RTMSetBlkStateChange ==============================================
+%% Abstract:
+%%   Sets BlkStateChange flag.
+%%
+%function RTMsSetBlkStateChange(system) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %assign setStr = "ssSetBlkStateChange(%<simS>)"
+  %else
+    %if GenRTModel
+      %assign setStr = RTMsSet(system, "BlkStateChangeFlag", "true")
+    %else
+      %assign setStr = "ssSetBlkStateChange(%<tSimStruct>)"
+    %endif
+  %endif
+  %return setStr
+%endfunction %% RTMSetBlkStateChange
+
+
+%% Function: RTMGetErrStat =====================================================
+%% Abstract:
+%%   Return code for doing a "get" on ErrorStatus field in the rtModel
+%% 
+%function RTMsGetErrStat(system) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %return "ssGetErrorStatus(%<simS>)"
+  %endif
+  %return RTMsGet(system, "ErrorStatus")
+%endfunction %% RTMGetErrStat
+
+
+%% Function: RTMSetErrStat =====================================================
+%% Abstract:
+%%   Return code for setting the error status
+%% 
+%function RTMsSetErrStat(system, errStat) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %return "ssSetErrorStatus(%<simS>, %<errStat>)"
+  %endif
+  %return RTMsSet(system, "ErrorStatus", errStat)
+%endfunction %% RTMSetErrStat
+
+
+%% Function: RTMSetSolverNeedsReset ============================================
+%% Abstract:
+%%   Sets solver needs reset flag.
+%%
+%function RTMsSetSolverNeedsReset(system) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %assign setStr =  "ssSetSolverNeedsReset(%<simS>)"
+  %else
+    %if GenRTModel
+      %assign rts    = RTMsGet(system, "RTWSolverInfo")
+      %assign setStr = "rtsiSetSolverNeedsReset(%<rts>, true)"
+    %else
+      %assign setStr = "ssSetSolverNeedsReset(%<tSimStruct>)"
+    %endif
+  %endif
+  %return setStr
+%endfunction %% RTMSetSolverNeedsReset
+
+
+%% Function: RTMModelMthsSet ======================================================
+%% Abstract:
+%%   Set a model-methods field
+%%
+%function RTMsModelMthsSet(system, fldName,sVal) void
+  %if GenRTModel
+    %assign rts          = RTMsGet(system, "RTWRTModelMethodsInfo")
+    %assign transFldName = "UNHANDLED_FIELD"
+    %switch fldName
+      %case "mdlInitializeSizes"
+	%assign transFldName = "InitSizesFcn"
+	%break
+      %case "mdlInitializeSampleTimes"
+	%assign transFldName = "InitSampTimesFcn"
+	%break
+      %case "mdlStart"
+	%assign transFldName = "StartFcn"
+	%break
+      %case "mdlOutputs"
+	%assign transFldName = "OutputsFcn"
+	%break
+      %case "mdlUpdate"
+	%assign transFldName = "UpdateFcn"
+	%break
+      %case "mdlDerivatives"
+	%assign transFldName = "DervisFcn"
+	%break
+      %case "mdlProjection"
+	%assign transFldName = "ProjectionFcn"
+	%break
+      %case "mdlTerminate"
+	%assign transFldName = "TerminateFcn"
+	%break
+      %case "RTModelPtr"
+	%assign transFldName = "RTModelPtr"
+	%break
+      %default
+	%% BEGIN_ASSERT
+	%break
+	%% END_ASSERT
+    %endswitch
+    %assign setStr = "rtmiSet%<transFldName>((%<rts>), %<sVal>)"
+  %else
+    %assert fldName != "RTModelPtr"
+    %assign setStr = "ssSet%<fldName>(%<tSimStruct>, %<sVal>)"
+  %endif
+  %return setStr
+%endfunction %% RTMModelMthsSet
+
+
+%% Function: RTMsSolverSet =====================================================
+%% Abstract:
+%%   Set a solver-specific field
+%%
+%function RTMsSolverSet(system, fldName,sVal) void
+  %if GenRTModel
+    %if CodeFormat == "Embedded-C"
+      %assign rts    = "%<RTMGetSolverInfo()>"
+    %else
+      %assign rts    = RTMsGet(system, "RTWSolverInfo")
+    %endif
+    %assign setStr = "rtsiSet%<fldName>(%<rts>, %<sVal>)"
+  %else
+    %assign setStr = "ssSet%<fldName>(%<tSimStruct>, %<sVal>)"
+  %endif
+  %return setStr
+%endfunction %% RTMsSolverSet
+
+
+%% Function: RTMSolverGet ======================================================
+%% Abstract:
+%%   Get a solver-specific field
+%%
+%function RTMsSolverGet(system, fldName) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %assign getStr =  "ssGet%<fldName>(%<simS>)"
+  %else
+    %if GenRTModel
+      %assign rts    = RTMsGet(system, "RTWSolverInfo")
+      %assign getStr = "rtsiGet%<fldName>(%<rts>)"
+    %else
+      %assign getStr = "ssGet%<fldName>(%<tSimStruct>)"
+    %endif
+  %endif
+  %return getStr
+%endfunction %% RTMSolverGet
+
+
+%% Function: RTMSolverAssertCheck ==============================================
+%% Abstract:
+%%   Used with accelerator to generate conditionals for the
+%%   Simulink consistency checker.
+%%
+%function RTMsSolverAssertCheck(system) void
+  %assert !GenRTModel
+  %assign setStr = "_ssGetSolverAssertCheck(%<tSimStruct>)"
+  %return setStr
+%endfunction %% RTMSolverAssertCheck
+
+
+%% Function: RTMLoggingSet =====================================================
+%% Abstract:
+%%   Return code for setting a logging related field in the SimStruct. 
+%% 
+%function RTMsLoggingSet(system, recordName, initVal) void
+  %if recordName == "RTWLogInfo"
+    %openfile setFile
+    %if CodeFormat == "Embedded-C"
+      %<RTMGetLoggingObject()> = %<initVal>;
+    %else
+      %<RTMsSet(system, "RTWLogInfo", "%<initVal>")>;
+    %endif
+    %closefile setFile
+  %else
+    %openfile setFile
+    %assign setStr = "rtliSet" + recordName + ...
+      "(%<RTMGetLoggingObject()>, %<initVal>)"
+    %<setStr>;
+    %closefile setFile
+  %endif
+  
+  %return setFile
+%endfunction %% RTMLoggingSet
+  
+
+%% Function: RTMLoggingGet =====================================================
+%% Abstract:
+%%   Return code for getting a logging related field in the SimStruct. 
+%% 
+%function RTMsLoggingGet(system, recordName) void
+  %assign setStr = "rtliGet" + recordName + ...
+    "(%<RTMGetLoggingObject()>)"
+  
+  %return setStr
+%endfunction %% RTMLoggingGet
+  
+
+%% Function: RTMGetModelSS =====================================================
+%% Abstract:
+%%   Returns model SimStruct when explicitly needed. This is a temporary 
+%%   function to help migrate away from the root SimStruct
+%% 
+%function RTMsGetModelSS(system) void
+  %assign rtmName = FcnUpdateRTModelInterfaceArg(system, tSimStruct)
+  %return rtmName
+%endfunction %% RTMGetRootSS
+
+%endif %% _RTMDLLIB_
+
+
+%% Function: RTMUpdateIntegerAbsoluteTime ======================================
+%% Abstract:
+%%   Used currently by ERT to update time. It is not a real SimStruc macro.
+%% 
+%function RTMsUpdateIntegerAbsoluteTime(system) void
+  %if GenRTModel
+    %assign updStr = FcnGenSpecialAccess(system, "UpdateIntegerAbsoluteTime", ...
+      "other", 0, [], "", tSimStruct)
+  %else
+    %assign updStr = "ssUpdateIntegerAbsoluteTime(%<tSimStruct>)"
+  %endif
+  %return updStr
+%endfunction %% RTMUpdateIntegerAbsoluteTime
+
+
+%% Function: RTMUpdateRealAbsoluteTime ======================================
+%% Abstract:
+%%   Used currently by ERT to update time. It is not a real SimStruc macro.
+%% 
+%function RTMsUpdateRealAbsoluteTime(system) void
+  %if GenRTModel
+    %assign updStr = FcnGenSpecialAccess(system, "UpdateRealAbsoluteTime", ...
+      "other", 0, [], "", tSimStruct)
+  %else
+    %assign updStr = "ssUpdateRealAbsoluteTime(%<tSimStruct>)"
+  %endif
+  %return updStr
+%endfunction %% RTMUpdateRealAbsoluteTime
+
+%% Function: RTMUpdateRealAbsoluteTimeForTID ===================================
+%% Abstract:
+%%   Used currently by ERT to update time for TID. It is not a real SimStruc macro.
+%% 
+%function RTMsUpdateRealAbsoluteTimeForTID(system, tid) void
+  %if GenRTModel
+    %if (SampleTime[tid].Asynchronous == "no" && ...
+      SampleTime[tid].PeriodAndOffset[1] != 0)
+      %assign offsetStr = " + %<SampleTime[tid].PeriodAndOffset[1]>"
+    %else
+      %assign offsetStr = ""
+    %endif
+    %if SLibClockTickIsUnit32Pair(tid)
+      %assign ct  = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", ...
+	"", "", tSimStruct)
+      %assign cth  = RTMDispatchToAccessFcn("ClockTickH%<tid>", "get", ...
+	"", "", tSimStruct)
+      %assign ss = RTMDispatchToAccessFcn("StepSize%<tid>", "get", ...
+	"", "", tSimStruct)
+      %assign tt = "%<LibGetTaskTime(tid)>"
+      %assign updStr = "if(!(++%<ct>)) ++%<cth>"
+	
+      %% No need to update the task time if it's a modelref RTW target
+      %% and the tid is continuous
+      %if !IsModelReferenceRTWTarget() || !LibIsContinuous(tid)
+        %if PurelyIntegerCode
+	  %% Extmode mode require floating point absolute time, in this 
+	  %% case, PurelyIntegerCode need provide floating point time. 
+	  %%
+	  %assign updStr = "%<updStr>;\n %<tt> = %<ct> + %<cth> * 4294967296.0"
+	%else
+	  %assign updStr = "%<updStr>;\n %<tt> = %<ct> * %<ss> + %<cth> * %<ss> * 4294967296.0"
+	  %assign updStr = updStr + offsetStr
+	%endif
+      %endif
+    %else
+      %assign ct  = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", ...
+	"", "", tSimStruct)
+      %assign ss = RTMDispatchToAccessFcn("StepSize%<tid>", "get", ...
+	"", "", tSimStruct)
+      %assign tt = "%<LibGetTaskTime(tid)>"
+	
+      %% No need to update the task time if it's a model ref target
+      %% and the tid is continuous
+      %if IsModelReferenceRTWTarget() && LibIsContinuous(tid)
+        %assign updStr = "%<ct>++"
+      %else
+        %if PurelyIntegerCode
+          %assign updStr = "%<tt> = \n (++%<ct>)"
+        %else
+          %assign updStr = "%<tt> = \n (++%<ct>) * %<ss>"
+	  %assign updStr = updStr + offsetStr
+        %endif
+      %endif
+    %endif
+  %else
+    %assign updStr = "ssUpdateRealAbsoluteTimeForTID(%<tSimStruct>, %<tid>)"
+  %endif
+  %return updStr
+%endfunction %% RTMUpdateRealAbsoluteTimeForTID
+
+%% Function: RTMUpdateIntegerAbsoluteTimeForTID ===================================
+%% Abstract:
+%%   Used currently by ERT to update time for TID. It is not a real SimStruc macro.
+%% 
+%function RTMsUpdateIntegerAbsoluteTimeForTID(system, tid) void
+  %if GenRTModel
+      %if SLibClockTickIsUnit32Pair(tid)
+	%assign ct  = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", ...
+	  "", "", tSimStruct)
+        %assign cth  = RTMDispatchToAccessFcn("ClockTickH%<tid>", "get", ...
+	  "", "", tSimStruct)
+	%assign updStr = "%<ct>++;"
+	%assign updStr = "%<updStr>\n if (!%<ct>) %<cth>++"
+      %else
+	%assign ct  = RTMDispatchToAccessFcn("ClockTick%<tid>", "get", ...
+	  "", "", tSimStruct)
+	%assign updStr = "%<ct>++"
+      %endif
+  %else
+    %assign updStr = "ssUpdateIntegerAbsoluteTimeForTID(%<tSimStruct>, %<tid>)"
+  %endif
+  %return updStr
+%endfunction %% RTMUpdateIntegerAbsoluteTimeForTID
+
+%% Function: RTMUpdateSubrateTaskTime ==========================================
+%% Abstract:
+%%   Used currently by ERT to update time. It is not a real SimStruc macro.
+%% 
+%function RTMsUpdateSubrateTaskTime(system, subRateIdx) void
+  %if GenRTModel
+    %assign updStr = FcnGenSpecialAccess(system, "UpdateSubrateTaskTime", ...
+      "other", 1, ["%<subRateIdx>"], "", tSimStruct)
+  %else
+    %assign updStr = "ssUpdateSubrateTaskTime(%<tSimStruct>, %<subRateIdx>)"
+  %endif
+  %return updStr
+%endfunction %% RTMUpdateSubrateTaskTime
+
+
+%% Function: RTMTaskRunsThisBaseStep ============================================
+%% Abstract:
+%%   Used currently by ERT to determine if there is a subrate hit.
+%% 
+%function RTMsTaskRunsThisBaseStep(system, subRateIdx) void
+  %if GenRTModel
+    %assign updStr = FcnGenSpecialAccess(system, "StepTask", ...
+      "other", 1, ["%<subRateIdx>"], "", tSimStruct)
+  %else
+    %assign updStr = "ssStepTask(%<tSimStruct>, %<subRateIdx>)"
+  %endif
+  %return updStr
+%endfunction %% RTMTaskRunsThisBaseStep
+
+
+%% Function: RTMGetStopRequested ===============================================
+%% Abstract:
+%%   Return code for doing a "get" on StopRequested field in the rtModel
+%% 
+%function RTMsGetStopRequested(system) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %return "ssGetStopRequested(%<simS>)"
+  %endif
+  %return RTMsGet(system, "StopRequested")
+%endfunction %% RTMGetStopRequested
+
+
+%% Function: RTMSetStopRequested ===============================================
+%% Abstract:
+%%   Return code for setting the stop requested flag
+%% 
+%function RTMsSetStopRequested(system, srq) void
+  %if IsModelReferenceForASimstructBasedTarget()
+    %assign simS = RTMsGet(system, "MdlRefSfcnS")
+    %return "ssSetStopRequested(%<simS>, %<srq>)"
+  %endif
+  %return RTMsSet(system, "StopRequested", srq)
+%endfunction %% RTMSetStopRequested
+
+
+%% Function: RTMStopReqAccessed ================================================
+%% Abstract:
+%%   Was stop requested flag accessed?
+%% 
+%function RTMsStopReqAccessed(system) void
+  %assign srq      = "StopRequested"
+  %assign srqp     = "StopRequestedPtr"
+  %assign rtRecs   = RTMGetRTModelRecShell()
+  %assign theRec   = rtRecs.%<srq>
+  %assign theRecp  = rtRecs.%<srqp>
+  %assign accessed = (theRec.NumSet > 0) || (theRec.NumGet > 0) || ...
+    (theRecp.NumGet > 0) || (theRecp.NumSet > 0)
+  %%
+  %% The StopRequestedFlag is required for the SolverInfo record, so we also
+  %% need to check for continuous states and non-inlined s-functions
+  %%
+  %return (accessed || NumContStates || NumChildSFunctions)
+%endfunction %% RTMStopReqAccessed
+
+%% Function: RTMRegisterDataType ===============================================
+%% Abstract:
+%%   Return code for doing a data type registration
+%% 
+%function RTMsRegisterDataType(system, dtypeName) void
+  %% Used only for simstruc.h
+  %assert !GenRTModel
+
+  %assign regStr = "ssRegisterDataType(%<tSimStruct>, %<dtypeName>)"
+  
+  %return regStr
+%endfunction %% RTMRegisterDataType
+
+%%------------------------------------------------------------------------------
+%% rtModel creation SECTION:
+%%------------------------------------------------------------------------------
+%% This section is devoted to methods that are called to create a type 
+%% defintion for the rtModel structure. There are also methods for generating
+%% access macros for some of the fields when necessary.
+%%------------------------------------------------------------------------------
+
+
+%% Function: FcnGetQualifier ===================================================
+%% Abstract:
+%%   Generate the qualifier
+%%
+%function FcnGetQualifier(qual) void
+  %assign retStr = ""
+  %switch qual
+    %case ""
+      %assign retStr= ""
+      %break
+    %case "CONST"
+      %assign retStr = "const "
+      %break
+    %default
+      %assign retStr = "BOGUS_QUAL "
+      %break
+  %endswitch
+  %return retStr
+%endfunction %% FcnGetQualifier
+
+
+%% Function: FcnGetDtypeName ===================================================
+%% Abstract:
+%%   Generate the datatype name.
+%%
+%function FcnGetDtypeName(dTypeId)
+  %switch dTypeId
+    %case "CHAR"
+      %assign retStr = "char"
+      %break
+    %case "UINT32"
+    %case "uint32"
+      %assign retStr = "uint32_T"
+      %break
+    %case "UINT16"
+    %case "uint16"
+      %assign retStr = "uint16_T"
+      %break  
+    %case "UINT8"
+    %case "uint8"
+      %assign retStr = "uint8_T"
+      %break
+    %case "INT"
+      %assign retStr = "int_T"
+      %break
+    %case "REAL"
+    %case "real_T"
+    %case "DOUBLE"
+    %case "double"
+      %assign retStr = "real_T"
+      %break
+    %case "VOID"
+      %assign retStr = "void"
+      %break
+    %case "SIMSTRUCT"
+      %assign retStr = "struct SimStruct_tag"
+      %break
+    %case "SIMSTRUCT_PTR"
+      %assign retStr = "struct SimStruct_tag *"
+      %break
+    %case "SS_SIMMODE"
+      %assign retStr = "SS_SimMode"
+      %break
+    %case "TIME"
+      %if CodeFormat == "Embedded-C" && PurelyIntegerCode
+	%assign retStr = "uint32_T"
+      %else
+	%assign retStr = "time_T"
+      %endif
+      %break
+    %case "SOLVER_MODE"
+      %assign retStr = "SolverMode"
+      %break
+    %case "ZC_SIG_STATE"
+      %assign retStr = "ZCSigState"
+      %break
+    %case "BOOLEAN"
+      %assign retStr = "boolean_T"
+      %break
+    %case "DWORK"
+      %assign retStr = "struct _ssDWorkRecord"
+      %break
+    %case "RTW_LOG_INFO"
+      %assign retStr = "RTWLogInfo"
+      %break
+    %case "EXT_MODE_INFO"
+      %assign retStr = "RTWExtModeInfo"
+      %break
+    %case "SOLVER_INFO"
+      %assign retStr = "RTWSolverInfo"
+      %break
+    %case "NONINLINED_SFCS"
+      %assign retStr = CodeFormat == "Embedded-C" ? ...
+        SLibGenERTNonInlinedSFcnsSubStruct() : ""
+      %break
+    %case "MODEL_METHODS_INFO"
+      %assign retStr = "RTWRTModelMethodsInfo"
+      %break
+    %case "SIM_TIME_STEP"
+      %assign retStr = "SimTimeStep"
+      %break
+    %case "INTG"
+      %assign retStr = "%<upperSolver>_IntgData"
+      %break
+    %case "LOG_SIG_PTR"
+      %assign retStr = "LogSignalPtrsType"
+      %break
+    %case "DATA_MAP_INFO"
+      %assign retStr = RTWCAPI ? SLibGenDataMapInfoSubstruct() : ""
+      %break
+    %case "RATE_INTERACTION"
+      %assign retStr = CodeFormat == "Embedded-C" ? ...
+	SLibGenERTRateInteractionSubStruct() : ""
+      %break
+    %case "TASK_COUNTERS"
+      %assign retStr = CodeFormat == "Embedded-C" ? ...
+	SLibGenERTTaskCountersSubStruct() : ""
+      %break
+    %default
+      %% BEGIN_ASSERT
+      %assign retStr = "BOGUS_TYPE"
+      %% END_ASSERT
+  %endswitch
+  %return retStr
+%endfunction %% FcnGetDtypeName
+
+
+%% Function: FcnGetStorageKeys =================================================
+%% Abstract:
+%%   Generate the prefix and postfix keys for the given storage class
+%%
+%function FcnGetStorageKeys(storage, arrayDims) void
+  %switch storage
+    %case "SCALAR"
+      %assign prefix  = ""
+      %assign postfix = ""
+      %break
+    %case "POINTER"
+      %assign prefix  = "*"
+      %assign postfix = ""
+      %break
+    %case "POINTERPOINTER"
+      %assign prefix  = "**"
+      %assign postfix = ""
+      %break
+    %case "ARRAY"
+      %assign prefix  = ""
+      %assign nDims = SIZE(arrayDims)[1]
+      
+      %assign postfix = ""
+      %foreach dimIdx = nDims
+	%assign postfix = postfix + "[%<arrayDims[dimIdx]>]"
+      %endforeach
+      %break
+    %default
+      %assign prefix  = "BOGUS_PREFIX"
+      %assign postfix = "BOGUS_POSTFIX"
+      %break
+  %endswitch
+  %assign retVal = ["%<prefix>", "%<postfix>"]
+  %return retVal
+%endfunction %% FcnGetStorageKeys
+
+
+%% Function: FcnGenFieldTypeDef ================================================
+%% Abstract:
+%%   Generates the type definition for one of the fields in the rtModel
+%%
+%function FcnGenFieldTypeDef(theField) void
+  %assign qual  =FcnGetQualifier(theField.Qualifier)
+  
+  %assign dType =FcnGetDtypeName(theField.DataType)
+  %assign stKeys=FcnGetStorageKeys(theField.StorageType,theField.ArrayDims)
+  %assign retStr="%<qual>%<dType> %<stKeys[0]>%<theField.VarName>%<stKeys[1]>;"
+  %return retStr
+%endfunction %% FcnGenFieldTypeDef
+
+
+%% Function: FcnGenTypeStrForRTMFields =========================================
+%% Abstract:
+%%   Generates the typedef for the rtModel based on the usage of various 
+%%   fields in the rtModel record.
+%% 
+%function FcnGenTypeStrForRTMFields(rtRecs) void
+  %assign rootFields = FIELDNAMES(rtRecs)
+  %assign numFields  = SIZE(rootFields)[1]
+
+  %foreach fldIdx = numFields
+    %assign thisfld = rtRecs.%<rootFields[fldIdx]>
+    %if thisfld.RecType != "Variable"
+      %continue
+    %endif
+    
+    %assign thisfld.TypeStr = FcnGenFieldTypeDef(thisfld)
+  %endforeach
+%endfunction %% FcnGenTypeStrForRTMFields
+
+
+%% FcnRTMFieldIsRequired =======================================================
+%% Abstract:
+%%   Is a field in the rtModel required?
+%%
+%function FcnRTMFieldIsRequired(fld) void
+  %%
+  %% Currently we also make fields which have at least one Get required.
+  %% This is because the field could be potentially updated in a location
+  %% within rtw/c/src/
+  %%
+  %assign reqFcn = "%<fld.IsRequiredFcn>"
+  %assign req = %<reqFcn>
+  %return req
+%endfunction %% FcnRTMFieldIsRequired
+
+
+%% Function: FcnGenHStructFromRTMRecs ==========================================
+%% Abstract:
+%%   Generate a hierarchical structure from the rtModel records.
+%%
+%function FcnGenHStructFromRTMRecs(rtRecs) void
+  %assign rootFields = FIELDNAMES(rtRecs)
+  %assign numFields  = SIZE(rootFields)[1]
+  %assign empArray = []
+  
+  %createrecord Root {}
+  %addtorecord  Root FieldNames %<empArray>
+  %addtorecord  Root FieldNums %<empArray>
+  %addtorecord  Root TotalNumFields 0
+  
+  %foreach fldIdx = numFields
+    %assign thisfld = GETFIELD(rtRecs, rootFields[fldIdx])
+    %if thisfld.RecType != "Variable"
+      %continue
+    %endif
+    
+    %%
+    %% We only deal here with parents that are 1-level deep.
+    %% More work needs to be done here if we need deeper
+    %% Root structures.
+    %%
+    
+    %if FcnRTMFieldIsRequired(thisfld)
+      %assign fldParent = thisfld.Parent
+      %assign rootField = (fldParent == "")
+      %if !rootField
+	%if !ISFIELD(Root, fldParent)
+	  %addtorecord Root %<fldParent> ...
+	  { ...
+	    FieldNames %<empArray>; ...
+	    FieldNums  %<empArray>  ...
+	  }
+	%endif
+	%assign parentRec = GETFIELD(Root, fldParent)
+      %else
+	%assign parentRec = Root
+      %endif
+
+      %assign Root.TotalNumFields = Root.TotalNumFields + 1
+      %assign parentRec.FieldNames = parentRec.FieldNames + rootFields[fldIdx]
+      %assign parentRec.FieldNums  = parentRec.FieldNums  + thisfld.VarRecNumber
+    %endif
+  %endforeach
+  %return Root
+%endfunction %% FcnGenHStructFromRTMRecs
+
+
+%% Function: FcnGenSubstructFlatFields =========================================
+%% Abstract:
+%%   Generate flat substructure for RTModel rec fields
+%%
+%function FcnGenSubstructFlatFields(name, fldNums, fields) void
+  %assign rtRecs    = RTMGetRTModelRecShell()
+  %assign numFields = SIZE(fldNums)[1]
+  %openfile tmpBuff
+  %foreach fldIdx = numFields
+    %if numFields > 1
+      %assign thisfld = rtRecs.%<fields[fldIdx]>
+    %else
+      %assign thisfld = rtRecs.%<fields>
+    %endif
+    %<thisfld.TypeStr>
+  %endforeach
+  %closefile tmpBuff
+  %return tmpBuff
+%endfunction %% FcnGenSubstructFlatFields
+
+
+%% Function: FcnGenTypeDefFromHStruct ==========================================
+%% Abstract:
+%%   Generate a typedef from the hierarchical struct
+%%
+%function FcnGenTypeDefFromHStruct(structName, hstruct, tag) void
+  %assign fldNames = hstruct.FieldNames
+  %assign fldNums  = hstruct.FieldNums
+  
+  %assign flatFields = ""
+  
+  %if SIZE(fldNums)[0] > 0 && SIZE(fldNums)[1] > 0
+    %assign sortNames  = FEVAL("rtmdlsortflds", fldNames, fldNums)
+    %assign flatFields = FcnGenSubstructFlatFields(structName, fldNums, ...
+      sortNames)
+  %endif
+  
+  %assign childFlds    = FIELDNAMES(hstruct)
+  %assign numChildFlds = SIZE(childFlds)[1]
+  
+  %openfile strctBuff
+  %assign commentStr = SLibGetRTMSubStructCommentStr(structName)
+  %if !WHITE_SPACE(commentStr)
+    %<commentStr> \
+  %endif
+  %assign structHead = ""
+  %assign structTail = " %<structName>"
+  %if (structName == tSimStructType)
+    %assign structTail = ""
+  %endif
+  %<structHead>struct %<tag> {
+    %<flatFields>
+    %foreach fldIdx = numChildFlds
+      %if childFlds[fldIdx] == "FieldNames" || ...
+	childFlds[fldIdx] == "FieldNums" || ...
+	childFlds[fldIdx] == "TotalNumFields"
+	%continue
+      %endif
+      %%
+      %assign hss = hstruct.%<childFlds[fldIdx]>
+      %<FcnGenTypeDefFromHStruct(childFlds[fldIdx],hss,"")>
+    %endforeach
+    }%<structTail>;
+  %closefile strctBuff
+  %return strctBuff
+%endfunction %% FcnGenTypeDefFromHStruct
+
+
+%% Function: RTMGenOpaqueTypedef ===============================================
+%% Abstract:
+%%   Generate an opaque typedef of the rtModel
+%%
+%function RTMsGenOpaqueTypedef(system) void
+  %if !EmptyRealTimeObject
+    %openfile rtmTypedef
+    
+    /* Forward declaration for rtModel */
+    typedef struct _%<tSimStructType>_Tag %<tSimStructType>;
+    %closefile rtmTypedef
+  %else
+    %assign rtmTypedef = ""
+  %endif
+  
+  %return rtmTypedef
+%endfunction %% RTMGenOpaqueTypedef
+
+
+%% Function: RTMGenRtMdlTypedef ================================================
+%% Abstract:
+%%   Generates the typedef for the rtModel based on the usage of various 
+%%   fields in the rtModel record.
+%% 
+%function RTMsGenRtMdlTypedef(system) void
+  %assign rtRecs = RTMGetRTModelRecShell()
+  %%
+  %% Generate the type strings for each field
+  %%
+  %<FcnGenTypeStrForRTMFields(rtRecs)>\
+  %%
+  %% Generate a hierarhical TLC structure from the rtModel records
+  %%
+  %assign hStruct = FcnGenHStructFromRTMRecs(rtRecs)
+  %%
+  %% Generate typedef from HStruct
+  %% 
+  %if hStruct.TotalNumFields > 0
+    %openfile typeBuf
+    /* Real-time Model Data Structure */
+    %<FcnGenTypeDefFromHStruct(tSimStructType, hStruct, ...
+      "_%<tSimStructType>_Tag")>\
+    %closefile typeBuf
+  %else
+    %assign CompiledModel.EmptyRealTimeObject = 1
+    %assign typeBuf = ""
+  %endif
+  %return typeBuf
+%endfunction %% RTMGenRtMdlTypedef
+
+
+%% FcnRTMFieldNeedsMacro =======================================================
+%% Abstract:
+%%   Is a macro needed RTM field?
+%%
+%function FcnRTMFieldNeedsMacro(fld) void
+  %assign retVal = TLC_FALSE %% assume 
+  
+  %if CodeFormat == "Embedded-C" && !GenerateGRTWrapper
+    %if EXISTS(fld.ERTMacro) && ...
+      (fld.RecType != "Variable" || FcnRTMFieldIsRequired(fld))
+      %assign numAccesses = SIZE(fld.ERTMacro)[1]
+      %foreach aIdx = numAccesses
+	%if fld.ERTMacro[aIdx] > 0
+	  %assign retVal = TLC_TRUE
+	  %break
+	%endif
+      %endforeach
+    %endif
+  %else
+    %assign retVal = TLC_TRUE
+  %endif
+      
+  %return retVal
+%endfunction %% FcnRTMFieldNeedsMacro
+
+
+%function FcnRTMAccessNeedsMacro(fld, accessType, macroLoc)
+  %assign retVal     = TLC_FALSE
+  %assign accessCode = 0
+  
+  %if EXISTS(fld.ERTMacro)
+    %switch accessType
+      %case "Set"
+	%assign accessCode = fld.ERTMacro[0]
+	%break
+      %case "Get"
+	%assign accessCode = fld.ERTMacro[1]
+	%break
+      %case "Is"
+	%assign accessCode = fld.ERTMacro[2]
+	%break
+      %case "Other"
+	%assign accessCode = fld.ERTMacro[3]
+	%break
+    %endswitch
+  %endif
+  
+  %if CodeFormat == "Embedded-C" 
+    %assign macLocCode = 0
+    %switch macroLoc
+      %case "PUBLIC"
+	%assign macLocCode = 1
+	%break
+      %case "PRIVATE"
+	%assign macLocCode = 2
+	%break
+    %endswitch
+    %if !GenerateGRTWrapper 
+      %if EXISTS(fld.ERTMacro)
+	%assign retVal = (macLocCode == accessCode)
+      %endif
+    %else
+      %% If grtInterface is required, 
+      %% Always generate macro in public
+      %%
+      %if accessCode == -1 %% FORCE_NO_MACRO 
+	%assign retVal = TLC_FALSE
+      %else
+	%assign retVal = (macLocCode == 1)
+      %endif
+    %endif
+  %else
+    %assign retVal = TLC_TRUE
+  %endif
+  %return retVal
+%endfunction %% FcnRTMAccessNeedsMacro
+
+
+%% Function: FcnGenVariableMacro ===============================================
+%% Abstract:
+%%   Generate macros for a simple variable field
+%%
+%function FcnGenVariableMacro(fldName, fld, macroLoc) void
+  %assign macros = ""
+
+  %if FcnRTMAccessNeedsMacro(fld, "Get", macroLoc)
+    %assign macName = "rtmGet" + fldName
+    %assign macros  = macros + "#ifndef %<macName>\n"
+    %assign macros  = macros + "# define %<macName>(rtm) "
+    %assign accStr  = FcnGenFieldAccessString(fld, "get", "", "", "(rtm)")
+    %assign macros  = macros + "(%<accStr>)\n"
+    %assign macros  = macros + "#endif\n\n"
+  %endif
+  
+  %if FcnRTMAccessNeedsMacro(fld, "Set", macroLoc)
+    %assign macName = "rtmSet" + fldName
+    %assign macros  = macros + "#ifndef %<macName>\n"
+    %assign macros  = macros + "# define %<macName>(rtm, val) "
+    %assign accStr  = FcnGenFieldAccessString(fld, "set", "", "val", "(rtm)")
+    %assign macros  = macros + "(%<accStr>)\n"
+    %assign macros  = macros + "#endif\n\n"
+  %endif
+  
+  %return macros
+  
+%endfunction %% FcnGenVariableMacro
+
+
+%% Function: FcnGenIndexedAccessMacro ==========================================
+%% Abstract:
+%%   Generate macros for a simple variable field
+%%
+%function FcnGenIndexedAccessMacro(fldName, fld, idxFld, macroLoc) void
+  %assign macros = ""
+
+  %if FcnRTMAccessNeedsMacro(fld, "Get", macroLoc)
+    %assign macName = "rtmGet" + fldName
+    %assign macros  = macros + "#ifndef %<macName>\n"
+    %assign macros  = macros + "# define %<macName>(rtm, idx) "
+    %assign accStr  = FcnGenFieldAccessString(idxFld, "get", "idx", "", "(rtm)")
+    %assign macros  = macros + "(%<accStr>)\n"
+    %assign macros  = macros + "#endif\n\n"
+  %endif
+
+  %if FcnRTMAccessNeedsMacro(fld, "Set", macroLoc)
+    %assign macName = "rtmSet" + fldName
+    %assign macros  = macros + "#ifndef %<macName>\n"
+    %assign macros  = macros + "# define %<macName>(rtm, idx, val) "
+    %assign accStr  = FcnGenFieldAccessString(idxFld, "set", "idx", "val", "(rtm)")
+    %assign macros  = macros + "(%<accStr>)\n"
+    %assign macros  = macros + "#endif\n\n"
+  %endif
+  
+  %return macros
+  
+%endfunction %% FcnGenIndexedAccessMacro
+
+
+%% Function: FcnGenSpecialAccessMacro ==========================================
+%% Abstract:
+%%   Generate macros for a simple variable field
+%%
+%function FcnGenSpecialAccessMacro(fldName, fld, rtRecs, macroLoc) void
+  %assign macros = ""
+  
+  %% Generate the list of args
+  %assign comma = ""
+  %if FcnNeedRTMInMacroArg(fld)
+    %assign argStr = "rtm"
+    %assign comma = ", "
+  %else
+    %assign argStr = ""
+  %endif
+  %assign args   = fld.Args
+  %foreach argIdx = fld.NumArgs
+    %assign argStr = argStr + comma 
+    %assign argStr = argStr + args[argIdx]
+    %assign comma = ", "
+  %endforeach
+  
+  %if fld.GetFcn != "" && FcnRTMAccessNeedsMacro(fld, "Get", macroLoc)
+    %assign accStr = %<fld.GetFcn>(fld, "(rtm)")
+    %if !WHITE_SPACE(accStr)
+      %assign macName = "rtmGet" + fldName
+      %assign macros  = macros + "#ifndef %<macName>\n"
+      %assign macros  = macros + "# define %<macName>(%<argStr>) "
+      %assign macros  = macros + "%<accStr>\n"
+      %assign macros  = macros + "#endif\n\n"
+    %endif
+  %endif
+  
+  %if fld.SetFcn != "" && FcnRTMAccessNeedsMacro(fld, "Set", macroLoc)
+    %if fld.SetHasValArg
+      %assign accStr = %<fld.SetFcn>(fld, "(rtm)", "(val)")
+    %else
+      %assign accStr = %<fld.SetFcn>(fld, "(rtm)")
+    %endif
+    %if !WHITE_SPACE(accStr)
+      %assign macName = "rtmSet" + fldName
+      %assign valArg  = fld.SetHasValArg ? ", val" : ""
+      %assign macros  = macros + "#ifndef %<macName>\n"
+      %assign macros  = macros + "# define %<macName>(%<argStr>%<valArg>) "
+      %assign macros  = macros + "%<accStr>\n"
+      %assign macros  = macros + "#endif\n\n"
+    %endif
+  %endif
+    
+  %if fld.IsFcn != "" && FcnRTMAccessNeedsMacro(fld, "Is", macroLoc)
+    %assign accStr = %<fld.IsFcn>(fld, "(rtm)")
+    %if !WHITE_SPACE(accStr)
+      %assign macName = "rtmIs" + fldName
+      %assign macros  = macros + "#ifndef %<macName>\n"
+      %assign macros  = macros + "# define %<macName>(%<argStr>) "
+      %assign macros  = macros + "%<accStr>\n"
+      %assign macros  = macros + "#endif\n\n"
+    %endif
+  %endif
+    
+  %if fld.OtherFcn != "" && FcnRTMAccessNeedsMacro(fld, "Other", macroLoc)
+    %assign accStr = %<fld.OtherFcn>(fld, "(rtm)")
+    %if !WHITE_SPACE(accStr)
+      %assign macName = "rtm" + fldName
+      %assign macros  = macros + "#ifndef %<macName>\n"
+      %assign macros  = macros + "# define %<macName>(%<argStr>) "
+      %assign macros  = macros + "%<accStr>\n"
+      %assign macros  = macros + "#endif\n\n"
+    %endif
+  %endif
+    
+  %return macros
+  
+%endfunction %% FcnGenSpecialAccessMacro
+
+
+%% Function: RTMGenMacroDefines ================================================
+%% Abstract:
+%%   Generates macros for the fields of the rtModel that are under use.
+%% 
+%function RTMsGenMacroDefines(system, macroLoc) void
+  %assign rtRecs     = RTMGetRTModelRecShell()
+  %assign rootFields = FIELDNAMES(rtRecs)
+  %assign numFields  = SIZE(rootFields)[1]
+  
+  %assign vMacs = ""
+  %assign iMacs = ""
+  %assign sMacs = ""
+  
+  %foreach fldIdx = numFields
+    %assign thisfld = rtRecs.%<rootFields[fldIdx]>
+    %if FcnRTMFieldNeedsMacro(thisfld)
+      %switch(thisfld.RecType)
+	%case "Variable"
+	  %assign vMacs = vMacs + ...
+	    FcnGenVariableMacro(rootFields[fldIdx], thisfld, macroLoc)
+	  %break
+	%case "IndexedAccess"
+	  %assign iMacs = iMacs + ...
+	    FcnGenIndexedAccessMacro(rootFields[fldIdx], thisfld, ...
+	    rtRecs.%<thisfld.AccessedRec>, macroLoc)
+	  %break
+	%case "SpecialAccess"
+	  %assign sMacs = sMacs + ...
+	    FcnGenSpecialAccessMacro(rootFields[fldIdx], thisfld, ...
+	    rtRecs, macroLoc)
+	  %break
+      %endswitch
+    %endif
+  %endforeach
+  
+  %openfile macBuf
+  %if !WHITE_SPACE(vMacs)
+    %<vMacs>
+  %endif
+
+  %if !WHITE_SPACE(iMacs)
+    %<iMacs>
+  %endif
+
+  %if !WHITE_SPACE(sMacs)
+    %<sMacs>
+  %endif
+  %<RTMGenMacroDefinesForGRTWrapper(rtRecs, macroLoc)>
+  %closefile macBuf
+  %return macBuf
+%endfunction %% RTMGenMacroDefines
+
+%% Function: RTMGenMacroDefinesForGRTWrapper
+%% Abstract:
+%%   This function will generat macros that are used in grt_main.c
+%% but not needed for ert code format. To compile grt_main.c, 
+%% when GenerateGRTWrapper is true, need generate these macros. 
+%% These macros will access a GRTTimingEngineTmp if field does not exist. 
+%% Please note that the return values of these macros is not really
+%% used in grt_main.c when GenerateGRTWrapper is true.
+%%
+%function RTMGenMacroDefinesForGRTWrapper(rtRecs, macroLoc)
+  %assign macros = ""
+  %if GenerateGRTWrapper && macroLoc == "PUBLIC"
+
+    %% rtwsolverinfo is special
+    %assign fld = rtRecs.RTWSolverInfo
+    %assign macName = "rtmGetRTWSolverInfo"
+    %assign macros  = macros + "#ifdef %<macName>\n"
+    %assign macros  = macros + "#undef %<macName>\n"
+    %assign macros  = macros + "#endif\n"
+    %assign macros  = macros + "#define %<macName>(rtm) "
+    %assign accStr  = FcnGenFieldAccessString(fld, "get", "", "", "(rtm)")
+    %assign macros  = macros + "&(%<accStr>)\n"
+  %endif
+  
+  %return macros
+%endfunction
+
+%% Function: RTMAddExternRTModelDecl ===========================================
+%% Abstract:
+%%   Create an extern declaration of rtModel. Used in the DSP blockset.
+%%
+%function RTMsAddExternRTModelDecl(system) Output
+  %if GenRTModel
+    #include "%<CompiledModel.Name>.h"
+    
+    extern %<tSimStructType> *const %<tSimStruct>;
+  %else
+    #include "simstruc.h"
+    
+    extern SimStruct *const %<tSimStruct>;
+  %endif
+%endfunction
+
+%% [EOF] rtmdllib.tlc

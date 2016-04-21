@@ -1,0 +1,19 @@
+#include "mech_std.h"
+real_T mech_06Rk0bMTt_bwmAjwk1Agk1(real_T *mech_KJG4Kk9fgm9nBnBn6Uwl62,int32_T
+mech_gk1AgwrUzx6IBl3I7YBm72,int32_T mech_nEzwnzsYEy7MRl4MgnDvg2,boolean_T
+mech_06Rk0217V_1dZH9drTvhr1){int32_T mech_SqObSqPfhq9X7X7XF04JF0,
+mech_ObSqOEysYETPd_LPaOaOa0,mech_CrRnCbNX8a7sV2Ds8aNX81,
+mech_m9fgmH5OZGLV05NVX9ecX1;real_T mech_AjwmAfiuefijyufjxoIEx_=0;real_T
+mech_SoG6S7hoHAxaQitarRnCr_=0;for(mech_ObSqOEysYETPd_LPaOaOa0=0;
+mech_ObSqOEysYETPd_LPaOaOa0<mech_nEzwnzsYEy7MRl4MgnDvg2;
+mech_ObSqOEysYETPd_LPaOaOa0++){mech_AjwmAfiuefijyufjxoIEx_=0;
+mech_CrRnCbNX8a7sV2Ds8aNX81=mech_ObSqOEysYETPd_LPaOaOa0 *
+mech_gk1AgwrUzx6IBl3I7YBm72;mech_m9fgmH5OZGLV05NVX9ecX1=
+mech_06Rk0217V_1dZH9drTvhr1?mech_ObSqOEysYETPd_LPaOaOa0+1:
+mech_gk1AgwrUzx6IBl3I7YBm72;for(mech_SqObSqPfhq9X7X7XF04JF0=0;
+mech_SqObSqPfhq9X7X7XF04JF0<mech_m9fgmH5OZGLV05NVX9ecX1;
+mech_SqObSqPfhq9X7X7XF04JF0++){mech_AjwmAfiuefijyufjxoIEx_+=fabs(
+mech_KJG4Kk9fgm9nBnBn6Uwl62[mech_SqObSqPfhq9X7X7XF04JF0+
+mech_CrRnCbNX8a7sV2Ds8aNX81]);}if(mech_AjwmAfiuefijyufjxoIEx_>
+mech_SoG6S7hoHAxaQitarRnCr_){mech_SoG6S7hoHAxaQitarRnCr_=
+mech_AjwmAfiuefijyufjxoIEx_;}}return mech_SoG6S7hoHAxaQitarRnCr_;}

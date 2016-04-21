@@ -1,0 +1,212 @@
+%% ============================================================================
+%% $RCSfile: formatmodelref.tlc,v $
+%% $Revision: 1.1.6.7 $ 
+%% 
+%% Function: HandleModelrefConstBIOAndPrm =====================================
+%% Dump const block IO and parameters for model reference
+%%
+%function ModelrefHandleConstBIOAndPrm()  void
+  %assign dataFile   = GetDataCFile()
+  %assign privFile   = GetPrivateHFile()
+  %assign mdlhdrFile = GetBaseFile("SystemHeader")
+  
+  %% --------------------------------------------------------------------------
+  %% SimulinkGlobal parameters:
+  %% - Declaration done by standard data buffering mechanism (must be unstructured)
+  %% - Instantiation done as part of model reference SFcn / top model.
+  %assert SLibAreSimulinkGlobalParamsUnstructured()
+  
+  %% --------------------------------------------------------------------------
+  %% Const parameters:
+  %%   structure definition: goes to private file
+  %%   instantiation:        goes to data file
+  %%   extern declaration:   goes to private file
+  %%   init (if applicable): goes to mdl_init function (in model.c)
+
+  %% Structure definitions (typedefs)
+  %openfile constPrmDef
+  %if !SLibPrmBufferIsEmpty("Const", "Typedef")
+
+    /* Constant parameters (auto storage) */
+    %<SLibGetPrmBuffer("Const", "Typedef")>\
+  %endif
+  %%
+  %if !SLibPrmBufferIsEmpty("ConstWithInit", "Typedef")
+    
+    /* Constant parameters with dynamic initialization (auto storage) */
+    %<SLibGetPrmBuffer("ConstWithInit", "Typedef")>\
+  %endif
+  %closefile constPrmDef
+  %if !WHITE_SPACE(constPrmDef)
+    %<SLibSetModelFileAttribute(privFile, "Typedefs", constPrmDef)>
+  %endif
+  
+  %% Instantiation
+  %openfile constPrmInst
+  %if !SLibPrmBufferIsEmpty("Const", "Instance")
+    /* Constant parameters (auto storage) */
+    %<SLibGetPrmBuffer("Const", "Instance")>
+  %endif
+  %%
+  %if !SLibPrmBufferIsEmpty("ConstWithInit", "Instance")
+
+    /* Constant parameters with dynamic initialization (auto storage) */
+    %<SLibGetPrmBuffer("ConstWithInit", "Instance")>
+  %endif
+  %closefile constPrmInst
+  %if !WHITE_SPACE(constPrmInst)
+    %<SLibSetModelFileAttribute(dataFile, "Declarations", constPrmInst)>
+  %endif
+  
+  %% Extern declarations
+  %assign constPrmDecl = GetConstPrmExternBuf()
+  %assign constPrmDecl = constPrmDecl + GetConstPrmWithInitExternBuf()
+  %if !WHITE_SPACE(constPrmDecl)
+    %<SLibSetModelFileAttribute(privFile, "ExternData", constPrmDecl)>
+  %endif
+  
+  %% --------------------------------------------------------------------------
+  %% Const Block I/O 
+  %%    structure definition:  goes to system header files (handled in 
+  %%                           other places). 
+  %%                           ModelrefCleanup: This structure
+  %%                           should go to private file
+  %%    Instance:              goes to data file
+  %%    Extern declration:     goes to private file
+  %%                           model reference s-function wrapper
+  %%
+  
+  %% Instance
+  %openfile cioBuf
+  %if !LibConstBlockIOInstanceIsEmpty()
+    /* Invariant block signals (auto storage) */
+    rtC%<FcnGetSystemIdentifier(NumSystems-2)> %<tConstBlockIOStruct> = {
+      %<LibDumpConstBlockIOInstance()>
+    };
+  %endif
+  %closefile cioBuf
+  
+  %% dump info in data file
+  %if !WHITE_SPACE(cioBuf) 
+    %<SLibSetModelFileAttribute(dataFile, "Declarations", cioBuf)>
+  %endif
+
+  
+  %% Extern declration
+  %assign cBIOExtBuf = GetConstBIOExternBuf()
+  %<SLibSetModelFileAttribute(privFile, "ExternData", cBIOExtBuf)>
+  
+%endfunction %% ModelrefHandleConstBIOAndPrm
+
+
+%% Function: ModelrefHandleRTModel ============================================
+%%  For model reference rtModel typedef goes to top model header file,
+%%  and rtModel macros goes to private file.
+%%  This may need to be updated when we support continuous states
+%%
+%function ModelrefHandleRTModel()  void
+  
+  %assert(IsModelReferenceTarget() && GenRTModel)
+
+  %assign topSysfName = SLibGetSystemOutputFileBaseName(System[NumSystems-2])
+  %assign mdlrefFile = SLibAddModelFile("SystemHeader","Simulink", "%<topSysfName>")
+  %assign privFile = SLibAddModelFile("SystemHeader","Simulink", "%<Name>_private")
+  
+  %% --------------------------------------------------------------------------
+  %% rtModel typedef 
+  %openfile rtmTypedefs
+  %assign rtmTypedefsStr = RTMGenRtMdlTypedef()
+  %if !WHITE_SPACE(rtmTypedefsStr)
+    %<rtmTypedefsStr>
+  %endif
+  %closefile rtmTypedefs
+  %<SLibSetModelFileAttribute(mdlrefFile, "Typedefs", rtmTypedefs)>
+  %undef rtmTypedefs
+
+  %% --------------------------------------------------------------------------
+  %% rtModel macros
+  %openfile rtmMacros
+  
+  %assign rtmMacrosStr = RTMGenMacroDefines("PUBLIC")
+  %if !WHITE_SPACE(rtmMacrosStr)
+    /* Macros for accessing real-time model data structure  */
+    %<rtmMacrosStr>
+  %endif
+  %closefile rtmMacros
+  %<SLibSetModelFileAttribute(privFile, "Typedefs", rtmMacros)>
+  %undef rtmMacros
+  
+  
+  %% Opaque type def goes to type file 
+  %if !EmptyRealTimeObject
+    %assign typesFile = SLibAddModelFile("SystemHeader","Simulink","%<Name>_types")
+    %openfile opaqTypedefBuf
+    %<RTMsGenOpaqueTypedef(CompiledModel.System[NumSystems-1])>\
+    %closefile opaqTypedefBuf
+    %<SLibSetModelFileAttribute(typesFile, "Typedefs", opaqTypedefBuf)>
+  %endif
+
+%endfunction %% ModelrefHandleRTModel
+
+
+%% Function:  ModelrefDumpDataFileBannerAndInclude ============================
+%% Added code to dump banner and include to data file.
+%function ModelrefDumpDataFileBannerAndInclude() void
+  %assign dataFile = GetDataCFile()  
+  %openfile dataBanBuf
+  /*
+  * %<Name>_data.c
+  *
+  %<SLibCommonHeaderInfo()>\
+  */
+  %closefile dataBanBuf
+  
+  
+  %openfile inclBuf
+  %assign fileName = SLibGetSystemOutputFileBaseName(System[NumSystems-2])
+  #include "%<fileName>.h"
+  #include "%<Name>_private.h"
+  %closefile inclBuf
+
+  %<SLibSetModelFileAttribute(dataFile, "Banner", dataBanBuf)>
+  %<SLibSetModelFileAttribute(dataFile, "Includes", inclBuf)>
+
+%endfunction
+
+
+%% Function: ModelrefGenSfcnAndHandleConstPrmAndBIO  ===========================
+%%   Temporary function to dump model reference constant parameter, etc
+%%
+%function ModelrefGenSfcnAndHandleConstPrmAndBIO() void
+  %% Do not generate s-function wrapper for the model reference rtw target
+  %if IsModelReferenceSimTarget()
+    %include "modelrefsfcnbody.tlc"
+  %endif
+  %<GenAndCacheModelReferenceInterfaceInMatFile()>
+  
+  %<ModelrefHandleConstBIOAndPrm()>
+
+  %assign dataFile = GetDataCFile()
+  %if !SLibGetModelFileIsEmpty(dataFile)
+    %<ModelrefDumpDataFileBannerAndInclude()>
+  %endif
+%endfunction
+
+
+%% Function:  =======================================
+%%   Temporary function to dump model reference constant parameter, etc
+%%
+%function ModelrefHandleExportFileInfo() void
+  
+  %assign baseFile = GetBaseFile("SystemHeader")
+  
+  %openfile mdlRefRegFcn
+  /* Model reference registration function */
+  extern void %<GetModelRefRegistrationFcnName()>(%<SLibModelReferenceRegFcnArgs(TLC_FALSE)>);
+  %closefile mdlRefRegFcn
+  %<SLibSetModelFileAttribute(baseFile, "ExternFcns", mdlRefRegFcn)>
+  
+  %<ModelrefHandleRTModel()>
+%endfunction
+
+%% [EOF] formatmodelref.tlc

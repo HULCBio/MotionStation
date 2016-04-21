@@ -1,0 +1,327 @@
+%% $RCSfile: sdspupfirdn2.tlc,v $
+%% $Revision: 1.8.4.2 $ $Date: 2004/04/12 23:10:06 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: FIR Integer-Ratio Sample-Rate Conversion
+%%
+
+%implements sdspupfirdn2 "C"
+
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspupfirdn_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(0)
+    %assign outDT = FixPt_GetOutputDataType(0)
+    %assign block = block + inDT + outDT
+    %%
+    %assign INPORT       = 0
+    %assign OUTPORT      = 0
+    %assign INPORTWIDTH  = LibDataInputPortWidth(INPORT)
+    %%
+    %% DWorks: OutIdx, MemIdx, PartialSums, InBuf, OutBuf
+    %%
+    %assign IFACTOR      = SFcnParamSettings.IFACTOR
+    %assign DFACTOR      = SFcnParamSettings.DFACTOR
+    %assign LENGTH       = LibBlockParameterSize(FILTER)
+    %assign NCOLS        = IFACTOR * DFACTOR
+    %assign SUB_ORDER    = %<LENGTH>[1] / NCOLS
+    %%
+    %assign NSTATES         = LibBlockDWorkWidth(InBuf)
+    %assign FILT_COMPLEX    = LibBlockParameterIsComplex(FILTER)
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign OUT_COMPLEX     = (FILT_COMPLEX || DATA_COMPLEX)
+    %assign INPORT_IS_SINGLE  = (LibBlockInputSignalDataTypeId(INPORT) == tSS_SINGLE)
+    %%
+    %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+    %assign dims    = LibBlockInputSignalDimensions(INPORT)
+    %assign COLS    = (numDims == 2) ? dims[1] : 1
+    %assign ROWS    = dims[0]
+    %%
+    %assign FRAMEBASED = LibBlockInputSignalIsFrameData(INPORT)
+    %assign FRAME      = FRAMEBASED ? ROWS : 1
+    %assign NUM_CHANS  = FRAMEBASED ? COLS : INPORTWIDTH
+    %%
+    %assign MEM_SIZE     = NSTATES / NUM_CHANS
+    %assign N0           = SFcnParamSettings.N0
+    %assign N1           = SFcnParamSettings.N1
+    %assign OUT_LEN      = N1 * IFACTOR
+    %%
+    %assign DAT_T  = LibBlockInputSignalDataTypeName(INPORT,"")
+    %assign FILT_T = LibBlockParameterDataTypeName(FILTER,"")
+    %assign OUT_T  = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+    %%
+    %assign block = block + INPORT       + OUTPORT          + IFACTOR      \
+                          + DFACTOR      + SUB_ORDER        + FILT_COMPLEX \
+                          + DATA_COMPLEX + OUT_COMPLEX                     \
+                          + INPORT_IS_SINGLE + NUM_CHANS                   \
+                          + FRAME        + MEM_SIZE         + N0           \ 
+                          + N1           + OUT_LEN          + DAT_T        \
+                          + FILT_T       + OUT_T
+
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* DSP Blockset FIR Rate Conversion %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %assign inDTypeId     = LibBlockInputSignalDataTypeId(INPORT)
+    %assign outDTypeId    = LibBlockOutputSignalDataTypeId(OUTPORT)
+    %assign inputZeroVal  = SLibGetGroundValueFromId(inDTypeId)
+    %assign outputZeroVal = SLibGetGroundValueFromId(outDTypeId)
+    %%
+    /* Initialize indices. */
+    %<LibBlockDWork(OutIdx, "", "", 0)> = %<LibBlockDWork(MemIdx, "", "", 0)> = 0;
+    %%
+    /* Initialize partial sums buffer */
+    {
+        %if FixPt_DataTypeIsFloat(inDT)
+            %<OUT_T> *sumsPointer = %<LibBlockDWorkAddr(PartialSums, "", "", 0)>;
+        %else
+            %assign accDT = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+            %assign accDT = OUT_COMPLEX ? accDT.ComplexName : accDT.Name
+            %<accDT> *sumsPointer = %<LibBlockDWorkAddr(PartialSums, "", "", 0)>;
+        %endif
+        %assign count = NUM_CHANS*IFACTOR
+        int_T i = %<count>;
+        while (i-- > 0) {
+            %if (OUT_COMPLEX)
+                sumsPointer->re = %<outputZeroVal>;
+                sumsPointer->im = %<outputZeroVal>;
+            %else
+                *sumsPointer = %<outputZeroVal>;
+            %endif
+            sumsPointer++;
+        }
+    }
+    %%
+    /* Initialize input delay buffer */
+    {
+        %<DAT_T> *inputTap = %<LibBlockDWorkAddr(InBuf, "", "", 0)>;
+        %assign count = NUM_CHANS*(SUB_ORDER + IFACTOR*N0)
+        int_T i = %<count>;
+        while (i-- > 0) {
+            %if (DATA_COMPLEX)
+                inputTap->re = %<inputZeroVal>;
+                inputTap->im = %<inputZeroVal>;
+            %else
+                *inputTap = %<inputZeroVal>;
+            %endif
+            inputTap++;
+        }
+    }
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* DSP Blockset FIR Rate Conversion %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %if FixPt_DataTypeIsFloat(inDT)
+        %<CallFltptRuntimeFcn(block)>
+    %else
+        %<GenerateFixPtInlineCode(block)>
+    %endif
+}
+
+%endfunction  %% Outputs
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateFixPtInlineCode ======================================
+%%
+%function GenerateFixPtInlineCode(block) Output
+%%
+%createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+%% create accRec record
+%assign accLabel  = (NUM_CHANS > 1) \
+                  ? LibBlockDWork(PartialSums, "j+k*%<IFACTOR>", "", 0) \
+                  : LibBlockDWork(PartialSums, "j", "", 0)
+%assign accDT     = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+%assign accIsCplx = OUT_COMPLEX
+%createrecord accRec { label     accLabel; ...
+                       dTypeRec  accDT; ...
+                       isComplex accIsCplx }
+%% create prodRec record (always real)
+%assign prodLabel = "prod"
+%assign prodDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%createrecord prodRec { label     prodLabel; ...
+                        dTypeRec  prodDT; ...
+                        isComplex 0 }
+%% create cffRec record
+%assign cffLabel = LibBlockParameter(FILTER, "cffIdx", "", "0")
+%assign cffDT    = FixPt_GetParameterDataType(CFF_DATA_TYPE, 0, 0)
+%createrecord cffRec { label     cffLabel; ...
+                       dTypeRec  cffDT; ...
+                       isComplex FILT_COMPLEX }
+%% create inRec record
+%assign inLabel = LibBlockInputSignal(INPORT, "uIdx", "","0")
+%createrecord inRec { label     inLabel; ...
+                      dTypeRec  inDT; ...
+                      isComplex DATA_COMPLEX }
+%% create outRec record
+%assign outLabel = LibBlockOutputSignal(OUTPORT, "yIdx", "","0")
+%createrecord outRec { label    outLabel; ...
+                      dTypeRec  outDT; ...
+                      isComplex OUT_COMPLEX }
+%% create input tap record
+%assign tapLabel = LibBlockDWork(InBuf, "tapIdx", "", 0)
+%createrecord tapRec { label     tapLabel; ...
+                       dTypeRec  inDT; ...
+                       isComplex DATA_COMPLEX }
+%% create outBufRec record
+%assign outBufLabel = (NUM_CHANS > 1) \
+                    ? LibBlockDWork(OutBuf, "idx+k*%<OUT_LEN>", "", "0") \
+                    : LibBlockDWork(OutBuf, "idx", "", "0")
+%createrecord outBufRec { label     outBufLabel; ...
+                          dTypeRec  outDT; ...
+                          isComplex OUT_COMPLEX }
+%%
+{
+    int32_T mIdx=0, oIdx=0;
+    int_T   uIdx = 0, yIdx = 0, cffIdx = 0;
+    %<prodDT.Name> %<prodRec.label>;
+    %if (NUM_CHANS > 1)
+    int_T   i, j, k;
+    for (k=0; k < %<NUM_CHANS>; k++) {
+    %else
+    int_T   i, j;
+    {
+    %endif
+        int_T inIdx = 0; 
+        mIdx  = %<LibBlockDWork(MemIdx,"", "", 0)>;
+        oIdx  = %<LibBlockDWork(OutIdx,"", "", 0)>;
+        for (i=0; i < %<FRAME>; i++) {
+            /*  Read input dat into input circular buffer */
+            %if (NUM_CHANS > 1)
+            int_T tapIdx = mIdx + k*%<MEM_SIZE>;
+            %else
+            int_T tapIdx = mIdx;
+            %endif
+            %<DSPFixptLibEquals(tapRec, inRec, rndSatRec)>\
+            uIdx++;
+            /* Compute partial sums for each interpolation phase */
+            for (j=0; j < %<IFACTOR>; j++) {
+                int_T m = %<SUB_ORDER>;
+                int_T tap = mIdx - (%<IFACTOR>-j)*%<N0>;
+                tap += %<DFACTOR>;
+                while (m--) {
+                    tap -= %<DFACTOR>;
+                    tap  = (tap>=0) ? tap : (tap+%<MEM_SIZE>);
+                    {
+                        %if (NUM_CHANS > 1)
+                        int_T tapIdx = tap + k*%<MEM_SIZE>;
+                        %else
+                        int_T tapIdx = tap;
+                        %endif
+                        %<FixptMAC(accRec, "+=", prodRec, tapRec, cffRec, rndSatRec)>\
+                        cffIdx++;
+                    }
+                }
+            }
+            if (++inIdx == %<DFACTOR>) {
+                for (j=0; j < %<IFACTOR>; j++) {
+                    /* Output partial sums to output buffer */
+                    int_T idx = j*%<N1> + oIdx;
+                    if ( idx > (%<OUT_LEN>-1) ) idx -= %<OUT_LEN>;
+                    %<DSPFixptLibEquals(outBufRec, accRec, rndSatRec)>\
+                    /* Output results */
+                    idx = j+oIdx;
+                    if ( idx > (%<OUT_LEN>-1) ) idx -= %<OUT_LEN>;
+                    %<DSPFixptLibEquals(outRec, outBufRec, rndSatRec)>\
+                    yIdx++;
+                    /* Reset partial sums buffer */
+                    %if (accRec.isComplex)
+                        %assign accReLabel = accRec.label + ".re"
+                        %assign accImLabel = accRec.label + ".im"
+                        %<accReLabel> = %<accImLabel> = 0;
+                    %else
+                        %<accRec.label> = 0;
+                    %endif
+                }
+                /* increment oIdx by iFactor for next interpolation sum */
+                if ((oIdx+=%<IFACTOR>) >= %<OUT_LEN>) oIdx = 0;
+                /*  Reset indices */
+                inIdx  = 0;
+                cffIdx = 0;
+            }
+            /* increment mIdx for the next input sample */
+            if (++mIdx >= %<MEM_SIZE>) mIdx = 0;
+        }
+    }
+    /* Update stored indices for next output hit */
+    %<LibBlockDWork(MemIdx,"", "", 0)> = mIdx;
+    %<LibBlockDWork(OutIdx,"", "", 0)> = oIdx;
+}
+%endfunction %% GenerateFixPtInlineCode
+
+%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: CallFltptRuntimeFcn ======================================
+%%
+%function CallFltptRuntimeFcn(block) Output
+%%
+/* DSP Blockset FIR Rate Conversion %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %<DAT_T> *x      = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<DAT_T> *tap0   = %<LibBlockDWorkAddr(InBuf, "", "", 0)>;
+    %<OUT_T> *sums   = %<LibBlockDWorkAddr(PartialSums, "", "", 0)>;
+    %<OUT_T> *outBuf = %<LibBlockDWorkAddr(OutBuf, "", "", 0)>;
+    %<OUT_T> *y      = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    int_T  *tapIdx  = %<LibBlockDWorkAddr(MemIdx,      "", "", 0)>;
+    int_T  *outIdx  = %<LibBlockDWorkAddr(OutIdx,      "", "", 0)>;
+    const %<FILT_T> * const filter = (%<FILT_T> *)%<LibBlockParameterAddr(FILTER, "", "", "0")>;
+
+    %assign ARG_LIST = "x,y,tap0,sums,outBuf,filter,tapIdx,outIdx, %<NUM_CHANS>,\
+                       %<FRAME>,%<IFACTOR>,%<DFACTOR>,%<SUB_ORDER>,\
+                       %<MEM_SIZE>,%<OUT_LEN>,%<N0>,%<N1>"
+
+    %if (INPORT_IS_SINGLE)
+        %assign cplx_str = "C"
+        %assign real_str = "R"
+    %else
+        %assign cplx_str = "Z"
+        %assign real_str = "D"
+    %endif
+ 
+    %assign func_str = "MWDSP_UpFIRDn_"
+
+    %if (DATA_COMPLEX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+
+    %if (FILT_COMPLEX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+
+    %<func_str>(%<ARG_LIST>);
+
+}
+%endfunction %% CallFltptRuntimeFcn
+
+%% [EOF] sdspupfirdn2.tlc

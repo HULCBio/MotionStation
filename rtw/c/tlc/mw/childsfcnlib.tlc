@@ -1,0 +1,422 @@
+%% 
+%% $Revision: 1.1.6.7 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Library to support the notion of an rtModel object.
+%%      Currently also contains routines for root SimStruct
+%%
+
+%if EXISTS("_CHILDSFCNLIB_") == 0
+%assign _CHILDSFCNLIB_ = 1
+
+%% Function: SLibGenChildSfcnTermMemFreeCode ===================================
+%% Abstract:
+%%   Dump memory free code in MdlTerminate when we are using UsingMalloc
+%%
+%function SLibGenChildSfcnTermMemFreeCode(s) Output
+  %assign isSfcnCF = (CodeFormat == "S-Function")
+  if( %<s> != NULL ) {
+    %%
+    %% Level independent allocation
+    %%
+    rt_FREE(ssGetSampleTimePtr(%<s>));
+    rt_FREE(ssGetOffsetTimePtr(%<s>));
+    rt_FREE(ssGetSampleTimeTaskIDPtr(%<s>));
+    %assign numArgs = Parameters[0] / 2
+    %if numArgs > 0
+      %if isSfcnCF
+	%%
+	%% free params not tunable array
+	%%
+	%if LibSFunctionLevel() == "Level2"
+	  #if defined(MATLAB_MEX_FILE)
+	  {
+	    uint_T *attribs = ...
+	      ssGetSFcnParamAttribsPtr(%<s>);
+	    
+	    mxFree(attribs);
+	  }
+	  #endif
+	%endif %% SFunctionLevel == "Level2"
+	%%
+	%% free MATLAB versions of mxArray
+	%%
+	#if defined(MATLAB_MEX_FILE)
+	{
+	  %foreach argIdx = numArgs
+	    %%assign paramIdx = 
+	    %assign paramVal = "P%<argIdx + 1>"
+	    %if SLibGetBlockParameterStorageClass(%<paramVal>) == "Auto_SFCN"
+	      %% S-Function parameters marked as tunable are allocated and
+	      %% freed by Simulink and don't need to be handled by the S-Function
+	      %% termination function
+	    %else
+	      {
+		mxDestroyArray(_ssGetSFcnParam(%<s>, %<argIdx>));
+	      }
+	    %endif 
+	  %endforeach
+	}
+	#endif
+      %endif %% isSfcnCF
+      
+      %%
+      %% Unconditionally free param ptr array
+      %%
+      {
+	mxArray **ptr = (mxArray **) ssGetSFcnParamsPtr(%<s>);
+	rt_FREE(ptr);
+      }
+    %endif %% numArgs > 0
+    
+    %if NumSFcnSysOutputCalls > 0
+      rt_FREE(ssGetCallSystemOutputPtr(%<s>));
+      rt_FREE(ssGetCallSystemOutputArg1List(%<s>));
+      rt_FREE(ssGetCallSystemOutputArg2List(%<s>));
+      rt_FREE(ssGetCallSystemOutputFcnList(%<s>));
+    %endif
+    %%
+    %% Level dependent allocation
+    %%
+    %if ParamSettings.FunctionLevel == 1
+      %%
+      %% Level 1
+      %%
+      %assign usingUPtrs = (ParamSettings.UsingUPtrs == "yes")
+      %assign inputsContiguous = ...
+	(ParamSettings.InputContiguous == "yes")
+      %if usingUPtrs
+	{
+	  real_T **ptr = (real_T **) ssGetUPtrs(%<s>);
+	  rt_FREE(ptr);
+	}
+      %elseif !inputsContiguous	
+	{
+	  real_T *ptr = (real_T *) ssGetU(%<s>);
+	  rt_FREE(ptr);
+	}
+      %endif
+      %if StatesDiscontiguous
+	{
+	  real_T *ptr = (real_T *) ssGetContStates(%<s>);
+	  rt_FREE(ptr);
+	}
+      %endif
+      %% D-Work
+      %if NumDWork > 0
+	rt_FREE(ssGetSFcnDWork(%<s>));
+      %endif
+    %else
+      %%
+      %% Level 2
+      %%
+      %if GenRTModel
+	/* Destroy the blkInfo2 ptr */
+	{
+	  struct _ssBlkInfo2 *blkInfo2 = ssGetBlkInfo2Ptr(%<s>);
+	  rt_FREE(blkInfo2);
+	}
+      %endif
+      /* Destroy model methods 2 */
+      {
+        struct _ssSFcnModelMethods2 *methods2 = ...
+          ssGetModelMethods2(%<s>);
+        rt_FREE(methods2);
+      }
+      %foreach ipIdx = NumDataInputPorts
+	{
+	  %if ParamSettings.UsingUPtrs[ipIdx] == "yes"
+	    void **ptr = (void**) \
+	    ssGetInputPortSignalPtrs(%<s>, %<ipIdx>);
+	    rt_FREE(ptr);
+	  %endif
+	  %assign nDims = LibBlockInputSignalNumDimensions(ipIdx)
+	  %if nDims >= matrixDimensionThreshhold && UsingMalloc
+	    %if !isSfcnCF
+	      rt_FREE(ssGetInputPortDimensions(%<s>, %<ipIdx>));
+	    %else
+	      {
+		int_T *dimensions = \
+		ssGetInputPortDimensions(%<s>, %<ipIdx>);
+		#if defined(MATLAB_MEX_FILE)
+		if (dimensions != NULL) {
+		  utFree(dimensions);
+		  dimensions = NULL;
+		}
+		#else
+		rt_FREE(dimensions);
+		#endif
+	      }
+	    %endif
+	  %endif
+	}
+      %endforeach
+      %foreach opIdx = NumDataOutputPorts
+	%assign nDims = LibBlockOutputSignalNumDimensions(opIdx)
+	%if nDims >= matrixDimensionThreshhold && UsingMalloc
+	  %if !isSfcnCF
+	    rt_FREE(ssGetOutputPortDimensions(%<s>, %<opIdx>));
+	  %else
+	    {
+	      int_T *dimensions = \
+	      ssGetOutputPortDimensions(%<s>, %<opIdx>);
+	      #if defined(MATLAB_MEX_FILE)
+	      if (dimensions != NULL) {
+		utFree(dimensions);
+		dimensions = NULL;
+	      }
+	      #else
+	      rt_FREE(dimensions);
+	      #endif
+	    }
+	  %endif
+	%endif
+      %endforeach
+      %%
+      %% Need to add these macros to simstruc.h
+      %%
+      rt_FREE(ssGetPortInfoForInputs(%<s>));
+      rt_FREE(ssGetPortInfoForOutputs(%<s>));
+      %%
+      %% D-Work
+      %if NumDWork > 0
+	rt_FREE(ssGetSFcnDWork(%<s>));
+      %endif
+    %endif
+  }
+%endfunction %% SLibGenChildSfcnTermMemFreeCode
+
+
+%% Function: SLibCacheRTCallSys ================================================
+%% Abstract:
+%%   Cache rt_CallSys() used by non-inlined S-Functions.
+%%
+%function SLibCacheRTCallSys() void
+  
+  %if CodeFormat != "S-Function"  && !IsModelReferenceSimTarget() && CompiledModel.NumChildSFunctions > 0
+    %assign fName = CompiledModel.Name
+    %openfile tmpFcnBuf
+    %assign opFile = SLibAddModelFile("SystemBody","Simulink", fName)
+
+    /* Helper function to make function calls from non-inlined S-functions */
+    int_T rt_CallSys(SimStruct *S, int_T element, int_T tid)
+    {
+      (*(S)->callSys.fcns[element])((S)->callSys.args1[element], 
+      (S)->callSys.args2[element], tid);
+      
+      if (ssGetErrorStatus(S) != NULL) {
+	return 0;
+      } else {
+	return 1;
+      }
+    }
+    %closefile tmpFcnBuf
+    
+    %<SLibSetModelFileAttribute(opFile, "Functions", tmpFcnBuf)>
+
+    %assign ext = "_private"
+    %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fName+ext)
+
+    %openfile tmpFcnBuf
+    extern int_T rt_CallSys(SimStruct *S, int_T element, int_T tid);
+    %closefile tmpFcnBuf
+
+    %<SLibSetModelFileAttribute(opFile, "ExternFcns", tmpFcnBuf)>
+
+    %openfile tmpFcnBuf
+    %assign opFile = SLibAddModelFile("SystemBody","Simulink", fName)
+
+    /* Helper function to make function enables from non-inlined S-functions */
+    int_T rt_EnableSys(SimStruct *S, int_T element, int_T tid)
+    {
+      if ((S)->callSys.fcns[ssGetOutputPortWidth(S,0)+element] != NULL) {
+	(*(S)->callSys.fcns[ssGetOutputPortWidth(S,0)+element])
+	((S)->callSys.args1[element], 
+	(S)->callSys.args2[element], tid);
+      
+	if (ssGetErrorStatus(S) != NULL) {
+	  return 0;
+	}
+      }
+      if ((S)->callSys.fcns[2*ssGetOutputPortWidth(S,0)+element] != NULL) {
+	(*(S)->callSys.fcns[2*ssGetOutputPortWidth(S,0)+element])
+	((S)->callSys.args1[element], 
+	(S)->callSys.args2[element], tid);
+      
+	if (ssGetErrorStatus(S) != NULL) {
+	  return 0;
+	}
+      }
+      return 1;
+    }
+    %closefile tmpFcnBuf
+    
+    %<SLibSetModelFileAttribute(opFile, "Functions", tmpFcnBuf)>
+
+    %assign ext = "_private"
+    %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fName+ext)
+
+    %openfile tmpFcnBuf
+    extern int_T rt_EnableSys(SimStruct *S, int_T element, int_T tid);
+    %closefile tmpFcnBuf
+
+    %<SLibSetModelFileAttribute(opFile, "ExternFcns", tmpFcnBuf)>
+
+    %openfile tmpFcnBuf
+    %assign opFile = SLibAddModelFile("SystemBody","Simulink", fName)
+
+    /* Helper function to make function disables from non-inlined S-functions */
+    int_T rt_DisableSys(SimStruct *S, int_T element, int_T tid)
+    {
+      (*(S)->callSys.fcns[3*ssGetOutputPortWidth(S,0)+element])
+      ((S)->callSys.args1[element], 
+      (S)->callSys.args2[element], tid);
+      
+      if (ssGetErrorStatus(S) != NULL) {
+	return 0;
+      } else {
+	return 1;
+      }
+    }
+    %closefile tmpFcnBuf
+    
+    %<SLibSetModelFileAttribute(opFile, "Functions", tmpFcnBuf)>
+
+    %assign ext = "_private"
+    %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fName+ext)
+
+    %openfile tmpFcnBuf
+    extern int_T rt_DisableSys(SimStruct *S, int_T element, int_T tid);
+    %closefile tmpFcnBuf
+
+    %<SLibSetModelFileAttribute(opFile, "ExternFcns", tmpFcnBuf)>
+  %endif
+%endfunction
+
+
+%% Function: SLibGenERTNonInlinedSFcnsSubStruct =============================== 
+%% Abstract:
+%%   Generate the substructure in the real-time model rtM.NonInlinedSFcns
+%%
+%% Local function used in this file
+%function SLibGenERTNonInlinedSFcnsSubStruct() void
+  %openfile tmpFcnBuf
+
+  /*
+   * NonInlinedSFcns:
+   * The following substructure contains information regarding
+   * non-inlined s-functions used in the model.
+   */
+  struct {
+    %% Fixed non-inlined sfunction elements
+    %if !IsModelReferenceSimTarget()
+      RTWSfcnInfo sfcnInfo;
+    %endif
+    SimStruct childSFunctions[%<NumChildSFunctions>];
+    SimStruct *childSFunctionPtrs[%<NumChildSFunctions>];
+    struct _ssBlkInfo2 blkInfo2[%<NumChildSFunctions>];
+    struct _ssSFcnModelMethods2 methods2[%<NumChildSFunctions>];
+    %%
+    %% Dynamic non-inlined sfunction elements
+    %%
+    %foreach childIdx = NumChildSFunctions
+      struct {
+      %assign thisBlock = ChildSFunctionList[childIdx]
+      %with thisBlock
+	%assign sfuncName = ParamSettings.FunctionName
+	%assign numSfcnSampleTimes = SIZE(TID, 1)
+        time_T sfcnPeriod[%<numSfcnSampleTimes>];
+        time_T sfcnOffset[%<numSfcnSampleTimes>];
+        int_T sfcnTsMap[%<numSfcnSampleTimes>];
+        %if NumDataInputPorts > 0
+          struct _ssPortInputs inputPortInfo[%<NumDataInputPorts>];
+        %endif
+        %%
+        %% InputPort Info
+        %foreach ipIdx = NumDataInputPorts
+          %assign ip    = DataInputPort[ipIdx]
+          %assign dtype = SLibGetRecordDataTypeName(ip,"")
+          %assign width = LibBlockInputSignalWidth(ipIdx)
+          %assign dims  = LibBlockInputSignalDimensions(ipIdx)
+          %assign nDims = LibBlockInputSignalNumDimensions(ipIdx)
+          %switch ParamSettings.FunctionLevel
+            %case 1
+              %if ParamSettings.UsingUPtrs == "yes"
+                real_T const *UPtrs[%<width>];
+              %endif
+              %break
+            %case 2
+              %if ParamSettings.UsingUPtrs[ipIdx] == "yes"
+                real_T const *UPtrs%<ipIdx>[%<width>];
+              %endif
+              %break
+          %endswitch
+          %if nDims >= matrixDimensionThreshhold
+            int_T iDims%<ipIdx>[%<nDims>];
+          %endif
+        %endforeach %%NumDataInputPorts
+        %%
+        %% OutputPort Info
+        %if NumDataOutputPorts > 0
+          struct _ssPortOutputs outputPortInfo[%<NumDataOutputPorts>];
+        %endif
+        %foreach opIdx = NumDataOutputPorts
+          %assign oNumDims = LibBlockOutputSignalNumDimensions(opIdx)
+          %if %<oNumDims> >= matrixDimensionThreshhold
+            int_T oDims%<opIdx>[%<oNumDims>];
+          %endif
+        %endforeach %%NumDataOutputPorts
+        %%
+        %% States: level-1 s-functions with discontinuous states
+        %if ParamSettings.FunctionLevel == 1
+          %assign numDiscStates = DiscStates[0]
+          %assign numContStates = ContStates[0]
+          %assign nStates = numDiscStates + numContStates
+          %if (nStates > 0) && (StatesDiscontiguous == 1)
+            real_T X[%<nStates>];
+          %endif
+        %endif
+        %%
+        %% Parameters
+        %assign numArgs = Parameters[0] / 2
+        %if numArgs > 0
+          %if LibSFunctionLevel() == "Level2"
+            uint_T attribs[%<numArgs>];
+          %endif
+          mxArray *params[%<numArgs>];
+        %endif
+        %%
+        %% DWork
+        %assign numDWorks = thisBlock.NumDWork
+        %if numDWorks > 0
+          struct _ssDWorkRecord dWork[%<numDWorks>];
+        %endif
+        %%
+        %% Function calls
+        %if NumSFcnSysOutputCalls > 0
+          %assign pZeroWidth = LibBlockOutputSignalWidth(0)
+          int_T callSysOutputs[%<pZeroWidth>];
+          void *callSysArgs1[%<pZeroWidth>];
+          int_T callSysArgs2[%<pZeroWidth>];
+          %if IsModelReferenceSimTarget()
+            %% The Model Reference Simulation Target doesn't support
+            %% Initialization function pointers
+            SysOutputFcn callSysFcns[%<3*pZeroWidth>];
+          %else
+            SysOutputFcn callSysFcns[%<4*pZeroWidth>];
+          %endif
+        %endif
+      } Sfcn%<childIdx>;
+      %endwith %%thisBlock
+    %endforeach %%NumChildSFunctions
+  } \
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%endif %% _CHILDSFCNLIB_
+
+%% [EOF] childsfcnlib.tlc

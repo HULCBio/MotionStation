@@ -1,0 +1,511 @@
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: Multi-port switch block target file.
+
+%implements MultiPortSwitch "C"
+
+
+%% Function:  zeroIdxAdjust================================================
+%% Abstract:
+%%   Reset port index if use zero index
+%%
+%function zeroIdxAdjust(sw) void
+  %if UseZeroIndex
+    %%
+    %return ("(%<sw>)+1")
+    %%
+  %else
+    %return sw
+  %endif
+%endfunction
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+  %else
+    %%
+    %% In non-fixpt mode
+    %%
+    %<LibBlockSetIsExpressionCompliant(block)>
+    %<LibBlockInputSignalAllowScalarExpandedExpr(block,0)>
+  %endif
+%endfunction
+
+%% Function: FixptOutputs ==========================================================
+%% Abstract:
+%%      This function is called when in fixpt mode.
+%%
+%function FixptOutputs(block, system) Output
+  %%
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %%
+  %% Get input and output data types
+  %%
+  %assign y0DT  = FixPt_GetOutputDataType(0)
+  %assign u0DT  = FixPt_GetInputDataType(0)
+  %% Declared here to avoid errors due to creation inside roll or for each
+  %assign uCurDT = FixPt_GetInputDataType(1)
+  %%
+  %if IntegerSizes.IntNumBits > 16
+      %%
+      %%  SS_INT32   =  6,    /* int32_T   */
+      %%
+      %assign u0NominalDT = FixPt_GetDataTypeFromIndex(6)
+      %%
+  %elseif IntegerSizes.IntNumBits > 8
+      %%
+      %%  SS_INT16   =  4,    /* int16_T   */
+      %%
+      %assign u0NominalDT = FixPt_GetDataTypeFromIndex(4)
+      %%
+  %else
+      %%
+      %%  SS_INT8    =  2,    /* int8_T    */
+      %%
+      %assign u0NominalDT = FixPt_GetDataTypeFromIndex(2)
+      %%
+  %endif      
+  %%
+  /* %<Type> Block: %<Name> */
+  %% 
+  %assign swInputWidth = LibBlockInputSignalWidth(0)
+  %assign swSignal = LibBlockInputSignal(0, "", "", 0)
+  %assign numDataInputPorts = NumDataInputPorts-1
+  %assign numOutObj = LibBlockOutputSignalWidth(0)
+  %if numDataInputPorts == 1
+    %assign modeIsIndexSecondPort = 1
+  %else
+    %assign modeIsIndexSecondPort = 0
+  %endif
+  %%
+  %% Basically there exists two modes:
+  %% Mode 1: There are two input ports
+  %% The value of the first input (always a scalar)
+  %% indicates which element of the second input (typically a vector)
+  %% to use as the output (always a scalar)
+  %%
+  %% Mode 2: There are three or more input ports.
+  %% The value of the first input indicates which 
+  %% port to use as the output.
+  %%
+  %% In this file we have two cases.
+  %% Namely the control signal scalar and vector.
+  %% We handle Mode1 and Mode2 for the first case,
+  %% and the second case doesn't have mode1.
+  %assign tmp1Label="u0CastTemp"
+  {
+  %if swInputWidth == 1
+    %%
+    %openfile gutsofcast
+    %assign retVecStr = FixPt_Fix2Fix(tmp1Label,u0NominalDT,swSignal,u0DT,"Floor","Saturate")
+    %closefile gutsofcast
+    %if SIZE(retVecStr,1) == 3
+      %assign controlValue = retVecStr[1]
+      %%
+      %% for trivial or simple casts do not assign results
+      %% to temporary variable.  Use them in the next expression directly
+      %%
+    %else
+      %<u0NominalDT.NativeType> %<tmp1Label>;
+      %<gutsofcast>
+      %assign controlValue = tmp1Label
+    %endif
+    %assign yre = LibBlockOutputSignal(0, "", "", tRealPart)
+    %if y0IsComplex
+      %assign yim = LibBlockOutputSignal(0, "", "", tImagPart)
+    %endif
+    %if modeIsIndexSecondPort == 1 
+      %% Check to see if data signal is contiguous
+      %% This has been done to account for signals fed to a mux block (Or any other virtual block) 
+      %% and then fed into the multiport switch.
+      %% if signal is contiguous then just index into the signal
+      %% otherwise need to use a switch statement.
+      %assign p1rollRegs = RollRegions
+      %if EXISTS("DataInputPort[1].RollRegions")
+        %assign p1rollRegs = DataInputPort[1].RollRegions
+      %endif
+      %assign rollRegionMatrix = LibRollRegions2StartEndMatrix(p1rollRegs)
+      %assign firstRollRegionWidth = rollRegionMatrix[1][0] - ...
+        rollRegionMatrix[0][0] + 1
+      %if DataInputPort[1].Width == firstRollRegionWidth
+	%if UseZeroIndex
+	  %assign u1re = LibBlockInputSignal(1,"(%<controlValue>)", "", tRealPart)
+	  %if y0IsComplex
+	    %assign u1im = LibBlockInputSignal(1,"(%<controlValue>)", "", tImagPart)
+	  %endif
+	%else
+	  %assign u1re = LibBlockInputSignal(1,"((%<controlValue>)-1)", "", tRealPart)
+	  %if y0IsComplex
+	    %assign u1im = LibBlockInputSignal(1,"((%<controlValue>)-1)", "", tImagPart)
+	  %endif
+	%endif
+        %assign uCurDT = FixPt_GetInputDataType(1)
+        %% Handle conversion
+        %%
+        %<FixPt_Fix2FixAlwaysOutput(yre,y0DT,...
+          u1re,uCurDT,...
+          FixPtRoundingMode,FixPtSaturationMode)>\
+        %if y0IsComplex
+          %%
+          %<FixPt_Fix2FixAlwaysOutput(yim,y0DT,...
+            u1im,uCurDT,...
+            FixPtRoundingMode,FixPtSaturationMode)>\
+        %endif
+      %else
+        switch (%<controlValue>){
+          %assign inputSignal1Width = LibBlockInputSignalWidth(1)
+          %foreach inputIdx = inputSignal1Width
+            %%
+            %assign reSigIdx = tRealPart + STRING(inputIdx)
+            %assign imSigIdx = tImagPart + STRING(inputIdx)
+            %%
+	    %if UseZeroIndex
+	      %assign caseElement = inputIdx
+	    %else
+	      %assign caseElement = inputIdx + 1
+	    %endif
+            %assign u1re = LibBlockInputSignal(1, "", "", reSigIdx)
+            %if y0IsComplex
+              %assign u1im = LibBlockInputSignal(1,"", "",imSigIdx)
+            %endif
+            case %<caseElement>:
+            %assign uCurDT = FixPt_GetInputDataType(1)
+            %% Handle conversion
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(yre,y0DT,...
+              u1re,uCurDT,...
+              FixPtRoundingMode,FixPtSaturationMode)>\
+            %if y0IsComplex
+              %%
+              %<FixPt_Fix2FixAlwaysOutput(yim,y0DT,...
+                u1im,uCurDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %endif
+            break;
+          %endforeach
+          default:
+            break;
+        }
+      %endif
+    %else
+      %% Multiple data ports, sw is a scalar
+      switch(%<controlValue>)
+      {
+	%foreach inputIdx = numDataInputPorts
+	  %assign inputElement = inputIdx + 1          %% data input port index
+	  %if UseZeroIndex
+	    %assign caseElement = inputIdx          %% data input port index
+	  %else
+	    %assign caseElement = inputIdx + 1          %% data input port index
+	  %endif
+          case %<caseElement>:
+	  %% Compute input if it conditionally executed
+	  %<SLibFcnComputeInput(block, inputElement)>
+	  %%
+          %assign rollVars = ["Y", "u%<inputElement>"]
+          %assign uCurDT = FixPt_GetInputDataType(inputElement)
+          %roll sigIdx = RollRegions, lcv = RollThreshold, block, ...
+            "Roller", rollVars
+            %%
+            %assign reSigIdx = tRealPart + STRING(sigIdx)
+            %assign imSigIdx = tImagPart + STRING(sigIdx)
+            %%
+            %assign yre  = LibBlockOutputSignal(0,          "", lcv, reSigIdx)
+            %assign uire = LibBlockInputSignal(inputElement,"", lcv, reSigIdx)
+            %if y0IsComplex
+              %assign yim  = LibBlockOutputSignal(0,           "", lcv, imSigIdx)
+              %assign uiim = LibBlockInputSignal( inputElement,"", lcv, imSigIdx)
+            %endif
+            %%
+            %% Handle conversion
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(yre,y0DT,...
+              uire,uCurDT,...
+              FixPtRoundingMode,FixPtSaturationMode)>\
+            %if y0IsComplex
+              %%
+              %<FixPt_Fix2FixAlwaysOutput(yim,y0DT,...
+                uiim,uCurDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %endif
+          %endroll
+          break;
+        %endforeach
+        default:
+          break;
+      }
+    %endif
+  %else
+    %% swSignal is a vector
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = 2, block, "Roller", rollVars
+      %%
+      %assign reSigIdx = tRealPart + STRING(sigIdx)
+      %assign imSigIdx = tImagPart + STRING(sigIdx)
+      %%
+      {
+      %assign swSignal = LibBlockInputSignal (0, "", lcv, sigIdx)
+      %openfile gutsofcast
+      %assign retVecStr = FixPt_Fix2Fix(tmp1Label,u0NominalDT,swSignal,u0DT,"Floor","Saturate")
+      %closefile gutsofcast
+      %if SIZE(retVecStr,1) == 3
+        %%
+        %% for trivial or simple casts do not assign results
+        %% to temporary variable.  Use them in the next expression directly
+        %%
+        switch (%<retVecStr[1]>) \
+      %else
+        %<u0NominalDT.NativeType> %<tmp1Label>;
+        %<gutsofcast>
+        switch (%<tmp1Label>) \       
+      %endif
+      %%
+      %% open scope of switch
+      %assign yre  = LibBlockOutputSignal(0,          "", lcv, reSigIdx)
+      %if y0IsComplex
+        %assign yim  = LibBlockOutputSignal(0,          "", lcv, imSigIdx)
+      %endif
+      {
+        %foreach inputIdx = numDataInputPorts
+          %assign inputElement = inputIdx + 1
+	  %if UseZeroIndex
+	    %assign caseElement = inputIdx          %% data input port index
+	  %else
+	    %assign caseElement = inputIdx + 1          %% data input port index
+	  %endif
+          %assign uCurDT = FixPt_GetInputDataType(inputElement)
+          %assign uire = LibBlockInputSignal(inputElement,"", lcv, reSigIdx)
+          %if y0IsComplex
+            %assign uiim = LibBlockInputSignal(inputElement,"", lcv, imSigIdx)
+          %endif
+          case %<caseElement>:
+          %%
+          %% Handle conversion
+          %%
+          %<FixPt_Fix2FixAlwaysOutput(yre,y0DT,...
+            uire,uCurDT,...
+            FixPtRoundingMode,FixPtSaturationMode)>\
+          %if y0IsComplex
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(yim,y0DT,...
+              uiim,uCurDT,...
+              FixPtRoundingMode,FixPtSaturationMode)>\
+          %endif
+          break;          
+        %endforeach
+        default:
+          break;
+        %%
+        %% close switch 
+      }
+      }
+    %endroll
+  %endif
+  }
+%endfunction
+
+
+%% Function: ClassicOutputs ==========================================================
+%% Abstract:
+%%      This function is called when in non-fixpt mode
+%%
+%function ClassicOutputs(block, system) Output
+  %% 
+  %assign swInputWidth = LibBlockInputSignalWidth(0)
+  %assign swSignal = LibBlockInputSignal(0, "", "", 0)
+  %assign numDataSignals = NumDataInputPorts - 1
+  %if swInputWidth == 1
+    %if numDataSignals == 1
+      %assign inputSignal1Width = LibBlockInputSignalWidth(1)
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      %if inputSignal1Width == 1
+	%% Case 1: 1 data port, 1 wide
+	%assign u1 = LibBlockInputSignal(1,"", "", 0)
+	%assign code = "%<y> = %<u1>;"
+	%<FcnConditionalAssignment(1, 0, code)>\
+      %else
+	%% Case 2: 1 data port, n-wide
+	  %assign sw = FcnComputeSwitchValue(swSignal)
+	  %assign sw = zeroIdxAdjust(sw)
+	  %assign p1rollRegs = RollRegions
+	  %assert !EXISTS("DataInputPort[1].RollRegions")
+	  %assign rollRegionMatrix = LibRollRegions2StartEndMatrix(p1rollRegs)
+	  %assign firstRollRegionWidth = rollRegionMatrix[1][0] - ...
+	    rollRegionMatrix[0][0] + 1
+	  %assign u1 = LibBlockInputSignal(1, "", "", 0)
+	  %% Check if data signal is contiguous
+	  %if DataInputPort[1].Width == firstRollRegionWidth
+	    %assign u1 = LibBlockInputSignal(1,"(%<sw>)-1", "", 0)
+	    %<y> = %<u1>;
+	  %else
+	    %% If data signal is not contiguous
+	    switch (%<sw>) {
+	      %assign inputSignal1Width = LibBlockInputSignalWidth(1)
+	      %foreach inputIdx = inputSignal1Width
+		%assign inputElement = inputIdx + 1
+		%assign u1 = LibBlockInputSignal(1, "", "", inputIdx)
+		%assign code = "%<y> = %<u1>;"
+		case %<inputElement>:
+		%<FcnConditionalAssignment(1, 0, code)>\
+		break;
+	      %endforeach
+              default:
+                break;
+	    }
+	  %endif
+      %endif
+    %else
+      %% Case 3: multiple data ports
+      %assign sw = FcnComputeSwitchValue(swSignal)
+      %assign sw = zeroIdxAdjust(sw)
+      %%
+      switch (%<sw>) {
+      %assign numOutputs = LibBlockOutputSignalWidth(0)
+      %foreach inputIdx = numDataSignals
+	%assign inputElement = inputIdx + 1	  %% data input port index
+	case %<inputElement>:
+	%assign inputSignalWidth = LibBlockInputSignalWidth(inputElement)
+	%% Compute input if it conditionally executed
+	%<SLibFcnComputeInput(block, inputElement)>
+	%%
+	%if (inputSignalWidth == 1)
+	  %% If this signal is 1 wide, it will be scalar expanded
+	  %assign rollVars = ["Y"]
+	  %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, ...
+	    "Roller", rollVars
+	    %assign ui = LibBlockInputSignal(inputElement, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	    %<y> = %<ui>;
+	  %endroll
+	%else
+	  %% If this signal is n-wide, check if we can flat roll regions
+	  %% of it.
+	  %assign rollVars = ["Y", "u%<inputElement>"]
+	  %assign pRollRegs = RollRegions
+	  %if EXISTS("DataInputPort[inputElement].RollRegions")
+	    %assign pRollRegs = DataInputPort[inputElement].RollRegions
+	  %endif
+	  %if LibBlockInputSignalIsExpr(inputElement)
+	    %roll sigIdx = pRollRegs, lcv = RollThreshold, block, ...
+	      "Roller", rollVars
+	      %assign ui = LibBlockInputSignal(inputElement, "", lcv, sigIdx)
+	      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	      %<y> = %<ui>;
+	    %endroll
+	  %else
+	    %roll sigIdx = pRollRegs, lcv = RollThreshold, block, ...
+	      "FlatRoller", rollVars
+	      %assign ui = LibBlockInputSignal(inputElement, "", lcv, sigIdx)
+	      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	      %%
+	      %if lcv == ""
+		%<y> = %<ui>;
+	      %else
+		%assign ui = LibBlockInputSignalAddr(inputElement, "", "", ...
+		  CurrentRollRegionOffset)
+		%assign y = LibBlockOutputSignalAddr(0, "", "", ...
+		  CurrentRollRegionOffset)
+		%assign inputDataType = LibBlockInputSignalDataTypeName(1, "")
+		%assign code = "(void) memcpy (%<y>, %<ui>, %<ROLL_ITERATIONS()> * sizeof (%<inputDataType>));"
+		%<FcnConditionalAssignment(inputElement, 0, code)>\
+	      %endif
+	    %endroll
+	  %endif
+	%endif
+	break;
+      %endforeach
+        default:
+          break;
+	}
+    %endif
+  %else
+    %% Case 4: wide sw vector
+      %assign rollVars = ["U", "Y"]
+      %roll sigIdx = RollRegions, lcv = 2, block, "Roller", rollVars
+	%assign swSignal = LibBlockInputSignal (0, "", lcv, sigIdx)
+	%assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	%assign sw = FcnComputeSwitchValue(swSignal)
+	%assign sw = zeroIdxAdjust(sw)
+	%%
+        switch (%<sw>) {
+	  %foreach inputIdx = numDataSignals
+	    %assign inputElement = inputIdx + 1
+	    %assign inputSignal = LibBlockInputSignal(inputElement, "", lcv, ...
+	      sigIdx)
+	    case %<inputElement>:
+	    %assign code = "%<y> = %<inputSignal>;"
+	    %<FcnConditionalAssignment(inputElement, 0, code)>\
+	    break;
+	  %endforeach
+          default:
+            break;
+	}
+      %endroll
+  %endif
+  
+%endfunction
+
+%% Function: FcnConditionalAssignment =========================================
+%% Synopsis:
+%%      FcnConditionalAssignment (inputPort, outputPort, codeString)
+%%      where
+%%      inputPort  is the input  port number,
+%%      outputPort is the output port number, and
+%%      codeString is the string that should be conditionally included.
+%%
+%% Abstract:
+%%      If the input buffer has been reused for the output buffer,
+%%      then the code is output (surrounded by comments) only if
+%%      ShowEliminatedStatements is on, else nothing is output.
+%%      If buffer reuse does not apply, the code is output as is.
+%function FcnConditionalAssignment (inputPort, outputPort, codeString) Output
+  %if (%<LibBlockInputSignalBufferDstPort(inputPort)> == outputPort)
+    %if (ShowEliminatedStatements)
+      /* (no action necessary since buffer is reused) */
+      /* %<codeString> */
+    %endif
+  %else
+    %<codeString>
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Compute outputs separately for fixpt and non-fixpt modes
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %<FixptOutputs(block, system)>
+  %else
+    %<ClassicOutputs(block, system)>
+  %endif
+%endfunction
+
+  
+%% Function: FcnComputeSwitchValue ============================================
+%% Synopsis:
+%%      FcnComputeSwitchValue(swSignal)
+%%      where
+%%      swSignal is the name of the sw signal.
+%%
+%% Abstract:
+%%      Helper function.  Outputs the code to compute the value of the
+%%      sw signal.
+%function FcnComputeSwitchValue(swSignal) void
+  %return "(int_T)%<swSignal>"
+%endfunction
+
+%% [EOF] mpswitch.tlc

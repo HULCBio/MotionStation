@@ -1,0 +1,1051 @@
+%include "serial_packing.tlc"
+
+%% File: EightBytePackingUtils
+%%
+%% Abstract:
+%%
+%%   A set of utilities for generating code to pack (& scale) and unpack
+%%   (& unscale) Simulink signals into 8 bytes of a CAN message packet. 
+%%
+%%   This code has been written to take advantage of the target word size,
+%%   and endianess.   The only restriction is that the size of the packed / scaled
+%%   value is not allowed to exceed the word size of the processor.
+%%
+%% $Revision: 1.9.6.7 $
+%% $Date: 2004/04/19 01:19:30 $
+%%
+%% Copyright 2001-2004 The MathWorks, Inc.
+
+%% Function: isStandardSignal
+%%
+%% Returns true if signalType corresponds
+%% to a Standard signal, otherwise returns false
+%% 
+%function isStandardSignal(signalType)
+   %if signalType == 0
+      %return TLC_TRUE
+   %else
+      %return TLC_FALSE
+   %endif
+%endfunction
+
+%% Function: isModeSignal
+%%
+%% Returns true if signalType corresponds
+%% to a Mode signal, otherwise returns false
+%%
+%function isModeSignal(signalType)
+   %if signalType == 1
+      %return TLC_TRUE
+   %else
+      %return TLC_FALSE
+   %endif
+%endfunction
+
+%% Function: isModeDependantSignal
+%%
+%% Returns true if signalType corresponds
+%% to a Mode Dependant signal, otherwise returns false
+%%
+%function isModeDependantSignal(signalType) 
+   %if signalType == 2
+      %return TLC_TRUE
+   %else
+      %return TLC_FALSE
+   %endif
+%endfunction
+
+%% Function: SvSignedString
+%%
+%% Returns a string used to denote that the scaled
+%% output value is signed.
+%% 
+%function SvSignedString() 
+   %return "SIGNED"
+%endfunction
+
+%% Function: SvUnsignedString
+%%
+%% Returns a string used to denote that the scaled
+%% output value is unsigned.
+%% 
+%function SvUnsignedString()
+   %return "UNSIGNED"
+%endfunction
+
+%% Function: SvFloatString
+%%
+%% Returns a string used to denote that the scaled
+%% output value is a float.
+%function SvFloatString()
+   %return "IEEE FLOAT"
+%endfunction
+
+%% Function: getSvClassString
+%%
+%% Determines the class of the scaled output
+%% value from the dataType parameter passed
+%% from the S-function.
+%%
+%% Either SvSignedString, SvUnsignedString or
+%% SvFloatString is returned.
+%%
+%function getSvClassString(dataType)
+   %switch dataType
+      %case 0
+         %assign class = SvSignedString()
+         %break
+      %case 1
+         %assign class = SvUnsignedString() 
+         %break
+      %case 2
+         %exit "CANdb: IEEE Float datatype not yet supported."
+         %assign class = SvFloatString()
+         %break
+      %case 3
+         %exit "CANdb: IEEE Double datatype not yet supported."
+         %break
+    %endswitch
+   %return class
+%endfunction
+
+%% =======================================================
+%% Function PackingComment
+%%
+%% Generates the comment that appears before the code 
+%% for scaling and packing each signal
+%%
+%function PackingComment(name, startBit, length, desiredSignalByteLayout, dataType, signalType, offset, factor)
+   %openfile buffer
+      /* --------------- START Packing CANdb signal %<name> ------------------ 
+       *  startBit                = %<startBit>
+       *  length                  = %<length>
+       *  desiredSignalByteLayout = %<EndianParamString(desiredSignalByteLayout)> 
+       *  dataType                = %<getSvClassString(dataType)>
+       *  signalType              = %< isStandardSignal(signalType) ? "STANDARD" : \
+          (isModeSignal(signalType) ? "MODE" : "MODE DEPENDENT")>
+       *  offset                  = %<offset> 
+       *  factor                  = %<factor> 
+       * -----------------------------------------------------------------------*/  
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% =======================================================
+%% Function PackingError
+%%
+%% Performs a check on signal length and generates an error if appropriate
+%% 
+%function PackingError(length, name) void
+   %% Currently we have no support for packing multi-word datatypes
+   %if length > %<WORD_BIT_SIZE()>
+      %openfile msg
+Signal %<name> is %<length> bits long, but the target processor word size
+is only %<WORD_BIT_SIZE()>.
+
+The CANdb packing blocks do not support the packing of multi-word signals.
+
+Please adjust the signal length to be within the word size, so that this signal can be packed.
+      %closefile msg
+      %exit %<msg>
+   %endif
+%endfunction
+
+%% =======================================================
+%% Function GenerateSignalPacking
+%%
+%% Generates code that maps i_inputSignal ports as defined
+%% in the signals record and maps the data into an
+%% 8 byte array located at the address in the 
+%% dataTarget string.
+%%
+%function GenerateSignalPacking(block, system, message, dataTarget)
+   %% Process all the signal information first to find
+   %% out if there are any mode based signals
+   %assign modeSignalIdx = -1
+
+   %assign signals = message.signals
+
+   %foreach signalIdx = SIZE(signals.signal,1)
+      %with signals.signal[signalIdx]
+         %assign i_signalType = CAST("Number",signalType[0])
+         %if isModeSignal(i_signalType) 
+            %assign modeSignalIdx=signalIdx
+            %break
+         %endif
+      %endwith
+   %endforeach
+  
+   %openfile buffer
+   {
+      /* final output words that individual signals are |'d into */
+      %% Generate a declaration like
+      %% uint32_T output_word0 = 0;
+      %% uint32_T output_word1 = 0;
+      %foreach idx = 8 / WORD_SIZE() 
+         %<UNSIGNED_WORD_TYPE()> output_word%<idx> = 0;
+      %endforeach
+      
+      /* variable to hold each scaled signal to be packed */
+      %<UNSIGNED_WORD_TYPE()> scaledSignal = 0; 
+
+      %% 
+
+      %if modeSignalIdx != -1
+         /* variable to hold the value of the processed mode signal */
+         %% Defaults to 0 in case mode is not connected
+         %<UNSIGNED_WORD_TYPE()> modeSignalValue = 0;
+         
+         %% check signal is connected to something other than a ground
+         %if LibBlockInputSignalConnected(modeSignalIdx)
+            %assign signalRecord = signals.signal[modeSignalIdx]
+            %with signalRecord
+               %assign i_startBit = CAST("Number",startBit[0])
+               %assign i_length = CAST("Number",length[0])
+               %assign i_desiredSignalByteLayout = CAST("Number",byteLayout[0])
+               %assign i_mode_dataType = CAST("Number",dataType[0])
+               %assign i_signalType = CAST("Number",signalType[0])
+               %assign i_offset = offset[0]
+               %assign i_factor = factor[0]
+
+               %% Generate appropriate comment for MODE signal
+               %<PackingComment(name, i_startBit, i_length, i_desiredSignalByteLayout, \
+                                i_mode_dataType, i_signalType, i_offset, i_factor)>
+
+               %% Currently we have no support for packing multi-word datatypes
+               %<PackingError(i_length, name)>
+   
+               %% process the mode signal first
+               %<GenerateScaling(block, system, "modeSignalValue", \
+                  modeSignalIdx, signalRecord )>
+               %% use scaledSignal for packing since we don't want to mask modeSignalValue
+               %% pack has side effect of masking to packed signal length
+               scaledSignal = modeSignalValue;
+               %% pack the mode signal 
+               %<pack("output_word", "scaledSignal", message.length[0], i_startBit, \
+                  i_length, EndianParamString(i_desiredSignalByteLayout))>
+            %endwith
+         %else
+               /* 
+                * The mode signal is either not connected or is connected directly to a ground.
+                * No packing code was generated.
+                *
+                */
+         %endif
+      %endif
+        
+      %foreach signalIdx = SIZE(signals.signal,1)
+         %assign signalRecord = signals.signal[signalIdx]
+         %%  
+         %with signalRecord
+            %assign i_startBit = CAST("Number",startBit[0])
+            %assign i_length = CAST("Number",length[0])
+            %assign i_desiredSignalByteLayout = CAST("Number",byteLayout[0])
+            %assign i_signalType = CAST("Number",signalType[0])
+            %assign i_dataType = CAST("Number",dataType[0])
+            %assign i_modeValue = CAST("Number",modeValue[0])
+            %assign i_offset = offset[0]
+            %assign i_factor = factor[0]
+
+            %if isModeSignal(i_signalType) && (modeSignalIdx != -1)
+               %% MODE signal has already been packed --> skip
+               %continue
+            %endif
+
+            %% Generate appropriate comment for signal
+            %<PackingComment(name, i_startBit, i_length, i_desiredSignalByteLayout, \
+                             i_dataType, i_signalType, i_offset, i_factor)>
+
+            %% Currently we have no support for packing multi-word datatypes
+            %<PackingError(i_length, name)>
+
+            %% check signal is connected to something other than a ground
+            %if LibBlockInputSignalConnected(signalIdx)
+               %% Generates code for saturating and scaling the input signal
+               %% Code is generated to optimize the data types of the input
+               %% and packing signals.
+               %if isModeDependantSignal(i_signalType) && (modeSignalIdx != -1)
+                  %% test depends on type of mode signal
+                  %switch getSvClassString(i_mode_dataType)
+                     %case SvSignedString()
+                        /* -- Mode dependancy check -- */
+                        if ((%<SIGNED_WORD_TYPE()>) modeSignalValue == %<i_modeValue>) { 
+                     %break
+                     %case SvUnsignedString()
+                        /* -- Mode dependancy check -- */
+                        if (modeSignalValue == %<i_modeValue>) { 
+                     %break
+                  %endswitch
+               %endif
+               %<GenerateScaling(block, system, "scaledSignal", \
+                  signalIdx, signalRecord )>
+
+               %<pack("output_word", "scaledSignal", message.length[0], i_startBit, \
+                  i_length, EndianParamString(i_desiredSignalByteLayout))>
+               %if isModeDependantSignal(i_signalType) && (modeSignalIdx != -1)
+                  }
+               %endif
+            %else
+               /* 
+                * This signal is either not connected or is connected directly to a ground.
+                * No packing code was generated.
+                *
+                */
+            %endif
+            /* ------ END Packing CANdb signal %<name>  ----- */
+         %endwith
+      %endforeach
+      
+      /* CAN message byte array is not guaranteed to be word aligned,
+       * copy bytes individually from the output_words */
+      %assign shift = 0
+      %foreach idx = 8
+         %if shift == 0
+            %<dataTarget>[%<idx>] = 
+               (uint8_T) output_word%<idx / WORD_SIZE()>;
+               
+         %else
+            %<dataTarget>[%<idx>] = 
+               (uint8_T) (output_word%<idx / WORD_SIZE()> >> %<shift * 8>);
+
+         %endif
+         %assign shift = shift + 1
+         %if shift == WORD_SIZE() 
+            %assign shift = 0
+         %endif
+      %endforeach
+   }
+  %closefile buffer
+  %return buffer    
+%endfunction
+
+%%===========================================================
+%% Function GenerateSignalUnpacking
+%%
+%% Generates code to accept a dataSource location
+%% and map it to outports as defined by the signals
+%% record structure
+%% ==========================================================
+%function GenerateSignalUnpacking(block, system, message, dataSource)
+   %% Process all the signal information first to find
+   %% out if there are any mode based signals
+   %assign modeSignalIdx = -1
+
+   %assign signals = message.signals
+
+   %foreach signalIdx = SIZE(signals.signal,1)
+      %with signals.signal[signalIdx]
+         %assign i_signalType = CAST("Number",signalType[0])
+         %if isModeSignal(i_signalType)
+            %assign modeSignalIdx=signalIdx
+            %assign modeSignalValue=LibBlockOutputSignal(modeSignalIdx,"","",0)
+            %break
+         %endif
+      %endwith
+   %endforeach
+ 
+   %openfile buffer
+   {
+      /* final input words that contain all signals as read from the message */
+      %% Generate a declaration like
+      %% uint32_T input_word0 = 0;
+      %% uint32_T input_word1 = 0;
+      %foreach idx = 8 / WORD_SIZE() 
+         %<UNSIGNED_WORD_TYPE()> input_word%<idx> = 0;
+      %endforeach
+      
+      /* variable to hold each unscaled unpacked signal */
+      %<UNSIGNED_WORD_TYPE()> unscaledSignal = 0; 
+
+
+      /* CAN message byte array is not guaranteed to be word aligned,
+       * copy bytes individually to the input_words */
+      %assign shift = 0
+      %assign curr_word = -1
+      %foreach idx = 8
+         %if (idx / WORD_SIZE()) != curr_word
+            %% new word
+            %assign curr_word = idx / WORD_SIZE()
+            
+            input_word%<curr_word> |= 
+         %endif
+         %if shift == 0
+            %<dataSource>[%<idx>]
+         %else
+            %if ((idx + 1) / WORD_SIZE()) != curr_word
+               %% finish off the code for this word
+               %assign semic = ";"
+            %else 
+               %assign semic = ""
+            %endif
+            | (%<dataSource>[%<idx>] << %<shift * 8>)%<semic>
+         %endif
+         %assign shift = shift + 1
+         %if shift == WORD_SIZE() 
+            %assign shift = 0
+         %endif
+      %endforeach
+      
+      %% NOTE: two passes are made over the list of signals as
+      %% we need to find the MODE signal and unpack it before
+      %% we are able to process any MODE DEPENDANT signals
+      %% pass = 0 | 1
+      %foreach pass=2
+         %foreach signalIdx = SIZE(signals.signal,1)
+            %with signals.signal[signalIdx]
+               %assign i_startBit = CAST("Number",startBit[0])
+               %assign i_length = CAST("Number",length[0])
+               %assign i_desiredSignalByteLayout = CAST("Number",byteLayout[0])
+               %assign i_signalType = CAST("Number",signalType[0])
+               %assign i_dataType = CAST("Number",dataType[0])
+               %assign i_modeValue = CAST("Number",modeValue[0])
+               %assign i_offset = offset[0]
+               %assign i_factor = factor[0]
+               %% if we are doing the MODE && STANDARD signal pass
+               %% then skip any MODE DEPENDANT signals
+               %if pass==0 && isModeDependantSignal(i_signalType)
+                  %% skip the MODE DEPENDANT signal until next pass
+                  %% MODE and STANDARD signals are processed now
+                  %continue
+               %% if we are doing the MODE DEPENDANT signal pass
+               %% then skip any MODE and STANDARD signals
+               %% as they've already been processed
+               %elseif pass==1 && !isModeDependantSignal(i_signalType)
+                  %% skip MODE and STANDARD signals
+                  %% MODE_DEPENDANT signals are processed now
+                  %continue
+               %endif
+               %%
+               %% Generate comments.
+
+               /* --------------- START Unpacking CANdb signal %<name> ------------------ 
+                *  startBit                = %<i_startBit>
+                *  length                  = %<i_length>
+                *  desiredSignalByteLayout = %<EndianParamString(i_desiredSignalByteLayout)> 
+                *  dataType                = %<getSvClassString(i_dataType)>
+                *  signalType              = %< isStandardSignal(i_signalType) ? "STANDARD" : \
+                     (isModeSignal(i_signalType) ? "MODE" : "MODE DEPENDENT")>
+                *  offset                  = %<i_offset> 
+                *  factor                  = %<i_factor> 
+                * -----------------------------------------------------------------------*/   
+
+               %% Currently we have no support for unpacking multi-word datatypes
+               %if i_length > %<WORD_BIT_SIZE()>
+                  %openfile msg
+Signal %<name> is %<i_length> bits long, but the target processor word size
+is only %<WORD_BIT_SIZE()>.
+
+The CANdb packing blocks do not support the unpacking of multi-word signals.
+
+Please adjust the signal length to be within the word size, so that this signal can be unpacked.
+                  %closefile msg
+                  %exit %<msg>
+               %endif
+                
+               %% Check to make sure the signal is connected to something other than a terminator
+               %% unless the signal is the MODE signal, which MUST ALWAYS be unpacked
+               %if LibBlockOutputSignalConnected(signalIdx) || isModeSignal(i_signalType) 
+                  %% 
+                  %% Check the mode dependancy of each signal
+                  %% Simply excluded dynamically dependant on the modeValue
+                  %if isModeDependantSignal(i_signalType) && (modeSignalIdx != -1)
+                     /* Mode dependancy check */
+                     if ( %<modeSignalValue> == %<i_modeValue> ){
+                  %endif
+                  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                  %assign signalRecord = signals.signal[signalIdx]
+                  %<unpack("input_word", "unscaledSignal", message.length[0], i_startBit, \
+                  i_length, EndianParamString(i_desiredSignalByteLayout))> 
+                  %<GenerateUnscaling(block, system, "unscaledSignal", signalIdx, signalRecord)> 
+                  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                  %if isModeDependantSignal(i_signalType) && (modeSignalIdx != -1)
+                     }
+                  %endif
+               %else
+                  /* 
+                   * This signal is either not connected or is connected directly to a terminator.
+                   * No unpacking code was generated.
+                   *
+                   */
+               %endif
+               /* ------ END Unpacking CANdb signal %<name>  ----- */
+            %endwith
+         %endforeach %% [signalIdx]
+      %endforeach %% [pass]
+   }
+   %closefile buffer
+   %return buffer
+%endfunction %% [ GenerateSignalUnpacking ]
+
+%% Function : deriveWorkingDataType
+%%
+%% Given an input / output datatype name, and its datatype id, the working datatype
+%% for the calculation, workingDType, is derived and returned.
+%% 
+%% The working datatype will be at least as wide as the input / output datatype.
+%%
+%function deriveWorkingDataType(inputDtype, inputDtypeId)
+
+   %% NOTE: the sv_bit_length check has already been applied by
+   %% this stage - we do not need to check that sv_bit_length 
+   %% <= WORD_BIT_SIZE again.
+   
+   %assign dtypeRec = isIntegerDType(inputDtype)
+   %% need to be careful about the working datatype
+   %% get the bit size of the input datatype
+   %assign input_size = SLibGetDataTypeSizeFromId(inputDtypeId) * 8
+   %if (input_size > WORD_BIT_SIZE())
+      %% we know that sv_bit_length <= WORD_BIT_SIZE
+      %% ---> input_size > sv_bit_length
+      %%
+      %% work in the input_size in this case 
+      %%
+      %assign workingDtype = inputDtype
+   %else
+      %% input_size <= WORD_BIT_SIZE
+      %%
+      %% AND input_size MAY BE <= sv_bit_length
+      %%
+      %% So, we widen the working type to WORD_BIT_SIZE.
+      %%
+      %% We keep the sign of the input datatype though...
+      %if dtypeRec.isSigned
+         %assign workingDtype = SIGNED_WORD_TYPE()
+      %else
+         %assign workingDtype = UNSIGNED_WORD_TYPE()
+      %endif
+   %endif
+   %return workingDtype
+%endfunction
+
+%% Function : isIntegerDType ===============================================================
+%%
+%% Given a datatype for an input / output signal,
+%% determine if it is an integer datatype, and if
+%% it is a signed datatype.  
+%%
+%% The isInteger and isSigned fields of the 
+%% returned record are assigned appropriately.
+%%
+%% Parameters
+%%
+%% dtype -  datatype name of a signal
+%% 
+%function isIntegerDType(dtype)
+   %switch dtype
+      %case "real_T"
+      %case "real32_T"
+         %assign isInteger = 0
+         %assign isSigned = 1
+         %break
+      %case "boolean_T"
+      %case "uint8_T"
+      %case "uint16_T"
+      %case "uint32_T"
+         %assign isInteger = 1
+         %assign isSigned = 0
+         %break
+      %case "int8_T"
+      %case "int16_T"
+      %case "int32_T"
+         %assign isInteger = 1
+         %assign isSigned = 1
+         %break
+   %endswitch
+   
+   %createrecord ReturnRecord {isInteger isInteger isSigned isSigned}
+   %return ReturnRecord
+%endfunction
+
+%% Function : workingDTypeScale =================================================================
+%%
+%% Function to scale all integer types.
+%%
+%% All calculations are performed in the template type T, 
+%% which is calculated in this function.
+%%
+%% For integer types, saturation is applied before scaling.
+%%
+%% Parameters:
+%%
+%% input          :  the input signal
+%% idx            :  the index of the input signal
+%% input_dtname   :  the type of the input signal, input
+%% factor         :  constant value of factor as signed / unsigned 
+%% constantTerm   :  precalculated constant term as signed / unsigned 
+%% min            :  constant value of minimum scaled value as signed / unsigned
+%% max            :  constant value of maximum scaled value as signed / unsigned
+%% output         :  the scaled output value
+%% 
+%function workingDTypeScale(input, idx, input_dtname, factor, constantTerm, min, max, output)
+   %openfile buffer
+   {
+      %% grab the optimisation info. from the IWork vector
+      %assign saturateMin = %<SFcnParamSettings.apply_min[idx]>
+      %assign saturateMax = %<SFcnParamSettings.apply_max[idx]>
+
+      %assign dtid = LibBlockInputSignalDataTypeId(idx)
+      %assign T = deriveWorkingDataType(input_dtname, dtid)
+
+      %if input_dtname == T
+         /* work in the input datatype, %<input_dtname>, 
+            for the scaling calculation */
+      %else
+         /* widen the input datatype, %<input_dtname>, 
+            to the processor word size, %<T>,
+            for the scaling calculation */
+      %endif
+ 
+      %<T> result = (%<T>) %<input>;
+
+      %if saturateMin
+         if (result < %<min>) {
+            /* lower saturation */
+            result = %<min>;
+         }
+      %endif
+      %if saturateMax
+         %if saturateMin
+            else if (result > %<max>) {
+         %else
+            if (result > %<max>) {   
+         %endif
+               /* upper saturation */
+               result = %<max>;
+            }
+      %endif
+
+      %if constantTerm == 0 && factor == 1
+         /* no scaling required */ 
+      %elseif constantTerm == 0 
+         /* no offset to apply */
+         result = result / %<factor>;
+      %elseif factor == 1
+         /* no factor to apply */
+         result = result - %<constantTerm>;
+      %else
+         /* full scaling operation */
+         result = (result / %<factor>) - %<constantTerm>;
+      %endif
+      
+      %if T != UNSIGNED_WORD_TYPE()
+         /* cast from the working datatype, %<T>, to the 
+            unsigned word size type for packing */
+         %<output> =  (%<UNSIGNED_WORD_TYPE()>) result;
+      %else
+         %<output> = result;
+      %endif
+      
+      
+   }
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : inputScaleReal =================================================================
+%%
+%% Function to scale real32 and real64 types.
+%%
+%% All calculations are performed in the template type T, which
+%% will be the type of the input signal.
+%%
+%% For real types, saturation is applied after scaling.
+%%
+%% The real result value is then truncated to fit into 
+%% the integer packing type.
+%%
+%% Parameters:
+%%
+%% input       :  the input signal
+%% T           :  the type of the input signal, input
+%% offset      :  constant value of offset as type T
+%% factor      :  constant value of factor as type T
+%% min         :  constant value of minimum scaled value as type T
+%% max         :  constant value of maximum scaled value as type T
+%% output      :  the scaled output value
+%% output_type :  the type, UNSIGNED, or SIGNED, of the output signal
+%% 
+%function inputScaleReal(input, T, offset, factor, min, max, output, output_type)
+   %openfile buffer
+   {
+      %if offset == 0 && factor == 1
+         /* no scaling required */ 
+         %<T> result = %<input>;
+      %elseif offset == 0 
+         /* no offset to apply */
+         %<T> result = %<input> / %<factor>;
+      %elseif factor == 1
+         /* no factor to apply */
+         %<T> result = %<input> - %<offset>;
+      %else
+         /* full scaling operation */
+         %<T> result = (%<input> - %<offset>) / %<factor>;
+      %endif
+      
+      /* saturate the result */
+      if (result > %<max>) {
+         result = %<max>;
+      }
+      else if (result < %<min>) {
+         result = %<min>;
+      }
+
+      /* Cast to an integer type 
+       * rather than round.
+       * This will ensure that we stay within the 
+       * allowable range.
+       */
+      %if (output_type == SvUnsignedString()) 
+         %<output> = (%<UNSIGNED_WORD_TYPE()>) result;
+      %else 
+         {
+            %<SIGNED_WORD_TYPE()> temp = (%<SIGNED_WORD_TYPE()>) result;
+            %<output> = (%<UNSIGNED_WORD_TYPE()>) temp;
+         }
+      %endif
+   }
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : outputScaleReal =================================================================
+%%
+%% Function to unscale real32 and real64 types.
+%%
+%% All calculations are performed in the template type T, which
+%% will be the type of the output signal.
+%%
+%% Parameters:
+%%
+%% output      :  the output signal
+%% T           :  the type of the output signal, output
+%% offset      :  constant value of offset as type T
+%% factor      :  constant value of factor as type T
+%% input       :  the scaled input value
+%% input_type  :  the type, UNSIGNED, or SIGNED, of the output signal
+%% 
+%function outputScaleReal(output, T, offset, factor, input, input_type)
+   %openfile buffer
+   {
+      /* map scaledValue back to a real taking care of sign */
+      %if (input_type == SvUnsignedString()) 
+         %<output> = (%<T>) %<input>;
+      %else 
+         {
+            %<SIGNED_WORD_TYPE()> temp = (%<SIGNED_WORD_TYPE()>) %<input>;
+            %<output> = (%<T>) temp;
+         }
+      %endif
+
+      %if offset == 0 && factor == 1
+         /* no scaling required */ 
+      %elseif offset == 0 
+         /* no offset to apply */
+         %<output> = %<output> * %<factor>;
+      %elseif factor == 1
+         /* no factor to apply */
+         %<output> = %<output> + %<offset>;
+      %else
+         /* full scaling operation */
+         %<output> = (%<output> * %<factor>) + %<offset>;
+      %endif
+   }
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : workingDTypeUnScale =================================================================
+%%
+%% Function to unscale all integer types.
+%%
+%% All calculations are performed in the template type T, 
+%% which is calculated in this function.
+%%
+%% Parameters:
+%%
+%% output         :  the output signal
+%% idx            :  the index of the output signal
+%% output_dtname  :  the type of the output signal, output
+%% factor         :  constant value of factor as signed / unsigned 
+%% constantTerm   :  precalculated constant term as signed / unsigned 
+%% input          :  the scaled input value
+%% input_type     :  the type, UNSIGNED, or SIGNED, of the output signal
+%% 
+%function workingDTypeUnScale(output, idx, output_dtname, factor, constantTerm, input, input_type)
+   %openfile buffer
+   {
+      %assign dtid = LibBlockOutputSignalDataTypeId(idx)
+      %assign T = deriveWorkingDataType(output_dtname, dtid)
+
+      %% see if the working type is wider than the proc
+      %% word size
+      %if (T != UNSIGNED_WORD_TYPE()) && (T != SIGNED_WORD_TYPE())
+         /* processor word size, %<WORD_BIT_SIZE()> bits, is not wide enough
+            to perform the scaling calculation.
+            
+            Widen the scaled value to the working 
+            datatype for unpacking */
+         %if (input_type == SvUnsignedString()) 
+            %% unsigned cast to wider signed / unsigned leaves value unchanged
+            %<T> workingoutput = (%<T>) %<input>;
+         %else 
+            %% signed cast to wider signed / unsigned cast invokes sign extension 
+            %<T> workingoutput = (%<T>) ((%<SIGNED_WORD_TYPE()>) %<input>);
+         %endif
+      %else
+         /* processor word size, %<WORD_BIT_SIZE()> bits, is wide enough 
+            to perform the scaling calculation */
+         %<T> workingoutput = (%<T>) %<input>;
+      %endif
+
+      %if constantTerm == 0 && factor == 1
+         /* no scaling required */ 
+      %elseif constantTerm == 0 
+         /* no offset to apply */
+         workingoutput = workingoutput * %<factor>;
+      %elseif factor == 1
+         /* no factor to apply */
+         workingoutput = workingoutput + %<constantTerm>;
+      %else
+         /* full scaling operation */
+         workingoutput = (workingoutput + %<constantTerm>) * %<factor>;
+      %endif
+
+      %if output_dtname == T
+         %<output> = workingoutput;
+      %else
+         /* narrow the working datatype, %<T> 
+            to the output datatype, %<output_dtname> */
+         %<output> = (%<output_dtname>) workingoutput;
+      %endif
+   }
+   %closefile buffer
+   %return buffer
+%endfunction
+
+
+%% Function : GenerateScaling =============================================================
+%%
+%% Parameters
+%%    block             -     associated block
+%%    system            -     associated system
+%%    scaledUIntValue    -    text string to be expanded to the output variable
+%%    signalIdx         -     which CANdb signal is being processed
+%%    signalRecord      -     the set of all signals
+%%
+%% Purpose
+%%
+%%    To generate code to scale a Simulink input signal, signalIdx, into a word ready
+%%    for packing. 
+%%
+%function GenerateScaling(block, system, scaledUIntValue, signalIdx, signalRecord )
+   %assign signal = LibBlockInputSignal(signalIdx,"","",0)
+   %with signalRecord
+      %assign i_dataType = CAST("Number",dataType[0])
+      %assign i_offset_real64 = offset[0]
+      %assign i_factor_real64 = factor[0]
+      %assign i_dataTypeName = getSvClassString(i_dataType)
+      %%
+      %assign i_min_real64 = %<SFcnParamSettings.min[signalIdx]>
+      %assign i_max_real64 = %<SFcnParamSettings.max[signalIdx]>
+      %assign i_constantTerm_real64 = %<SFcnParamSettings.constantTerm[signalIdx]>
+
+      %assign dtname = LibBlockInputSignalDataTypeName(signalIdx,tRealPart) 
+      %%
+      %openfile buffer
+         /* -- Scaling and Offset --- */
+         %switch dtname
+            %case "real_T"
+               %% NOTE: using real64_T on purpose
+               %% our calculations are done in double precision
+               %<inputScaleReal(signal, \
+                                "real64_T", \
+                                i_offset_real64, \
+                                i_factor_real64, \
+                                i_min_real64, \
+                                i_max_real64, \
+                                scaledUIntValue, \
+                                i_dataTypeName)>
+               %break
+            %case "real32_T"
+               %assign offset_real32 = CAST("Real32", i_offset_real64)
+               %assign factor_real32 = CAST("Real32", i_factor_real64)
+               %assign min_real32 = CAST("Real32", i_min_real64)
+               %assign max_real32 = CAST("Real32", i_max_real64)
+               %<inputScaleReal(signal, \
+                                dtname, \
+                                offset_real32, \
+                                factor_real32, \
+                                min_real32, \
+                                max_real32, \
+                                scaledUIntValue, \
+                                i_dataTypeName)>
+               %break
+            %case "boolean_T"
+            %case "uint8_T"
+            %case "uint16_T"
+            %case "uint32_T"
+               %assign factor_uint = CAST("Unsigned", i_factor_real64)
+               %assign constantTerm_uint = CAST("Unsigned", i_constantTerm_real64)
+               %assign min_uint = CAST("Unsigned", i_min_real64)
+               %assign max_uint = CAST("Unsigned", i_max_real64)
+            
+               %<workingDTypeScale(signal, \
+                                   signalIdx, \
+                                   dtname, \
+                                   factor_uint, \
+                                   constantTerm_uint, \
+                                   min_uint, \
+                                   max_uint, \
+                                   scaledUIntValue)>
+               %break
+            %case "int8_T"
+            %case "int16_T"
+            %case "int32_T"
+               %assign factor_int = CAST("Number", i_factor_real64)
+               %assign constantTerm_int = CAST("Number", i_constantTerm_real64)
+               %assign min_int = CAST("Number", i_min_real64)
+               %assign max_int = CAST("Number", i_max_real64)
+               %<workingDTypeScale(signal, \
+                                   signalIdx, \
+                                   dtname, \
+                                   factor_int, \
+                                   constantTerm_int, \
+                                   min_int, \
+                                   max_int, \
+                                   scaledUIntValue)>
+               %break
+         %endswitch
+      %closefile buffer
+   %endwith
+
+   %return buffer
+
+%endfunction %% [ GenerateScaling ]
+
+%% Function : GenerateUnscaling =============================================================
+%%
+%% Parameters
+%%    block             -     associated block
+%%    system            -     associated system
+%%    scaledUIntValue    -     text string to be expanded to the input variable
+%%    signalIdx         -     which CANdb signal is being processed
+%%    signalRecord      -     the set of all signals
+%%
+%% Purpose
+%%
+%%    To generate code to scale an unpacked CANdb signal back into it's
+%%    Simulink signal , signalIdx, into a word ready for packing. 
+%%
+%% Remove and scale back to physical units the rawvalue
+%function GenerateUnscaling(block, system, scaledUIntValue, signalIdx, signalRecord )
+   %%
+   %assign signal = LibBlockOutputSignal(signalIdx,"","",0)
+   %with signalRecord
+
+      %assign i_length = CAST("Number",length[0])
+      %assign i_dataType = CAST("Number",dataType[0])
+      
+      %assign i_offset_real64 = offset[0]
+      %assign i_factor_real64 = factor[0]
+      %assign i_constantTerm_real64 = %<SFcnParamSettings.constantTerm[signalIdx]>
+   
+      %assign i_dataTypeName = getSvClassString(i_dataType)
+      
+      %openfile buffer
+         %if i_dataTypeName == SvSignedString()
+            %if i_length < WORD_BIT_SIZE()
+               /* -- sign extend the unpacked signal --- */
+               %<scaledUIntValue> = %<signedIntExtend(scaledUIntValue,i_length)>;
+            %endif
+         %endif
+
+         %assign dtname = LibBlockOutputSignalDataTypeName(signalIdx,tRealPart)
+
+         %switch dtname
+            %case "real_T"
+               %% NOTE: using real64_T on purpose
+               %% our calculations are done in double precision
+               %<outputScaleReal(signal, \
+                                "real64_T", \
+                                i_offset_real64, \
+                                i_factor_real64, \
+                                scaledUIntValue, \
+                                i_dataTypeName)>
+               %break
+            %case "real32_T"
+               %assign offset_real32 = CAST("Real32", i_offset_real64)
+               %assign factor_real32 = CAST("Real32", i_factor_real64)
+               %<outputScaleReal(signal, \
+                                dtname, \
+                                offset_real32, \
+                                factor_real32, \
+                                scaledUIntValue, \
+                                i_dataTypeName)>
+               %break
+            %case "boolean_T"
+            %case "uint8_T"
+            %case "uint16_T"
+            %case "uint32_T"
+               %assign factor_uint = CAST("Unsigned", i_factor_real64)
+               %assign constantTerm_uint = CAST("Unsigned", i_constantTerm_real64)
+            
+               %<workingDTypeUnScale(signal, \
+                                   signalIdx, \
+                                   dtname, \
+                                   factor_uint, \
+                                   constantTerm_uint, \
+                                   scaledUIntValue, \
+                                   i_dataTypeName)>
+               %break
+            %case "int8_T"
+            %case "int16_T"
+            %case "int32_T"
+               %assign factor_int = CAST("Number", i_factor_real64)
+               %assign constantTerm_int = CAST("Number", i_constantTerm_real64)
+
+               %<workingDTypeUnScale(signal, \
+                                   signalIdx, \
+                                   dtname, \
+                                   factor_int, \
+                                   constantTerm_int, \
+                                   scaledUIntValue, \
+                                   i_dataTypeName)>
+               %break
+         %endswitch
+      %closefile buffer
+   %endwith
+   %return buffer
+%endfunction
+
+%% Sign extend an integer of specific bit length to 32 bit
+%% The input integer should in uint32_T storage
+%function signedIntExtend(input, bit_len) 
+   %assign mask =  ( CAST("Unsigned", \
+      FEVAL("hex2dec","ffffffff")) << bit_len ) & CAST("Number",FEVAL("hex2dec","ffffffff"))
+   %assign mask = FEVAL("dec2hex",mask)
+   %assign shift = bit_len - 1
+   %assign output = "( (%<input> >> %<shift> ) & 0x1 ) ? 0x%<mask> | %<input> : %<input>"
+	%return  output
+%endfunction
+
+%% Function: EndianParamString ==================================
+%%
+%% Parameters 
+%%    endian   -  0 | 1
+%%
+%% Returns 
+%%    "LITTLE_ENDIAN" if endian == 0
+%%    "BIG_ENDIAN" if endian == 1
+%%
+%function EndianParamString(endian)
+   %switch endian
+      %case 0
+         %return LittleEndianString() 
+         %break
+      %case 1
+         %return BigEndianString()
+         %break
+   %endswitch
+   %error "Bad input arg. %<endian>"
+%endfunction

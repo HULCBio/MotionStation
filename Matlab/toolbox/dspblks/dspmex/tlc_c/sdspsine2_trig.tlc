@@ -1,0 +1,244 @@
+%%
+%% Abstract: Signal Processing Blockset sine wave source block - trig fcn code generation
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% $Revision: 1.7.4.4 $ $Date: 2004/04/01 16:05:05 $
+%% $RCSfile: sdspsine2_trig.tlc,v $
+%%
+
+
+%% DiscreteTrigOutput ========================================================
+%% 
+%function DiscreteTrigOutput(block) Output
+  /* Discrete trigonometric mode: */
+  {
+    %%
+    %assign sinFcnStr     = IS_SINGLE ? "sinf" : "sin"
+    %assign cosFcnStr     = IS_SINGLE ? "cosf" : "cos"
+    %assign nonScalarAmp  = ( LibBlockParameterSize(Amplitude)[0] * LibBlockParameterSize(Amplitude)[1] ) > 1
+    %assign nonScalarFreq = ( LibBlockParameterSize(Frequency)[0] * LibBlockParameterSize(Frequency)[1] ) > 1
+    %%
+    %if nonScalarAmp
+      const %<dTypeP> *amp       = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+      %assign ampStr = "(*amp)"
+    %else
+      const %<dTypeP>  amp       = %<LibBlockParameter(Amplitude,  "", "", 0)>;
+      %assign ampStr = "amp"
+    %endif
+    %if nonScalarFreq
+      const %<dTypeP> *freqNrm   = %<LibBlockParameterAddr(Frequency,  "", "", 0)>; /* normalized units */
+    %else
+      const %<dTypeP>  freqNrm   = %<LibBlockParameter(Frequency,  "", "", 0)>; /* normalized units */
+    %endif
+    %<dTypeP>       *accFrqNrm = %<LibBlockDWorkAddr(AccFreqNorm, "", "", 0)>;
+    %if !scalarY
+      %<dType>        *y         = %<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+    %endif
+    %if nChans > 1
+    /* Loop over each channel */
+    int i;
+    for (i = 0; i < %<nChans>; i++) {
+    %endif
+    %if nSamps > 1
+      /* Loop over frame */
+      int j;
+      for (j=0; j < %<nSamps>; j++) {  
+    %endif
+    %if IS_COMPLEX
+      %if scalarY
+        %<LibBlockOutputSignal(OUTPORT, "","",0)>.re = %<ampStr> * %<cosFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+        %<LibBlockOutputSignal(OUTPORT, "","",0)>.im = %<ampStr> * %<sinFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+      %else
+        (y  )->re = %<ampStr> * %<cosFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+        (y++)->im = %<ampStr> * %<sinFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+      %endif
+    %else
+      %% REAL ONLY
+      %if scalarY
+        %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<ampStr> * %<sinFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+      %else
+        *y++ = %<ampStr> * %<sinFcnStr>((*accFrqNrm) * %<SFcnParamSettings.Pi2>);
+      %endif
+    %endif %% COMPLEX vs REAL
+
+    /* Update accumulated normalized freq value */
+    /* for next sample.  Keep in range [0 1.0)  */
+    %if nonScalarFreq
+      *accFrqNrm += *freqNrm;
+    %else
+      *accFrqNrm += freqNrm;
+    %endif
+    %assign str = (IS_SINGLE) ? "F" : ""
+    if (*accFrqNrm >= 1.0%<str>) {
+      *accFrqNrm -= 1.0%<str>;
+    } else if (*accFrqNrm < 0.0%<str>)  {
+      *accFrqNrm += 1.0%<str>;
+    }
+    %if nSamps > 1
+      } %% end of frame loop
+    %endif
+
+    %if nChans > 1
+      %if nonScalarAmp
+        amp++;
+      %endif
+      %if nonScalarFreq
+        freqNrm++;
+      %endif
+        accFrqNrm++;
+      } %% end of channel loop
+    %endif
+  }
+
+%endfunction %% DiscreteTrigPeriodic
+
+
+%% TrigFcnStart ===========================================================
+%%
+%function TrigFcnStart(block) Output
+  /* Trigonometric mode: compute initial accumulated
+   * normalized trig fcn argument for each channel
+   * NOTE: assuming model start time is ZERO
+   */
+  {
+    %%
+    %assign nonScalarFreq  = ( LibBlockParameterSize(Frequency)[0] * LibBlockParameterSize(Frequency)[1] ) > 1
+    %assign nonScalarPhase = ( LibBlockParameterSize(Phase)[0]     * LibBlockParameterSize(Phase)[1]     ) > 1
+    %assign str            = IS_SINGLE ? "F" : ""
+    %%
+    %if nonScalarPhase
+      const %<dTypeP> *phasNrm = %<LibBlockParameterAddr(Phase,  "", "", 0)>; /* normalized units */
+    %endif
+    %%
+    %if (nChans > 1)
+      int i;
+    %endif
+    
+    %if ((nChans > 1) && nonScalarPhase)
+      for (i = 0; i < %<nChans>; i++) {
+    %else
+      {
+    %endif
+    %%
+    /* Compute trig function argument: arg = omega * t + phi (NORMALIZED units, and t == 0) */
+    %if nonScalarPhase
+      %<dTypeP> arg = *phasNrm++;
+    %else
+      %<dTypeP> arg = %<LibBlockParameter(Phase, "", "", 0)>;
+    %endif
+    
+    /* Keep normalized value in range [0 1.0) */
+    while (arg >= 1.0%<str>) arg -= 1.0%<str>;
+    while (arg <  0.0%<str>) arg += 1.0%<str>;
+        
+    /* Store computed value */
+    %if (nChans == 1)
+      %<LibBlockDWork(AccFreqNorm, "", "", 0)> = arg;
+    %elseif ((nChans > 1) && nonScalarPhase)
+      *(%<LibBlockDWorkAddr(AccFreqNorm, "", "", 0)> + i) = arg;
+    %else
+      %% Multiple channels
+      %% Scalar phase
+      %% Scalar freq (or freq not used)
+      for (i = 0; i < %<nChans>; i++) {
+        /* Use scalar normalized arg value for all channels (scalar expansion) */
+        *(%<LibBlockDWorkAddr(AccFreqNorm, "", "", 0)> + i) = arg;
+      }
+    %endif
+    }
+  }
+
+%endfunction %% TrigFcnStart
+
+
+%% TrigFcnReEnable ===========================================================
+%%
+%function TrigFcnReEnable(block) Output
+    %%
+    %assign nonScalarFreq  = ( LibBlockParameterSize(Frequency)[0] * LibBlockParameterSize(Frequency)[1] ) > 1
+    %assign nonScalarPhase = ( LibBlockParameterSize(Phase)[0]     * LibBlockParameterSize(Phase)[1]     ) > 1
+    %assign str            = IS_SINGLE ? "F" : ""
+    %assign scalarArg      = 0
+    %%
+    /* Trigonometric mode: re-compute accumulated
+     * normalized trig fcn argument for each channel
+     */
+
+    %if (SFcnParamSettings.ResetState != "Reset")
+      /* Catch up to present time on re-enable */
+      %if nSamps == 1
+        const %<dTypeP> tNorm = (%<dTypeP>)(%<LibGetT()> / %<LibBlockSampleTime(block)>%<str>); /* normalized time: time divided by the discrete sample time */
+      %else
+        const %<dTypeP> tNorm = (%<dTypeP>)(%<LibGetT()> / (%<LibBlockSampleTime(block)>%<str> / (%<dTypeP>)%<nSamps>)); /* normalized time: time divided by the discrete sample time */
+      %endif
+      %if nonScalarFreq
+        const %<dTypeP> *freqNrm = %<LibBlockParameterAddr(Frequency,  "", "", 0)>; /* normalized units */
+      %endif
+    %endif
+    %if nonScalarPhase
+      const %<dTypeP> *phasNrm = %<LibBlockParameterAddr(Phase,  "", "", 0)>; /* normalized units */
+    %endif
+    %if (nChans > 1)
+      int i;
+    %endif
+
+    /* Compute trig function argument: arg = omega * t + phi (NORMALIZED units) */
+    %if (SFcnParamSettings.ResetState != "Reset")
+      %% CATCHUP TO PRESENT TIME mode
+      %if ((nChans > 1) && (nonScalarFreq || nonScalarPhase))
+        for (i = 0; i < %<nChans>; i++) {
+      %else
+        %assign scalarArg = 1
+        {
+      %endif
+    %else
+      %% RESET TO TIME ZERO mode
+      /* Reset to time zero on re-enable */
+      %if ((nChans > 1) && nonScalarPhase)
+        for (i = 0; i < %<nChans>; i++) {
+      %else
+        %assign scalarArg = 1
+        {
+      %endif
+    %endif
+    %%
+    %if nonScalarPhase
+      %<dTypeP> arg = *phasNrm++;
+    %else
+      %<dTypeP> arg = %<LibBlockParameter(Phase, "", "", 0)>;
+    %endif
+    %%
+    %if (SFcnParamSettings.ResetState != "Reset")
+      %% CATCHUP TO PRESENT TIME mode
+      %if nonScalarFreq
+        arg += (*freqNrm++ * tNorm);
+      %else
+        arg += (%<LibBlockParameter(Frequency, "", "", 0)> * tNorm);
+      %endif
+    %endif
+
+      /* Keep normalized value in range [0 1.0) */
+      while (arg >= 1.0%<str>) arg -= 1.0%<str>;
+      while (arg <  0.0%<str>) arg += 1.0%<str>;
+        
+      /* Store computed value */
+      %if (nChans == 1)
+        %% ONE channel
+        %<LibBlockDWork(AccFreqNorm, "", "", 0)> = arg;
+      %else
+        %% Multiple channels
+        %if scalarArg
+          for (i = 0; i < %<nChans>; i++) {
+            /* Use scalar normalized arg value for all channels (scalar expansion) */
+            *(%<LibBlockDWorkAddr(AccFreqNorm, "", "", 0)> + i) = arg;
+          }
+        %else
+          *(%<LibBlockDWorkAddr(AccFreqNorm, "", "", 0)> + i) = arg;
+        %endif
+      %endif
+      } %% code to compute arg
+
+%endfunction %% TrigFcnReEnable
+
+
+%% [EOF] sdspsine2_trig.tlc

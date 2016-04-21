@@ -1,0 +1,130 @@
+%% =============================================================================
+%% $RCSfile: ertsourcetemplate.tlc,v $
+%% $Revision: 1.1.6.6 $
+%% $Date: 2004/04/14 23:48:08 $
+%%
+%% Abstract:
+%%   Invokes Real-Time Workshop Embedded Coder source file templates
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%selectfile NULL_FILE
+
+%function SLibERTWriteSource() void
+
+  %assign isERT = CompiledModel.ConfigSet.IsERTTarget
+  
+  %% Set the code template compliance level.  Based on this setting, Real-Time
+  %% Workshop will perform the appropriate backward compatibility checks.
+  
+  %<LibSetCodeTemplateComplianceLevel(2)>
+
+  %% Template processing hook:
+  %%
+  %%   o Any TLC variables created outside function scope appear in
+  %%     the ERT templates.
+  %%   o To guard against this, place code inside SLibERTTemplateSetup()
+  %%
+  %if isERT
+    %include "erttemplatesetup.tlc"
+    %<SLibERTTemplateSetup()>
+  %endif
+  %assign ModelName = Name
+  
+  %% Create sample main
+  
+  %if isERT && GenerateSampleERTMain
+    %assert(!IsModelReferenceTarget())
+    %if GenerateGRTWrapper
+      %<SLibCreateMainForGRTWrapper("ert_main")>
+    %else
+      %<SLibCreateSampleMain("ert_main")>
+    %endif
+  %endif
+  
+  %% Write source files to disk
+  
+  %foreach fileIdx = LibGetNumSourceFiles()
+    %if FcnSkipModelFile(fileIdx)
+      %continue
+    %endif
+    
+    %assign FileName  = LibGetSourceFileSection(fileIdx,"Name")
+    %assign FileType  = LibGetSourceFileSection(fileIdx,"Type") == "SystemBody" ? "source" : "header"
+    %assign FileTag   = LibGetSourceFileTag(fileIdx)
+    %assign indent    = LibGetSourceFileIndent(fileIdx)
+    %assign outputDir = LibGetModelFileAttribute(fileIdx,"OutputDirectory")
+    %assign indentFile = TLC_FALSE
+    %if ISEMPTY(outputDir)
+      %assign outputFileName = FileName
+    %else
+      %assign outputFileName = FEVAL("fullfile",outputDir,FileName)
+      %assign indentFile = TLC_TRUE
+    %endif
+    
+    %<LibWriteToStandardOutput("### Writing %<FileType> file %<FileName>")>
+
+    %if isERT
+      %assign codeTemplate     = LibGetModelFileAttribute(fileIdx,"CodeTemplate")
+      %assign codeTemplateInfo = FEVAL("rtw_fileparts",codeTemplate)
+      
+      %% Validate the template
+      
+      %if codeTemplateInfo.Ext == ".cgt" || !FILE_EXISTS(codeTemplate)
+	%assign errMsg = FEVAL("rtw_expand_template_from_tlc",codeTemplate, ...
+	  CompiledModel.Name)
+	%switch errMsg
+	  %case "success"
+	    %% Success (just continue)
+	    %break
+	  %case "file not found"
+	    %% File not on MATLAB path (note that this error message check is
+	    %% coupled to rtw_cgt_name_conv)
+	    %if ISEMPTY(FEVAL("regexp",codeTemplate,"_cgt.tlc"))
+	      %assign actFile = codeTemplate
+	    %else
+	      %assign actFile = FEVAL("rtw_cgt_name_conv",codeTemplate,"tlc2cgt")
+	    %endif
+	    %assign errTxt = "Unable to locate code generation template file: " ...
+	      "%<actFile>.  Verify that this file is on the MATLAB path."
+	    %<LibReportError(errTxt)>
+	  %default
+	    %% Error expanding template.
+	    %assign errTxt = "Error expanding code template " ...
+	      "file: %<codeTemplate>\n\n" ...
+	      "%<errMsg>"  
+	    %<LibReportError(errTxt)>
+	%endswitch
+	%if codeTemplateInfo.Ext == ".cgt"
+	  %assign codeTemplate = FEVAL("rtw_cgt_name_conv",codeTemplate,"cgt2tlc")
+	%endif
+      %endif
+    
+      %% Execute the template, and commit it to disk
+      %openfile outputFile = outputFileName
+      %include codeTemplate
+      %closefile outputFile
+      %if indent
+	%matlab c_indent(outputFileName)
+      %endif
+    %else
+      %openfile outputFile = outputFileName
+      %include "rtw_code.tlc"
+      %closefile outputFile
+      %if indent
+	%matlab c_indent(outputFileName)
+      %endif
+    %endif
+    %if indentFile
+      %matlab c_indent(outputFileName)
+    %endif
+  %endforeach
+  
+%endfunction
+
+
+%function FcnSkipModelFile(fileIdx) void
+  %assign filter  = LibGetModelFileAttribute(fileIdx,"Filter")
+  %assign isEmpty = LibGetModelFileAttribute(fileIdx,"IsEmpty")
+  %return (filter == 1 || isEmpty)
+%endfunction

@@ -1,0 +1,173 @@
+%% $RCSfile: stihil.tlc,v $
+%% $Revision: 1.1.6.3 $
+%% $Date: 2004/04/08 20:45:30 $
+%%
+%% Copyright 2002-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+
+%implements stihil "C"
+
+%%    %include "tiblksutil.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%%   Executes once during codegen, 
+%%   regardless of number of instances of this block
+%function BlockTypeSetup(block, system) void
+
+%endfunction %% BlockTypeSetup
+
+
+
+%% Function: BlockInstanceSetup ==================================================
+%%   Executes for each instance of this block 
+%function BlockInstanceSetup(block, system) void
+
+%if ISFIELD(block,"SLName")
+    %assign success = FEVAL("HilBlkEnforceCodegenConstraints",block.SLName)
+%else
+    %assign success = FEVAL("HilBlkEnforceCodegenConstraints",block.Name)
+%endif
+%if !success
+    %error  There was a problem setting up HIL block for code generation.
+%endif
+
+%%   Cache function prototype
+%openfile buffer
+extern %<block.RTWdata.funcDecl>;
+%closefile buffer
+%<LibCacheFunctionPrototype(buffer)>
+
+%endfunction %%BlockInstanceSetup
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+
+%%  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  
+%%  Block label scope marker
+
+/* HIL Function Call block (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+%%
+%%  Declare return value temp pointer if needed
+%assign hasRV = CAST("Number",block.RTWdata.hasReturnValue)
+%if hasRV
+    %assign dtname  = LibBlockOutputSignalDataTypeName(0,tRealPart)
+    %assign isRVPtr = CAST("Number",block.RTWdata.isReturnValuePointer)
+    %if isRVPtr
+        %<dtname> * retvalTmpPtr;
+    %endif
+%endif
+
+%%  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  
+%%  Copy inport to outport first if in-place array
+
+%assign numArgs = CAST("Number",block.RTWdata.numArgs)
+%foreach argNum = numArgs
+    %assign argNum1Based = argNum + 1
+    %assign argExprPrefix = "block.RTWdata.arg" + STRING(argNum1Based) + "_"
+    %assign inportIdxExpr = argExprPrefix + "inportIdx"
+    %assign inportIdxStr  = %<inportIdxExpr>
+    %assign inportIdx1Based = CAST("Number",inportIdxStr)
+    %assign inportIdx = inportIdx1Based - 1
+    %assign outportIdxExpr = argExprPrefix + "outportIdx"
+    %assign outportIdxStr  = %<outportIdxExpr>
+    %assign outportIdx1Based = CAST("Number",outportIdxStr)
+    %assign outportIdx = outportIdx1Based - 1
+    %assign portAssignExpr = argExprPrefix + "portAssign"
+    %assign portAssignStr = %<portAssignExpr>
+    %if ISEQUAL(portAssignStr,"Input and output ports")
+        %assign argNameExpr = argExprPrefix + "name"
+        %assign argName = %<argNameExpr>
+        %assign inportPtr  = LibBlockInputSignalAddr(inportIdx, "", "", 0)
+        %assign outportPtr = LibBlockOutputSignalAddr(outportIdx, "", "", 0)
+        %assign width      = LibBlockInputSignalWidth(inportIdx)
+        %assign dtname     = LibBlockInputSignalDataTypeName(outportIdx,tRealPart)
+        /*  %<argName> is an in-place array; 
+         *  copy the input data to the outport now 
+         *  so that we can do the in-place computation 
+         *  in the outport buffer.                       */
+        memcpy(%<outportPtr>, %<inportPtr>, %<width>*sizeof(%<dtname>));
+    %endif
+%endforeach
+
+%%  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  
+%%  Render function call
+
+%assign funcCallLine = ""
+
+%%    - return value expression (e.g. "*rtB.something = " )
+%if hasRV
+    %if isRVPtr
+        %assign funcCallLine = "retvalTmpPtr = "
+    %else
+        %assign outportSig = LibBlockOutputSignal(0, "", "", 0)
+        %assign funcCallLine = outportSig + " = "
+    %endif
+%endif
+%%    - the function call itself
+%assign funcCallLine = funcCallLine + "%<block.RTWdata.funcName>("
+%%    - the args list
+%foreach argNum = numArgs 
+    %assign argNum1Based = argNum + 1
+    %if argNum1Based > 1
+        %assign funcCallLine = funcCallLine + ","
+    %endif
+    %assign argExprPrefix = "block.RTWdata.arg" + STRING(argNum1Based) + "_"
+    %assign isPtrExpr = argExprPrefix + "isPtr"
+    %assign isPtrStr  = %<isPtrExpr>
+    %assign isPtr     = CAST("Number",isPtrStr)
+    %if isPtr
+        %%  Arg is pointer; pass outport pointer directly.
+        %assign portAssignExpr = argExprPrefix + "portAssign"
+        %assign portAssignStr = %<portAssignExpr>
+        %if ISEQUAL(portAssignStr,"Input port")
+            %assign inportIdxExpr = argExprPrefix + "inportIdx"
+            %assign inportIdxStr  = %<inportIdxExpr>
+            %assign inportIdx1Based = CAST("Number",inportIdxStr)
+            %assign inportIdx = inportIdx1Based - 1
+            %assign inportPtr  = LibBlockInputSignalAddr(inportIdx, "", "", 0)
+            %assign funcCallLine = funcCallLine + inportPtr
+        %else
+            %% "Output port" or "Input and output ports"
+            %assign outportIdxExpr = argExprPrefix + "outportIdx"
+            %assign outportIdxStr  = %<outportIdxExpr>
+            %assign outportIdx1Based = CAST("Number",outportIdxStr)
+            %assign outportIdx = outportIdx1Based - 1
+            %assign outportPtr = LibBlockOutputSignalAddr(outportIdx, "", "", 0)
+            %assign funcCallLine = funcCallLine + outportPtr
+        %endif
+    %else
+        %%  Arg is not a pointer; pass dereferenced inport pointer. 
+        %assign inportIdxExpr = argExprPrefix + "inportIdx"
+        %assign inportIdxStr  = %<inportIdxExpr>
+        %assign inportIdx1Based = CAST("Number",inportIdxStr)
+        %assign inportIdx = inportIdx1Based - 1
+        %assign inportSig  = LibBlockInputSignal(inportIdx, "", "", 0)
+        %assign funcCallLine = funcCallLine + inportSig
+    %endif
+%endforeach
+%assign funcCallLine = funcCallLine + ");"
+%<funcCallLine>
+
+%%  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  %  
+%%  Copy output pointer referent
+%%    - if return value is pointer, copy data from function's specified 
+%%         memory output to the outport buffer.
+%if hasRV
+    %if isRVPtr
+        %assign outportPtr = LibBlockOutputSignalAddr(0, "", "", 0)
+        %assign width = block.RTWdata.returnValueLength
+        %assign dtname  = LibBlockOutputSignalDataTypeName(0,tRealPart)
+        memcpy(%<outportPtr>, retvalTmpPtr, %<width>*sizeof(%<dtname>));
+    %endif
+%endif
+
+}
+
+%endfunction
+
+%% [EOF] stihil.tlc

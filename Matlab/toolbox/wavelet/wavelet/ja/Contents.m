@@ -1,0 +1,154 @@
+% Wavelet Toolbox 
+% Version 3.0 (R14) 05-May-2004 
+%
+% Wavelet Toolbox の GUI(グラフィカルユーザインタフェース)
+%  wavemenu    - Wavelet Toolbox の対話型のユーザインタフェースツールを
+%                起動します。
+%
+% ウェーブレット：一般
+% biorfilt    - 双直交ウェーブレットフィルタセット
+% centfrq     - ウェーブレットの中心周波数
+% dyaddown    - 2進ダウンサンプリング
+% dyadup      - 2進アップサンプリング
+% intwave     - ウェーブレット関数psiの積分
+% orthfilt    - 直交ウェーブレットフィルタ集合
+% qmf         - クァドレチャーミラーフィルタ
+% wavefun     - ウェーブレット関数とスケーリング関数
+% wavefun2    - 2次元ウェーブレット関数とスケーリング関数
+% wavemngr    - ウェーブレットの管理コマンド
+% wfilters    - ウェーブレットフィルタ
+% wmaxlev     - 最大ウェーブレット分解レベル
+%
+% ウェーブレットファミリ
+% biorwavf    - 双直交スプラインウェーブレットフィルタ
+% cgauwavf    - 複素 Gaussian ウェーブレット
+% cmorwavf    - 複素 Morlet ウェーブレット
+% coifwavf    - Coiflets ウェーブレットフィルタ
+% dbaux       - Daubechies ウェーブレットフィルタの計算
+% dbwavf      - Daubechies ウェーブレットフィルタ
+% fbspwavf    - 複素周波数 B-Spline ウェーブレット 
+% gauswavf    - Gaussian ウェーブレット
+% mexihat     - Mexican Hat ウェーブレット
+% meyer       - Meyer ウェーブレット
+% meyeraux    - Meyer ウェーブレットの補助関数
+% morlet      - Morlet ウェーブレット
+% rbiowavf    - 逆双直交スプラインウェーブレットフィルタ
+% shanwavf    - 複素 Shannon ウェーブレット
+% symaux      - Symlets ウェーブレットフィルタの計算
+% symwavf     - Symlets ウェーブレットフィルタ
+%
+% 連続ウェーブレット：1次元
+% cwt         - 連続1次元ウェーブレット係数の計算
+%
+% 離散ウェーブレット：1次元
+% appcoef     - 1次元の Approximation 係数の抽出
+% detcoef     - 1次元の Detail 係数の抽出
+% dwt         - 単一レベルの離散1次元ウェーブレット変換
+% dwtmode     - 離散ウェーブレット変換拡張モード
+% idwt        - 単一レベルの逆離散1次元ウェーブレット変換
+% upcoef      - 1次元ウェーブレット係数から直接再構成
+% upwlev      - 1次元のウェーブレット分解の単一レベルの再構成
+% wavedec     - 多重レベルの1次元ウェーブレット分解
+% waverec     - 多重レベルの1次元ウェーブレット再構成
+% wrcoef      - 1次元のウェーブレット係数から単一ブランチを再構成
+%
+% 離散ウェーブレット：2次元
+% appcoef2    - 2次元 Approximation 係数の抽出
+% detcoef2    - 2次元 Detail 係数の抽出
+% dwt2        - 単一レベルの離散2次元ウェーブレット変換
+% dwtmode     - 離散ウェーブレット変換拡張モード
+% idwt2       - 単一レベルの逆離散2次元ウェーブレット変換
+% upcoef2     - 2次元のウェーブレット係数から直接再構成
+% upwlev2     - 2次元のウェーブレット分解の単一レベルの再構成
+% wavedec2    - 多重レベルの2次元ウェーブレット分解
+% waverec2    - 多重レベルの2次元ウェーブレット再構成
+% wrcoef2     - 2次元のウェーブレット係数から単一ブランチを再構成
+%
+% ウェーブレットパケットアルゴリズム
+% bestlevt    - 最良なレベルツリー(ウェーブレットパケット)
+% besttree    - 最良のツリー(ウェーブレットパケット)
+% entrupd     - エントロピーのアップデート (ウェーブレットパケット)
+% wentropy    - エントロピー(ウェーブレットパケット)の算出
+% wp2wtree    - ウェーブレットパケットツリーからウェーブレットツリーを抽%               出
+% wpcoef      - ウェーブレットパケット係数の計算
+% wpcutree    - ウェーブレットパケットツリーの削除
+% wpdec       - 1次元ウェーブレットパケット分解
+% wpdec2      - 2次元ウェーブレットパケット分解
+% wpfun       - ウェーブレットパケット関数
+% wpjoin      - ウェーブレットパケットの組み替え
+% wprcoef     - ウェーブレットパケット係数を再構成
+% wprec       - 1次元ウェーブレットパケット再構成
+% wprec2      - 2次元ウェーブレットパケット再構成
+% wpsplt      - ウェーブレットパケットの分割(分解)
+%
+% 信号とイメージの雑音除去と圧縮
+% ddencmp     - 雑音除去または圧縮処理に関連したデフォルト値の算出
+% thselect    - 雑音除去のためのスレッシュホールド値の設定
+% wbmpen      - ウェーブレット1次元または2次元の雑音除去のためのペナル
+%               ティが課せられたしきい値
+% wdcbm       - Birge-Massart法を使ってウェーブレット1次元雑音除去または%               圧縮
+% wdcbm2      - Birge-Massart法を使ってウェーブレット2次元雑音除去または%               圧縮
+% wden        - ウェーブレットを使って自動的に1次元の雑音除去
+% wdencmp     - ウェーブレットを使って雑音除去または圧縮
+% wnoise      - 雑音を含んだウェーブレットテストデータの作成
+% wnoisest    - 1次元ウェーブレット係数の雑音の推定
+% wpbmpen     - ウェーブレットパケットの雑音除去のためのペナルティが課せ%               られたしきい値
+% wpdencmp    - ウェーブレットパケットを用いた雑音除去または圧縮
+% wpthcoef    - ウェーブレットパケット係数にスレッシュホールド処理を適用% wthcoef     - 1次元でスレッシュホールド処理
+% wthcoef2    - 2次元でスレッシュホールド処理
+% wthresh     - ソフトスレッシュホールドまたはハードスレッシュホールド処%               理
+% wthrmngr    - しきい値を設定する管理コマンド
+%
+% ツリー管理ユーテリティ
+% allnodes    - ツリーノード
+% depo2ind    - ノードの深さ－位置をノードインデックスに変換
+% disp        - WRTREE オブジェクトの情報を表示
+% drawtree    - ウェーブレットパケット分解ツリーの表示 (GUI)
+% dtree       - DTREE クラス用のコンストラクタ
+% get         - オブジェクトフィールドの内容を取得
+% ind2depo    - ノードのインデックスをノードの深さと位置に変換
+% isnode      - 存在するノードに対する評価
+% istnode     - ノードが最終ノードか否かのチェック
+% leaves      - 不連続ノード
+% nodeasc     - 設定したノードの上層のノードインデックスまたは深さ、位置%               を出力
+% nodedesc    - 設定したノードの下層のノードインデックスまたは深さ、位置%               を出力
+% nodejoin    - ノードの組み替え
+% nodepar     - ノードの親ノードを出力
+% nodesplt    - ノードの分割
+% noleaves    - 不連続ではないノードを検出
+% ntnode      - 不連続ノードの数
+% ntree       - NTREE クラス用のコンストラクタ
+% plot        - ツリーオブジェクトのプロット
+% read        - ツリーオブジェクトフィールドの値を読み取る
+% readtree    - Figure からウェーブレットパケット分解のツリーを読み取る
+% set         - オブジェクトフィールドの内容を設定
+% tnodes      - 不連続なノードの検出 (古い関数 LEAVES)
+% treedpth    - ツリーの深さ
+% treeord     - ツリーの次数
+% wptree      - WPTREE クラス用のコンストラクタ
+% wpviewcf    - ウェーブレットパケットのカラー係数をプロット
+% write       - ツリーオブジェクトフィールドに値を書き込む
+% wtbo        - WTBO クラス用のコンストラクタ
+% wtreemgr    - ツリー構造に対する管理コマンド
+%
+% 一般的なユーテリティ
+% wcodemat    - 拡大された疑似カラー行列のスケーリング
+% wextend     - ベクトルまたは行列の拡張
+% wkeep       - ベクトルまたは行列の一部を抽出
+% wrev        - ベクトル要素の順番を逆にする
+%
+% その他
+% wvarchg     - 分散が変化する点を検出
+%
+% ウェーブレットに関する情報
+% waveinfo    - ウェーブレットに関する情報
+%
+% デモンストレーション
+% wavedemo    - Wavelet Toolbox のデモ
+%
+% 参考: WAVEDEMO
+
+
+
+% Generated from Contents.m_template revision 1.8
+% Copyright 1995-2004 The MathWorks, Inc. 

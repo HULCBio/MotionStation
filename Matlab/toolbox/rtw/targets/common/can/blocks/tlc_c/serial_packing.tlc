@@ -1,0 +1,477 @@
+%% File: serial_packing
+%%
+%% Abstract:
+%%
+%%    A set of utilities for generating code to pack values of
+%%    varying bit length into arbitrary positions in a target
+%%    array.
+%%
+%%    $Revision: 1.7.4.3 $
+%%    $Date: 2004/04/19 01:19:52 $
+%%
+%%    Copyright 2002-2003 The MathWorks, Inc.
+
+%% FUNCTIONS =========================================================
+%% 
+%%     ** Exported Functions ***
+%%
+%%       WORD_SIZE
+%%       WORD_BIT_SIZE
+%%       UNSIGNED_WORD_TYPE
+%%       SIGNED_WORD_TYPE
+%%
+%%    ** Internal Functions ***
+%%
+%%       pack
+%%       unpack
+%%       create_mask
+%%       shift_left
+%%       shift_right
+%%       byte_reorder
+%%       pre_process
+%%
+%% ==================================================================
+
+%% import some useful functions to get target specific information
+%include "canrtwinfo.tlc"
+
+%% Function : WORD_SIZE ============================================
+%%
+%%    Return the WORD_SIZE of the target machine in bytes
+%%
+%function WORD_SIZE() void
+   %assign TARGET_WORD_LENGTHS = GetRTWWordLengths()
+   %return (TARGET_WORD_LENGTHS.WordSize / 8)
+%endfunction
+
+%% Function : WORD_BIT_SIZE =====================================
+%%
+%%    Return the WORD_SIZE of the target machine in bits
+%%
+%function WORD_BIT_SIZE() void
+   %return WORD_SIZE() * 8
+%endfunction
+
+%% Function : UNSIGNED_WORD_TYPE =========================================
+%%
+%%    Return the unsigned word type on the target machine
+%%
+%function UNSIGNED_WORD_TYPE() void
+   %assign TARGET_WORD_LENGTHS = GetRTWWordLengths()
+   %return "uint%<WORD_BIT_SIZE()>_T"
+%endfunction
+
+%% Function : SIGNED_WORD_TYPE =========================================
+%%
+%%    Return the signed word type on the target machine
+%%
+%function SIGNED_WORD_TYPE() void
+   %assign TARGET_WORD_LENGTHS = GetRTWWordLengths()
+   %return "int%<WORD_BIT_SIZE()>_T"
+%endfunction
+
+
+%% Function: create_mask ==================================
+%%
+%% Creates a hex string 0x@@@@@@ that has ones in
+%% all the low order bits up to but not including
+%% bit_length
+%%
+%function create_mask(bit_length) void
+   %if bit_length < WORD_BIT_SIZE()
+      %assign ret = ~( ~0 << bit_length )
+   %else
+      %assign ret = ~0
+   %endif
+   %assign mask = FEVAL("dec2hex",ret)
+   %return  "0x%<mask>"
+%endfunction
+
+%% Function : shift_left ====================================
+%%
+%% Parameters
+%%    signal         -  text        : input signal WORD
+%%    temp_word_name -  text        : pointer to WORD_UNION two element array 
+%%    shift          -  integer     : number of bit positions to shift by
+%%    bit_length     -  integer     : the number of bits to mask
+%%
+%% Returns
+%%    A code segment to perform the shift on signal and place the
+%%    result in temp_word_name
+%%
+%function shift_left(signal, temp_word_name, shift, bit_length ) void
+   %openfile buffer 
+      %if bit_length < WORD_BIT_SIZE()
+         %% mask the input signal
+         %<signal> &= %<create_mask(bit_length)>;
+      %endif
+      %%
+      %if shift == 0
+         %% No shift required, copy signal straight into tempwordname0
+         %<temp_word_name>0 = %<signal>; 
+      %else
+         %if ( shift + bit_length ) > WORD_BIT_SIZE()
+            %% shift will occupy both temp words
+            %<temp_word_name>0 = %<signal> << %<shift>;
+            %<temp_word_name>1 = %<signal> >> %<WORD_BIT_SIZE() - shift>; 
+         %else
+            %% shift will occupy only the first temp word
+            %<temp_word_name>0 = %<signal> << %<shift>;
+         %endif
+      %endif
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : shift_right ====================================
+%%
+%% Parameters
+%%    signal         -  text        : output signal WORD
+%%    temp_word_name -  text        : pointer to WORD_UNION two element array
+%%    shift          -  integer     : number of bit positions to shift by
+%%    bit_length     -  integer     : the number of bits to mask
+%%
+%% Returns
+%%    A code segment to perform the shift on temp_word_name and place the
+%%    result in signal
+%%
+%function shift_right(signal, temp_word_name, shift, bit_length ) void
+   %openfile buffer
+      %if shift == 0
+         %% No shift required, copy tempwordname0 straight into signal
+         %<signal> = %<temp_word_name>0;
+      %else
+         %if ( shift + bit_length ) > WORD_BIT_SIZE()
+            %% signal will be shifted from both temp words
+            %<signal> = %<temp_word_name>0 >> %<shift>;
+            %<signal> |= %<temp_word_name>1 << %<WORD_BIT_SIZE() - shift>;
+         %else
+            %% signal will be shifted from only the first temp word
+            %<signal> = %<temp_word_name>0 >> %<shift>;
+         %endif
+      %endif
+      %%
+      %if bit_length < WORD_BIT_SIZE()
+         %% mask the output signal
+         %<signal> &= %<create_mask(bit_length)>; 
+      %endif
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : byte_reorder ============================================
+%%
+%% Reorders the bytes in the two element WORD_UNION array. Requires
+%% the definition of WORD_UNION to be included.
+%%
+%% Parameters
+%%    word        :  text  : reference to a WORD
+%%    word_size   :  integer . eg 4 for uint32
+%%    word_type   :  uint32_T for example
+%%
+%function byte_reorder( word ) void
+   %openfile buffer
+      %assign half_word_size = WORD_SIZE() / 2
+      %foreach idx = WORD_SIZE() 
+         %assign mask = FEVAL("dec2hex",CAST("Unsigned",255 << (8 * idx)))
+         %assign mask = "0x%<mask>"
+         %assign shift = ( WORD_SIZE() - 1 - 2 * idx) * 8
+         %if idx < half_word_size
+            %assign shift_type = "<<"
+         %else
+            %assign shift_type = ">>"
+            %assign shift = -shift
+         %endif
+         %if idx < (WORD_SIZE() - 1)
+            (((%<UNSIGNED_WORD_TYPE()>)(%<word>) & %<mask> ) %<shift_type> %<shift> ) | 
+         %else
+            (((%<UNSIGNED_WORD_TYPE()>)(%<word>) & %<mask> ) %<shift_type> %<shift> ) \ 
+         %endif
+      %endforeach
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : pre_process ===================================================
+%%
+%% Returns a record of useful values to be used during the packing and
+%% unpacking process.
+%%
+%% Parameters
+%%
+%%    start_bit      -  integer start bit
+%%    signal_endian  -  "BIG_ENDIAN" | "LITTLE_ENDIAN"
+%%    message_length -  message length 
+%%
+%% Returns
+%%
+%%    Record {
+%%       start_bit         :  modified start_bit
+%%       shift             :  The amount required to shift 
+%%       w0                :  location of word 0
+%%       w1                :  location of word 1
+%%       total_word_count  :  The total number of words used
+%%    }
+%%
+%function pre_process(start_bit, signal_endian, message_length)
+   %assign start_bit = CAST("Number", start_bit)
+   %assign message_length = CAST("Number", message_length)
+
+   %assign total_word_count = FEVAL("floor",message_length / WORD_SIZE()) + \
+      (( message_length % WORD_SIZE() ) > 0 )
+
+   %if signal_endian == BigEndianString()
+      %assign unused_bytes = total_word_count * WORD_SIZE() - message_length
+      %assign unused_bytes = CAST("Number",unused_bytes)
+      %assign start_bit = start_bit + unused_bytes * 8
+      %assign w0 = total_word_count - FEVAL("floor",start_bit / WORD_BIT_SIZE()) - 1
+      %assign w1 = w0 - 1
+   %else
+      %assign w0 = FEVAL("floor", start_bit / WORD_BIT_SIZE() )
+      %assign w1 = w0 + 1
+   %endif
+
+   %assign start_bit = CAST("Number",start_bit)
+   %assign shift = start_bit % CAST("Number", WORD_BIT_SIZE())
+
+   %% Ensure that all the results are integers
+   %assign w0 = CAST("Number",w0)
+   %assign w1 = CAST("Number",w1)
+   %assign shift = CAST("Number",shift)
+   %assign start_bit = CAST("Number",start_bit)
+
+   %% w0 is always used; check w0 is valid
+   %<CHECK_W0(w0, total_word_count)>
+
+   %createrecord ReturnRecord { start_bit start_bit shift shift w0 w0 w1 w1 total_word_count total_word_count }
+   %return ReturnRecord
+%endfunction
+
+%% Function : pack ===========================================================================
+%%
+%% pack a signal (of max size == word size) into an arbitrary word length array
+%%
+%% Parameters
+%%
+%%    output_word    -     text representing the base name of a set of words containing the message
+%%    signal         -     the input signal (of word type for target machine) to pack into output_words
+%%    start_bit      -     The position the least significant bit of the signal will occupy
+%%    bit_length     -     The number of bits the signal will occupy in the message
+%%    message_length -     The length of the target message in bytes
+%%    signal_endian  -     "BIG_ENDIAN" | "LITTLE_ENDIAN" the byte order of the signal
+%%
+%% Notes
+%%
+%%    For Little Endian signals, the start bit is counted from the start of the message array.
+%%    For Big Endian signals, the start bit is counted from the end of the message array.
+%%
+%%    We define a work array, workingword, which is two elements of the word type for the 
+%%    target machine.
+%%
+%% Example
+%%
+%% {
+%%    /* 8 byte frame, target word size = 2 */
+%%    
+%%    uint16_T frame0 = 0;
+%%    uint16_T frame1 = 0;
+%%    uint16_T frame2 = 0;
+%%    uint16_T frame3 = 0;
+%%    uint16_T signal = 15;
+%%    
+%%    %<pack( "frame", "signal", 8, 20, 10, "LITTLE_ENDIAN")>
+%%
+%% }
+%%
+%function pack( output_word , signal, message_length, start_bit, bit_length, signal_endian) void
+   %openfile buffer
+      %% check that we are not trying to pack a signal that is longer than the word size
+      %if bit_length > %<WORD_BIT_SIZE()>      
+         %openfile msg 
+The signal to pack is %<bit_length> bits long, but the target processor word size
+is only %<WORD_BIT_SIZE()>.
+
+This packing code cannot pack multi-word signals.
+
+In order to pack multi-word signals, you must split the signal into word sized
+chunks and pack each word individually, taking care with the start bits.
+         %closefile msg
+         %exit %<msg>
+      %endif
+      
+      %assign temp_word_name = "working_word"
+      {
+         %assign info = pre_process(start_bit, signal_endian, message_length )
+         /* create temporary storage for packing */
+         %<UNSIGNED_WORD_TYPE()> %<temp_word_name>0; 
+         %if TEMP_WORD_2_USED(info, bit_length)
+            %<UNSIGNED_WORD_TYPE()> %<temp_word_name>1;
+         %endif
+         
+         /* -- pack the signal --- */
+         %%
+         %<shift_left(signal, temp_word_name, info.shift, bit_length)>
+         %%
+         %if signal_endian == BigEndianString()
+            /* The signal is to be packed in big endian format
+               Reverse the bytes in each word */
+            %<temp_word_name>0 = %<byte_reorder("%<temp_word_name>0")>;
+            %if TEMP_WORD_2_USED(info, bit_length)
+               %<temp_word_name>1 = %<byte_reorder("%<temp_word_name>1")>;
+            %endif 
+         %else
+            /* The signal is to be packed in little endian format
+               No need to reverse the bytes in each word */         
+         %endif
+
+         %%
+         %<output_word>%<info.w0> |= %<temp_word_name>0;
+         
+         %if TEMP_WORD_2_USED(info, bit_length)
+            %% check w1 is valid
+            %<CHECK_W1(info)>
+            %<output_word>%<info.w1> |= %<temp_word_name>1;
+         %endif
+      }
+   %closefile buffer
+   %return buffer
+%endfunction
+
+%% Function : TEMP_WORD_2_USED
+%%
+%% Helper function.  
+%%
+%% Returns 1 if the second temporary word is used
+%% Returns 0 if the second temporary word is not used
+%%
+%function TEMP_WORD_2_USED(info, bit_length)
+   %if (info.shift + bit_length) > WORD_BIT_SIZE()
+      %return 1
+   %else
+      %return 0
+   %endif
+%endfunction
+
+%% Function : CHECK_W0
+%%
+%% Helper function. Throws an error if w0 is not in range
+%% 
+%function CHECK_W0(w0, total_word_count) void
+   %if w0 >=0 && w0 < total_word_count
+      %% w0 is in range
+   %else
+      %% ERROR
+      %openfile buffer
+A signal in your model specifies a start bit that exceeds the boundaries of
+the message.
+      %closefile buffer
+      %exit %<buffer>
+   %endif
+%endfunction
+
+%% Function : CHECK_W1
+%%
+%% Helper function. Throws an error if w1 is not in range
+%% 
+%function CHECK_W1(info) void
+   %if info.w1 >=0 && info.w1 < info.total_word_count
+      %% w1 is in range
+   %else
+      %% ERROR
+      %openfile buffer
+A signal in your model has a length that exceeds the boundaries of the 
+message.
+      %closefile buffer
+      %exit %<buffer>
+   %endif
+%endfunction
+
+
+%% Function : unpack ===========================================================================
+%%
+%% unpack a signal from an arbitrary word length array
+%%
+%% Parameters
+%%
+%%    input_word     -     text representing the base name of a set of words containing the message
+%%    signal         -     the output signal (of word type for target machine) to unpack from input_words 
+%%    start_bit      -     The position the least significant bit of the signal will occupy
+%%    bit_length     -     The number of bits the signal will occupy in the message
+%%    message_length -     The length of the message in bytes
+%%    signal_endian  -     "BIG_ENDIAN" | "LITTLE_ENDIAN" the byte order of the signal
+%%
+%%
+%% Notes
+%%
+%%    For Little Endian signals, the start bit is counted from the start of the message array.
+%%    For Big Endian signals, the start bit is counted from the end of the message array.
+%%
+%%    We define a work array, workingword, which is two elements of the word type for the 
+%%    target machine.
+%%
+%% Example
+%%
+%% {
+%%    /* 8 byte frame, target word size = 2 */
+%%    
+%%    uint16_T frame0 = 0;
+%%    uint16_T frame1 = 0;
+%%    uint16_T frame2 = 0;
+%%    uint16_T frame3 = 0;
+%%    uint16_T signal;
+%%    
+%%    %<unpack( "frame", "signal", 8, 20, 10, "LITTLE_ENDIAN")>
+%%
+%% }
+%%
+%function unpack(input_word , signal, message_length, start_bit, bit_length, signal_endian)
+   %openfile buffer
+      %% check that we are not trying to unpack a signal that is longer than the word size
+      %if bit_length > %<WORD_BIT_SIZE()>      
+         %openfile msg 
+The signal to unpack is %<bit_length> bits long, but the target processor word size
+is only %<WORD_BIT_SIZE()>.
+
+This unpacking code cannot unpack multi-word signals.
+
+In order to unpack multi-word signals, you must split the signal into word sized
+chunks and unpack each word individually, taking care with the start bits.
+         %closefile msg
+         %exit %<msg>
+      %endif
+  
+      %assign temp_word_name = "working_word"
+      {
+         %assign info = pre_process(start_bit, signal_endian, message_length )
+         /* create temporary storage for unpacking */
+         %<UNSIGNED_WORD_TYPE()> %<temp_word_name>0; 
+         %if TEMP_WORD_2_USED(info, bit_length)
+            %<UNSIGNED_WORD_TYPE()> %<temp_word_name>1;
+         %endif
+         
+         /* -- unpack the signal --- */
+         %<temp_word_name>0 = %<input_word>%<info.w0>;
+         
+         %if TEMP_WORD_2_USED(info, bit_length)
+            %% Check w1 is valid
+            %<CHECK_W1(info)>
+            %<temp_word_name>1 = %<input_word>%<info.w1>;
+         %endif
+
+         %if signal_endian == BigEndianString()
+            /* The signal is to be unpacked in big endian format
+               Reverse the bytes in each word */
+            %<temp_word_name>0 = %<byte_reorder("%<temp_word_name>0")>;
+            %if TEMP_WORD_2_USED(info, bit_length)
+               %<temp_word_name>1 = %<byte_reorder("%<temp_word_name>1")>;
+            %endif
+         %else
+            /* The signal is to be unpacked in little endian format
+               No need to reverse the bytes in each word */       
+         %endif
+
+         %<shift_right(signal, temp_word_name,info.shift,bit_length)>
+      }
+   %closefile buffer
+   %return buffer
+%endfunction

@@ -1,0 +1,236 @@
+%% $RCSfile: sdsphist.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:08:42 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Histogram Block
+
+%implements sdsphist "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "MinVal")>
+  %<LibRenameParameter(block, P2, "MaxVal")>
+  %<LibRenameParameter(block, P3, "nBins")>
+  %<LibRenameParameter(block, P4, "Normalize")>  
+  %<LibRenameParameter(block, P5, "Running")>
+  %<LibRenameParameter(block, P6, "Framebased")>
+  %<LibRenameParameter(block, P7, "ResetPort")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Histogram (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %assign normalize = LibBlockParameterValue(Normalize,0) != 0
+  %assign nbins   = CAST("Number",LibBlockParameterValue(nBins,0))
+  %assign minval  = MinVal.Value[0]
+  %assign maxval  = MaxVal.Value[0]
+  %%
+  %if TYPE(minval) != "Complex"
+    %assign min_mag = CAST("Real",minval)
+  %else
+    %assign min_re     = REAL(minval)
+    %assign min_im     = IMAG(minval)
+    %assign min_cmagsq = min_re * min_re + min_im * min_im
+    %assign min_mag    = CAST("Real",FEVAL("sqrt", min_cmagsq))
+  %endif
+  %<LibBlockDWork(MinMag,"", "", 0)> = %<min_mag>;
+  %%
+  %if TYPE(maxval) != "Complex"
+    %assign max_mag = CAST("Real",maxval)
+  %else
+    %assign max_re     = REAL(maxval)
+    %assign max_im     = IMAG(maxval)
+    %assign max_cmagsq = max_re * max_re + max_im * max_im
+    %assign max_mag    = CAST("Real",FEVAL("sqrt", max_cmagsq))
+  %endif
+  %<LibBlockDWork(MaxMag,"", "", 0)> = %<max_mag>;
+  %%
+  %<LibBlockDWork(Idelta,"", "", 0)> = %<nbins> / %<max_mag - min_mag>;
+      
+  %if running
+    %if normalize
+      %<LibBlockDWork(Iteration,"", "", 0)> = 0.0;
+    %endif
+    
+    /* Set all histogram bin counts to zero: */
+    memset(%<LibBlockDWorkAddr(BinCount,"", "", 0)>, 0, %<nbins>*sizeof(uint32_T));
+  %endif
+  
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Histogram (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT      = 0
+  %%
+  %assign running   = LibBlockParameterValue(Running,0) != 0
+  %assign normalize = LibBlockParameterValue(Normalize,0) != 0
+  %assign nbins     = CAST("Number" ,LibBlockParameterValue(nBins,0))
+  %assign umin      = LibBlockDWork(MinMag,"", "", 0)
+  %assign umax      = LibBlockDWork(MaxMag,"", "", 0)
+  %assign idelta    = LibBlockDWork(Idelta,"", "", 0)  
+  %%
+  %assign cplx      = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+  %assign contig    = IsInputPortContiguous(block, INPORT_DATA)
+  %assign width     = LibDataInputPortWidth(INPORT_DATA)
+  %%
+%if !running
+  %%
+  %% Not Running 
+  %%
+  {
+    real_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "","", 0)>;
+    real_T val = 0.0;
+    int_T  i   = 0;
+
+    /* Initialize all bins to zero: */
+    for( ; i < %<nbins>; i++) {
+      y[i] = 0.0;
+    }
+    
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %if cplx
+	val = sqrt(CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>));
+      %else
+	val = %<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>;
+      %endif
+      
+      /* Update appropriate histogram bin: */
+      if (val <= %<umin>) {
+	i = 0;
+      } else if (val > %<umax>) {
+	i = %<nbins-1>;
+      } else {
+	i = (int_T)(ceil((val-%<umin>) * %<idelta>) - 1);
+      }
+      (*(y + i))++;				
+    %endroll
+    
+    %if normalize
+	i = %<nbins>;
+	while (i-- > 0) {
+	  *y++ *= %<1.0 / width>;   %% scale = 1 / width
+	}
+    %endif
+  }
+%else
+  %%
+  %% Running
+  %%
+  %% * Input width is 1 (scalar only) for non-frame based.
+  %% * Input may be a vector for frame-based.
+  %% * Matrix inputs are not currently supported for
+  %%   the frame-based running histogram.
+  %%
+  %assign resetport  = LibBlockParameterValue(ResetPort,0) != 0
+  %%
+  /* Output running histogram */
+  %if (!contig)
+    %<LibDiscontiguousInputError(block)>
+  %endif
+  %%
+  {
+    uint32_T *h   = %<LibBlockDWorkAddr(BinCount, "", "", 0)>;
+    
+    %if resetport
+       if (%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) {	  
+         memset((void *)h, 0, %<nbins>*sizeof(uint32_T));	 
+         %%
+	 %if normalize
+	    %<LibBlockDWork(Iteration, "", "", 0)> = 0.0;
+	 %endif
+       }
+    %endif
+  %%
+  %if width ==1
+    %%
+    %% We need to test for an input width of one because the RollRegions
+    %% will be set to the output width if the input width is one.  It 
+    %% allows blocks to scalar expand, but causes problems for this code.
+    %%
+      {
+	%if cplx
+	  const real_T val = sqrt(CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", "", 0)>));
+	%else
+	  const real_T val = %<LibBlockInputSignal(INPORT_DATA, "", "", 0)>;
+	%endif
+	int_T i;
+       
+	/* Update appropriate histogram bin: */
+	if (val <= %<umin>) {
+	  i = 0;
+	} else if (val > %<umax>) {
+	  i = %<nbins-1>;
+	} else {
+	  i = (int_T)(ceil((val-%<umin>) * %<idelta>) - 1) ;
+	}
+	(*(h + i))++;				
+      }    
+  %else   
+    %assign rollVars = ["U"]
+    %roll sigIdx = DataInputPort[0].RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      {
+	%if cplx
+	  const real_T val = sqrt(CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>));
+	%else
+	  const real_T val = %<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>;
+	%endif
+	int_T i;
+       
+	/* Update appropriate histogram bin: */
+	if (val <= %<umin>) {
+	  i = 0;
+	} else if (val > %<umax>) {
+	  i = %<nbins-1>;
+	} else {
+	  i = (int_T)(ceil((val-%<umin>) * %<idelta>) - 1) ;
+	}
+	(*(h + i))++;				
+      }
+    %endroll
+  %endif %% width!=1
+  %%
+  %if normalize
+    {
+      /* Copy normalized bin count to output: */
+      real_T *iter_cnt = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+      real_T scale;
+      int_T  i;
+      
+      (*iter_cnt)++;
+      scale = 1 / *iter_cnt;
+    
+      for(i=0; i < %<nbins>; i++) {
+	%<LibBlockOutputSignal(OUTPORT, "i", "", 0)> = scale * (real_T)(*h++);
+      }
+    }
+  %else
+    {
+      /* Copy unnormalized bin count to output: */
+      int_T i;
+      for (i=0; i < %<nbins>; i++) {
+	%<LibBlockOutputSignal(OUTPORT, "i", "", 0)>  = (real_T)(*h++);
+      }
+    }        
+  %endif  
+}
+%endif %% Running
+
+%endfunction
+
+%% [EOF] sdsphist.tlc

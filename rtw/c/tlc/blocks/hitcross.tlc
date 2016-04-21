@@ -1,0 +1,152 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Hit-crossing block target file
+
+%implements HitCross "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: PrevZCStateSignalDataType =========================================
+%% Abstract:
+%%   Returns the data type id for the signal related to the previous zero
+%%   crossing state.
+%function PrevZCStateSignalDataType(block,system) void
+  %return LibBlockInputSignalDataTypeId(0)
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      Generate output code for the hit crossing block which is used to
+%%      detect signal crossing (sign change events) events.
+%%
+%function Outputs(block, system) Output
+  %if NumDataOutputPorts > 0
+    /* %<Type> Block: '%<Name>' */
+    {
+      real_T zcSig;
+    ZCEventType zcEvent;
+    \
+    %assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+    %assign zero = SLibGetFormattedValueFromId(outDType, 0)
+    %assign one  = SLibGetFormattedValueFromId(outDType, 1)
+    %% All ZC directions are the same for this block
+    %assign zcDir = LibConvertZCDirection(ZCEvent[0].Direction)
+    %assign rollVars = ["U", "Y", "PZC", "Mode", "<param>/HitCrossingOffset"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u      = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign y      = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %assign pzc    = LibBlockPrevZCState("", lcv, sigIdx)
+      %assign mode   = LibBlockMode("", lcv, sigIdx)
+      %assign offset = LibBlockParameter(HitCrossingOffset, "", lcv,sigIdx)
+      %%
+      %if outDType == tSS_BOOLEAN
+	%assign yEqOne = "%<y>"
+      %else
+	%assign yEqOne = "%<y> == %<one>"
+      %endif
+      %%
+      %% Check for zc events
+      %% 
+      %if InlineParameters == 1 && ISEQUAL(offset, 0.0)
+	zcSig = %<u>;
+      %else
+	zcSig = %<u> - %<offset>;
+      %endif
+        zcEvent = %<tRZCFcn>(%<zcDir>, &%<pzc>, zcSig);
+      %%
+      %% Post output
+      %%
+      if (%<mode> == 0) {
+        if (zcEvent != NO_ZCEVENT) {
+          if (%<yEqOne>) {
+            %<y> = %<zero>;
+          } else {
+            %<y> = %<one>;
+          }
+	  %<mode> = 1;
+        } else {
+          if (%<yEqOne>) {
+            if (%<u> != %<offset>) {
+	      %<y> = %<zero>;
+	    }
+            %if ZCEvent[0].Direction == "Any"
+	  } else if (%<u> == %<offset>) {
+	    %<y> = %<one>;
+            %endif
+          }
+        }
+      } else {
+        if (%<u> != %<offset>) {
+	  %<y> = %<zero>;
+        }
+	%<mode> = 0;
+      }
+    %endroll
+    }
+
+  %endif
+%endfunction
+
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      Generate code to compute the zero crossing signals.
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<Type> Block: '%<Name>' */
+  %assign blkWidth = ParamSettings.BlockWidth
+  %if blkWidth < NumNonsampledZCs
+    %foreach idx = NumNonsampledZCs
+      %assign zcs = LibBlockNonSampledZC("","",idx)
+      %assign zcIdx = NonsampledZC[idx].MapIdx
+      %assign zcIdx = CAST("Number", NonsampledZC[idx].MapIdx)
+      %if zcIdx < blkWidth
+	%assign u = LibBlockInputSignal(0,"","",zcIdx)
+	%assign p = LibBlockParameter(HitCrossingOffset,"","",zcIdx)
+	%<zcs> = %<u> - %<p>;
+      %else
+	%assign zcIdx = CAST("Number", zcIdx - blkWidth)
+	if (%<LibBlockMode("","", zcIdx)> == 0) {
+	  %<zcs> = 0.0;
+	} else {
+	  %<zcs> = %<RTMGet("T")> - %<RTMGet("TimeOfLastOutput")>;
+	}
+      %endif
+    %endforeach
+  %else
+    %if ParamSettings.InputContiguous == "yes"
+      %% Input is also contiguous, do run-time loop
+      %% ZC indices are always contiguous for this case
+      %assign rollVars = ["U", "NSZC", "<param>/HitCrossingOffset"]
+      %% Need to setup rollRegions for case when there is no output port
+      %assign rollRegions = [0:%<NumNonsampledZCs - 1>]
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+	%<LibBlockInputSignal(0, "", lcv, sigIdx)> - \
+	%<LibBlockParameter(HitCrossingOffset, "", lcv,sigIdx)>;
+      %endroll
+    %else
+      %% Input is not contiguous, do each element separately
+      %foreach idx = NumNonsampledZCs
+	%<LibBlockNonSampledZC("","",idx)> = \
+	%<LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)> - \
+	%<LibBlockParameter(HitCrossingOffset,"","",NonsampledZC[idx].MapIdx)>;
+      %endforeach
+    %endif
+  %endif
+%endfunction
+
+%% [EOF] hitcross.tlc

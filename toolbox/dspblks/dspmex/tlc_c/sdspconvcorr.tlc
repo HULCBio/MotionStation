@@ -1,0 +1,1217 @@
+%% $RCSfile: sdspconvcorr.tlc,v $
+%% $Revision: 1.14.4.2 $  $Date $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspconvcorr.cpp
+%%
+
+%implements "sdspconvcorr" "C"
+
+%% Function: BlockInstanceSetup =================================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %assign INPORTA = 0
+    %assign INPORTB = 1
+    %assign OUTPORT = 0
+    %%
+    %assign dtype      = LibBlockOutputSignalDataTypeName(OUTPORT,tRealPart)
+    %assign cdtype     = "c" + dtype
+    %%
+    %assign framebased = LibBlockInputSignalIsFrameData(INPORTA)
+    %assign cmplxA     = LibBlockInputSignalIsComplex(INPORTA)
+    %assign cmplxB     = LibBlockInputSignalIsComplex(INPORTB)
+    %%
+    %assign nDimsA   = LibBlockInputSignalNumDimensions(INPORTA)
+    %assign dimsA    = LibBlockInputSignalDimensions(INPORTA)
+    %assign widthA   = LibDataInputPortWidth(INPORTA)
+    %assign nRowsA   = framebased ? dimsA[0] : widthA
+    %assign nColsA   = framebased ? dimsA[1] : 1
+    %%
+    %assign nDimsB   = LibBlockInputSignalNumDimensions(INPORTB)
+    %assign dimsB    = LibBlockInputSignalDimensions(INPORTB)
+    %assign widthB   = LibDataInputPortWidth(INPORTB)
+    %assign nRowsB   = framebased ? dimsB[0] : widthB
+    %assign nColsB   = framebased ? dimsB[1] : 1
+    %%
+    %assign ScalarScalar = (nRowsA == 1) && (nRowsB == 1)
+    %assign ScalarVector = ((nRowsA == 1) || (nRowsB == 1)) && !ScalarScalar %% ExOR
+    %%
+    %assign nDimsOut = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign dimsOut  = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign widthOut = LibDataOutputPortWidth(OUTPORT)
+    %assign nRowsOut = framebased ? dimsOut[0] : widthOut
+    %assign nColsOut = framebased ? dimsOut[1] : 1
+    %%
+    %% Only one port need be checked since homogeneity of port data types enforced by S-function.
+    %assign IS_SINGLE = CAST("Boolean",(LibBlockInputSignalDataTypeId(INPORTA) == tSS_SINGLE))
+    %%
+    %% If a port has a single channel then don't move the pointer to the next channel.
+    %assign GotoNextChanA = (framebased && nColsA > 1)
+    %assign GotoNextChanB = (framebased && nColsB > 1)
+    %%
+    %assign TimeDomain     = (SFcnParamSettings.Domain == 1)
+    %assign NFFT           = SFcnParamSettings.NFFT
+    %assign IS_CORRELATION = (SFcnParamSettings.ConvCorr == 1)
+    %%
+
+    %% I/O port data types
+    %assign inADT     = FixPt_GetInputDataType(INPORTA)
+    %assign inBDT     = FixPt_GetInputDataType(INPORTB)
+    %assign outDT     = FixPt_GetOutputDataType(OUTPORT)
+
+    %assign block = block  + INPORTA + INPORTB + OUTPORT + framebased + cmplxA + cmplxB + widthB ...
+                  + nRowsA + nColsA  + nRowsB  + nColsB  + nRowsOut   + nColsOut + widthA  ...
+                  + IS_SINGLE + GotoNextChanA + GotoNextChanB + TimeDomain + NFFT + widthOut  ...
+                  + dtype     + cdtype + ScalarScalar + ScalarVector + IS_CORRELATION ...
+                  + inADT     + inBDT  + outDT
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup =====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspconvcorr_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+  %%
+  %if FixPt_DataTypeIsFloat(inADT)
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION             %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %<FltPtRunTimeFcn(block)>
+    %%
+  %else
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION                %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %<FixPtInlineCode(block)>
+    %%
+  %endif
+%%
+%endfunction %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%%
+%% create rndSatRec record
+%createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+%% create accumRec record (complex if either input A or input B is complex)
+%assign accumIsCplx = (cmplxA || cmplxB)
+%assign accumDT     = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+%assign accumDTName = (accumIsCplx) ? accumDT.ComplexName : accumDT.Name
+%assign accumLabel  = "accum"
+%createrecord accumRec { label     accumLabel; ...
+                         dTypeRec  accumDT; ...
+                         isComplex accumIsCplx; ...
+                         dTypeName accumDTName }
+%% create prodRec record (always real)
+%assign prodDT     = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%assign prodLabel  = "prod"
+%createrecord prodRec { label     prodLabel; ...
+                        dTypeRec  prodDT; ...
+                        isComplex 0 }
+%% create inARec record
+%assign inALabel  = LibBlockInputSignal(INPORTA, "", "", "0")
+%assign inADT     = FixPt_GetInputDataType(INPORTA)
+%createrecord inARec { label     inALabel; ...
+                       dTypeRec  inADT; ...
+                       isComplex cmplxA }
+%% create inBRec record
+%assign inBLabel  = LibBlockInputSignal(INPORTB, "", "", "0")
+%assign inBDT     = FixPt_GetInputDataType(INPORTB)
+%createrecord inBRec { label     inBLabel; ...
+                       dTypeRec  inBDT; ...
+                       isComplex cmplxB }
+%% create outRec record
+%assign outLabel = LibBlockOutputSignal(OUTPORT, "outIndex", "", "0")
+%assign outIsCplx = (cmplxA || cmplxB)
+%assign outDT     = FixPt_GetOutputDataType(OUTPORT)
+%createrecord outRec { label     outLabel; ...
+                       dTypeRec  outDT; ...
+                       isComplex outIsCplx }
+  %if IS_CORRELATION
+    /* Signal Processing Blockset Correlation Time Domain Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+    {
+      int_T inAIndex = 0;
+      int_T inBIndex = 0;
+      int_T i, c;
+      for (c=0; c< %<nColsOut>; c++) {
+        for (i = 0; i < %<nRowsOut>; i++) {
+          %<accumRec.dTypeName> %<accumRec.label>;
+          %<prodDT.Name>  %<prodRec.label>;
+          int_T B_offset = i - (%<nRowsB> - 1);   /* Shift for leftmost nonzero output point */
+          const int_T j_end = MIN(i, %<nRowsA>-1);
+          int_T       outIndex = (c*%<nRowsOut>) + i;
+          int_T       j        = MAX(0, B_offset);
+          %if cmplxB
+            %% Definition of correlation = E[A(n)*conj(B(n-m))]
+            %% So compute conjugate of B when input B is complex
+            %% Use a temp variable to store this conjugated value
+            %% in products (since there could be possible overflow/saturation
+            %% during the conjugate operation).
+            %<inBDT.ComplexName> tempB; /* To hold interim result of conj(inputB) */
+            %createrecord tempBRec { label     "tempB"; ...
+              dTypeRec  inBDT; ...
+              isComplex 1 }
+          %endif
+
+          %assign inARec.label = LibBlockInputSignal(INPORTA, "inAIndex+j", "", "0")
+          %assign inBRec.label = LibBlockInputSignal(INPORTB, "inBIndex+j-B_offset", "", "0")
+          %if cmplxB
+            %% tempB = conj(inB)
+            %% accum = inA * temp
+            %<DSPFixptLibConjugate(tempBRec,inBRec,rndSatRec)>\
+            %<FixptMAC(accumRec,"=",prodRec,inARec,tempBRec,rndSatRec)>\
+          %else
+            %% accum = inA * inB
+            %<FixptMAC(accumRec,"=",prodRec,inARec,inBRec,rndSatRec)>\
+          %endif
+          j++;
+
+          while(j <= j_end) {
+            %if cmplxB
+              %% tempB  = conj(inB)
+              %% accum += inA * tempB
+              %<DSPFixptLibConjugate(tempBRec,inBRec,rndSatRec)>\
+              %<FixptMAC(accumRec,"+=",prodRec,inARec,tempBRec,rndSatRec)>\
+            %else
+              %% accum += inA * inB
+              %<FixptMAC(accumRec,"+=",prodRec,inARec,inBRec,rndSatRec)>\
+            %endif
+            j++;
+          }
+          %% out = accum
+          %<DSPFixptLibEquals(outRec,accumRec,rndSatRec)>\
+        }
+        inAIndex += %<nRowsA> * %<GotoNextChanA>;
+        inBIndex += %<nRowsB> * %<GotoNextChanB>;
+      }
+    }
+  %else  %% Convolution
+    /* Signal Processing Blockset Convolution Time Domain Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+    {
+      int_T inAIndex = 0;
+      int_T inBIndex = 0;
+      int_T i, c;
+
+      for (c = 0; c < %<nColsOut>; c++) {
+        for (i = 0; i < %<nRowsOut>; i++) {
+          %<accumRec.dTypeName> %<accumRec.label>;
+          %<prodDT.Name>  %<prodRec.label>;
+          const int_T j_end    = MIN(i, %<nRowsB>-1);
+          int_T       outIndex = (c*%<nRowsOut>) + i;
+          int_T       j        = MAX(0, i-%<nRowsA>+1);
+
+          %assign inARec.label = LibBlockInputSignal(INPORTA, "inAIndex+i-j", "", "0")
+          %assign inBRec.label = LibBlockInputSignal(INPORTB, "inBIndex+j", "", "0")
+          %% accum = inA * inB
+          %<FixptMAC(accumRec,"=",prodRec,inARec,inBRec,rndSatRec)>\
+          j++;
+
+          while (j <= j_end) {
+            %% accum += inA * inB
+            %<FixptMAC(accumRec,"+=",prodRec,inARec,inBRec,rndSatRec)>\
+            j++;
+          }
+          %% out = accum
+          %<DSPFixptLibEquals(outRec,accumRec,rndSatRec)>\
+        }
+
+        inAIndex += %<nRowsA> * %<GotoNextChanA>;
+        inBIndex += %<nRowsB> * %<GotoNextChanB>;
+      }
+    }
+  %endif
+
+%endfunction    %%FixPtInlineCode
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtRunTimeFcn
+%%
+%% FLOATING POINT CODE GENERATION
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtRunTimeFcn(block) Output
+%%
+    %if IS_SINGLE
+      %assign cplx_str = "C"
+      %assign real_str = "R"
+      %assign ONE = "1.0F"
+    %else
+      %assign cplx_str = "Z"
+      %assign real_str = "D"
+      %assign ONE = "1.0"
+    %endif
+    %assign fft_func_str  = "MWDSP_R2DIF_TBLS_" + cplx_str
+    %assign ifft_func_str = "MWDSP_R2DIT_TBLS_" + cplx_str
+    %%
+    %%
+    %if ScalarScalar       %% Scalar on each channel of each input / Same for Time or Freq Domain
+    %%
+      %if IS_CORRELATION
+        /* Signal Processing Blockset Correlation Special Case: Scalars on each channel of each input (%<ParamSettings.FunctionName>) - '%<Name>' */
+      %else
+        /* Signal Processing Blockset Convolution Special Case: Scalars on each channel of each input (%<ParamSettings.FunctionName>) - '%<Name>' */
+      %endif
+      %<LibBlockDSPMultScalarChannels(IS_CORRELATION)>
+    %%
+    %elseif ScalarVector   %% Scalars on each channel of one input / Same for Time or Freq Domain
+    %%
+      %if IS_CORRELATION
+        /* Signal Processing Blockset Correlation Special Case: Scalars on each channel of one of the inputs (%<ParamSettings.FunctionName>) - '%<Name>' */
+      %else
+        /* Signal Processing Blockset Convolution Special Case: Scalars on each channel of one of the inputs (%<ParamSettings.FunctionName>) - '%<Name>' */
+      %endif
+        %<LibBlockDSPMultScalarVectorChannels(IS_CORRELATION)>
+    %%
+    %elseif TimeDomain
+    %%
+      %if IS_CORRELATION
+        /* Signal Processing Blockset Correlation Time Domain Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+        %assign func_str = "MWDSP_Corr_TD_"
+        %if cmplxA
+          %assign func_str = func_str + cplx_str
+        %else
+          %assign func_str = func_str + real_str
+        %endif
+        %if cmplxB
+          %assign func_str = func_str + cplx_str
+        %else
+          %assign func_str = func_str + real_str
+        %endif
+          %assign args = "%<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>, "
+          %assign args = args + "%<nRowsA>, "
+          %assign args = args + "%<GotoNextChanA>, "
+          %assign args = args + "%<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>, "
+          %assign args = args + "%<nRowsB>, "
+          %assign args = args + "%<GotoNextChanB>, "
+      %else  %% Convolution
+        /* Signal Processing Blockset Convolution Time Domain Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+        %assign func_str = "MWDSP_Conv_TD_"
+        %if cmplxA && cmplxB
+          %assign func_str = func_str + cplx_str + cplx_str
+        %elseif !cmplxA && !cmplxB
+          %assign func_str = func_str + real_str + real_str
+        %else
+          %assign func_str = func_str + real_str + cplx_str
+        %endif
+        %%
+        %% Set up arguments for function call
+        %%
+        %if cmplxA && !cmplxB
+          %assign args = "%<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>, "
+          %assign args = args + "%<nRowsB>, "
+          %assign args = args + "%<GotoNextChanB>, "
+          %assign args = args + "%<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>, "
+          %assign args = args + "%<nRowsA>, "
+          %assign args = args + "%<GotoNextChanA>, "
+        %else
+          %assign args = "%<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>, "
+          %assign args = args + "%<nRowsA>, "
+          %assign args = args + "%<GotoNextChanA>, "
+          %assign args = args + "%<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>, "
+          %assign args = args + "%<nRowsB>, "
+          %assign args = args + "%<GotoNextChanB>, "
+        %endif
+      %endif
+      %%
+      %assign args = args + "%<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>, "
+      %assign args = args + "%<nRowsOut>, "
+      %assign args = args + "%<nColsOut>"
+      %<func_str>(%<args>);
+    %%
+    %else %% Frequency Domain Implementation
+    %%
+      /* Signal Processing Blockset Convolution Frequency Domain Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+      {
+        %assign uA     = LibBlockInputSignalAddr( INPORTA,   "", "", 0)
+        %assign uB     = LibBlockInputSignalAddr( INPORTB,   "", "", 0)
+        %assign dwork1 = LibBlockDWorkAddr(FFT1, "", "", 0)
+        %assign dwork2 = LibBlockDWorkAddr(FFT2, "", "", 0)
+        %if nColsOut > 1
+          int_T i, n = %<nColsOut>;
+        %else
+          int_T i;
+        %endif
+        %<cdtype> tmp;
+        %<dtype> scale = %<ONE> / (%<dtype>)%<NFFT>;
+        %%
+        %<cdtype> *dwrkA = %<dwork1>, *dwrkB = %<dwork2>;
+        %if GotoNextChanB && !GotoNextChanA
+          %<cdtype> *OutBuff    = %<dwork2>;
+        %else
+          %<cdtype> *OutBuff    = %<dwork1>;
+        %endif
+        %%
+        %if cmplxA || cmplxB
+          %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %else
+          %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %endif
+        %assign pad_func_str = "MWDSP_Copy_and_ZeroPad_"
+        %if cmplxA
+          const %<cdtype> *inPtrA = %<uA>;
+          %assign pad_func_str_A = pad_func_str + cplx_str + cplx_str
+        %else
+          const %<dtype> *inPtrA = %<uA>;
+          %assign pad_func_str_A = pad_func_str + real_str + cplx_str
+        %endif
+        %if cmplxB
+          const %<cdtype> *inPtrB = %<uB>;
+          %assign pad_func_str_B = pad_func_str + cplx_str + cplx_str
+        %else
+          const %<dtype> *inPtrB = %<uB>;
+          %assign pad_func_str_B = pad_func_str + real_str + cplx_str
+        %endif
+        %if !GotoNextChanA
+          %<pad_func_str_A>(inPtrA, %<nRowsA>, %<dwork1>, %<NFFT>);
+          %<fft_func_str>(%<dwork1>, 1, %<NFFT>, %<NFFT>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0);
+        %endif
+        %if !GotoNextChanB
+          %<pad_func_str_B>(inPtrB, %<nRowsB>, %<dwork2>, %<NFFT>);
+          %<fft_func_str>(%<dwork2>, 1, %<NFFT>, %<NFFT>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0);
+        %endif
+        %if nColsOut > 1
+          while (n--) {
+        %endif
+        %if GotoNextChanA
+          %<pad_func_str_A>(inPtrA, %<nRowsA>, %<dwork1>, %<NFFT>);
+          %<fft_func_str>(%<dwork1>, 1, %<NFFT>, %<NFFT>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0);
+          inPtrA += %<nRowsA>;
+        %endif
+        %if GotoNextChanB
+          %<pad_func_str_B>(inPtrB, %<nRowsB>, %<dwork2>, %<NFFT>);
+          %<fft_func_str>(%<dwork2>, 1, %<NFFT>, %<NFFT>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0);
+          inPtrB += %<nRowsB>;
+        %endif
+        /* Multiply in frequency domain */
+        for (i=0; i<%<NFFT>; i++) {
+          %if IS_CORRELATION %% Conjugate B before multiplying
+            tmp.re = CMULT_YCONJ_RE(dwrkA[i], dwrkB[i]);
+            tmp.im = CMULT_YCONJ_IM(dwrkA[i], dwrkB[i]);
+          %else %% Convolution
+            tmp.re = CMULT_RE(dwrkA[i], dwrkB[i]);
+            tmp.im = CMULT_IM(dwrkA[i], dwrkB[i]);
+          %endif
+          OutBuff[i] = tmp;
+        }
+        %<ifft_func_str>(OutBuff, 1, %<NFFT>, %<NFFT>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 1);
+        /* Load output from temporary buffer */
+          %if IS_CORRELATION
+            for (i=%<NFFT + 1 - nRowsB>; i<%<NFFT>; i++) {
+              %if cmplxA || cmplxB
+                outPtr->re     = OutBuff[i].re * scale;
+                (outPtr++)->im = OutBuff[i].im * scale;
+              %else
+                *outPtr++ = OutBuff[i].re * scale;
+              %endif
+            }
+            for (i=0; i<%<nRowsA>; i++) {
+              %if cmplxA || cmplxB
+                outPtr->re     = OutBuff[i].re * scale;
+                (outPtr++)->im = OutBuff[i].im * scale;
+              %else
+                *outPtr++ = OutBuff[i].re * scale;
+              %endif
+            }
+          %else  %% CONVOLUTION
+            for (i=0; i<%<nRowsOut>; i++) {
+              %if cmplxA || cmplxB
+                outPtr->re     = OutBuff[i].re * scale;
+                (outPtr++)->im = OutBuff[i].im * scale;
+              %else
+                *outPtr++ = OutBuff[i].re * scale;
+              %endif
+            }
+          %endif
+        %if nColsOut > 1
+        }
+        %endif
+      }
+    %endif
+
+%endfunction   %% FltPtRunTimeFcn
+
+
+%% Function: LibBlockDSPMultScalarChannels
+%%
+%% This function takes signals from two input ports, where each input signal
+%% can have arbitrary numbers of channels, but only one sample per channel
+%% on each port. It then does a point by point multiply. In the case of N channels
+%% on each port, the behavior is straightforward. In the case of N channels
+%% on one port and 1 on the other, the data from the 1 channel port is multiplied
+%% against each of the N channels on the other input to produce an N channel output.
+%function LibBlockDSPMultScalarChannels(ConjB) Output
+    %assign cmplxA     = LibBlockInputSignalIsComplex(INPORTA)
+    %assign cmplxB     = LibBlockInputSignalIsComplex(INPORTB)
+    %assign framebased = LibBlockInputSignalIsFrameData(INPORTA)
+    %assign dimsA    = LibBlockInputSignalDimensions(INPORTA)
+    %assign widthA   = LibDataInputPortWidth(INPORTA)
+    %assign nColsA   = framebased ? dimsA[1] : 1
+    %assign dimsB    = LibBlockInputSignalDimensions(INPORTB)
+    %assign widthB   = LibDataInputPortWidth(INPORTB)
+    %assign nColsB   = framebased ? dimsB[1] : 1
+    %assign GotoNextChanA = (framebased && nColsA > 1)
+    %assign GotoNextChanB = (framebased && nColsB > 1)
+    %assign NchanNchan    = (GotoNextChanA && GotoNextChanB)
+    %assign Nchan1chan    = (GotoNextChanA || GotoNextChanB) && !NchanNchan
+    %assign CplxCplx     = (cmplxA && cmplxB)
+    %assign CplxReal     = (cmplxA || cmplxB) && !CplxCplx  %% ExOR
+    %assign RealReal     = (!cmplxA && !cmplxB)
+    %assign ConjX = 0
+    %assign ConjY = 0
+    %if NchanNchan       %% N channels on each input
+      {
+        int_T i;
+        %if cmplxA || cmplxB
+          %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %else
+          %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %endif
+        %if CplxCplx      %% Both input signals are complex
+          for (i=0; i<%<nColsOut>; i++) {
+            %if ConjB
+              outPtr->re     = CMULT_YCONJ_RE(%<LibBlockInputSignal(INPORTA, "i", "", 0)>, %<LibBlockInputSignal(INPORTB, "i", "", 0)>);
+              (outPtr++)->im = CMULT_YCONJ_IM(%<LibBlockInputSignal(INPORTA, "i", "", 0)>, %<LibBlockInputSignal(INPORTB, "i", "", 0)>);
+            %else
+              outPtr->re     = CMULT_RE(%<LibBlockInputSignal(INPORTA, "i", "", 0)>, %<LibBlockInputSignal(INPORTB, "i", "", 0)>);
+              (outPtr++)->im = CMULT_IM(%<LibBlockInputSignal(INPORTA, "i", "", 0)>, %<LibBlockInputSignal(INPORTB, "i", "", 0)>);
+            %endif
+          }
+        %elseif CplxReal %% One complex signal, one real
+          %if cmplxA
+            %assign CDAT = LibBlockInputSignal(INPORTA, "i", "", 0)
+            %assign RDAT = LibBlockInputSignal(INPORTB, "i", "", 0)
+          %else
+            %assign CDAT = LibBlockInputSignal(INPORTB, "i", "", 0)
+            %assign RDAT = LibBlockInputSignal(INPORTA, "i", "", 0)
+          %endif
+          for (i=0; i<%<nColsOut>; i++) {
+            outPtr->re     = %<CDAT>.re * %<RDAT>;
+            %if ConjB && cmplxB
+              (outPtr++)->im = -%<CDAT>.im * %<RDAT>;
+            %else
+              (outPtr++)->im = %<CDAT>.im * %<RDAT>;
+            %endif
+          }
+        %else     %% RealReal
+          for (i=0; i<%<nColsOut>; i++) {
+            *outPtr++ = %<LibBlockInputSignal(INPORTA, "i", "", 0)> * %<LibBlockInputSignal(INPORTB, "i", "", 0)>;
+          }
+        %endif
+      }
+      %elseif Nchan1chan
+      {
+        int_T i;
+        %if cmplxA || cmplxB
+          %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %else
+          %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %endif
+        for (i=0; i<%<nColsOut>; i++) {
+        %if CplxCplx || RealReal     %% Signal complexities match
+          %if GotoNextChanA
+            %assign u_one  = LibBlockInputSignal(INPORTB, "", "", 0)
+            %assign u_many = LibBlockInputSignal(INPORTA, "i", "", 0)
+            %if ConjB && cmplxB
+              %assign ConjX = 1
+            %endif
+          %else
+            %assign u_one  = LibBlockInputSignal(INPORTA, "", "", 0)
+            %assign u_many = LibBlockInputSignal(INPORTB, "i", "", 0)
+            %if ConjB && cmplxB
+              %assign ConjY = 1
+            %endif
+          %endif
+          %if CplxCplx
+            %if ConjX
+              outPtr->re     = CMULT_XCONJ_RE(%<u_one>, %<u_many>);
+              (outPtr++)->im = CMULT_XCONJ_IM(%<u_one>, %<u_many>);
+            %elseif ConjY
+              outPtr->re     = CMULT_YCONJ_RE(%<u_one>, %<u_many>);
+              (outPtr++)->im = CMULT_YCONJ_IM(%<u_one>, %<u_many>);
+            %else
+              outPtr->re     = CMULT_RE(%<u_one>, %<u_many>);
+              (outPtr++)->im = CMULT_IM(%<u_one>, %<u_many>);
+            %endif
+          %else %% RealReal
+            *outPtr++     = %<u_one> * %<u_many>;
+          %endif
+        %else %% CplxReal
+          %if (GotoNextChanA && cmplxA) || (GotoNextChanB && cmplxB)  %% N complex chans, 1 real
+            %assign u_Ncplx = cmplxA ? LibBlockInputSignal(INPORTA, "i", "", 0)   ...
+                                     : LibBlockInputSignal(INPORTB, "i", "", 0)
+            %assign u_1real = cmplxA ? LibBlockInputSignal(INPORTB, "i", "", 0)   ...
+                                     : LibBlockInputSignal(INPORTA, "i", "", 0)
+              outPtr->re     = %<u_Ncplx>.re * %<u_1real>;
+              %if ConjB && cmplxB
+                (outPtr++)->im = -%<u_Ncplx>.im * %<u_1real>;
+              %else
+                (outPtr++)->im = %<u_Ncplx>.im * %<u_1real>;
+              %endif
+          %else %%  N real channels, 1 complex
+            %assign u_1Cplx = cmplxA ? LibBlockInputSignal(INPORTA, "i", "", 0)   ...
+                                     : LibBlockInputSignal(INPORTB, "i", "", 0)
+            %assign u_Nreal = cmplxA ? LibBlockInputSignal(INPORTB, "i", "", 0)   ...
+                                     : LibBlockInputSignal(INPORTA, "i", "", 0)
+              outPtr->re     = %<u_Nreal> * %<u_1Cplx>.re;
+              %if ConjB && cmplxB
+                (outPtr++)->im = -%<u_Nreal> * %<u_1Cplx>.im;
+              %else
+                (outPtr++)->im = %<u_Nreal> * %<u_1Cplx>.im;
+              %endif
+          %endif
+        %endif
+        }
+      }
+      %else  %% 1chan1chan
+        %if CplxCplx
+          %if ConjB
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.re = CMULT_YCONJ_RE(%<LibBlockInputSignal(INPORTA, "", "", 0)>,  %<LibBlockInputSignal(INPORTB, "", "", 0)>);
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.im = CMULT_YCONJ_IM(%<LibBlockInputSignal(INPORTA, "", "", 0)>,  %<LibBlockInputSignal(INPORTB, "", "", 0)>);
+          %else
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.re = CMULT_RE(%<LibBlockInputSignal(INPORTA, "", "", 0)>,  %<LibBlockInputSignal(INPORTB, "", "", 0)>);
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.im = CMULT_IM(%<LibBlockInputSignal(INPORTA, "", "", 0)>,  %<LibBlockInputSignal(INPORTB, "", "", 0)>);
+          %endif
+        %elseif CplxReal
+          %if cmplxA
+            %assign u_real = LibBlockInputSignal(INPORTB, "", "", 0)
+            %assign u_cplx = LibBlockInputSignal(INPORTA, "", "", 0)
+          %else
+            %assign u_real = LibBlockInputSignal(INPORTA, "", "", 0)
+            %assign u_cplx = LibBlockInputSignal(INPORTB, "", "", 0)
+          %endif
+          %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.re = %<u_cplx>.re * %<u_real>;
+          %if ConjB && cmplxB
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.im = -%<u_cplx>.im * %<u_real>;
+          %else
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)>.im = %<u_cplx>.im * %<u_real>;
+          %endif
+        %else %% RealReal
+          %<LibBlockOutputSignal(OUTPORT, "", "", 0)> = %<LibBlockInputSignal(INPORTA, "", "", 0)> * %<LibBlockInputSignal(INPORTB, "", "", 0)>;
+        %endif
+      %endif
+%endfunction  %% LibBlockDSPMultScalarChannels
+
+%function ScalarVectorMult_NchanNchan(IS_CORRELATION) Output
+    %assign CplxCplx      = (cmplxA && cmplxB)
+    %assign CplxReal      = (cmplxA || cmplxB) && !CplxCplx  %% ExOR
+    %assign RealReal      = (!cmplxA && !cmplxB)
+    %assign ConjFlag      = IS_CORRELATION && cmplxB
+    %assign ConjX         = 0
+    %assign ConjY         = 0
+    %assign Reverse       = IS_CORRELATION && (nRowsB > 1)
+%%
+    %if nRowsA == 1
+      %assign ScalarSig = LibBlockInputSignalAddr(INPORTA, "", "", 0)
+      %assign VectorSig = LibBlockInputSignalAddr(INPORTB, "", "", 0)
+      %if ConjFlag
+        %assign ConjY = 1
+      %endif
+    %else
+      %assign ScalarSig = LibBlockInputSignalAddr(INPORTB, "", "", 0)
+      %assign VectorSig = LibBlockInputSignalAddr(INPORTA, "", "", 0)
+      %if ConjFlag
+        %assign ConjX = 1
+      %endif
+    %endif
+    %if cmplxA || cmplxB
+      %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+    %else
+      %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+    %endif
+    %if CplxCplx      %% Both input signals are complex
+      const %<cdtype> *inPtrScalar = %<ScalarSig>;
+      %if Reverse
+        int_T i, l;
+        for (i=0; i++<%<nColsOut>;) {
+          const %<cdtype> *inPtrVector = %<VectorSig> + i*%<nRowsOut> - 1;
+      %else
+        const %<cdtype> *inPtrVector = %<VectorSig>;
+        int_T i = %<nColsOut>, l;
+        while (i--) {
+      %endif
+          l = %<nRowsOut>;
+          while (l--) {
+            %if ConjX
+              outPtr->re     = CMULT_XCONJ_RE(*inPtrScalar, *inPtrVector);
+              (outPtr++)->im = CMULT_XCONJ_IM(*inPtrScalar, *inPtrVector);
+            %elseif ConjY
+              outPtr->re     = CMULT_YCONJ_RE(*inPtrScalar, *inPtrVector);
+              (outPtr++)->im = CMULT_YCONJ_IM(*inPtrScalar, *inPtrVector);
+            %else
+              outPtr->re     = CMULT_RE(*inPtrScalar, *inPtrVector);
+              (outPtr++)->im = CMULT_IM(*inPtrScalar, *inPtrVector);
+            %endif
+            %if Reverse
+              inPtrVector--;
+            %else
+              inPtrVector++;
+            %endif
+          }
+          inPtrScalar++;
+        }
+    %elseif CplxReal %% One complex signal, one real
+      %if (cmplxA && nRowsA == 1) || (cmplxB && nRowsB == 1)  %% cplx scalar times real vector on N channels
+        const %<cdtype> *inPtrCplxScalar = %<ScalarSig>;
+        %if Reverse
+          int_T i, l;
+          for (i=0; i++<%<nColsOut>;) {
+            const %<dtype>  *inPtrRealVector = %<VectorSig> + i*%<nRowsOut> - 1;
+        %else
+          int_T i = %<nColsOut>, l;
+          const %<dtype>  *inPtrRealVector = %<VectorSig>;
+          while (i--) {
+        %endif
+            l = %<nRowsOut>;
+            while (l--) {
+              outPtr->re     = inPtrCplxScalar->re * *inPtrRealVector;
+              %if Reverse
+                %if ConjFlag
+                  (outPtr++)->im = -inPtrCplxScalar->im * *inPtrRealVector--;
+                %else
+                  (outPtr++)->im = inPtrCplxScalar->im * *inPtrRealVector--;
+                %endif
+              %else
+                %if ConjFlag
+                  (outPtr++)->im = -inPtrCplxScalar->im * *inPtrRealVector++;
+                %else
+                  (outPtr++)->im = inPtrCplxScalar->im * *inPtrRealVector++;
+                %endif
+              %endif
+            }
+            inPtrCplxScalar++;
+          }
+      %else        %% cplx vector times real scalar on N channels
+        const %<dtype>  *inPtrRealScalar = %<ScalarSig>;
+        %if Reverse
+          int_T i, l;
+          for (i=0; i++<%<nColsOut>;) {
+            const %<cdtype>  *inPtrCplxVector = %<VectorSig> + i*%<nRowsOut> - 1;
+        %else
+          int_T i = %<nColsOut>, l;
+          const %<cdtype> *inPtrCplxVector = %<VectorSig>;
+          while (i--) {
+        %endif
+        l = %<nRowsOut>;
+        while (l--) {
+          outPtr->re     = inPtrCplxVector->re * *inPtrRealScalar;
+          %if Reverse
+            %if ConjFlag
+              (outPtr++)->im = -(inPtrCplxVector--)->im * *inPtrRealScalar;
+            %else
+              (outPtr++)->im = (inPtrCplxVector--)->im * *inPtrRealScalar;
+            %endif
+          %else
+            %if ConjFlag
+              (outPtr++)->im = -(inPtrCplxVector++)->im * *inPtrRealScalar;
+            %else
+              (outPtr++)->im = (inPtrCplxVector++)->im * *inPtrRealScalar;
+            %endif
+          %endif
+          }
+          inPtrRealScalar++;
+        }
+      %endif
+    %else          %% Both input signals are real
+        const %<dtype> *inPtrScalar = %<ScalarSig>;
+        %if Reverse
+          int_T i, l;
+          for (i=0; i++<%<nColsOut>;) {
+            const %<dtype> *inPtrVector = %<VectorSig> + i*%<nRowsOut> - 1;
+        %else
+          int_T i = %<nColsOut>, l;
+          const %<dtype> *inPtrVector = %<VectorSig>;
+          while (i--) {
+        %endif
+        l = %<nRowsOut>;
+        while (l--) {
+          %if Reverse
+            *outPtr++     = *inPtrScalar * *inPtrVector--;
+          %else
+            *outPtr++     = *inPtrScalar * *inPtrVector++;
+          %endif
+        }
+        inPtrScalar++;
+      }
+    %endif
+%endfunction  %% ScalarVectorMult_NchanNchan(IS_CORRELATION) Output
+
+%function ScalarVectorMult_Nchan1chan(IS_CORRELATION) Output
+    %assign CplxCplx      = (cmplxA && cmplxB)
+    %assign CplxReal      = (cmplxA || cmplxB) && !CplxCplx  %% ExOR
+    %assign RealReal      = (!cmplxA && !cmplxB)
+    %assign ConjFlag      = IS_CORRELATION && cmplxB
+    %assign ConjX         = 0
+    %assign ConjY         = 0
+    %assign Reverse       = IS_CORRELATION && (nRowsB > 1)
+        %if cmplxA || cmplxB
+          %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %else
+          %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %endif
+        %if ((widthA == 1) || (widthB == 1))    %% N vector signals times one scalar signal (matrix times scalar)
+          %if widthB == 1  %% No reverse of individual channels required, Conjugate B if Correlation.
+            int_T i=%<widthOut>;
+            %if CplxCplx
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              while (i--) {
+                %if ConjFlag
+                  outPtr->re = CMULT_XCONJ_RE(inScalar, *inPtrVector);
+                  (outPtr++)->im = CMULT_XCONJ_IM(inScalar, *inPtrVector);
+                %else
+                  outPtr->re = CMULT_RE(inScalar, *inPtrVector);
+                  (outPtr++)->im = CMULT_IM(inScalar, *inPtrVector);
+                %endif
+                inPtrVector++;
+              }
+            %elseif cmplxA && !cmplxB
+              %<dtype> inScalar    = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              while (i--) {
+                outPtr->re = inScalar  * inPtrVector->re;
+                (outPtr++)->im = inScalar * (inPtrVector++)->im;
+              }
+            %elseif !cmplxA && cmplxB
+              %<cdtype> inScalar      = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              while (i--) {
+                %if ConjFlag
+                  outPtr->re = inScalar.re  * *inPtrVector;
+                  (outPtr++)->im = -inScalar.im * *inPtrVector++;
+                %else
+                  outPtr->re = inScalar.re  * *inPtrVector;
+                  (outPtr++)->im = inScalar.im * *inPtrVector++;
+                %endif
+              }
+            %else %% RealReal
+              %<dtype> inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              while (i--) {
+                *outPtr++ = inScalar  * *inPtrVector++;
+              }
+            %endif
+          %elseif (widthA == 1) && IS_CORRELATION %% Need Conjugation AND Reverse
+            int_T i,l;
+            %if CplxCplx
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              for (i=0; i++ < %<nColsOut>;) {
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + i*%<nRowsB> - 1;
+                l = %<nRowsB>;
+                while (l--) {
+                  outPtr->re = CMULT_YCONJ_RE(inScalar, *inPtrVector);
+                  (outPtr++)->im = CMULT_YCONJ_IM(inScalar, *inPtrVector);
+                  inPtrVector--;
+                }
+              }
+            %elseif cmplxA && !cmplxB
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              for (i=0; i++ < %<nColsOut>;) {
+                const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + i*%<nRowsB> - 1;
+                l = %<nRowsB>;
+                while (l--) {
+                  outPtr->re = inScalar.re * *inPtrVector;
+                  (outPtr++)->im = inScalar.im * *inPtrVector--;
+                }
+              }
+            %elseif !cmplxA && cmplxB
+              %<dtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              for (i=0; i++ < %<nColsOut>;) {
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + i*%<nRowsB> - 1;
+                l = %<nRowsB>;
+                while (l--) {
+                  outPtr->re = inScalar * inPtrVector->re;
+                  (outPtr++)->im = -inScalar * (inPtrVector--)->im;
+                }
+              }
+            %else %% RealReal
+              %<dtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              for (i=0; i++ < %<nColsOut>;) {
+                const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + i*%<nRowsB> - 1;
+                l = %<nRowsB>;
+                while (l--) {
+                  *outPtr++ = inScalar * *inPtrVector--;
+                }
+              }
+            %endif
+          %else %% widthA ==1 && IS_NOT_CORRELATION %% No Conjugation, No Reverse
+            int_T i=%<widthOut>;
+            %if CplxCplx
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              while (i--) {
+                outPtr->re = CMULT_RE(inScalar, *inPtrVector);
+                (outPtr++)->im = CMULT_IM(inScalar, *inPtrVector);
+                inPtrVector++;
+              }
+            %elseif cmplxA && !cmplxB
+              %<cdtype> inScalar    = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              while (i--) {
+                outPtr->re = inScalar.re  * *inPtrVector;
+                (outPtr++)->im = inScalar.im * *inPtrVector++;
+              }
+            %elseif !cmplxA && cmplxB
+              %<dtype> inScalar      = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              while (i--) {
+                outPtr->re = inScalar  * inPtrVector->re;
+                (outPtr++)->im = inScalar * (inPtrVector++)->im;
+              }
+            %else %% RealReal
+              %<dtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              while (i--) {
+                *outPtr++ = inScalar  * *inPtrVector++;
+              }
+            %endif
+          %endif
+        %else   %% 1 vector signal times N scalar signals (col vector times row vector) (still Nchan1Chan)
+          %if CplxCplx
+            %if nRowsA == 1
+              %if ConjFlag
+                %assign ConjY = 1
+              %endif
+              const %<cdtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+            %else
+              %if ConjFlag
+                %assign ConjX = 1
+              %endif
+              const %<cdtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+            %endif
+            int_T i = %<nColsOut>, l;
+            while (i--) {
+              %if Reverse
+                const %<cdtype> *tptr = inPtrVector + %<nRowsOut - 1>;
+              %else
+                const %<cdtype> *tptr = inPtrVector;
+              %endif
+              l = %<nRowsOut>;
+              while (l--) {
+                %if ConjX
+                  outPtr->re     = CMULT_XCONJ_RE(*inPtrScalar, *tptr);
+                  (outPtr++)->im = CMULT_XCONJ_IM(*inPtrScalar, *tptr);
+                %elseif ConjY
+                  outPtr->re     = CMULT_YCONJ_RE(*inPtrScalar, *tptr);
+                  (outPtr++)->im = CMULT_YCONJ_IM(*inPtrScalar, *tptr);
+                %else
+                  outPtr->re     = CMULT_RE(*inPtrScalar, *tptr);
+                  (outPtr++)->im = CMULT_IM(*inPtrScalar, *tptr);
+                %endif
+                %if Reverse
+                    tptr--;
+                %else
+                    tptr++;
+                %endif
+              }
+              inPtrScalar++;
+            }
+          %elseif CplxReal
+            %if ((nRowsA == 1) && cmplxA) || ((nRowsB == 1) && cmplxB)
+              %% N Complex scalar signals times 1 real vector
+              %if cmplxA
+                const %<cdtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              %else
+                const %<cdtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              %endif
+              int_T i = %<nColsOut>, l;
+              while (i--) {
+                %if Reverse
+                  const %<dtype> *tptr = inPtrVector + %<nRowsOut - 1>;
+                %else
+                  const %<dtype> *tptr = inPtrVector;
+                %endif
+                l = %<nRowsOut>;
+                while (l--) {
+                  outPtr->re     = *tptr   * inPtrScalar->re;
+                  %if Reverse
+                    %if ConjFlag
+                      (outPtr++)->im = -inPtrScalar->im * *tptr--;
+                    %else
+                      (outPtr++)->im = *tptr-- * inPtrScalar->im;
+                    %endif
+                  %else
+                      %if ConjFlag
+                        (outPtr++)->im = -inPtrScalar->im * *tptr++;
+                      %else
+                        (outPtr++)->im = *tptr++ * inPtrScalar->im;
+                      %endif
+                  %endif
+                }
+                inPtrScalar++;
+              }
+            %else   %% N Real scalars times 1 complex vector
+              %if cmplxA
+                const %<dtype>  *inPtrScalar = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              %else
+                const %<dtype>  *inPtrScalar = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              %endif
+              int_T i = %<nColsOut>, l;
+              while (i--) {
+                %if Reverse
+                  const %<cdtype> *tptr = inPtrVector + %<nRowsOut - 1>;
+                %else
+                  const %<cdtype> *tptr = inPtrVector;
+                %endif
+                l = %<nRowsOut>;
+                while (l--) {
+                  outPtr->re     = tptr->re     * *inPtrScalar;
+                  %if Reverse
+                    %if ConjFlag
+                      (outPtr++)->im = -(tptr--)->im * *inPtrScalar;
+                    %else
+                      (outPtr++)->im = (tptr--)->im * *inPtrScalar;
+                    %endif
+                  %else
+                      %if ConjFlag
+                        (outPtr++)->im = -(tptr++)->im * *inPtrScalar;
+                      %else
+                        (outPtr++)->im = (tptr++)->im * *inPtrScalar;
+                      %endif
+                  %endif
+                }
+                inPtrScalar++;
+              }
+            %endif
+          %else %% RealReal, N real scalar signals times 1 real vector
+            %if nRowsA == 1
+              const %<dtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+            %else
+              const %<dtype> *inPtrScalar = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+            %endif
+            int_T i = %<nColsOut>, l;
+            while (i--) {
+              %if Reverse
+                const %<dtype> *tptr = inPtrVector + %<nRowsOut - 1>;
+              %else
+                const %<dtype> *tptr = inPtrVector;
+              %endif
+              l = %<nRowsOut>;
+              while (l--) {
+                %if Reverse
+                    *outPtr++     = *inPtrScalar * *tptr--;
+                %else
+                    *outPtr++     = *inPtrScalar * *tptr++;
+                %endif
+              }
+              inPtrScalar++;
+            }
+          %endif
+        %endif
+%endfunction  %% ScalarVectorMult_Nchan1chan(IS_CORRELATION) Output
+
+%function ScalarVectorMult_1chan1chan(IS_CORRELATION) Output
+    %assign CplxCplx      = (cmplxA && cmplxB)
+    %assign CplxReal      = (cmplxA || cmplxB) && !CplxCplx  %% ExOR
+    %assign RealReal      = (!cmplxA && !cmplxB)
+    %assign ConjFlag      = IS_CORRELATION && cmplxB
+    %assign ConjX         = 0
+    %assign ConjY         = 0
+    %assign Reverse       = IS_CORRELATION && (nRowsB > 1)
+        int_T i = %<nRowsOut>;
+        %if cmplxA || cmplxB
+          %<cdtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %else
+          %<dtype> *outPtr = %<LibBlockOutputSignalAddr( OUTPORT,   "", "", 0)>;
+        %endif
+        %if CplxCplx
+          %if widthA == 1
+            %<cdtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+            %if Reverse
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + %<nRowsOut> - 1;
+            %else
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+            %endif
+            %if ConjFlag
+              %assign ConjY = 1
+            %endif
+          %else
+            %<cdtype> inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+            %if Reverse
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)> + %<nRowsOut> - 1;
+            %else
+              const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+            %endif
+            %if ConjFlag
+              %assign ConjX = 1
+            %endif
+          %endif
+            while (i--) {
+              %if ConjX
+                outPtr->re     = CMULT_XCONJ_RE(inScalar, *inPtrVector);
+                (outPtr++)->im = CMULT_XCONJ_IM(inScalar, *inPtrVector);
+              %elseif ConjY
+                outPtr->re     = CMULT_YCONJ_RE(inScalar, *inPtrVector);
+                (outPtr++)->im = CMULT_YCONJ_IM(inScalar, *inPtrVector);
+              %else
+                outPtr->re     = CMULT_RE(inScalar, *inPtrVector);
+                (outPtr++)->im = CMULT_IM(inScalar, *inPtrVector);
+              %endif
+              %if Reverse
+                inPtrVector--;
+              %else
+                inPtrVector++;
+              %endif
+            }
+        %elseif CplxReal
+          %if ((widthA == 1) && cmplxA) || ((widthB == 1) && cmplxB)
+            %% Complex scalar times real vector
+            %if cmplxA
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              %if Reverse
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + %<widthB> - 1;
+              %else
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              %endif
+            %else
+              %<cdtype> inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+              %if Reverse
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)> + %<widthA> - 1;
+              %else
+                const %<dtype>  *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              %endif
+            %endif
+            while (i--) {
+              outPtr->re     = *inPtrVector   * inScalar.re;
+              %if Reverse
+                %if ConjFlag
+                  (outPtr++)->im = -inScalar.im * *inPtrVector--;
+                %else
+                  (outPtr++)->im = *inPtrVector-- * inScalar.im;
+                %endif
+              %else
+                %if ConjFlag
+                  (outPtr++)->im = -inScalar.im * *inPtrVector++;
+                %else
+                  (outPtr++)->im = *inPtrVector++ * inScalar.im;
+                %endif
+              %endif
+            }
+          %else   %% Real scalar times complex vector
+            %if cmplxA
+              %if Reverse
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)> + %<widthA> - 1;
+              %else
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+              %endif
+              %<dtype>  inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+            %else
+              %<dtype>  inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+              %if Reverse
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + %<widthB> - 1;
+              %else
+                const %<cdtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+              %endif
+            %endif
+            while (i--) {
+              outPtr->re     = inPtrVector->re     * inScalar;
+              %if Reverse
+                %if ConjFlag
+                  (outPtr++)->im = -inScalar * (inPtrVector--)->im;
+                %else
+                  (outPtr++)->im = (inPtrVector--)->im * inScalar;
+                %endif
+              %else
+                %if ConjFlag
+                  (outPtr++)->im = -inScalar * (inPtrVector++)->im;
+                %else
+                  (outPtr++)->im = (inPtrVector++)->im * inScalar;
+                %endif
+              %endif
+            }
+          %endif
+        %else %% RealReal
+          %if widthA == 1
+            %<dtype> inScalar = %<LibBlockInputSignal( INPORTA,   "", "", 0)>;
+            %if Reverse
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)> + %<widthB> - 1;
+            %else
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTB,   "", "", 0)>;
+            %endif
+          %else
+            %<dtype> inScalar = %<LibBlockInputSignal( INPORTB,   "", "", 0)>;
+            %if Reverse
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)> + %<widthA> - 1;
+            %else
+              const %<dtype> *inPtrVector = %<LibBlockInputSignalAddr( INPORTA,   "", "", 0)>;
+            %endif
+          %endif
+          while (i--) {
+            %if Reverse
+              *outPtr++ = inScalar * *inPtrVector--;
+            %else
+              *outPtr++ = inScalar * *inPtrVector++;
+            %endif
+          }
+        %endif
+%endfunction  %% ScalarVectorMult_1chan1chan(IS_CORRELATION) Output
+
+%%
+%% Function: LibBlockDSPMultScalarVectorChannels
+%%
+%% This function is identical to LibBlockDSPMultScalarChannels except that this function
+%% allows one port to have vector channels. In this case, the scalar signals are just multiplied
+%% onto the vector channels, one at a time. The output can be either in the same order as the
+%% input vector or in reverse order, for each channel.
+%%
+%function LibBlockDSPMultScalarVectorChannels(IS_CORRELATION) Output
+%%
+    %assign NchanNchan    = (GotoNextChanA && GotoNextChanB)
+    %assign Nchan1chan    = (GotoNextChanA || GotoNextChanB) && !NchanNchan
+
+    %assign CplxCplx      = (cmplxA && cmplxB)
+    %assign CplxReal      = (cmplxA || cmplxB) && !CplxCplx  %% ExOR
+    %assign RealReal      = (!cmplxA && !cmplxB)
+    %assign ConjFlag      = IS_CORRELATION && cmplxB
+    %assign ConjX         = 0
+    %assign ConjY         = 0
+    %assign Reverse       = IS_CORRELATION && (nRowsB > 1)
+    {
+      %if NchanNchan       %% N channels on each input
+        %<ScalarVectorMult_NchanNchan(IS_CORRELATION)>
+      %elseif Nchan1chan   %% N channels on one input, 1 on the other
+        %<ScalarVectorMult_Nchan1chan(IS_CORRELATION)>
+      %else                %% 1 Scalar channel, 1 Vector channel
+        %<ScalarVectorMult_1chan1chan(IS_CORRELATION)>
+      %endif
+    }
+%endfunction  %% LibBlockDSPMultScalarVectorChannels
+
+%% EOF: sdspconvcorr2.tlc
+

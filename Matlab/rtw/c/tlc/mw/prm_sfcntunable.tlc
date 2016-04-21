@@ -1,0 +1,284 @@
+%% ============================================================================
+%% File: prm_sfcntunable.tlc
+%%
+%% Abstract:
+%%   
+%%   
+%% $Revision: 1.1.6.3 $ 
+%% $Date: 2004/04/14 23:48:37 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%% 
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_PRM_SFCNTUNABLE_") == 0
+%assign _PRM_SFCNTUNABLE_ = 1
+
+%include "prm_cacheutils.tlc"
+
+
+%% Function: SLibCacheSfcnTunablePrmBuffers ===================================
+%% Abstract:
+%%   Generate the definition & instantiation buffers for SfcnTunable parameters
+%%
+%function SLibCacheSfcnTunablePrmBuffers() void
+
+  %% Create parameter buffers
+  %<SLibCreatePrmBuffer("SfcnTunable", "Decl")>
+
+  %% Generate the parameter definition buffer
+  %assign declBuffer = FcnGenSfcnTunableParamDecl()
+  %<SLibSetPrmBufferPart("SfcnTunable", "Decl", "Code", declBuffer)>
+  
+%endfunction %% SLibCacheSfcnTunablePrmBuffers
+
+
+%% Function: FcnGenSfcnTunableParamDecl =======================================
+%% Abstract:
+%%   Generate the SfcnTunable parameters definition buffer
+%%
+%function FcnGenSfcnTunableParamDecl() void
+
+  %assign cacheBuffer = ""
+  %if CodeFormat == "S-Function" && !Accelerator
+    %openfile cacheBuffer
+    %foreach prmIdx = NumParameters
+      %assign mdlParam = Parameter[prmIdx]
+      %assign pName = mdlParam.Identifier
+      %if mdlParam.StorageClass == "Auto_SFCN"
+	%assert !LibGetRecordIsComplex(mdlParam)
+	%assert LibIsBuiltInDataType(mdlParam.OriginalDataTypeIdx)
+	#define %<pName>(S) _ssGetSFcnParam(S,%<ModelParameters.SfcnParamIdx>)
+	%assign CompiledModel.ModelParameters.SfcnParamIdx = ...
+	  ModelParameters.SfcnParamIdx + 1
+      %endif
+    %endforeach
+    %closefile cacheBuffer
+  %endif
+
+  %return cacheBuffer
+  
+%endfunction %% FcnGenSfcnTunableParamDecl
+
+
+%% Function: SLibGenSFcnParamChecks ============================================
+%% Abstract:
+%%   Generate code to check attributes of tunable parameters
+%%   for RTW-generated (or ERT) S-Functions.
+%%
+%% NOTE:
+%% - Uses mdlPrm.mxClassOfVar (added by SLibCacheNameAndValueStrForSFcnParam)
+%function SLibGenSFcnParamChecks(mdlPrm, sfcnPrmIdx) Output
+  %assign pName = mdlPrm.Identifier
+  /* Parameter check for '%<pName>' */
+
+  %% Check complexity
+  %if SLibGetRecordIsComplex(mdlPrm)
+    %assign logNot = "!"
+    %assign litNon = ""
+  %else
+    %assign logNot = ""
+    %assign litNon = "non "
+  %endif
+  if (%<logNot>mxIsComplex(ssGetSFcnParam(S, %<sfcnPrmIdx>))) {
+    ssSetErrorStatus(S,"Parameter '%<pName>' has to be a %<litNon>complex array.");
+    return;
+  }
+  
+  %% Check data type
+  %assign mxClassOfVar = mdlPrm.mxClassOfVar
+  %assign dataTypeIdx  = SLibGetIdFromMLDataType(mxClassOfVar)
+  %assign mxFcnName    = SLibGetMLidentFcnFromId(dataTypeIdx)
+  %assert(mxClassOfVar == SLibGetMLDataTypeFromId(dataTypeIdx))
+  if (!%<mxFcnName>(ssGetSFcnParam(S, %<sfcnPrmIdx>))) {
+    ssSetErrorStatus(S,"Parameter '%<pName>' has to be a %<mxClassOfVar> array.");
+    return;
+  }
+  
+  %% Check dimensions
+  %assign dims = FcnGetMatlabSafeDimensions(mdlPrm)
+  %assign numOfDims = SIZE(dims,1)
+  %%
+  %% Construct dimensions string (for error message)
+  %assign dimsStr = "[%<dims[0]>"
+  %foreach dimsIdx = (numOfDims-1)
+    %assign dimsStr = dimsStr + "x%<dims[dimsIdx+1]>"
+  %endforeach
+  %assign dimsStr = dimsStr + "]"
+  %%
+  if ((mxGetNumberOfDimensions(ssGetSFcnParam(S, %<sfcnPrmIdx>)) != %<numOfDims>)\
+  %foreach dimsIdx = numOfDims
+    ||
+    (mxGetDimensions(ssGetSFcnParam(S, %<sfcnPrmIdx>))[%<dimsIdx>] != %<dims[dimsIdx]>)\
+  %endforeach
+  )
+  {
+    ssSetErrorStatus(S,"Parameter '%<pName>' has to be a %<dimsStr> array.");
+    return;
+  }
+  
+%endfunction
+
+
+%% Function: SLibCacheNameAndValueStrForSFcnParam ==============================
+%% Abstract:
+%%   Generate name & value strings for a parameter to be used by
+%%   RTW-generated (or ERT) S-Function.
+%%
+%% NOTE:
+%% - These strings get cached into a global MATLAB variable (accessed in rtw_c.m)
+%%
+%function SLibCacheNameAndValueStrForSFcnParam(modelName, mdlPrmIdx) void
+  %assign mdlPrm = ModelParameters.Parameter[mdlPrmIdx]
+  %assign pName = mdlPrm.Identifier
+  %assign origDtypeIdx = mdlPrm.OriginalDataTypeIdx
+
+  %% --- Create the name string for this parameter -------------------------
+
+  %assign mxClassOfVar = FcnGetWSVariableClass(pName)
+  %if TYPE(mxClassOfVar) == "String"
+    %assign nameStr = pName
+  %else
+    %% Resulting value could be the result of executing an expression that
+    %% uses a combination of functions and variables from multiple workspaces
+    %% and may also include a transformation due to scaling/bias.  Therefore
+    %% we can not reliably use the parameter name in the generated S-Fcn.
+    %% --> Always use numeric (stored integer) value directly.
+    %assign nameStr = ""
+    %assign mxClassOfVar = "double"
+  %endif
+    
+  %% --- Create the value string for this parameter ------------------------
+
+  %% Get value string and replace TLC-specific tokens
+  %assign valueStr = FEATURE("expandparameter", mdlPrm.Value)
+  %assign valueStr = FEVAL("strrep","%<valueStr>","F","")
+  %assign valueStr = FEVAL("strrep","%<valueStr>","U","")
+  %assign valueStr = FEVAL("strrep","%<valueStr>","rtInf","inf")
+  %assign valueStr = FEVAL("strrep","%<valueStr>","rtMinusInf","-inf")
+  %assign valueStr = FEVAL("strrep","%<valueStr>","rtNaN","nan")
+  %assign valueStr = FcnReshapeValueStr(valueStr, mdlPrm)
+  
+  %% Account for scaling / bias of fixed-point parameters
+  %if !LibIsBuiltInDataType(origDtypeIdx)
+    
+    %% *** valueStr represents the stored-integer value ***
+    
+    %assign dType = FixPt_GetDataTypeFromIndex(origDtypeIdx)
+    %assert ((dType.IsFixedPoint) && ...
+      ((dType.FixedExp  != 0) || ...
+      (dType.FracSlope != 1) || ...
+      (dType.Bias      != 0)))
+    
+    %% Perform operations to account for scaling and bias
+    %%
+    %%    RealWorldValue = Bias + Slope*StoredIntValue
+    %%
+    %if (dType.FixedExp > 0)
+      %assign valueStr = "(2^%<dType.FixedExp>)*%<valueStr>"
+    %elseif (dType.FixedExp < 0)
+      %assign valueStr = "(2^(%<dType.FixedExp>))*%<valueStr>"
+    %endif
+    
+    %if (dType.FracSlope != 1)
+      %assign valueStr = "%<dType.FracSlope>*%<valueStr>"
+    %endif
+    
+    %if (dType.Bias != 0)
+      %assign valueStr = "%<dType.Bias> + %<valueStr>"
+    %endif
+    
+    %% *** valueStr now represents the real-world value ***
+    
+  %endif
+  
+  %% Add data type cast if necessary (cast to same class as workspace variable)
+  %if (mxClassOfVar != "double")
+    %assign valueStr = "%<mxClassOfVar>(%<valueStr>)"
+  %endif
+  
+  %% Add mxClassOfVar to ModelParameter record
+  %addtorecord ModelParameters.Parameter[mdlPrmIdx] mxClassOfVar mxClassOfVar
+
+  %% Create temporary global variable in base workspace
+  %matlab evalin("base", ...
+    "rtwsfcn_%<modelName>(end+1).Name = '%<pName>';")
+  %matlab evalin("base", ...
+    "rtwsfcn_%<modelName>(end).NameStr = '%<nameStr>';")
+  %% 
+  %% Matlab would crash if the intialization string of tunable 
+  %% parameter exceeded the matlab eval function limit of 64kB.
+  %% Added workaround by assigning a temporary variable in the
+  %% base workspace in order to limit the size of the evaluation
+  %% string.
+  %%
+  %matlab assignin("base", "rtw_sfunction_temp_var", valueStr) 
+  %matlab evalin("base", ...
+    "rtwsfcn_%<modelName>(end).ValueStr = rtw_sfunction_temp_var;")
+  %matlab evalin("base", "clear rtw_sfunction_temp_var;")
+%endfunction
+
+
+%% Function: FcnGetWSVariableClass =============================================
+%% Abstract:
+%%   Get MATLAB class of variable in base workspace.
+%%
+%% NOTE: With InlineParameters ON, we expect to find a variable in the base
+%%   workspace for each tunable parameter.  However, this might not always
+%%   be the case if the model contains non-inlined S-Functions.
+%%
+%function FcnGetWSVariableClass(identifier) void
+  %assign varName = identifier
+  %assign mxClass = 0
+  %if (InlineParameters && ...
+       FEVAL("evalin", "base", "exist('%<varName>', 'var')"))
+    %% Get MATLAB class from variable in base workspace.
+    %if FEVAL("evalin", "base", "isa(%<varName>, 'Simulink.Parameter')")
+      %assign varName = "%<varName>.Value"
+    %endif
+    %assign mxClass = FEVAL("evalin", "base", "class(%<varName>)")
+  %endif
+  
+  %return mxClass
+%endfunction
+
+
+%% Function: FcnGetMatlabSafeDimensions
+%% Abstract:
+%%   Get the dimensions of a parameter
+%%   For 1-D parameters, return [1xN]
+%function FcnGetMatlabSafeDimensions(mdlPrm)
+  %assign dims = mdlPrm.Dimensions
+  %if (SIZE(dims) == [1,1])
+    %assign dims = [1, %<dims[0]>]
+  %endif
+  
+  %return dims
+%endfunction
+
+
+%% Function: FcnReshapeValueStr ================================================
+%% Abstract:
+%%   Reshape value string if necessary.
+%%
+%function FcnReshapeValueStr(valueStr, mdlPrm) void
+  
+  %% Reshape value string if necessary
+  %assign dims = FcnGetMatlabSafeDimensions(mdlPrm)
+  %if (SIZE(mdlPrm.Value) != dims)
+    %assign valueStr = "reshape(%<valueStr>"
+    %foreach dimsIdx = SIZE(dims)[1]
+      %assign valueStr = "%<valueStr>, %<dims[dimsIdx]>"
+    %endforeach
+    %assign valueStr = "%<valueStr>)"
+  %endif
+
+  %return valueStr
+%endfunction  
+
+
+%endif %% EXISTS("_PRM_SFCNTUNABLE_")
+
+
+%% [EOF] prm_sfcntunable.tlc

@@ -1,0 +1,723 @@
+%% 
+%% $Revision: 1.1.6.9 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Description:
+%%   This TLC library file contains function for caching special block
+%%   code into the various model files.
+
+%if EXISTS("_CACHELIB_") == 0
+%assign _CACHELIB_ = 1
+
+%<LibAddToCompiledModel("ExternsCache", "")>
+%<LibAddToCompiledModel("SourceCodeCache", "")>
+%<LibAddToCompiledModel("NonFiniteAssignmentsCache", "")>
+%<LibAddToCompiledModel("FunctionPrototypesCache", "")>
+%<LibAddToCompiledModel("DefinesCache", "")>
+%<LibAddToCompiledModel("IncludesCache", "")>
+%<LibAddToCompiledModel("TypedefsCache", "")>
+%<LibAddToCompiledModel("GlobalPrmDataCache", "")>
+%<LibAddToCompiledModel("OverflowWarningCache", "")>
+%assign tempVar = tempRec {NumBlocks 0}
+%<LibAddToCompiledModel("IntegerOnlyWarningCache", tempRec)>
+%undef tempVar
+%<LibAddToCompiledModel("NumFiles", 0)>
+
+
+%% Function: LibTrapCacheAssert ================================================
+%% Abstract:
+%%   LibTrapCacheAssert determines if the access of a cache variable
+%%   is valid (i.e. cacheVar should not be a Number).  If the access is
+%%   a number this function generates an error, prints the TLC
+%%   call stack and exits. 
+%%
+%function LibTrapCacheAssert(cacheVar) void
+  %if TYPE(cacheVar) == "Number"
+    %openfile assertTxt
+
+
+Attempt to access a cache variable prior to calling its cache \
+generation function.
+
+The current cache:
+
+%<cacheVar>
+    %closefile assertTxt
+    %<LibReportFatalError(assertTxt)>
+  %endif
+%endfunction
+
+
+%assign ResetGlobalsErrorString = "#error A TLC Global was used after it was reset. To avoid this error, set the TLC variable 'ResetTLCGlobalsAfterUse' to 0."
+
+%% Function: SLibResetTLCGlobal ================================================
+%% Abstract:
+%%   Reset TLC globals that are either at root level TLC name space or a field
+%%   of the CompiledModel record. This function is controlled by the TLC flag
+%%   'ResetTLCGlobalsAfterUse'.
+%%
+%function SLibResetTLCGlobal(name) void
+  %if ResetTLCGlobalsAfterUse
+    %if ISFIELD(CompiledModel, name)
+      %assign CompiledModel.%<name> = ResetGlobalsErrorString
+    %elseif EXISTS(name)
+      %assign %<name> = ResetGlobalsErrorString
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: LibCacheNonFiniteAssignment =======================================
+%% Abstract:
+%%   LibCacheNonFiniteAssignment should be called from inside BlockTypeSetup
+%%   to cache assignments which need to be placed in the registration
+%%   function because of non-finite initialization.  That is, rtInfs,
+%%   rtNaNs, and rtMinusInfs parameters are initialized to zero until the
+%%   registration function is called, re-initializing them to their
+%%   appropriate value.  Each call to this function appends your buffer to
+%%   the existing cache buffer.
+%%   
+%%   Arguments:
+%%        buffer: Buffer to be cached for placement inside the model's
+%%   	     registration function.
+%%   Example:
+%%        %openfile buffer
+%%          rtP.block.param_1 = %<LibRealNonFinite(inf)>;
+%%          rtP.block.param_i = %<LibRealNonFinite(nan)>;
+%%          rtP.block.param_n = %<LibRealNonFinite(-inf)>;
+%%        %closefile buffer
+%%        %<LibCacheNonFiniteAssignment(buffer)>
+%%
+%function LibCacheNonFiniteAssignment(buffer) void
+  %assign ::CompiledModel.NonFiniteAssignmentsCache = ...
+    ::CompiledModel.NonFiniteAssignmentsCache + buffer
+%endfunction
+
+%% Function: LibDumpNonFiniteAssignmentCache ===================================
+%% Abstract:
+%%   LibDumpNonFiniteAssignmentCache dumps the non-finite assignments cache
+%%   to the output buffer.
+%%
+%function LibDumpNonFiniteAssignmentCache() Output
+
+  %% See Also:
+  %%      LibCacheNonFiniteAssignment
+  %%
+  %if !WHITE_SPACE(NonFiniteAssignmentsCache)
+
+    /* Non-finite (run-time) assignments */
+    { 
+      %<AccessedSimStructVarsForNonFinites>
+      %<NonFiniteAssignmentsCache>\
+    } 
+  %endif
+%endfunction
+
+%% DocFunction{Code Configuration Functions}: LibCacheFunctionPrototype ========
+%% Abstract:
+%%   LibCacheFunctionPrototype should be called from inside BlockTypeSetup
+%%   to cache a function prototype.  Each call to this function appends
+%%   your buffer to the existing cache buffer.  The prototypes are placed
+%%   inside model_private.h
+%%
+%%   Example:
+%%     %openfile buffer
+%% 	 extern int_T fun1(real_T x);
+%% 	 extern real_T fun2(real_T y, int_T i);
+%%     %closefile buffer
+%%     %<LibCacheFunctionPrototype(buffer)>
+%%
+%function LibCacheFunctionPrototype(buffer) void
+  %assign ::CompiledModel.FunctionPrototypesCache = ...
+    ::CompiledModel.FunctionPrototypesCache + buffer
+%endfunction
+
+%% Function: LibDumpFunctionPrototypesCache ====================================
+%%   Place any cached function prototypes into the output stream.
+%%
+%function LibDumpFunctionPrototypesCache() Output
+  %if !WHITE_SPACE(FunctionPrototypesCache)
+
+    %<FunctionPrototypesCache>\
+  %endif
+  %<SLibResetTLCGlobal("FunctionPrototypesCache")>\
+%endfunction
+
+
+%% DocFunction{Code Configuration Functions}: LibCacheDefine ===================
+%% Abstract:
+%%   Each call to this function appends your buffer to the existing cache
+%%   buffer. For blocks, this function is generally called from BlockTypeSetup.
+%%
+%%   For C, 
+%%       This functions caches #define statements for inclusion in 
+%%       model_private.h.
+%%
+%%       LibCacheDefine should be called from inside BlockTypeSetup to cache a
+%%       #define statement.  Each call to this function appends your buffer to
+%%       the existing cache buffer.
+%%       The #define statements are placed inside model_private.h.
+%%
+%% 	 Example:
+%% 	   %openfile buffer
+%% 	     #define INTERP(x,x1,x2,y1,y2) ( y1+((y2 - y1)/(x2 - x1))*(x-x1) )
+%% 	     #define this that
+%% 	   %closefile buffer
+%% 	   %<LibCacheDefine(buffer)>
+%%
+%%
+%function LibCacheDefine(buffer) void
+  %assign ::CompiledModel.DefinesCache = ::CompiledModel.DefinesCache + buffer
+%endfunction
+
+
+%% Function: LibDumpDefinesCache ===============================================
+%% Abstract:
+%%   Place any cached defines into the output stream.
+%%
+%function LibDumpDefinesCache() Output
+  %if !WHITE_SPACE(DefinesCache)
+
+    %<DefinesCache>\
+  %endif
+  %<SLibResetTLCGlobal("DefinesCache")>\
+%endfunction
+
+%function FcnScanForDuplicateIncludes(incFileName) void
+  %assign duplicate = 0
+  %foreach idx = ::CompiledModel.NumSysPathHeaders
+    %if (::CompiledModel.SysPathHeaders[idx] == incFileName)
+      %assign duplicate = 1
+      %break
+    %endif
+  %endforeach
+  %foreach idx = ::CompiledModel.NumSysLocalHeaders
+    %if (::CompiledModel.SysLocalHeaders[idx] == incFileName)
+      %assign duplicate = 1
+      %break
+    %endif
+  %endforeach
+  %foreach idx = ::CompiledModel.NumBlockPathHeaders
+    %if (::CompiledModel.BlockPathHeaders[idx] == incFileName)
+      %assign duplicate = 1
+      %break
+    %endif
+  %endforeach
+  %foreach idx = ::CompiledModel.NumBlockLocalHeaders
+    %if (::CompiledModel.BlockLocalHeaders[idx] == incFileName)
+      %assign duplicate = 1
+      %break
+    %endif
+  %endforeach
+  %return duplicate
+%endfunction
+
+
+%% DocFunction{Code Configuration Functions}: LibAddToCommonIncludes ==========
+%% Abstract:
+%%   Adds items to a unique-ified list of #include/package spec items.
+%%
+%%   Should be called from block TLC methods to specify generation of 
+%%   #include statements in model.h.  Specify locals bare, "myinclude.h",
+%%   and include path files are specified in braces, "<sysinclude.h>". Each 
+%%   call to this function adds the file to the list only if it is not already
+%%   there.  <math.h> and "math.h" are considered different files for the 
+%%   purpose of uniqueness. The #include statements are placed inside
+%%   model.h.
+%%
+%%   Example:
+%%     %<LibAddToCommonIncludes("tpu332lib.h")>
+%%
+%%
+%function LibAddToCommonIncludes(incFileName) void
+  %%
+  %% ignore empties
+  %%
+  %if incFileName == ""
+    %return
+  %endif
+  %%
+  %% scan for duplicates, add if not on any list
+  %%
+  %assign duplicate = FcnScanForDuplicateIncludes(incFileName)
+  %if (!duplicate)
+    %if incFileName[0] == "<"
+      %assign ::CompiledModel.BlockPathHeaders = ...
+	      ::CompiledModel.BlockPathHeaders + incFileName
+      %assign ::CompiledModel.NumBlockPathHeaders = ...
+	      ::CompiledModel.NumBlockPathHeaders + 1
+    %else
+      %assign ::CompiledModel.BlockLocalHeaders = ...
+	      ::CompiledModel.BlockLocalHeaders + incFileName
+      %assign ::CompiledModel.NumBlockLocalHeaders = ...
+	      ::CompiledModel.NumBlockLocalHeaders + 1
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: SLibAddToCommonIncludes ==========================================
+%% Abstract:
+%%   Adds items to a unique-ified list of #include/package spec items.
+%%
+%%   Should be called from non-block TLC methods to specify generation of 
+%%   #include statements.  Local includes are specified bare, "myinclude.h",
+%%   and include path files are specified in braces, "<sysinclude.h>". Each 
+%%   call to this function adds the file to the list only if it is not already
+%%   there.  <math.h> and "math.h" are considered different files for the 
+%%   purpose of uniqueness. The #include statements are placed inside
+%%   model.h.
+%%
+%%   This "S" version of adding to common includes adds the include file 
+%%   above all of the files added by LibAddToCommonIncludes, but below any
+%%   filenames already added by this function.
+%%
+%%   Example:
+%%     %<SLibAddToCommonIncludes("<assert.h>")>
+%%
+%%
+%function SLibAddToCommonIncludes(incFileName) void
+  %%
+  %% ignore empties
+  %%
+  %if incFileName == ""
+    %return
+  %endif
+  %%
+  %% scan for duplicates, add if not on any list
+  %%
+  %assign duplicate = FcnScanForDuplicateIncludes(incFileName)
+  %if (!duplicate)
+    %if incFileName[0] == "<"
+      %assign ::CompiledModel.SysPathHeaders = ...
+	      ::CompiledModel.SysPathHeaders + incFileName
+      %assign ::CompiledModel.NumSysPathHeaders = ...
+	      ::CompiledModel.NumSysPathHeaders + 1
+    %else
+      %assign ::CompiledModel.SysLocalHeaders = ...
+	      ::CompiledModel.SysLocalHeaders + incFileName
+      %assign ::CompiledModel.NumSysLocalHeaders = ...
+	      ::CompiledModel.NumSysLocalHeaders + 1
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: SLibDumpCommonIncludes ============================================
+%% Abstract:
+%%   Call this function once from within a target's ___hdr.tlc file
+%%   to generate the accumulated includes specified by the target, the
+%%   code format, and all the blocks.
+%%
+%function SLibDumpCommonIncludes(system) void
+  %assign isSFcn = (CodeFormat == "S-Function")
+  %assign inclBuff = ""
+  %openfile inclBuff
+  %foreach idx = ::CompiledModel.NumSysPathHeaders
+    %assign incFileName = ::CompiledModel.SysPathHeaders[idx]
+    #include %<incFileName>
+  %endforeach
+  %foreach idx = ::CompiledModel.NumBlockPathHeaders
+    %assign incFileName = ::CompiledModel.BlockPathHeaders[idx]
+    #include %<incFileName>
+  %endforeach
+  %if isSFcn 
+    %<LibSFcnPreSimstrucDefines(system)>
+  %endif
+  %foreach idx = ::CompiledModel.NumSysLocalHeaders
+    %assign incFileName = ::CompiledModel.SysLocalHeaders[idx]
+    #include %<"\"%<incFileName>\"">
+  %endforeach
+  %foreach idx = ::CompiledModel.NumBlockLocalHeaders
+    %assign incFileName = ::CompiledModel.BlockLocalHeaders[idx]
+    #include %<"\"%<incFileName>\"">
+  %endforeach 
+  %if isSFcn
+    %<LibSFcnPostSimstrucDefines()>
+  %endif 
+  %closefile inclBuff  
+  %return inclBuff
+%endfunction
+
+
+%% DocFunction{Code Configuration Functions}: LibCacheIncludes =================
+%% Abstract:
+%%   LibCacheIncludes should be called from inside BlockTypeSetup to cache
+%%   #include statements.  Each call to this function appends your buffer to
+%%   the existing cache buffer.  The #include statements are placed inside
+%%   model_private.h.
+%%
+%%   Example:
+%%     %openfile buffer
+%% 	 #include "myfile.h"
+%%     %closefile buffer
+%%     %<LibCacheInclude(buffer)>
+%%
+%%
+%function LibCacheIncludes(buffer) void
+  %assign ::CompiledModel.IncludesCache = ...
+    ::CompiledModel.IncludesCache + buffer
+%endfunction
+
+
+%% Function: LibDumpIncludesCache ==============================================
+%% Abstract:
+%%   Place any cached includes into the output stream.
+%%
+%function LibDumpIncludesCache() Output
+  %if !WHITE_SPACE(IncludesCache)
+
+    %<IncludesCache>\
+  %endif
+  %<SLibResetTLCGlobal("IncludesCache")>\
+%endfunction
+
+
+%% DocFunction{Code Configuration Functions}: LibCacheTypedefs =================
+%% Abstract:
+%%   LibCacheTypedefs should be called from inside BlockTypeSetup to cache
+%%   typedef declarations.  Each call to this function appends your buffer
+%%   to the existing cache buffer.  The typedef statements are placed
+%%   inside model.h.
+%%
+%%   Example:
+%%     %openfile buffer
+%% 	 typedef foo bar;
+%%     %closefile buffer
+%%     %<LibCacheTypedefs(buffer)>
+%%
+%function LibCacheTypedefs(buffer) void
+  %assign ::CompiledModel.TypedefsCache = ...
+    ::CompiledModel.TypedefsCache + buffer
+%endfunction
+
+
+%% Function: LibDumpTypedefsCache ==============================================
+%% Abstract:
+%%   Place any cached typedefs into the output stream.
+%%
+%function LibDumpTypedefsCache() void
+  %if !WHITE_SPACE(TypedefsCache)
+    %return "\n%<TypedefsCache>"
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%% DocFunction{Code Configuration Functions}: LibCacheExtern ===================
+%% Abstract:
+%%   LibCacheExtern should be called from inside BlockTypeSetup to cache an
+%%   extern statement.  Each call to this function appends your buffer to
+%%   the existing cache buffer.  The extern statements are placed in 
+%%   model_private.h.
+%%
+%%   A C example:
+%%     %openfile buffer
+%% 	 extern real_T mydata;
+%%     %closefile buffer
+%%     %<LibCacheExtern(buffer)>
+%%
+%function LibCacheExtern(buffer) void
+  %assign ::CompiledModel.ExternsCache = ::CompiledModel.ExternsCache + buffer
+%endfunction
+
+
+%% Function: LibDumpExternsCache ===============================================
+%% Abstract:
+%%   Place any cached externs into the output stream.
+%%
+%function LibDumpExternsCache() Output
+  %if !WHITE_SPACE(ExternsCache)
+
+    %<ExternsCache>\
+  %endif
+  %<SLibResetTLCGlobal("ExternsCache")>\
+%endfunction
+
+%% Function: SLibCacheSourceCode ===============================================
+%% Abstract:
+%%   This function should be called from inside BlockInstanceSetup to cache
+%%   source code at the top of model.c.  The buffer is added to the existing
+%%   cache buffer.
+%%
+%%   Example:
+%% 	  %openfile buffer
+%% 	  void myfunc(int i) {
+%% 	    i++;
+%% 	  }
+%% 	  %closefile buffer
+%% 	  %<SLibCacheSourceCode(buffer)>
+%%
+%function SLibCacheSourceCode(buffer) void
+  %assign ::CompiledModel.SourceCodeCache = ...
+    ::CompiledModel.SourceCodeCache + buffer
+%endfunction
+
+%% Function: SLibDumpSourceCodeCache ==========================================
+%% Abstract:
+%%      Dump any source code that was cached with either SLibCacheSourceCode()
+%%      or LibAddToFile().
+%%
+%function SLibDumpSourceCodeCache() Output
+  %% Dump any source code from SLibCacheSourceCode
+  %if !WHITE_SPACE(SourceCodeCache)
+
+    %<SourceCodeCache>\
+  %endif
+  %<SLibResetTLCGlobal("SourceCodeCache")>\
+  %% Create(dump) any files from LibAddtoFiles
+  %foreach idx = CompiledModel.NumFiles
+    %openfile file = CompiledModel.Files.Name[idx]
+    %<CompiledModel.Files.File[idx]>
+    %closefile file
+    %if ResetTLCGlobalsAfterUse
+      %assign CompiledModel.Files.File[idx] = 0
+    %endif
+  %endforeach
+
+  %% Generate rtwtypes.h. Need to pass whether full or minimized (ERT) version
+  %% of rtwtypes.h is desired as well as the location to place rtwtypes.h.
+  %if ConfigSet.IsERTTarget && (CompiledModel.ModelReferenceTargetType != "SIM") && (!ConfigSet.GRTInterface ) && (CompiledModel.NumChildSFunctions == 0)
+    %assign rtwTypesStyle = "minimized"
+  %else
+    %assign rtwTypesStyle = "full"
+  %endif
+  %if EXISTS(::OrigName)      
+    %assign modelName = CompiledModel.OrigName
+  %else
+    %assign modelName = CompiledModel.Name
+  %endif
+  %matlab rtwprivate("genRTWTYPESDOTH","%<modelName>",...
+    "%<GenUtilsPath>","%<rtwTypesStyle>",GenUtilsSrcInSharedLocation)
+%endfunction
+
+%% Function: LibCacheGlobalPrmData =============================================
+%% Abstract:
+%%   LibCacheGlobalPrmData should be called from inside BlockInstanceSetup
+%%   to cache global block parameter data.  Each call to this function
+%%   appends your buffer to the existing cache buffer.  The global data
+%%   is placed inside model.c.  Note that only functions in model.c will
+%%   be able to see this data.  For other files (ie subsystem files) to see
+%%   this data, you must extern it in the model_private.h file.
+%%   
+%%   Example:
+%%        %openfile buffer
+%%          real_T A[] = {1.0, 0.0, 0.0 };
+%%        %closefile buffer
+%%        %<LibCacheGlobalPrmData(buffer)>
+%%
+%function LibCacheGlobalPrmData(buffer) void
+  %if UsingMalloc
+
+    %openfile errTxt
+Attempting to declare global parameter data using TLC function
+LibCacheGlobalPrmData.
+
+Declaring global parameter data is not consistent with dynamic ...
+memory allocation.  Perhaps you should create the data in the ...
+block's start function.
+
+For example, assume a block requires constant and non-constant ...
+data.  The block creates the data in the start function and stores ...
+the location of the data in its PWork.  References to the data ...
+outside the start function are realized via the block PWork.
+
+%<"%function Start(block, system) Output">
+  /* initialize data (containing non-finites) */
+  {
+    static real_T nonFiniteData[] = { 1.0, 0.0, 27.2, 0.0 };
+
+    nonFiniteData[1] = %<"%<LibRealNonFinite(inf)>">;
+    nonFiniteData[3] = %<"%<LibRealNonFinite(nan)>">;
+
+    %<"%<LibBlockPWork(ConstNonFiniteData,"","",0)> = ">
+      &nonFiniteData[0];
+  }
+
+  /* initialize data (all finite) */
+  {
+    static const real_T finiteData[] = { 1.0, 12.0, 27.2, 45.0 };
+    %<"%<LibBlockPWork(ConstFiniteData,"","",0)> =">
+      &finiteData[0];
+  }
+
+  /* allocate memory for non-constant data */
+  {
+    SomeDataType *data;
+    data = (SomeDataType *) malloc(sizeof(SomeDataType));
+    VALIDATE_MEMORY(%<"%<RTMGetModelSS()>">, data);
+    %<"%<LibBlockPWork(NonConstData,"","",0)> = data;">
+  }
+%<"%endfunction">
+
+Note that static data is only declared with the "const" keyword if ...
+the data does not contain non-finites since rtInf, rtMinusInf, and ...
+rtNaN are not initialized until run time.
+
+Also note that the TLC references ConstNonFiniteData, ConstFiniteData, ...
+and NonConstData are made possible with either the TLC function ...
+LibDefinePWork or with the S-function's mdlRTW function.
+    %closefile errTxt
+    %<LibReportError(errTxt)>
+
+
+  %endif
+
+
+  %assign ::CompiledModel.GlobalPrmDataCache = ...
+    ::CompiledModel.GlobalPrmDataCache + buffer
+%endfunction
+
+%% Function: LibDumpGlobalPrmDataCache =========================================
+%% Abstract:
+%%   Place any cached global parameter data into the output stream.
+%%
+%function LibDumpGlobalPrmDataCache() Output
+  %if !WHITE_SPACE(GlobalPrmDataCache)
+
+    %<GlobalPrmDataCache>\
+  %endif
+  %<SLibResetTLCGlobal("GlobalPrmDataCache")>\
+%endfunction
+
+
+%% Function: SLibCacheOverflowWarning ==========================================
+%% Abstract:
+%%   This function is called by blocks that support saturation when they
+%%   need to cache a overflow warning.  It should be called when the block
+%%   requires saturation code(usually based on data types in and out) but
+%%   the user has the block configured to not generate the saturation code.
+%%
+%function SLibCacheOverflowWarning(block) void
+  %assign ::CompiledModel.OverflowWarningCache = ...
+    CompiledModel.OverflowWarningCache + ...
+    LibGetFormattedBlockPath(block) + "\n"
+%endfunction
+
+
+%% Function: SLibDumpOverflowWarning ===========================================
+%% Abstract:
+%%   This function is called after all block code has been generated.
+%%   Depending on the value of the flag WarnNonSaturatedBlocks, this function
+%%   dumps nothing, a single message, or a message with a list of all blocks
+%%   that should but don't have saturation code enabled.
+%%
+%function SLibDumpOverflowWarning() Output
+  %if ConfigSet.IsERTTarget
+    %if FEVAL("ert_autoconfig_opt",CompiledModel.Name)
+      %return ""
+    %endif
+  %endif
+  %selectfile STDOUT
+  %if WarnNonSaturatedBlocks == 0
+%% No output
+  %elseif WarnNonSaturatedBlocks == 1 && ...
+    !WHITE_SPACE(CompiledModel.OverflowWarningCache)
+
+NOTE:  There are blocks in the model that should have saturation code but
+were configured to not generate it.  This could result in wrapping or
+other undefined results depending on the compiler.  It is recommended that
+you enable the saturation code via the blocks dialog or otherwise ensure
+that data will always be within range.  (To turn off this message, set
+WarnNonSaturatedBlocks = 0, to see a list of the offending blocks, set
+WarnNonSaturatedBlocks = 2.)
+
+  %elseif !WHITE_SPACE(CompiledModel.OverflowWarningCache)
+
+NOTE:  The following blocks in the model should have saturation code but
+were configured to not generated it.  This could result in wrapping or
+other undefined results depending on the compiler.  It is recommended that
+you enable the saturation code via the blocks dialog or otherwise ensure
+that data will always be within range.  (To turn off this message, set
+WarnNonSaturatedBlocks = 0, to see only the message and not a list of the
+offending blocks, set WarnNonSaturatedBlocks = 1.)
+Blocks:
+
+%<CompiledModel.OverflowWarningCache>
+  %endif
+  %selectfile NULL_FILE
+  %<SLibResetTLCGlobal("OverflowWarningCache")>\
+%endfunction
+
+
+%% Function: SLibCacheIntegerOnlyWarning =======================================
+%% Abstract:
+%%   This function is called by the LibBlock* routines to cache any use of
+%%   non-integer data in the block inputs/outputs, parameters, states
+%%   or work vectors.
+%%
+%%   Arguments:
+%% 	  name: Name of the block
+%% 	  component: String describing the part of the block that is
+%% 		     declaring a non-integer.
+%%
+%function SLibCacheIntegerOnlyWarning(name,component) void
+  %assign foundBlock = 0
+  %foreach idx = IntegerOnlyWarningCache.NumBlocks
+    %if IntegerOnlyWarningCache.Block[idx].Name == name
+      %assign foundBlock = 1
+      %assign result = FEVAL("findstr", ...
+        CompiledModel.IntegerOnlyWarningCache.Block[idx].Component, component)
+      %if !SIZE(result,0)
+        %assign CompiledModel.IntegerOnlyWarningCache.Block[idx].Component = ...
+          IntegerOnlyWarningCache.Block[idx].Component + " %<component>"
+      %endif
+      %break
+    %endif
+  %endforeach
+
+  %if !foundBlock
+    %assign tmpVar = Block\
+    {\
+    Name         name;\
+    Component    component\
+    }
+    %assign CompiledModel.IntegerOnlyWarningCache = ...
+      IntegerOnlyWarningCache + Block
+    %undef tmpVar
+    %assign CompiledModel.IntegerOnlyWarningCache.NumBlocks = ...
+      IntegerOnlyWarningCache.NumBlocks + 1
+  %endif
+%endfunction
+
+
+%% Function: SLibDumpIntegerOnlyWarning ========================================
+%% Abstract:
+%%   This function dumps any warnings of float-point data that were
+%%   cached using SLibCacheIntegerOnlyWarning.
+%%
+%function SLibDumpIntegerOnlyWarning() void
+  %if IntegerOnlyWarningCache.NumBlocks > 0
+    %openfile warnTxt
+
+The following blocks contain non-integer data but the Integer Code Only
+option is selected.  You should replace/correct the blocks or uncheck
+Integer Code Only via the Real-Time Workshop Options dialog.
+
+      %if IntegerOnlyWarningCache.NumBlocks > 25
+        %assign loop = 20
+Total of %<IntegerOnlyWarningCache.NumBlocks> Blocks, only listing first 20.
+      %else
+        %assign loop = IntegerOnlyWarningCache.NumBlocks
+      %endif
+Block (details) :
+
+      %foreach idx = loop
+%<IntegerOnlyWarningCache.Block[idx].Name>  ...
+(%<IntegerOnlyWarningCache.Block[idx].Component>)
+      %endforeach
+    %closefile warnTxt
+    %selectfile STDOUT
+%<warnTxt>
+    %selectfile NULL_FILE
+    %<LibReportError(warnTxt)>
+  %endif
+%endfunction
+
+
+%endif %% _CACHELIB_
+
+%% [EOF] cachelib.tlc

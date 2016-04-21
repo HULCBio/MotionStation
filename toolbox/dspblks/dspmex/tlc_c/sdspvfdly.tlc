@@ -1,0 +1,360 @@
+%% $RCSfile: sdspvfdly.tlc,v $
+%% $Revision: 1.11 $ 
+%% $Date: 2002/04/14 21:03:42 $
+%%
+%% Dale Shpak
+%% June 30, 1998
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Variable Fractional Delay
+%%
+
+%implements sdspvfdly "C"
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+    %assign INPORT          = 0
+    %assign DELAY_PORT      = 1
+    %if (!IsInputPortContiguous(block,INPORT) || !IsInputPortContiguous(block,DELAY_PORT))
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign BUFF_OFF        = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign DMAX            = SFcnParamSettings.maxDELAY
+    %assign numElements     = LibBlockDWorkWidth(STATES)
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign IC              = SFcnParamSettings.IC
+    %assign IC_COMPLEX      = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign NIC1            = SFcnParamSettings.NIC1
+    %assign NIC2            = SFcnParamSettings.NIC2
+    %assign NUM_IC          = NIC1 * NIC2
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (DATA_COMPLEX)
+    %assign FILT            = SFcnParamSettings.FILTER
+    %assign numFILT         = SIZE(FILT,1)
+    %if (numFILT == 1 && FILT[0] == 0.0)
+        %assign HLEN = 0
+    %else
+        %assign HLEN            = CAST("Number", SIZE(SFcnParamSettings.FILTER, 0) / 2)
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+{
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    /*
+    * Initialize the state buffers with initial conditions.
+    */
+    %if (NIC1 * NIC2 > 1)
+        %assign astr    = ""
+        %assign count   = 0
+        %if (IS_COMPLEX)
+            creal_T ic[%<NUM_IC>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %if (IC_COMPLEX)
+                        %assign astr = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+                    %else
+                        %assign astr = astr + "{%<REAL(IC[count])>,0.0}"
+                    %endif
+                    %assign count   = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %else
+            real_T ic[%<NUM_IC>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %assign astr = astr + "%<IC[count]>"
+                    %assign count   = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %endif
+    %endif
+
+    %if (IS_COMPLEX)
+        %assign STATE_T     = "creal_T"
+    %else
+        %assign STATE_T     = "real_T"
+    %endif
+    %<STATE_T> *buff = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+    %<LibBlockDWork(BUFF_OFF, "","", 0)> = %<DMAX + HLEN - 1>;
+
+{
+    %if (NIC1*NIC2 == 0)
+        %if (IS_COMPLEX)
+            const creal_T zero  = {(real_T)0.0, (real_T)0.0};
+            %assign ZERO        = "zero"
+        %else
+            %assign ZERO        = "(real_T) 0.0"
+        %endif
+        int_T  j;
+        for (j=0; j < %<numElements>; j++) *buff++ = %<ZERO>;
+    %elseif (NIC1*NIC2 == 1)
+        /* Single initial condition */
+        int_T  j;
+        %if (IS_COMPLEX)
+            %if (IC_COMPLEX)
+                const creal_T ic  = {%<REAL(IC[0])>,%<IMAG(IC[0])>};
+            %else
+                const creal_T ic  = {%<REAL(IC[0])>,0.0};
+            %endif
+            for (j=0; j < %<numElements>; j++) *buff++ = ic;
+        %else
+            for (j=0; j < %<numElements>; j++) *buff++ = %<IC[0]>;
+        %endif
+    %elseif (NIC2 == 1)
+	/* For each channel, use a single IC for every delay element */
+        int_T  i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            for (j=0; j < %<DMAX>; j++) *buff++ = ic[i];
+            buff += %<HLEN + 1>;
+        }
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume maxDELAY rows and numCHANS columns (MATLAB)
+         */
+        int_T  i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<DAT_T> *icp = ic + i;
+            for (j=0; j < %<DMAX>; j++) {
+                *buff++ = *icp;
+                icp += %<NUM_CHANS>;
+            }
+            buff += %<HLEN + 1>;
+        }
+    %endif %% Number of ICs
+    }
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign INPORT          = 0
+    %assign DELAY_PORT      = 1
+    %assign OUTPORT         = 0
+    %assign BUFF_OFF        = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign DMAX            = SFcnParamSettings.maxDELAY
+    %assign BUFF_LEN        = DMAX + 1
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (DATA_COMPLEX)
+    %assign FILT            = SFcnParamSettings.FILTER
+    %assign numFILT         = SIZE(FILT,1)
+    %assign N_PHASES        = SFcnParamSettings.NUM_PHASES
+    %if (numFILT == 1 && FILT[0] == 0.0)
+        %assign HLEN        = 0
+    %else
+        %assign HLEN        = numFILT / (2 * N_PHASES)
+    %endif
+    %assign FILT_T          = "real_T"
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (IS_COMPLEX)
+        %assign OUT_T       = "creal_T"
+    %else
+        %assign OUT_T       = "real_T"
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %endif
+    %%
+{ 
+    %<DAT_T>    *x      = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<OUT_T>    *buff   = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+    %<OUT_T>    *y      = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    %<DAT_T>    *in_curr;
+        
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        int_T buffstart = %<LibBlockDWork(BUFF_OFF, "", "", 0)>;
+        real_T *dptr = %<LibBlockInputSignalAddr(DELAY_PORT, "", "", 0)>;
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+            real_T t = *dptr++;  /* Get delay time from 2nd input port */
+            int_T ti;
+
+            if (++buffstart == %<BUFF_LEN>) buffstart = 0;  /* Rotate circular buffer */
+            *(buff + buffstart) = *x++;
+            
+            /* Output new interpolation point */
+            in_curr = buff;
+            /* Clip delay time to legal range: [0,dmax] */
+            if (t < 0) t = 0;
+            else if (t > %<DMAX>) t = %<DMAX>;
+            ti = (int_T) t;         /* Integer part of delay time */
+            
+            %if (HLEN > 0)
+                /* Check if we need to use linear interp: */
+                if (ti < %<HLEN - 1>) {
+            %else
+                {
+            %endif
+                /* Linear interpolation: */
+                real_T frac  = t - ti;    /* Fractional part of delay time */
+                real_T frac1 = 1 - frac;
+                
+                /* Add offset to current input pos'n in buffer, backing up by
+                * the integer number of delay samples.  If we've backed up too
+                * far past the start of the buffer, wrap to the end:
+                */
+                ti = buffstart - ti;
+                if (ti < 0) ti += %<BUFF_LEN>;
+                in_curr += ti; /* Get pointer into buffer */
+                
+                if (ti > 0) {
+                    /* The two points are adjacent in memory: */
+                    %if (DATA_COMPLEX)
+                        y->re     = in_curr[0].re * frac1 + in_curr[-1].re * frac;
+                        (y++)->im = in_curr[0].im * frac1 + in_curr[-1].im * frac;
+                    %else
+                        *y++ = in_curr[0] * frac1 + in_curr[-1] * frac;
+                    %endif
+                } else {
+                    /* The two points are at the end and start of buffer: */
+                    %if (DATA_COMPLEX)
+                        y->re     = in_curr[0].re * frac1 + in_curr[%<BUFF_LEN - 1>].re * frac;
+                        (y++)->im = in_curr[0].im * frac1 + in_curr[%<BUFF_LEN - 1>].im * frac;
+                    %else
+                        *y++ = in_curr[0] * frac1 + in_curr[%<BUFF_LEN - 1>] * frac;
+                    %endif
+                }
+            %if (HLEN == 0)
+                }
+            %else
+                } else {
+                /* FIR Interpolation: */
+                %assign FILT_LEN    = numFILT / N_PHASES
+                %assign CFFS        = ""
+                %assign count       = 0
+                const real_T filter[%<numFILT>] = {
+                %foreach Idx = N_PHASES
+                    %foreach Idx2 = FILT_LEN
+                        %assign CFFS = CFFS + "%<FILT[count]>"
+                        %assign count = count + 1
+                        %if (count < numFILT) 
+                            %assign CFFS = CFFS + ", "
+                        %else
+                            %assign CFFS = CFFS + " };"
+                        %endif
+                    %endforeach
+                    %<CFFS>
+                    %assign CFFS = ""        
+                %endforeach
+                const real_T frac  = t - ti;    /* Fractional part of delay time */
+                int_T phase        = (int_T) (%<N_PHASES> * frac + 0.5); /* [0,nphases] */
+                
+                if (phase == %<N_PHASES>) { ++ti;  phase = 0; }
+           
+                /* Add offset to current input pos'n in buffer, backing up by the
+                * integer number of delay samples then incrementing by half the
+                * filter length.  If we've backed up too far past the start of the
+                * buffer, wrap:
+                */
+                ti = buffstart - ti + %<HLEN - 1>;
+                
+                if (ti < 0) ti += %<BUFF_LEN>;
+                in_curr += ti; /* Get pointer into buffer */
+                
+                if (ti+1 >= %<FILT_LEN>) {
+                    /* Contiguous input samples in buffer: */
+                    /* Point to correct polyphase filter */
+                    const %<FILT_T> *filt = filter + phase*%<FILT_LEN>; 
+
+                    %if (IS_COMPLEX)
+                        y->re = y->im = 0.0;
+                        %roll sigIdx3 = [ 0:%<FILT_LEN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            y->re += in_curr[-%<lcv3 == "" ? sigIdx3 : lcv3>].re * *filt;
+                            y->im += in_curr[-%<lcv3 == "" ? sigIdx3 : lcv3>].im * *filt++;
+                        %endroll
+                    %else
+                        *y = 0.0;
+                        %roll sigIdx3 = [ 0:%<FILT_LEN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            *y += in_curr[-%<lcv3 == "" ? sigIdx3 : lcv3>] * *filt++;
+                        %endroll
+                    %endif
+                    ++y;
+                } else {
+                    /* Discontiguous input samples in buffer: */
+                    const %<FILT_T>   *filt   = filter + phase*%<FILT_LEN>;
+                    const int_T   k1    = ti + 1;
+                    const int_T   k2    = %<FILT_LEN> - k1;
+                    const %<DAT_T> *in_last = in_curr - ti + %<BUFF_LEN - 1>;
+                    int_T kn;
+                    
+                    %if (IS_COMPLEX)
+                        y->re = y->im = 0.0;
+                        for(kn=0; kn  <k1; kn++) {
+                            y->re += in_curr[-kn].re * *filt;
+                            y->im += in_curr[-kn].im * *filt++;
+                        }
+                        for(kn=0; kn < k2; kn++) {
+                            y->re += in_last[-kn].re * *filt;
+                            y->im += in_last[-kn].im * *filt++;
+                        }
+                    %else
+                        *y = 0.0;
+                        for(kn=0; kn  <k1; kn++) {
+                            *y += in_curr[-kn] * *filt++;
+                        }
+                        for(kn=0; kn < k2; kn++) {
+                            *y += in_last[-kn] * *filt++;
+                        }
+                    %endif
+                    ++y;
+                }
+             } /* FIR interpolation */
+            %endif
+        %endroll %%  FRAME
+        %if (NUM_CHANS > 1)
+            buff += %<BUFF_LEN>;
+        %endif
+    %endroll  %% CHANNEL
+    %<LibBlockDWork(BUFF_OFF, "", "", 0)> += %<FRAME>;
+    %if (FRAME > BUFF_LEN)
+        while (%<LibBlockDWork(BUFF_OFF, "", "", 0)> >= %<BUFF_LEN>) %<LibBlockDWork(BUFF_OFF, "", "", 0)> -= %<BUFF_LEN>;
+    %else
+        if (%<LibBlockDWork(BUFF_OFF, "", "", 0)> >= %<BUFF_LEN>) %<LibBlockDWork(BUFF_OFF, "", "", 0)> -= %<BUFF_LEN>;
+    %endif
+}	
+%endfunction  %% Outputs
+
+%% [EOF] sdspvfdly.tlc
+

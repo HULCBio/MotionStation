@@ -1,0 +1,549 @@
+%% $RCSfile: sdspidwt.tlc,v $
+%% $Revision: 1.4.4.3 $ 
+%% $Date: 2004/04/12 23:08:44 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Inverse Discrete Wavelet Transform
+%%
+
+%implements sdspidwt "C"
+
+%% Function: BlockTypeSetup ==================================================
+%%
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block, "dspfilterbank_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+%%  
+    %%Port info
+    %%
+    %assign OUTPORT     = 0
+    %assign numDims     = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign dims        = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign NUM_CHANS   = (numDims == 2) ? dims[1] : 1
+    %assign FRAMESIZE   = dims[0]
+    %assign block = block + OUTPORT + NUM_CHANS + FRAMESIZE
+    %%
+    %%Data Type Info
+    %%
+    %assign DATA_CPLX        = LibBlockInputSignalIsComplex(0)  
+    %assign OUT_CPLX         = LibBlockOutputSignalIsComplex(0)
+    %assign FILT_CPLX        = LibBlockParameterIsComplex(LFILT)
+    %assign INPORT_IS_SINGLE = (LibBlockInputSignalDataTypeId(0) == tSS_SINGLE)
+    %if(INPORT_IS_SINGLE)
+        %assign DAT_T  = DATA_CPLX ? "creal32_T" : "real32_T"
+        %assign FILT_T = FILT_CPLX ? "creal32_T" : "real32_T"
+        %assign OUT_T  = OUT_CPLX  ? "creal32_T" : "real32_T"
+    %else                   %%input is double
+        %assign DAT_T  = DATA_CPLX ? "creal_T" : "real_T"
+        %assign FILT_T = FILT_CPLX ? "creal_T" : "real_T"
+        %assign OUT_T  = OUT_CPLX  ? "creal_T" : "real_T"
+    %endif  
+    %assign dTypeID = LibBlockOutputSignalDataTypeId(0)
+    %assign zeroVal = SLibGetGroundValueFromId(dTypeID)
+    %assign bytesPerOutElemStr  = "sizeof(%<OUT_T>)"
+    %assign bytesPerInElemStr   = "sizeof(%<DAT_T>)"
+    %assign block = block + FILT_T + DAT_T + OUT_T + INPORT_IS_SINGLE +   \
+                            DATA_CPLX + OUT_CPLX + FILT_CPLX +            \
+                            bytesPerOutElemStr + bytesPerInElemStr + zeroVal
+    %%
+    %%S-function Parameters
+    %%
+    %assign TREE          = SFcnParamSettings.TREE
+    %assign ASYMMETRIC    = 1
+    %assign SYMMETRIC     = 2
+    %assign NUM_LEVELS    = SFcnParamSettings.LEVELS
+    %assign INPUT_ARG     = SFcnParamSettings.INPUT
+    %assign IDWT          = 1
+    %assign BANKS         = 2
+    %assign needInportBuf = (!DATA_CPLX) && (FILT_CPLX) || (INPUT_ARG == IDWT)
+    %assign numLevelsMinusOne = NUM_LEVELS - 1
+    %assign block = block + TREE + NUM_LEVELS + INPUT_ARG + ASYMMETRIC \
+                          + SYMMETRIC + IDWT + BANKS + needInportBuf   \
+                          + numLevelsMinusOne
+    %%
+    %%Filter Bank Parameters
+    %%
+    %if (TREE == ASYMMETRIC)
+        %assign NUM_FILTERS = 2 * NUM_LEVELS
+        %assign NUM_INPUTS  = NUM_LEVELS + 1
+    %else
+        %assign FILT_LEVEL  = 2
+        %assign NUM_FILTERS = 2
+        %assign NUM_INPUTS  = 2
+        %foreach II = NUM_LEVELS-1
+            %assign FILT_LEVEL  = FILT_LEVEL * 2
+            %assign NUM_FILTERS = NUM_FILTERS + FILT_LEVEL
+            %assign NUM_INPUTS  = NUM_INPUTS * 2
+        %endforeach
+    %endif
+    %assign LFSize = LibBlockParameterSize(LFILT)
+    %assign LFLen  = LFSize[0] * LFSize[1]
+    %assign HFSize = LibBlockParameterSize(HFILT)
+    %assign HFLen  = HFSize[0] * HFSize[1]
+    %assign lpfIsLonger = (LFLen > HFLen)
+    %assign longTapLen  = (lpfIsLonger) ? LFLen/2 : HFLen/2
+    %assign shortTapLen = (lpfIsLonger) ? HFLen/2 : LFLen/2
+    %%
+    %assign block = block + NUM_FILTERS + NUM_INPUTS + LFLen + HFLen  \
+                          + lpfIsLonger + longTapLen + shortTapLen
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset IDWT %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %assign numBanks       = NUM_FILTERS/2
+    %assign totalLongTaps  = NUM_CHANS * longTapLen  * numBanks
+    %assign totalShortTaps = NUM_CHANS * shortTapLen * numBanks
+    %%
+    /* Initialize long and short tap delay buffer indices to zero */
+    int32_T *longTapIdx  = %<LibBlockDWorkAddr(LongTapIdx,  "", "", 0)>;
+    int32_T *shortTapIdx = %<LibBlockDWorkAddr(ShortTapIdx, "", "", 0)>;
+    int_T i = %<numBanks>;
+    while (i--) {
+        *longTapIdx++  = 0;
+        *shortTapIdx++ = 0;
+    }
+    
+    /* Initialize all elements of long and short tap delay buffers to zero */
+    {
+        %<OUT_T> *longTapBuf  = %<LibBlockDWorkAddr(LongTapBuf,  "", "", 0)>;
+        %<OUT_T> *shortTapBuf = %<LibBlockDWorkAddr(ShortTapBuf, "", "", 0)>;
+        int_T j = %<totalLongTaps>;
+        while (j--) {
+            %if (OUT_CPLX)
+                longTapBuf->re = %<zeroVal>;
+                (longTapBuf++)->im = %<zeroVal>;
+            %else
+                *longTapBuf++ = %<zeroVal>;
+            %endif
+        }
+        j = %<totalShortTaps>;
+        while (j--) {
+            %if (OUT_CPLX)
+                shortTapBuf->re = %<zeroVal>;
+                (shortTapBuf++)->im = %<zeroVal>;
+            %else
+                *shortTapBuf++ = %<zeroVal>;
+            %endif
+        }
+    }
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset IDWT %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %if (INPUT_ARG == IDWT)
+        /* Inverse discrete wavelet transform */
+    %else
+        /* Dyadic synthesis filter bank */
+    %endif
+    %if (TREE == ASYMMETRIC)
+        %<GenerateAsymIDWTCode(block)>
+    %else
+        %<GenerateSymIDWTCode(block)>
+    %endif
+}
+%endfunction  %% Outputs
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateSymIDWTCode ======================================
+%%
+%function GenerateSymIDWTCode(block) Output
+    %%
+    %assign numElem  = FRAMESIZE * NUM_CHANS 
+    %assign inFrameSize0 = FRAMESIZE >> NUM_LEVELS
+    %assign inElem0      = numElem   >> NUM_LEVELS
+    %assign numBanks0    = 1 << numLevelsMinusOne
+    %%
+    /* Symmetric Tree */
+    const int_T longTapBytes  = %<NUM_CHANS> * %<longTapLen>  * %<bytesPerOutElemStr>;
+    const int_T shortTapBytes = %<NUM_CHANS> * %<shortTapLen> * %<bytesPerOutElemStr>;
+    const int_T numElemTimesBpe = %<numElem> * %<bytesPerOutElemStr>;
+    byte_T *longFiltTapBuf    = (byte_T *)%<LibBlockDWorkAddr(LongTapBuf, "", "", 0)>; 
+    byte_T *shortFiltTapBuf   = (byte_T *)%<LibBlockDWorkAddr(ShortTapBuf,  "", "", 0)>;
+    int32_T  *longFiltTapIdx    = %<LibBlockDWorkAddr(LongTapIdx, "", "", 0)>;
+    int32_T  *shortFiltTapIdx   = %<LibBlockDWorkAddr(ShortTapIdx, "", "", 0)>;
+    byte_T *memBase           = (byte_T *)%<LibBlockDWorkAddr(WorkBuff,"", "", 0)>;
+    %if (needInportBuf)
+    byte_T *inportBuf = (byte_T *)%<LibBlockDWorkAddr(InportBuff, "", "", 0)>;
+    %endif
+    int_T   inFrameSize = %<inFrameSize0>;
+    int_T   inElem      = %<inElem0>;
+    int_T   numBanks    = %<numBanks0>;
+    int_T   level       = 0;
+    %%
+    %if (INPUT_ARG == BANKS)
+    /* Local array of pointers to the output port locations */
+    byte_T *inPortAddr[%<NUM_INPUTS>]; 
+    %foreach inPortIdx = NUM_INPUTS
+    inPortAddr[%<inPortIdx>] = (byte_T *)%<LibBlockInputSignalAddr(inPortIdx, "", "", 0)>;
+    %endforeach
+    %endif
+
+    %if (INPUT_ARG == IDWT)
+        %<CopyIDWTPortToBufSymTree(block)>
+    %endif
+    %if ( (!DATA_CPLX) && (FILT_CPLX) && (INPUT_ARG == BANKS) )
+        %<CopyInputToCplxBufBufSymTree(block)>
+    %endif
+    
+    /* Iterate through all tree levels */
+    for (level=0; level < %<NUM_LEVELS>; level++) {
+        /* reset parameters at the beginning of each level */
+        boolean_T outBufIdx        = (boolean_T)(level%2);
+        boolean_T inBufIdx         = (boolean_T)(!outBufIdx);
+        byte_T   *inputAddr        = memBase + inBufIdx  * numElemTimesBpe;  
+        byte_T   *outputAddr       = memBase + outBufIdx * numElemTimesBpe;
+        int_T inElemTimesBpe       = inElem * %<bytesPerOutElemStr>;
+        int_T inElemTimesBpeTimes2 = inElemTimesBpe * 2;
+        int_T i;
+
+        for (i=0; i < numBanks; i++) {
+            /* Memory address generations */
+            %assign inputToLongFiltStr  = "const byte_T *inputToLongFilt = "
+            %assign inputToShortFiltStr = "const byte_T *inputToShortFilt = "
+            %if (lpfIsLonger)
+                %assign inputToLongFiltStr  = inputToLongFiltStr  + LPFInputsToSymTree(block)
+                %assign inputToShortFiltStr = inputToShortFiltStr + HPFInputsToSymTree(block)
+            %else
+                %assign inputToLongFiltStr  = inputToLongFiltStr  + HPFInputsToSymTree(block)
+                %assign inputToShortFiltStr = inputToShortFiltStr + LPFInputsToSymTree(block)
+            %endif
+            %<inputToLongFiltStr>
+            %<inputToShortFiltStr>
+            %%      
+            byte_T *output = (level == %<numLevelsMinusOne>) 
+                           ? (byte_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>
+                           : outputAddr + i*inElemTimesBpeTimes2;
+
+            /* Two channel synthesis filter bank */
+            %<Generate2ChanSBankFcnCall(block)>
+
+            /* advance pointers for next filter bank on the same level */
+            longFiltTapIdx++;
+            shortFiltTapIdx++;
+            longFiltTapBuf  += longTapBytes;
+            shortFiltTapBuf += shortTapBytes;
+
+        } /* done with current filter bank */
+
+        /* update parameters for next level */
+        numBanks    >>= 1;
+        inElem      <<= 1;
+        inFrameSize <<= 1;
+
+    } /* done with current level */
+%%
+%endfunction %% GenerateSymIDWTCode
+
+%% Subfunction: LPFInputsToSymTree ======================================
+%%
+%function LPFInputsToSymTree(block) void
+%%
+%assign str = "(level == 0) ? "
+%if (needInportBuf)
+    %assign str = str + "inportBuf + (2*i+1) * inElemTimesBpe "
+%else
+    %assign str = str + "inPortAddr[2*i+1] "
+%endif
+%assign str = str + ": inputAddr + (2*i+1) * inElemTimesBpe;" 
+%%
+%return str
+%%
+%endfunction %% LPFInputsToSymTree
+
+%% Subfunction: HPFInputsToSymTree ======================================
+%%
+%function HPFInputsToSymTree(block) void
+%%
+%assign str = "(level == 0) ? "
+%if (needInportBuf)
+    %assign str = str + "inportBuf + 2*i*inElemTimesBpe "
+%else
+    %assign str = str + "inPortAddr[2*i]"
+%endif
+%assign str = str + ": inputAddr + 2*i*inElemTimesBpe;"
+%%
+%return str
+%%
+%endfunction %% HPFInputsToSymTree
+%%
+%% Subfunction: CopyIDWTPortToBufSymTree ======================================
+%%
+%function CopyIDWTPortToBufSymTree(block) Output
+%%
+{
+    /* Copy input port data into memory buffer before processing */
+    byte_T       *dst = inportBuf; 
+    const int_T   frameSizeInBytes = %<FRAMESIZE> * %<bytesPerOutElemStr>;
+    const int_T   bytesToCopy      = frameSizeInBytes >> %<NUM_LEVELS>;
+    int_T         bytesCopied      = 0;
+    int_T i, j;
+
+    for (j=0; j < %<NUM_INPUTS>; j++) {
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const byte_T *u = (byte_T *)%<LibBlockInputSignalAddr(0, "", "", 0)> + i*frameSizeInBytes + bytesCopied;
+            memcpy(dst, u, bytesToCopy);
+            dst += bytesToCopy;
+        }
+        bytesCopied += bytesToCopy;
+    }
+}
+%endfunction %% CopyIDWTPortToBufSymTree
+
+%% Subfunction: CopyInputToCplxBufBufSymTree ======================================
+%%
+%function CopyInputToCplxBufBufSymTree(block) Output
+%%
+{
+    /*Interleave real input data with imaginary zero and
+      store the results in memory before processing */
+    %<DAT_T> *buffer = (%<DAT_T> *)inportBuf;
+    int_T i;
+    for (i=0; i<%<NUM_INPUTS>; i++) {
+        const %<DAT_T> *uPort = (%<DAT_T> *)inPortAddr[i];
+        int_T j = inElem;
+        while (j--) {
+            *buffer++ = *uPort++;
+            *buffer++ = %<zeroVal>;
+        }
+    }
+}
+%endfunction %% CopyInputToCplxBufBufSymTree
+
+%% Subfunction: GenerateAsymIDWTCode ======================================
+%%
+%function GenerateAsymIDWTCode(block) Output
+    %%
+    %assign numElem  = FRAMESIZE * NUM_CHANS 
+    %assign inElem0  = numElem >> NUM_LEVELS
+    %assign inFrameSize0 = FRAMESIZE >> NUM_LEVELS
+    %%
+    /* Asymmetric Tree */
+    const int_T longTapBytes  = %<NUM_CHANS> * %<longTapLen>  * %<bytesPerOutElemStr>;
+    const int_T shortTapBytes = %<NUM_CHANS> * %<shortTapLen> * %<bytesPerOutElemStr>;
+    const int_T inElem0Bytes  = %<inElem0>   * %<bytesPerOutElemStr>;
+    const int_T inElem0BytesTimes4 = inElem0Bytes * 4;    
+    int32_T  *longFiltTapIdx  = %<LibBlockDWorkAddr(LongTapIdx, "", "", 0)>;
+    int32_T  *shortFiltTapIdx = %<LibBlockDWorkAddr(ShortTapIdx, "", "", 0)>;
+    byte_T *longFiltTapBuf  = (byte_T *)%<LibBlockDWorkAddr(LongTapBuf, "", "", 0)>; 
+    byte_T *shortFiltTapBuf = (byte_T *)%<LibBlockDWorkAddr(ShortTapBuf,  "", "", 0)>;
+    byte_T *memBase = (byte_T *)%<LibBlockDWorkAddr(WorkBuff,"", "", 0)>;
+    %if (needInportBuf)
+    byte_T *inportBuf = (byte_T *)%<LibBlockDWorkAddr(InportBuff, "", "", 0)>;
+    %endif
+    %%    
+    
+    int_T   inFrameSize   = %<inFrameSize0>;   /* first level input frame size */
+    int_T   level         = 0;
+    byte_T *inputAddr     = memBase;
+    byte_T *outputAddr    = memBase;
+    %if (INPUT_ARG == BANKS)
+    /* Local array of pointers to the output port locations */
+    byte_T *inPortAddr[%<NUM_INPUTS>]; 
+    %foreach inPortIdx = NUM_INPUTS
+    inPortAddr[%<inPortIdx>] = (byte_T *)%<LibBlockInputSignalAddr(inPortIdx, "", "", 0)>;
+    %endforeach
+    %endif
+    %%
+    %if (INPUT_ARG == IDWT)
+        %<CopyIDWTPortToBufAsymTree(block)>
+    %endif
+    %if ( (!DATA_CPLX) && (FILT_CPLX) && (INPUT_ARG == BANKS) )
+        %<CopyInputToCplxBufBufAsymTree(block)>
+    %endif
+    
+    /* Iterate through all tree levels */
+    for (level=0; level < %<NUM_LEVELS>; level++) {
+        /* calculate input and output addresses to work buffer */
+        if (level == 1) {
+            outputAddr = memBase + inElem0BytesTimes4;
+        } else if (level > 1) {
+            inputAddr  = memBase + (inElem0BytesTimes4 << (level-2));
+            outputAddr = memBase + (inElem0BytesTimes4 << (level-1));
+        }
+
+        {
+            /* Memory address generations */
+            %assign inputToLongFiltStr  = "const byte_T *inputToLongFilt = "
+            %assign inputToShortFiltStr = "const byte_T *inputToShortFilt = "
+            %if (needInportBuf)
+                byte_T *inportBufAddr = inportBuf + (inElem0Bytes << level);
+            %endif
+            %%
+            %if (lpfIsLonger)
+                %assign inputToLongFiltStr  = inputToLongFiltStr  + LPFInputsToAsymTree(block)
+                %assign inputToShortFiltStr = inputToShortFiltStr + HPFInputsToAsymTree(block)
+            %else
+                %assign inputToLongFiltStr  = inputToLongFiltStr  + HPFInputsToAsymTree(block)
+                %assign inputToShortFiltStr = inputToShortFiltStr + LPFInputsToAsymTree(block)
+            %endif
+            %<inputToLongFiltStr>
+            %<inputToShortFiltStr>
+            %%
+            byte_T *output = (level == %<numLevelsMinusOne>) ? (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)> : outputAddr;
+            
+            /* Two channel synthesis filter bank */
+            %<Generate2ChanSBankFcnCall(block)>
+
+            /* Update parameters for next level */
+            longFiltTapIdx++;
+            shortFiltTapIdx++;
+            longFiltTapBuf  += longTapBytes;
+            shortFiltTapBuf += shortTapBytes;
+            inFrameSize    <<= 1;
+        }
+    }
+%%
+%endfunction %% GenerateAsymIDWTCode
+%%
+%% Subfunction: LPFInputsToAsymTree ======================================
+%%
+%function LPFInputsToAsymTree(block) void
+%%
+%assign str = "(level == 0) ? "
+%if (needInportBuf)
+    %assign str = str + "inportBuf "
+%else
+    %assign str = str + "inPortAddr[%<NUM_LEVELS>] "
+%endif
+%assign str = str + ": inputAddr;" 
+%%
+%return str
+%%
+%endfunction %% LPFInputsToAsymTree
+%%
+%% Subfunction: HPFInputsToAsymTree ======================================
+%%
+%function HPFInputsToAsymTree(block) void
+%%
+%if (needInportBuf)
+    %assign str = "inportBufAddr; "
+%else
+    %assign str = "(level == 0) ? inPortAddr[%<numLevelsMinusOne>] : inPortAddr[%<numLevelsMinusOne>-level];"
+%endif
+%%
+%return str
+%%
+%endfunction %% HPFInputsToAsymTree
+%%
+%% Subfunction: CopyIDWTPortToBufAsymTree ======================================
+%%
+%function CopyIDWTPortToBufAsymTree(block) Output
+%%
+{
+    /* Copy input port data into memory buffer before processing */
+    byte_T *dst = inportBuf; 
+    const int_T frameSizeInBytes = %<FRAMESIZE> * %<bytesPerInElemStr>;
+    int_T       bytesLeftToCopy  = frameSizeInBytes;
+    int_T i, level;
+    for (level=%<NUM_LEVELS>; level >=0; level--) {
+        int_T  bytesToCopy = (level == %<NUM_LEVELS>)
+                           ? (%<FRAMESIZE> >> level) * %<bytesPerInElemStr>
+                           : (%<FRAMESIZE> >> (level+1)) * %<bytesPerInElemStr>;
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const byte_T *u = (byte_T *)%<LibBlockInputSignalAddr(0, "", "", 0)> + i*frameSizeInBytes + bytesLeftToCopy - bytesToCopy;
+            memcpy(dst, u, bytesToCopy);
+            dst += bytesToCopy;
+        }
+        bytesLeftToCopy -= bytesToCopy;
+    }
+}
+%endfunction %% CopyIDWTPortToBufAsymTree
+%%
+%% Subfunction: CopyInputToCplxBufBufAsymTree ======================================
+%%
+%function CopyInputToCplxBufBufAsymTree(block) Output
+%%
+{
+    /*Interleave real input data with imaginary zero and
+      store the results in memory before processing */
+    %assign numInputsMinusOne = NUM_INPUTS - 1 
+    int_T inElem = (%<FRAMESIZE> * %<NUM_CHANS>) >> %<NUM_LEVELS>;  
+    %<DAT_T> *buffer = (%<DAT_T> *)inportBuf;
+    int_T i;
+    for (i=%<numInputsMinusOne>; i >= 0; i--) {
+        const %<DAT_T> *uPort = (%<DAT_T> *)inPortAddr[i];
+        int_T j = inElem;
+        while (j--) {
+            *buffer++ = *uPort++;
+            *buffer++ = %<zeroVal>;
+        }
+        if ( i != %<numInputsMinusOne> )inElem <<= 1;
+    }
+}
+%endfunction %% CopyInputToCplxBufBufAsymTree
+%%
+%% Subfunction: Generate2ChanSBankFcnCall ======================================
+%%
+%function Generate2ChanSBankFcnCall(block) Output
+    %%
+    %assign shortFiltAddr = (lpfIsLonger)                                \
+                          ? LibBlockParameterAddr(HFILT, "", "", "0")    \
+                          : LibBlockParameterAddr(LFILT, "", "", "0")    
+    %assign longFiltAddr  = (lpfIsLonger)                                \
+                          ? LibBlockParameterAddr(LFILT, "", "", "0")    \
+                          : LibBlockParameterAddr(HFILT, "", "", "0")
+    %assign polyphaseShortFiltLen = (lpfIsLonger) ? HFLen/2 : LFLen/2
+    %assign polyphaseLongFiltLen  = (lpfIsLonger) ? LFLen/2 : HFLen/2
+    %%
+    %assign ARG_LIST = "(void *)inputToLongFilt,  \
+                        (void *)inputToShortFilt, \
+                        (void *)output,           \
+                        (void *)longFiltTapBuf,   \
+                        (void *)shortFiltTapBuf,  \
+                        (void *)%<longFiltAddr>,  \
+                        (void *)%<shortFiltAddr>, \
+                        longFiltTapIdx,           \
+                        shortFiltTapIdx,          \
+                        %<NUM_CHANS>, inFrameSize, %<longTapLen>, %<shortTapLen>"
+    %%
+    %if (INPORT_IS_SINGLE)
+        %assign cplx_str = "C"
+        %assign real_str = "R"
+    %else
+        %assign cplx_str = "Z"
+        %assign real_str = "D"
+    %endif
+    %%
+    %assign func_str = "MWDSP_2ChSBank_DF_"
+    %%
+    %if (DATA_CPLX) || (FILT_CPLX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %if (FILT_CPLX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %% GENERATE RUNTIME FUNCTION CALL
+    %%
+    %<func_str>(%<ARG_LIST>);
+    %%
+%endfunction %% Generate2ChanSBankFcnCall
+
+%% [EOF] sdspidwt.tlc

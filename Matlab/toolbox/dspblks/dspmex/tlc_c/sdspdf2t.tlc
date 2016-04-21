@@ -1,0 +1,309 @@
+%% $RCSfile: sdspdf2t.tlc,v $
+%% $Revision: 1.13 $ 
+%% $Date: 2002/04/14 21:02:11 $
+%%
+%% Dale Shpak
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Direct-Form II Transpose filter
+%%
+
+%implements sdspdf2t "C"
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+    %assign INPORT          = 0
+    %assign CONTIG          = IsInputPortContiguous(block,INPORT)
+    %% We do not support discontiguous inputs
+    %if (!CONTIG)
+	%<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign COEFFS          = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign LEN_NUM         = SIZE(SFcnParamSettings.NUM, 1)
+    %assign LEN_DEN         = SIZE(SFcnParamSettings.DEN, 1)
+    %assign NUM_DELAYS	    = MAX(LEN_NUM, LEN_DEN)
+    %assign NUM_IC          = SIZE(SFcnParamSettings.IC, 1)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign NUM_COMPLEX     = TYPE(SFcnParamSettings.NUM[0]) == "Complex"
+    %assign DEN_COMPLEX     = TYPE(SFcnParamSettings.DEN[0]) == "Complex"
+    %assign IC_COMPLEX      = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign FILT_COMPLEX    = (NUM_COMPLEX || DEN_COMPLEX)
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (FILT_COMPLEX || DATA_COMPLEX)
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %assign NUM_ELE         = NUM_CHANS * NUM_DELAYS
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /*
+    * Initialize the state buffers with initial conditions.
+    * There is one extra memory element for each channel that is set
+    * to zero.  It simplifies the filtering algorithm.
+    */
+    %if (NUM_IC > 1)
+        %if (IC_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,%<IMAG(SFcnParamSettings.IC[NUM_IC-1])>}};
+        %elseif (IS_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,0.0},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,0.0}};
+        %else
+            const real_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                %<SFcnParamSettings.IC[Idx]>,
+            %endforeach
+            %<SFcnParamSettings.IC[NUM_IC-1]>};
+        %endif
+    %endif
+    int_T   i, j;
+    %if (IS_COMPLEX)
+        const creal_T zero  = {(real_T)0.0, (real_T)0.0};
+        %assign ZERO        = CAST("String", "zero")
+        %assign STATE_T     = CAST("String", "creal_T")
+    %else
+        %assign ZERO        = CAST("String", "(real_T) 0.0")
+        %assign STATE_T     = CAST("String", "real_T")
+    %endif
+    %<STATE_T> *dlyBuff = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+
+    %if (NUM_IC == 0)
+        for (j=0; j < %<NUM_ELE>; j++) *dlyBuff++ = %<ZERO>;
+    %elseif (NUM_IC == 1)
+        /* Single initial condition */
+        %if (IS_COMPLEX)
+            const creal_T ic  = {%<REAL(SFcnParamSettings.IC[0])>,%<IMAG(SFcnParamSettings.IC[0])>};
+        %endif
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            %if (IS_COMPLEX)
+                for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = ic;
+            %else
+                for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = %<SFcnParamSettings.IC[0]>;
+            %endif
+            *dlyBuff++ = %<ZERO>;
+        }
+    %elseif (NUM_IC == NUM_DELAYS - 1)
+        /* Same IC's for all channels: */
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<STATE_T>  *icp = ic;
+            for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = *icp++;
+            *dlyBuff++ = %<ZERO>;
+        }
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume numDELAYS rows and numCHANS columns
+         */
+        const %<STATE_T> *icp = ic;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = *icp++;
+            *dlyBuff++ = %<ZERO>;
+        }
+    %endif %% Number of ICs
+}
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign INPORT          = 0
+    %assign OUTPORT         = 0
+    %assign COEFFS          = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign ORD_NUM         = SIZE(SFcnParamSettings.NUM, 1) - 1
+    %assign ORD_DEN         = SIZE(SFcnParamSettings.DEN, 1) - 1
+    %assign NUM_DELAYS	    = MAX(ORD_NUM, ORD_DEN) + 1
+    %assign LEN_MIN         = MIN(ORD_NUM, ORD_DEN)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.NUM_CHANS)
+    %assign NUM_COMPLEX     = TYPE(SFcnParamSettings.NUM[0]) == "Complex"
+    %assign DEN_COMPLEX     = TYPE(SFcnParamSettings.DEN[0]) == "Complex"
+    %assign FILT_COMPLEX    = (NUM_COMPLEX || DEN_COMPLEX)
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign IS_COMPLEX      = (FILT_COMPLEX || DATA_COMPLEX)
+    %if (IS_COMPLEX)
+        %assign OUT_T       = CAST("String", "creal_T")
+    %else
+        %assign OUT_T       = CAST("String", "real_T")
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = CAST("String", "creal_T")
+    %else
+        %assign DAT_T       = CAST("String", "real_T")
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = CAST("String", "creal_T")
+    %else
+        %assign FIL_T       = CAST("String", "real_T")
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %endif
+    %%
+{
+    %if (FILT_COMPLEX)
+        const creal_T numerator[%<ORD_NUM + 1>] = {
+        %foreach Idx = ORD_NUM
+            {%<REAL(SFcnParamSettings.NUM[Idx])>,%<IMAG(SFcnParamSettings.NUM[Idx])>},
+        %endforeach
+        {%<REAL(SFcnParamSettings.NUM[ORD_NUM])>,%<IMAG(SFcnParamSettings.NUM[ORD_NUM])>}};
+    %else
+        const real_T numerator[%<ORD_NUM + 1>] = {
+        %foreach Idx = ORD_NUM
+            %<SFcnParamSettings.NUM[Idx]>,
+        %endforeach
+        %<SFcnParamSettings.NUM[ORD_NUM]>};
+    %endif
+    %if (ORD_DEN > 0)
+        /* The first denominator coefficient of 1.0 is implied */
+        %if (FILT_COMPLEX)
+            const creal_T denominator[%<ORD_DEN>] = {
+            %foreach Idx = ORD_DEN - 1
+                {%<REAL(SFcnParamSettings.DEN[Idx+1])>,%<IMAG(SFcnParamSettings.DEN[Idx+1])>},
+            %endforeach
+            {%<REAL(SFcnParamSettings.DEN[ORD_DEN])>,%<IMAG(SFcnParamSettings.DEN[ORD_DEN])>} };
+        %else
+            const real_T denominator[%<ORD_DEN>] = {
+            %foreach Idx = ORD_DEN - 1
+                %<SFcnParamSettings.DEN[Idx+1]>,
+            %endforeach
+            %<SFcnParamSettings.DEN[ORD_DEN]>};
+        %endif
+    %endif
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    %<DAT_T>    *uptr       = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<OUT_T>    *mem_base   = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+    %<OUT_T>    *y          = %<LibBlockOutputSignalAddr(OUTPORT,"", "",0)>;
+
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+            const %<FIL_T> *num = numerator;
+            %if (ORD_DEN > 0)
+                const %<FIL_T> *den = denominator;
+            %endif
+            %<OUT_T> *filt_mem   = mem_base;
+            %<OUT_T> *next_mem   = filt_mem + 1;
+            %<DAT_T> u = *uptr++;
+            %<OUT_T> out;
+
+            /* Compute the output value */
+            %if (DATA_COMPLEX)
+                %if (FILT_COMPLEX)
+                    /* Complex data, complex filter */
+                    y->re     = out.re = CMULT_RE(u, *num) + filt_mem->re;
+                    (y++)->im = out.im = CMULT_IM(u, *num) + filt_mem->im;
+                    ++num;
+                %else
+                    /* Complex data, real filter */
+                    y->re     = out.re = u.re * *num    + filt_mem->re;
+                    (y++)->im = out.im = u.im * *num++  + filt_mem->im;
+                %endif
+            %else
+                %if (FILT_COMPLEX)
+                    /* Real data, complex filter */
+                    y->re     = out.re = u * num->re     + filt_mem->re;
+                    (y++)->im = out.im = u * (num++)->im + filt_mem->im;
+                %else
+                    *y++ = out = u * *num++ + *filt_mem;
+                %endif
+            %endif
+
+            %if (LEN_MIN > 0)
+                /* Update states having both numerator and denominator coeffs */
+                %roll sigIdx3 = [ 0:%<LEN_MIN - 1> ], lcv3 = 3, block, "InlineRoller"
+                    %if (DATA_COMPLEX)
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     + CMULT_RE(u, *num) - CMULT_RE(out, *den);
+                            (filt_mem++)->im = (next_mem++)->im + CMULT_IM(u, *num) - CMULT_IM(out, *den);
+                            ++num;  ++den;
+                        %else
+                            filt_mem->re     = next_mem->re     + u.re * *num   - out.re * *den;
+                            (filt_mem++)->im = (next_mem++)->im + u.im * *num++ - out.im * *den++;
+                        %endif
+                    %else
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     + u * num->re     - CMULT_RE(out, *den);
+                            (filt_mem++)->im = (next_mem++)->im + u * (num++)->im - CMULT_IM(out, *den);
+                            ++den;
+                        %else
+                            *filt_mem++ = *next_mem++ + u * *num++ - out * *den++;
+                        %endif
+                    %endif
+                %endroll
+            %endif
+            %if (ORD_NUM > LEN_MIN)
+                /* Update the rest of the states */
+                %roll sigIdx3 = [ %<LEN_MIN>: %<ORD_NUM - 1> ], lcv3 = 3, block, "InlineRoller"
+                    %if (DATA_COMPLEX)
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     + CMULT_RE(u, *num);
+                            (filt_mem++)->im = (next_mem++)->im + CMULT_IM(u, *num);
+                            ++num;
+                        %else
+                            filt_mem->re     = next_mem->re     + u.re  * *num;
+                            (filt_mem++)->im = (next_mem++)->im + u.im  * *num++;
+                        %endif
+                    %else
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     + u  * num->re;
+                            (filt_mem++)->im = (next_mem++)->im + u  * (num++)->im;
+                        %else
+                            *filt_mem++ = *next_mem++ + u  * *num++;
+                        %endif
+                    %endif
+                %endroll
+            %endif
+            %if (ORD_DEN > LEN_MIN)
+                /* Update the rest of the states */
+                %roll sigIdx3 = [ %<LEN_MIN>: %<ORD_DEN - 1> ], lcv3 = 3, block, "InlineRoller"
+                    %if (DATA_COMPLEX)
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     - CMULT_RE(out, *den);
+                            (filt_mem++)->im = (next_mem++)->im - CMULT_IM(out, *den);
+                            ++den;
+                        %else
+                            filt_mem->re     = next_mem->re     - out.re * *den;
+                            (filt_mem++)->im = (next_mem++)->im - out.im * *den++;
+                        %endif
+                    %else
+                        %if (FILT_COMPLEX)
+                            filt_mem->re     = next_mem->re     - CMULT_RE(out, *den);
+                            (filt_mem++)->im = (next_mem++)->im - CMULT_IM(out, *den);
+                            ++den;
+                        %else
+                            *filt_mem++ = *next_mem++ - out * *den++;
+                        %endif
+                    %endif
+                %endroll
+            %endif
+        %endroll  %% Frame
+        %if (NUM_CHANS > 1)
+            mem_base += %<NUM_DELAYS>;
+        %endif
+    %endroll  %% Channel
+}	
+%endfunction  %% Outputs
+
+%% [EOF] sdspdf2t.tlc
+

@@ -1,0 +1,178 @@
+%% $RCSfile: c6000_periphs.tlc,v $
+%% $Revision: 1.1.6.1 $ 
+%% $Date: 2004/01/22 18:32:07 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% part of the Target for TI C6000 DSP
+
+
+%% ==========================================================================
+%% Function: codecIsSigned16
+%% Abstract:
+%%      Returns TRUE if codec data format is in 16-bit mode   
+
+%function codecIsSigned16 (void)
+
+	%return (DataFormat == "LINEAR_16BIT" || DataFormat == "16BIT")
+
+%endfunction %% codecIsSigned16
+
+
+
+%if !EXISTS("C6000_PERIPHS_TLC")
+%assign C6000_PERIPHS_TLC = 1
+
+    %% Include external c6000 functions =========================================
+    %%
+    %include "c6000_codec.tlc" 
+    
+    %if !useDSPBIOS    
+        %include "c6000_dma.tlc"   
+        %include "c6000_mcbsp.tlc"      
+    %endif
+    
+    %if BoardType=="C6701EVM"
+        %include "c6701evm_bsl.tlc"  
+    %elseif BoardType=="C6416DSK"
+        %include "c6416dsk_bsl.tlc"   
+    %elseif BoardType=="C6713DSK"
+        %% For now, the board (AIC23 codec) support code is in this file:    
+        %%  (shared code could be pulled out into a ~aic23~.tlc file   xxx)
+        %include "c6416dsk_bsl.tlc"   
+    %else
+        %include "c6711dsk_bsl.tlc"   
+    %endif
+ 
+    %% Function:  ConfigPeripherals ======================================
+    %%
+    %% Call common board peripheral configurations
+    %%
+    %function ConfigPeripherals(block) Output
+        %%
+		%% Only do the following if the ADC or DAC are calling this:
+		%%
+        %% Check to see if A/D is being used
+        %assign DAC_in_use = %<EXISTS("::CompiledModel.c6701evm_dac_instance")> || %<EXISTS("::CompiledModel.c6711dsk_dac_instance")> || \ 
+        					 %<EXISTS("::CompiledModel.tmdx326040_dac_instance")>  || %<EXISTS("::CompiledModel.aic23_dac_instance")> 
+        %assign ADC_in_use = %<EXISTS("::CompiledModel.c6701evm_adc_instance")> || %<EXISTS("::CompiledModel.c6711dsk_adc_instance")> || \
+        					 %<EXISTS("::CompiledModel.tmdx326040_adc_instance")> || %<EXISTS("::CompiledModel.aic23_adc_instance")> 
+        %%
+            %if ADC_in_use || DAC_in_use
+                %% Generate support functions:
+                %% 
+                %<create_c6xxx_bsl()>\
+                %%
+                %if BoardType=="C6701EVM"
+                    %if !useDSPBIOS
+                        %<Create_config_McBSP(block)>\
+                        %<Create_config_DMA(block)>\                   
+                    %endif
+                    %<Create_config_codec(block)>\
+                %else
+                    %<Create_config_McBSP(block)>\
+                    %<Create_config_DMA(block)>\
+                    %<Create_config_codec(block)>\
+                %endif 
+                		                
+                %%
+				%%  Make the following call only once
+				%%  It doesn't matter whether the ADC or DAC causes the following
+				%%  line of code to generate ... but only one should
+				%%
+		        %if JustCreatedCompiledModelRecord("c6000_util_config_peripherals")
+                		
+                %openfile buffer
+                
+                #define FRAME_SIZE          %<FrameSize>					
+                #define NUM_OF_FRAMES       2                   // Must Not Be Changed
+                
+                %if (BoardType=="C6711DSK" || BoardType=="C6416DSK" || BoardType=="C6713DSK")
+                    #define NOT_READY			0
+                    #define READY				1
+                    #define	PING_TO_PONG		2
+                    #define	PONG_TO_PING		3
+                    #define	RX_PING_FLAG		0x0001
+                    #define	RX_PONG_FLAG		0x0010
+                    #define	TX_PING_FLAG		0x0100
+                    #define	TX_PONG_FLAG		0x1000    
+                %endif
+
+                #ifdef _C6XCHIP_SOURCE_FILE_
+                    %if BoardType=="C6711DSK"
+						%if EXISTS("::CompiledModel.c6711dsk_adc_instance") || EXISTS("::CompiledModel.c6711dsk_dac_instance")
+							volatile int16_T *adcBuffPtr;
+							volatile int16_T *dacBuffPtr;
+						%elseif EXISTS("::CompiledModel.tmdx326040_adc_instance") || EXISTS("::CompiledModel.tmdx326040_dac_instance")
+ 							volatile int32_T *adcBuffPtr;
+							volatile int32_T *dacBuffPtr;
+                        %endif
+                    %elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+						%if EXISTS("::CompiledModel.aic23_adc_instance") || EXISTS("::CompiledModel.aic23_dac_instance")
+						    %if (DataFormat == "16BIT")
+                                volatile int16_T *adcBuffPtr;
+                                volatile int16_T *dacBuffPtr;
+                            %else
+                                volatile int32_T *adcBuffPtr;
+                                volatile int32_T *dacBuffPtr;
+                            %endif
+                        %endif
+                    %else   %% C6701EVM:
+                        %if codecIsSigned16(block)
+                            volatile int32_T adc_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            volatile int32_T dac_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            volatile int32_T *adcBuffPtr;
+                            volatile int32_T *dacBuffPtr;               
+                        %else
+                            volatile uint32_T adc_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            volatile uint32_T dac_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            volatile uint32_T *adcBuffPtr;
+                            volatile uint32_T *dacBuffPtr;
+                        %endif
+                    %endif  %% BoardType
+                #else
+                    %if BoardType=="C6711DSK"
+						%if EXISTS("::CompiledModel.c6711dsk_adc_instance") || EXISTS("::CompiledModel.c6711dsk_dac_instance")
+							extern volatile int16_T *adcBuffPtr;
+							extern volatile int16_T *dacBuffPtr;
+						%elseif EXISTS("::CompiledModel.tmdx326040_adc_instance") || EXISTS("::CompiledModel.tmdx326040_dac_instance")
+							extern volatile int32_T *adcBuffPtr;
+							extern volatile int32_T *dacBuffPtr;
+						%endif
+                    %elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+						%if EXISTS("::CompiledModel.aic23_adc_instance") || EXISTS("::CompiledModel.aic23_dac_instance")
+						    %if (DataFormat == "16BIT")
+                                extern volatile int16_T *adcBuffPtr;
+                                extern volatile int16_T *dacBuffPtr;
+                            %else
+                                extern volatile int32_T *adcBuffPtr;
+                                extern volatile int32_T *dacBuffPtr;
+                            %endif
+                        %endif
+                    %else  %% C6701EVM:
+                        %if codecIsSigned16(block)
+                            extern volatile int32_T adc_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            extern volatile int32_T dac_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            extern volatile int32_T *adcBuffPtr;
+                            extern volatile int32_T *dacBuffPtr;               
+                        %else
+                            extern volatile uint32_T adc_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            extern volatile uint32_T dac_buffer[NUM_OF_FRAMES*FRAME_SIZE];
+                            extern volatile uint32_T *adcBuffPtr;
+                            extern volatile uint32_T *dacBuffPtr;
+                        %endif
+                    %endif   %% BoardType
+                #endif     
+             
+                %closefile buffer
+                
+                %<LibCacheDefine(buffer)>    
+               
+                %<create_CodecInit_function()>
+                codec_init();
+		
+            %endif
+        %endif
+    %endfunction  %% ConfigPeripherals
+
+%endif %% C6000_PERIPHS_TLC
+
+%% [EOF] c6000_periphs.tlc

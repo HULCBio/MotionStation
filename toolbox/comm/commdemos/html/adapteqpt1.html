@@ -1,0 +1,483 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Adaptive Equalizer Simulation (Part I)</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-09">
+      <meta name="m-file" content="adapteqpt1"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Adaptive Equalizer Simulation (Part I)</h1>
+      <introduction>
+         <p>This script simulates a communication link with PSK modulation, raised-cosine pulse shaping, multipath fading, and adaptive
+            equalization.
+         </p>
+         <p>It is the first of two parts:  Part I (adapteqpt1.m) sets simulation parameters and creates channel and equalizer objects.
+            Part II (adapteqpt2.m) performs a link simulation based on these settings, which are stored in the MATLAB workspace.  For
+            information on the Part II script, enter demo('toolbox','comm') at the MATLAB prompt, and select "Adaptive Equalizer Simulation
+            (Part II)".
+         </p>
+         <p>Part I sets up three equalization scenarios, and calls Part II multiple times for each of these.  Each call corresponds to
+            a transmission block. The pulse shaping and multipath fading channel retain state information from one block to the next.
+             For visualizing the impact of channel fading on adaptive equalizer convergence, the simulation resets the equalizer state
+            every block.
+         </p>
+         <p>To experiment with different simulation settings, you can edit the Part I script.  For instance, you can set the ResetBeforeFiltering
+            property of the equalizer object to 0, which will cause the equalizer to retain state from one block to the next.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Modulation and transmission block</a></li>
+            <li><a href="#2">Transmit/receive filters</a></li>
+            <li><a href="#3">Additive white Gaussian noise</a></li>
+            <li><a href="#4">Simulation 1: Frequency-flat fading channel</a></li>
+            <li><a href="#5">Simulation 2: Frequency-selective fading channel and linear equalizer</a></li>
+            <li><a href="#6">Simulation 3: Decision feedback equalizer (DFE)</a></li>
+         </ul>
+      </div>
+      <h2>Modulation and transmission block<a name="1"></a></h2>
+      <p>Set parameters related to PSK modulation and the transmission block.  The block comprises three contiguous parts: training
+         sequence, payload, and tail sequence.  All use the same PSK scheme. The training and tail sequences are used for equalization.
+      </p><pre class="codeinput">Tsym = 1e-6; <span class="comment">% Symbol period (s)</span>
+bitsPerSymbol = 2;  <span class="comment">% Number of bits per PSK symbol</span>
+M = 2.^bitsPerSymbol;  <span class="comment">% PSK alphabet size (number of modulation levels)</span>
+nPayload = 400;  <span class="comment">% Number of payload symbols</span>
+nTrain = 100;  <span class="comment">% Number of training symbols</span>
+nTail = 20; <span class="comment">% Number of tail symbols</span>
+xTrain = pskmod(randint(1, nTrain, M), M);  <span class="comment">% Training sequence</span>
+xTail = pskmod(randint(1, nTail, M), M);  <span class="comment">% Tail sequence</span>
+</pre><h2>Transmit/receive filters<a name="2"></a></h2>
+      <p>Create structures containing information about the transmit and receive filters (txFilt and rxFilt).  Each filter has a square-root
+         raised cosine frequency response, implemented with an FIR structure.
+      </p>
+      <p>The transmit and receive filters incorporate upsampling and downsampling, respectively, and both use an efficient polyphase
+         scheme (see Part II script for more information).  These multirate filters retain state from one transmission block to the
+         next, like the channel object (see "Simulation 1: Frequency-flat fading channel" below).
+      </p>
+      <p>The peak value of the impulse response of the filter cascade is 1.  The transmit filter uses a scale factor to ensure unit
+         transmitted power.
+      </p>
+      <p>To construct the pulse filter structures, this script uses an auxiliary function adapteq_buildfilter.m.  An improved approach
+         would be to use multirate filter objects from the Filter Design Toolbox.
+      </p><pre class="codeinput"><span class="comment">% Filter parameters</span>
+nSymFilt = 8;  <span class="comment">% Number of symbol periods spanned by each filter</span>
+osfFilt = 4;  <span class="comment">% Oversampling factor for filter (samples per symbol)</span>
+rolloff = 0.25;  <span class="comment">% Rolloff factor</span>
+Tsamp = Tsym/osfFilt; <span class="comment">% TX signal sample period (s)</span>
+cutoffFreq = 1/(2*Tsym);  <span class="comment">% Cutoff frequency (half Nyquist bandwidth)</span>
+orderFilt = nSymFilt*osfFilt;  <span class="comment">% Filter order (number of taps - 1)</span>
+
+<span class="comment">% Filter responses and structures</span>
+sqrtrcCoeff = firrcos(orderFilt, cutoffFreq, rolloff, 1/Tsamp, <span class="keyword">...</span>
+              <span class="string">'rolloff'</span>, <span class="string">'sqrt'</span>);
+txFilt = adapteq_buildfilter(osfFilt*sqrtrcCoeff, osfFilt, 1);
+rxFilt = adapteq_buildfilter(sqrtrcCoeff, 1, osfFilt);
+</pre><h2>Additive white Gaussian noise<a name="3"></a></h2>
+      <p>Set signal-to-noise ratio parameter for additive white Gaussian noise.</p><pre class="codeinput">EsNodB = 20;  <span class="comment">% Ratio of symbol energy to noise power spectral density (dB)</span>
+snrdB = EsNodB - 10*log10(osfFilt); <span class="comment">% Signal-to-noise ratio per sample (dB)</span>
+</pre><h2>Simulation 1: Frequency-flat fading channel<a name="4"></a></h2>
+      <p>Begin with single-path, frequency-flat fading.  For this channel, the receiver uses a simple 1-tap LMS (least mean square)
+         equalizer, which implements automatic gain and phase control.
+      </p>
+      <p>The Part II script (adapteqpt2.m) runs multiple times.  Each run corresponds to a transmission block.  The equalizer resets
+         its state and weight every transmission block.  (To retain state from one block to the next, you can set the ResetBeforeFiltering
+         property of the equalizer object to 0.)
+      </p>
+      <p>Before the first run, the Part II script displays the initial properties of the channel and equalizer objects.  For each run,
+         a MATLAB figure shows signal processing visualizations.  The red circles in the signal constellation plots correspond to symbol
+         errors.  In the "Weights" plot, blue and magenta lines correspond to real and imaginary parts, respectively. (The HTML version
+         of this demo shows the last state of the visualizations.)
+      </p><pre class="codeinput">simName = <span class="string">'Frequency-flat fading'</span>;  <span class="comment">% Used to label figure window.</span>
+
+<span class="comment">% Multipath channel</span>
+fd = 30;  <span class="comment">% Maximum Doppler shift (Hz)</span>
+chan = rayleighchan(Tsamp, fd);  <span class="comment">% Create channel object.</span>
+chan.ResetBeforeFiltering = 0;  <span class="comment">% Allow state retention across blocks.</span>
+
+<span class="comment">% Adaptive equalizer</span>
+nWeights = 1;  <span class="comment">% Single weight</span>
+stepSize = 0.1;  <span class="comment">% Step size for LMS algorithm</span>
+alg = lms(stepSize);  <span class="comment">% Adaptive algorithm object</span>
+eqObj = lineareq(nWeights, alg, pskmod(0:M-1, M));  <span class="comment">% Equalizer object</span>
+
+<span class="comment">% Link simulation</span>
+nBlocks = 50;  <span class="comment">% Number of transmission blocks in simulation</span>
+<span class="keyword">for</span> block = 1:nBlocks, adapteqpt2; <span class="keyword">end</span>  <span class="comment">% Run Part II script in loop.</span>
+</pre><pre class="codeoutput"> 
+chan =
+ 
+             ChannelType: 'Rayleigh'
+       InputSamplePeriod: 2.5000e-007
+         MaxDopplerShift: 30
+              PathDelays: 0
+           AvgPathGaindB: 0
+      NormalizePathGains: 1
+               PathGains: 0.3112- 0.9061i
+      ChannelFilterDelay: 0
+    ResetBeforeFiltering: 0
+     NumSamplesProcessed: 0
+
+ 
+eqObj =
+ 
+                  EqType: 'Linear Equalizer'
+                 AlgType: 'LMS'
+                nWeights: 1
+             nSampPerSym: 1
+                  RefTap: 1
+                SigConst: [1x4 double]
+                StepSize: 0.1000
+           LeakageFactor: 1
+                 Weights: 0
+            WeightInputs: 0
+    ResetBeforeFiltering: 1
+     NumSamplesProcessed: 0
+
+</pre><img vspace="5" hspace="5" src="adapteqpt1_01.png"> <h2>Simulation 2: Frequency-selective fading channel and linear equalizer<a name="5"></a></h2>
+      <p>Simulate a three-path fading channel (frequency-selective fading).  The receiver uses an 8-tap linear RLS (recursive least
+         squares) equalizer with symbol-spaced taps.  The simulation uses the channel object from Simulation 1, but with modified properties.
+      </p><pre class="codeinput">simName = <span class="string">'Linear equalization of frequency-selective fading channel'</span>;
+
+<span class="comment">% Multipath channel</span>
+chan.PathDelays = [0 0.9 1.5]*Tsym; <span class="comment">% Path delay vector (s)</span>
+chan.AvgPathGaindB = [0 -3 -6]; <span class="comment">% Average path gain vector (dB)</span>
+reset(chan, 0);  <span class="comment">% Reset channel to known state.</span>
+
+<span class="comment">% Adaptive equalizer</span>
+nWeights = 8;
+forgetFactor = 0.99;  <span class="comment">% RLS algorithm forgetting factor</span>
+alg = rls(forgetFactor);  <span class="comment">% RLS algorithm object</span>
+eqObj = lineareq(nWeights, alg, pskmod(0:M-1, M));  <span class="comment">% Equalizer object</span>
+eqObj.RefTap = 3;  <span class="comment">% Reference tap</span>
+
+<span class="comment">% Link simulation.  Store BER values.</span>
+<span class="keyword">for</span> block = 1:nBlocks, adapteqpt2; BERvect(block)=BER; <span class="keyword">end</span>
+avgBER2 = mean(BERvect)  <span class="comment">% Average BER over transmission blocks</span>
+</pre><pre class="codeoutput"> 
+chan =
+ 
+             ChannelType: 'Rayleigh'
+       InputSamplePeriod: 2.5000e-007
+         MaxDopplerShift: 30
+              PathDelays: [0 9.0000e-007 1.5000e-006]
+           AvgPathGaindB: [0 -3 -6]
+      NormalizePathGains: 1
+               PathGains: [1x3 double]
+      ChannelFilterDelay: 4
+    ResetBeforeFiltering: 0
+     NumSamplesProcessed: 0
+
+ 
+eqObj =
+ 
+                  EqType: 'Linear Equalizer'
+                 AlgType: 'RLS'
+                nWeights: 8
+             nSampPerSym: 1
+                  RefTap: 3
+                SigConst: [1x4 double]
+            ForgetFactor: 0.9900
+             InvCorrInit: 0.1000
+           InvCorrMatrix: [8x8 double]
+                 Weights: [0 0 0 0 0 0 0 0]
+            WeightInputs: [0 0 0 0 0 0 0 0]
+    ResetBeforeFiltering: 1
+     NumSamplesProcessed: 0
+
+
+avgBER2 =
+
+    0.0128
+
+</pre><img vspace="5" hspace="5" src="adapteqpt1_02.png"> <h2>Simulation 3: Decision feedback equalizer (DFE)<a name="6"></a></h2>
+      <p>The receiver uses a DFE with a six-tap fractionally spaced forward filter (two samples per symbol) and two feedback weights.
+          The DFE uses the same RLS algorithm as in Simulation 2.  The receive filter structure is reconstructed to account for the
+         increased number of samples per symbol. This simulation uses the same channel object as in Simulation 2.
+      </p><pre class="codeinput">simName = <span class="string">'Decision feedback equalizer (DFE)'</span>;
+
+<span class="comment">% Reset channel to known state.</span>
+reset(chan, 0);
+
+<span class="comment">% Receive filter</span>
+nSamp = 2;  <span class="comment">% Two samples per symbol at equalizer input</span>
+rxFilt = adapteq_buildfilter(sqrtrcCoeff, 1, osfFilt/nSamp);
+
+<span class="comment">% Adaptive equalizer</span>
+nFwdWeights = 6;  <span class="comment">% Number of feedforward equalizer weights</span>
+nFbkWeights = 2;  <span class="comment">% Number of feedback filter weights</span>
+eqObj = dfe(nFwdWeights, nFbkWeights, alg, pskmod(0:M-1, M), nSamp);
+eqObj.RefTap = 3;  <span class="comment">% Reference tap</span>
+
+<span class="keyword">for</span> block = 1:nBlocks, adapteqpt2; BERvect(block)=BER; <span class="keyword">end</span>
+avgBER3 = mean(BERvect)
+
+block = 1;  <span class="comment">% Reset variable (in case Part II is run independently).</span>
+</pre><pre class="codeoutput"> 
+chan =
+ 
+             ChannelType: 'Rayleigh'
+       InputSamplePeriod: 2.5000e-007
+         MaxDopplerShift: 30
+              PathDelays: [0 9.0000e-007 1.5000e-006]
+           AvgPathGaindB: [0 -3 -6]
+      NormalizePathGains: 1
+               PathGains: [1x3 double]
+      ChannelFilterDelay: 4
+    ResetBeforeFiltering: 0
+     NumSamplesProcessed: 0
+
+ 
+eqObj =
+ 
+                  EqType: 'Decision Feedback Equalizer'
+                 AlgType: 'RLS'
+                nWeights: [6 2]
+             nSampPerSym: 2
+                  RefTap: 3
+                SigConst: [1x4 double]
+            ForgetFactor: 0.9900
+             InvCorrInit: 0.1000
+           InvCorrMatrix: [8x8 double]
+                 Weights: [0 0 0 0 0 0 0 0]
+            WeightInputs: [0 0 0 0 0 0 0 0]
+    ResetBeforeFiltering: 1
+     NumSamplesProcessed: 0
+
+
+avgBER3 =
+
+  6.5000e-004
+
+</pre><img vspace="5" hspace="5" src="adapteqpt1_03.png"> <p class="footer">Copyright 1996-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Adaptive Equalizer Simulation (Part I)
+% This script simulates a communication link with PSK modulation,
+% raised-cosine pulse shaping, multipath fading, and adaptive equalization.
+%
+% It is the first of two parts:  Part I (adapteqpt1.m) sets simulation
+% parameters and creates channel and equalizer objects.  Part II
+% (adapteqpt2.m) performs a link simulation based on these settings, which
+% are stored in the MATLAB workspace.  For information on the Part II
+% script, enter demo('toolbox','comm') at the MATLAB prompt, and select
+% "Adaptive Equalizer Simulation (Part II)".
+%
+% Part I sets up three equalization scenarios, and calls Part II multiple
+% times for each of these.  Each call corresponds to a transmission block.
+% The pulse shaping and multipath fading channel retain state information
+% from one block to the next.  For visualizing the impact of channel fading
+% on adaptive equalizer convergence, the simulation resets the equalizer
+% state every block.  
+% 
+% To experiment with different simulation settings, you can edit the Part I
+% script.  For instance, you can set the ResetBeforeFiltering property of
+% the equalizer object to 0, which will cause the equalizer to retain state
+% from one block to the next.
+
+%   Copyright 1996-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/04/20 23:15:11 $
+
+%% Modulation and transmission block
+% Set parameters related to PSK modulation and the transmission block.  The
+% block comprises three contiguous parts: training sequence, payload, and
+% tail sequence.  All use the same PSK scheme. The training and tail
+% sequences are used for equalization.
+Tsym = 1e-6; % Symbol period (s)
+bitsPerSymbol = 2;  % Number of bits per PSK symbol
+M = 2.^bitsPerSymbol;  % PSK alphabet size (number of modulation levels)
+nPayload = 400;  % Number of payload symbols
+nTrain = 100;  % Number of training symbols
+nTail = 20; % Number of tail symbols
+xTrain = pskmod(randint(1, nTrain, M), M);  % Training sequence
+xTail = pskmod(randint(1, nTail, M), M);  % Tail sequence
+
+%% Transmit/receive filters
+% Create structures containing information about the transmit and receive
+% filters (txFilt and rxFilt).  Each filter has a square-root raised cosine
+% frequency response, implemented with an FIR structure. 
+%
+% The transmit and receive filters incorporate upsampling and downsampling,
+% respectively, and both use an efficient polyphase scheme (see Part II
+% script for more information).  These multirate filters retain state from
+% one transmission block to the next, like the channel object (see
+% "Simulation 1: Frequency-flat fading channel" below).
+%
+% The peak value of the impulse response of the filter cascade is 1.  The
+% transmit filter uses a scale factor to ensure unit transmitted power. 
+%
+% To construct the pulse filter structures, this script uses an auxiliary
+% function adapteq_buildfilter.m.  An improved approach would be to use
+% multirate filter objects from the Filter Design Toolbox.
+
+% Filter parameters
+nSymFilt = 8;  % Number of symbol periods spanned by each filter
+osfFilt = 4;  % Oversampling factor for filter (samples per symbol)
+rolloff = 0.25;  % Rolloff factor
+Tsamp = Tsym/osfFilt; % TX signal sample period (s)
+cutoffFreq = 1/(2*Tsym);  % Cutoff frequency (half Nyquist bandwidth)
+orderFilt = nSymFilt*osfFilt;  % Filter order (number of taps - 1)
+
+% Filter responses and structures
+sqrtrcCoeff = firrcos(orderFilt, cutoffFreq, rolloff, 1/Tsamp, ...
+              'rolloff', 'sqrt');
+txFilt = adapteq_buildfilter(osfFilt*sqrtrcCoeff, osfFilt, 1);
+rxFilt = adapteq_buildfilter(sqrtrcCoeff, 1, osfFilt);
+
+%% Additive white Gaussian noise
+% Set signal-to-noise ratio parameter for additive white Gaussian noise.
+EsNodB = 20;  % Ratio of symbol energy to noise power spectral density (dB)
+snrdB = EsNodB - 10*log10(osfFilt); % Signal-to-noise ratio per sample (dB)
+
+%% Simulation 1: Frequency-flat fading channel
+% Begin with single-path, frequency-flat fading.  For this channel, the
+% receiver uses a simple 1-tap LMS (least mean square) equalizer, which
+% implements automatic gain and phase control.  
+%
+% The Part II script (adapteqpt2.m) runs multiple times.  Each run
+% corresponds to a transmission block.  The equalizer resets its state and
+% weight every transmission block.  (To retain state from one block to the
+% next, you can set the ResetBeforeFiltering property of the equalizer
+% object to 0.)
+%
+% Before the first run, the Part II script displays the initial properties
+% of the channel and equalizer objects.  For each run, a MATLAB figure
+% shows signal processing visualizations.  The red circles in the signal
+% constellation plots correspond to symbol errors.  In the "Weights" plot,
+% blue and magenta lines correspond to real and imaginary parts,
+% respectively. (The HTML version of this demo shows the last state of the
+% visualizations.)
+simName = 'Frequency-flat fading';  % Used to label figure window.
+
+% Multipath channel
+fd = 30;  % Maximum Doppler shift (Hz)
+chan = rayleighchan(Tsamp, fd);  % Create channel object.
+chan.ResetBeforeFiltering = 0;  % Allow state retention across blocks.
+
+% Adaptive equalizer
+nWeights = 1;  % Single weight
+stepSize = 0.1;  % Step size for LMS algorithm
+alg = lms(stepSize);  % Adaptive algorithm object
+eqObj = lineareq(nWeights, alg, pskmod(0:M-1, M));  % Equalizer object
+
+% Link simulation
+nBlocks = 50;  % Number of transmission blocks in simulation
+for block = 1:nBlocks, adapteqpt2; end  % Run Part II script in loop.  
+
+%% Simulation 2: Frequency-selective fading channel and linear equalizer
+% Simulate a three-path fading channel (frequency-selective fading).  The
+% receiver uses an 8-tap linear RLS (recursive least squares) equalizer
+% with symbol-spaced taps.  The simulation uses the channel object from
+% Simulation 1, but with modified properties.
+simName = 'Linear equalization of frequency-selective fading channel';
+
+% Multipath channel
+chan.PathDelays = [0 0.9 1.5]*Tsym; % Path delay vector (s)
+chan.AvgPathGaindB = [0 -3 -6]; % Average path gain vector (dB)
+reset(chan, 0);  % Reset channel to known state.
+
+% Adaptive equalizer
+nWeights = 8;
+forgetFactor = 0.99;  % RLS algorithm forgetting factor
+alg = rls(forgetFactor);  % RLS algorithm object
+eqObj = lineareq(nWeights, alg, pskmod(0:M-1, M));  % Equalizer object
+eqObj.RefTap = 3;  % Reference tap
+
+% Link simulation.  Store BER values.
+for block = 1:nBlocks, adapteqpt2; BERvect(block)=BER; end
+avgBER2 = mean(BERvect)  % Average BER over transmission blocks
+
+
+%% Simulation 3: Decision feedback equalizer (DFE)
+% The receiver uses a DFE with a six-tap fractionally spaced forward filter
+% (two samples per symbol) and two feedback weights.  The DFE uses the same
+% RLS algorithm as in Simulation 2.  The receive filter structure is
+% reconstructed to account for the increased number of samples per symbol.
+% This simulation uses the same channel object as in Simulation 2.  
+simName = 'Decision feedback equalizer (DFE)';
+
+% Reset channel to known state.
+reset(chan, 0);
+
+% Receive filter
+nSamp = 2;  % Two samples per symbol at equalizer input
+rxFilt = adapteq_buildfilter(sqrtrcCoeff, 1, osfFilt/nSamp);
+
+% Adaptive equalizer
+nFwdWeights = 6;  % Number of feedforward equalizer weights
+nFbkWeights = 2;  % Number of feedback filter weights
+eqObj = dfe(nFwdWeights, nFbkWeights, alg, pskmod(0:M-1, M), nSamp);
+eqObj.RefTap = 3;  % Reference tap
+
+for block = 1:nBlocks, adapteqpt2; BERvect(block)=BER; end
+avgBER3 = mean(BERvect)
+
+block = 1;  % Reset variable (in case Part II is run independently).
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

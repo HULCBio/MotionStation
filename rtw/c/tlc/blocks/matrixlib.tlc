@@ -1,0 +1,193 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Tom Weis
+%% March 7, 2000
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Description: This TLC library contains matrix multiplication and 
+%%              division routines
+%%
+%if EXISTS("_MATRIXLIB_") == 0
+%assign _MATRIXLIB_ = 1
+
+%%
+%% (1) Global Library Functions (Lib functions)
+%%
+
+%% Function: SLibMatrixOperand =================================================
+%%
+%% Purpose:
+%%      Determine address of matrix multiplication/inversion operand
+%%
+%% Syntax:
+%%      SLibMatrixOperand(block, opIdx)
+%%
+%% Arguments:
+%%      block: block scope
+%%      opIdx: Integer index specifying operand index and type
+%%      Legend for interpreting opIdx:
+%%         zero - operand is block output
+%%         greater than zero - operand is block data input port
+%%         negative - operand is dwork
+%%
+%% Returns:
+%%      The address of the specified operand.
+%%
+%% Description:
+%%      SLibMatrixOperand returns the address of the specified operand.
+%%
+%function SLibMatrixOperand(block, opIdx) void
+
+  %if opIdx == 0
+    %return LibBlockOutputSignalAddr(0, "", "", 0)
+  %elseif opIdx > 0
+    %return  LibBlockInputSignalAddr(opIdx-1, "", "", 0)
+  %else
+    %assign dwIdx = (opIdx * -1) - 1
+    %return LibBlockDWorkAddr(block.DWork[dwIdx], "", "", 0)
+  %endif
+%endfunction %% SLibMatrixOperand
+
+
+
+%% Function: RealMultiply ================================================
+%% Abstract:
+%%       Generate code to multiply two numbers.  Includes saturation code
+%%       if the doSaturate flag is set.  Procedure takes into account
+%%       the data type of the numbers.
+%%
+%% Synopsis:
+%%       RealMultiply (a, b, output, doSaturate)
+%%         a,b    - variables to be multiplied
+%%         output - variable that will hold the value a*b
+%%         doSaturate - Saturation flag for integer inputs
+%%
+%% Precondition:
+%%         a, b must not be empty strings.
+%function RealMultiply (a, b, output, doSaturate) Output
+  %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(...
+    LibBlockOutputSignalDataTypeId(0))
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")
+  %if (!doSaturate)
+    %% No overflow checking
+    %if ISEQUAL(a, output)
+      %<output> *= %<b>;
+    %elseif ISEQUAL(b, output)
+      %<output> *= %<a>;
+    %else
+      %<output> = %<a> * %<b>;
+    %endif
+  %else
+    %<output> = SaturateProduct_%<outputDTname> (%<a>, %<b>);
+  %endif
+%endfunction
+
+%% Function: ComplexMultiply ================================================
+%% Abstract:
+%%       Generates code to do a complex multiply with saturation for integer
+%%       types if the saturation flag is set.
+%% Synopsis:
+%%       ComplexMultiply (a, b, c, d, output_re, output_im, doSaturate) Output
+%%       results in
+%%       (output_re + i*output_im) <-- (a + i*b) * (c + i*d)
+%%
+%%       a - Real part of first complex number
+%%       b - Imaginary part of first complex number
+%%       c - Real part of second complex number
+%%       d - Imaginary part of second complex number
+%%       output_re - Real part of complex number which will hold result
+%%       output_im - Imaginary part of complex number which will hold result
+%%       doSaturate - Saturation flag for integer inputs
+%%
+%% Preconditions:
+%%       a, c, output_re, output_im are all assumed to be non-empty strings.
+%function ComplexMultiply (a, b, c, d, output_re, output_im, doSaturate, bufferOverWrite) Output
+  %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(...
+    LibBlockOutputSignalDataTypeId(0))
+  %assign outputDTname = LibBlockOutputSignalAliasedThruDataTypeName(0, "")
+  %assign outputDTnameRe = LibBlockOutputSignalAliasedThruDataTypeName(0, "%<tRealPart>")  
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %% Both b and d can't be empty because then we'd be in the RealMultiply routine
+  %if (!doSaturate)
+    %if ISEQUAL(b, "")
+      %% Input is real, gain is complex
+      %assign b = %<zero>
+    %endif
+    %if ISEQUAL(d, "")
+      %% Input is complex, gain is real      
+      %assign d = %<zero>
+    %endif
+    %if (bufferOverWrite) %% outputOverWritesInput
+      {
+      %<outputDTnameRe> tmpReal = %<a> * %<c> - %<b> * %<d>;
+      \
+        %<output_im> = %<a> * %<d> + %<b> * %<c>;
+        %<output_re> = tmpReal;
+      }
+    %else
+      %<output_re> = %<a> * %<c> - %<b> * %<d>;
+      %<output_im> = %<a> * %<d> + %<b> * %<c>;
+    %endif
+  %else
+    %% For integers, anything times zero is zero (for floating point,
+    %% one might get NaN).
+    %% We can take advantage of this fact and optimize as follows:
+    %assign bIsNullString = 0
+    %assign dIsNullString = 0
+    %if ISEQUAL(b, "")
+      %assign bIsNullString = 1
+    %endif
+    %if ISEQUAL(d, "")
+      %assign dIsNullString = 1
+    %endif
+    %if (bIsNullString)
+	%% Input is real, gain is complex
+	%% Input and output cannot share a buffer.
+	%<RealMultiply(a, c, output_re, doSaturate)>\
+	%<RealMultiply(a, d, output_im, doSaturate)>\
+    %elseif (dIsNullString)
+	%% Input is complex, gain is real
+	%% Input and output may share a buffer, but we
+	%% are multiplying only by the real part of the parameter.
+	%<RealMultiply(a, c, output_re, doSaturate)>\
+	%<RealMultiply(b, c, output_im, doSaturate)>\
+    %else
+      %if (bufferOverWrite) %% outputOverWritesInput
+	{
+	%<outputDTnameRe> tmp1;
+	%<outputDTnameRe> tmp2;
+	%<outputDTnameRe> tmpReal;      
+	\
+	  tmp1 = SaturateProduct_%<outputDTnameRe> (%<a>, %<c>);
+	  tmp2 = SaturateProduct_%<outputDTnameRe> (%<b>, %<d>);
+	  %<SLibSumWithSaturate (outputDataType, "-", "tmpReal", "tmp1", "tmp2", "")>\
+
+	  tmp1 = SaturateProduct_%<outputDTnameRe> (%<a>, %<d>);
+	  tmp2 = SaturateProduct_%<outputDTnameRe> (%<b>, %<c>);
+	  %<SLibSumWithSaturate (outputDataType, "+", output_im, "tmp1", "tmp2", "")>\
+
+	  %<output_re> = tmpReal;
+	}
+      %else
+	{
+	%<outputDTnameRe> tmp1;
+	%<outputDTnameRe> tmp2;
+	\
+	  tmp1 = SaturateProduct_%<outputDTnameRe> (%<a>, %<c>);
+	  tmp2 = SaturateProduct_%<outputDTnameRe> (%<b>, %<d>);
+	  %<SLibSumWithSaturate (outputDataType, "-", output_re, "tmp1", "tmp2", "")>\
+
+	  tmp1 = SaturateProduct_%<outputDTnameRe> (%<a>, %<d>);
+	  tmp2 = SaturateProduct_%<outputDTnameRe> (%<b>, %<c>);
+	  %<SLibSumWithSaturate (outputDataType, "+", output_im, "tmp1", "tmp2", "")>\
+	}
+      %endif
+    %endif
+  %endif
+%endfunction
+
+%endif %% _MATRIXLIB_
+
+%% [EOF] matrixlib.tlc

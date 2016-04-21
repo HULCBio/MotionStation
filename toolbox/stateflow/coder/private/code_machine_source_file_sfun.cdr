@@ -1,0 +1,190 @@
+function code_machine_source_file_sfun(fileNameInfo)
+% CODE_MACHINE_SOURCE_FILE(FILENAMEINFO,MACHINE,TARGET)
+
+%   Copyright 1995-2004 The MathWorks, Inc.
+%   $Revision: 1.1.6.8 $  $Date: 2004/04/15 00:51:29 $
+
+
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	%%%%%  GLOBAL VARIABLES
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	global gMachineInfo  gTargetInfo
+
+   machine = gMachineInfo.machineId;
+
+	fileName = fullfile(fileNameInfo.targetDirName,fileNameInfo.machineSourceFile);
+   sf_echo_generating('Coder',fileName);
+
+   file = fopen(fileName,'wt');
+   if file<3
+     construct_coder_error([],sprintf('Failed to create file: %s.',fileName),1);
+     return;
+   end
+
+.../* Include files */
+	if(~isempty(sf('get',gMachineInfo.parentTarget,'target.customCode')))
+...#define IN_SF_MACHINE_SOURCE 1
+	end
+...#include "$fileNameInfo.machineHeaderFile$"
+	for i = 1:length(fileNameInfo.chartHeaderFiles)
+...#include "$fileNameInfo.chartHeaderFiles{i}$"
+	end
+
+	file = dump_module(fileName,file,machine,'source');
+    if file < 3
+      return;
+    end
+
+
+.../* SFunction Glue Code */
+...unsigned int sf_$gMachineInfo.machineName$_method_dispatcher(SimStruct *simstructPtr, const char *chartName, int_T method, void *data)
+...{
+		for chart = gMachineInfo.charts
+      	chartUniqueName = sf('CodegenNameOf',chart);
+			chartName = [gMachineInfo.machineName,'/',sf('get',chart,'chart.name')];
+			chartName(regexp(chartName,'\s')) = ' ';
+			% G91382: Escape double quote characters
+			chartName = strrep(chartName,'"','\"');
+...	if(!strcmp_ignore_ws(chartName,"$chartName$/ SFunction ")) {
+...	   $chartUniqueName$_method_dispatcher(simstructPtr, method, data);
+...      return 1;
+...	}
+		end
+...	return 0;
+...}
+...unsigned int sf_$gMachineInfo.machineName$_process_check_sum_call( int nlhs, mxArray * plhs[], int nrhs, const mxArray * prhs[] )
+...{
+...#ifdef MATLAB_MEX_FILE
+...	char commandName[20];
+...	if (nrhs<1 || !mxIsChar(prhs[0]) ) return 0;
+...$sf_comment('/* Possible call to get the checksum */')$
+...	mxGetString(prhs[0], commandName,sizeof(commandName)/sizeof(char));
+...	commandName[(sizeof(commandName)/sizeof(char)-1)] = '\0';
+...	if(strcmp(commandName,"sf_get_check_sum")) return 0;
+...	plhs[0] = mxCreateDoubleMatrix( 1,4,mxREAL);
+
+		if gTargetInfo.codingLibrary
+...	if(nrhs>2 && mxIsChar(prhs[1])) {
+...		mxGetString(prhs[1], commandName,sizeof(commandName)/sizeof(char));
+...		commandName[(sizeof(commandName)/sizeof(char)-1)] = '\0';
+...		if(!strcmp(commandName,"library")) {
+...			char machineName[100];
+...			mxGetString(prhs[2], machineName,sizeof(machineName)/sizeof(char));
+...			machineName[(sizeof(machineName)/sizeof(char)-1)] = '\0';
+...			if(!strcmp(machineName,"$gMachineInfo.machineName$")){
+			checksumVector = sf('get',gMachineInfo.target,'target.checksumNew');
+			for i=1:4
+...				((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+			end
+...			}else{
+...				return 0;
+...			}
+...		}
+...	}else {
+...		return 0;
+...	}
+...
+		else
+...	if(nrhs>1 && mxIsChar(prhs[1])) {
+...		mxGetString(prhs[1], commandName,sizeof(commandName)/sizeof(char));
+...		commandName[(sizeof(commandName)/sizeof(char)-1)] = '\0';
+...		if(!strcmp(commandName,"machine")) {
+			checksumVector = sf('get',gMachineInfo.machineId,'machine.checksum');
+			for i=1:4
+...			((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+		   end
+...		}else if(!strcmp(commandName,"exportedFcn")) {
+			checksumVector = sf('get',gMachineInfo.machineId,'machine.exportedFcnChecksum');
+			for i=1:4
+...			((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+			end
+...		}else if(!strcmp(commandName,"makefile")) {
+			checksumVector = sf('get',gMachineInfo.machineId,'machine.makefileChecksum');
+			for i=1:4
+...			((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+			end
+...		}else if(nrhs==3 && !strcmp(commandName,"chart")) {
+...			unsigned int chartFileNumber;
+...			chartFileNumber = (unsigned int)mxGetScalar(prhs[2]);
+...			switch(chartFileNumber) {
+			for chart = gMachineInfo.charts
+         	chartUniqueName = sf('CodegenNameOf',chart);
+				chartFileNumber = sf('get',chart,'chart.chartFileNumber');
+...			case $#chartFileNumber$:
+...			{
+...				extern void sf_$chartUniqueName$_get_check_sum(mxArray *plhs[]);
+...				sf_$chartUniqueName$_get_check_sum(plhs);
+...				break;
+...			}
+...
+			end
+...			default:
+			for i=1:4
+...				((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)(0.0);
+			end
+...			}
+...		}else if(!strcmp(commandName,"target")) {
+			checksumVector = sf('get',gMachineInfo.target,'target.checksumSelf');
+			for i=1:4
+...			((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+			end
+...		}else {
+...			return 0;
+...		}
+...	} else{
+			checksumVector = sf('get',gMachineInfo.target,'target.checksumNew');
+			for i=1:4
+...				((real_T *)mxGetPr((plhs[0])))[$#(i-1)$] = (real_T)($#checksumVector(i)$U);
+			end
+...	}
+		end
+...	return 1;
+...#else
+...	return 0;
+...#endif
+...}
+...
+...unsigned int sf_$gMachineInfo.machineName$_autoinheritance_info( int nlhs, mxArray * plhs[], int nrhs, const mxArray * prhs[] )
+...{
+...#ifdef MATLAB_MEX_FILE
+...	char commandName[32];
+...	if (nrhs<2 || !mxIsChar(prhs[0]) ) return 0;
+...$sf_comment('/* Possible call to get the autoinheritance_info */')$
+...	mxGetString(prhs[0], commandName,sizeof(commandName)/sizeof(char));
+...	commandName[(sizeof(commandName)/sizeof(char)-1)] = '\0';
+...	if(strcmp(commandName,"get_autoinheritance_info")) return 0;
+...{
+...			unsigned int chartFileNumber;
+...			chartFileNumber = (unsigned int)mxGetScalar(prhs[1]);
+...			switch(chartFileNumber) {
+			for chart = gMachineInfo.charts
+         	chartUniqueName = sf('CodegenNameOf',chart);
+			chartFileNumber = sf('get',chart,'chart.chartFileNumber');
+...			case $#chartFileNumber$:
+...			{
+...				extern mxArray *sf_$chartUniqueName$_get_autoinheritance_info(void);
+...				plhs[0] = sf_$chartUniqueName$_get_autoinheritance_info();
+...				break;
+...			}
+...
+			end
+...			default:
+...             plhs[0] = mxCreateDoubleMatrix(0,0,mxREAL);
+...			}
+...}
+...	return 1;
+...#else
+...	return 0;
+...#endif
+...}
+   if gTargetInfo.codingDebug
+...void  $gMachineInfo.machineName$_debug_initialize(void)
+...{
+	   code_machine_debug_initialization(file);
+...}
+	end
+
+...
+	fclose(file);
+	try_indenting_file(fileName);
+

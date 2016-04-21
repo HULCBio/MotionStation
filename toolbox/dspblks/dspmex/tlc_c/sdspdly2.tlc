@@ -1,0 +1,836 @@
+%% $RCSfile: sdspdly2.tlc,v $
+%% $Revision: 1.27.4.3 $
+%% $Date: 2004/04/20 23:16:17 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Integer delay
+
+%implements sdspdly2 "C"
+
+%include "dsplib.tlc"
+%include "dsp_ic.tlc"
+%include "event_port_handler.tlc"
+
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dsp_ic_rt")>
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:   Name the S-function parameters
+%%             
+%function BlockInstanceSetup (block, system) void
+    %%
+    %assign INPORT_DATA    = 0
+    %assign INPORT_RESET   = 1
+    %assign OUTPORT        = 0
+    %assign IS_DIRECT_FEED = CAST("Boolean",(SFcnParamSettings.IsDirectFeedThrough == "Yes"))
+    %%
+    %assign sig_datatype    = LibBlockInputSignalDataTypeName(INPORT_DATA,"%<tRealPart>")
+    %assign bytesPerElemStr = (LibBlockInputSignalIsComplex(INPORT_DATA)) \
+                            ? "(2 * sizeof(%<sig_datatype>))"        \
+                            : "sizeof(%<sig_datatype>)"
+    %%
+    %assign resetport = (SFcnParamSettings.ResetPort == 1)
+    %assign diffPortRates = !LibIsSFcnSingleRate(block)
+    %assign nChans = SFcnParamSettings.ICs_nChans
+    %assign nSamps = LibBlockInputSignalWidth(INPORT_DATA) / nChans
+    %assign buflen = LibBlockDWorkWidth(BUFF) / nChans
+    %assign incrementDelayPerSample  = SFcnParamSettings.incrementDelayPerSample
+    %assign incrementDelayPerChannel = SFcnParamSettings.incrementDelayPerChannel
+    %assign DelayIsScalar = CAST("Boolean",(incrementDelayPerSample == 0) && (incrementDelayPerChannel == 0))
+    %assign block  = block + INPORT_DATA + INPORT_RESET + OUTPORT + incrementDelayPerSample         \
+                           + IS_DIRECT_FEED + buflen + nChans  + nSamps +  incrementDelayPerChannel \
+                           + bytesPerElemStr + resetport + diffPortRates + DelayIsScalar
+                          
+    %% Setup the initial condition handler:
+    %%
+    %<CopyICsInstanceSetup(block)>
+
+    %%
+    %% Setup the event port handler:
+    %%
+    %if resetport
+      %<EventPortHandlerInstanceSetup(block)>
+      %if  EventPortRequiresState(block)
+        %assign ephdwork = EPHPState
+      %else
+        %assign ephdwork = 0
+      %endif
+      %assign block = block + ephdwork
+    %endif
+    %%
+    %assign GenerateSampleHitCode = 1 %% Used by the rate grouping functions
+    %assign block = block + GenerateSampleHitCode
+    %%
+%endfunction  %% BlockInstanceSetup
+
+
+%% Function: resetStates =============================================
+%%
+%% Abstract:
+%%      Reset the delay buffer and counters.
+%%
+%function resetStates(block) Output
+  %if IS_DIRECT_FEED
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> = %<buflen - 2>;
+  %else
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> = %<buflen - (nSamps + 1)>;
+  %endif
+  %if (ICs_CopyFcnIndex != 0) && DelayIsScalar
+    %switch ICs_CopyFcnIndex
+      %case 1
+        {
+          int i=%<nChans>, j;
+          byte_T *buff = (byte_T *)%<LibBlockDWorkAddr(BUFF,"","",0)>;
+          while (i--) {
+            byte_T *ics  = (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)>;
+            for (j=0; j < %<LibBlockParameter(Delays,"","",0)>; j++) {
+              memcpy(buff + %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> * %<bytesPerElemStr>, ics, %<bytesPerElemStr>);
+              %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>++;
+              while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+              ics += %<bytesPerElemStr>;
+            }
+            buff += %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+          }
+        }
+        %break
+
+      %case 2
+        {
+          int i=%<LibBlockParameter(Delays,"","",0)>, j;
+          byte_T *ics  = (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)>;
+          byte_T *buff = (byte_T *)%<LibBlockDWorkAddr(BUFF,"","",0)>;
+          while (i--) {
+            for (j=0; j<%<nChans>; j++) {
+              memcpy(buff + (i + j*%<LibBlockParameter(Delays,"","",0)>)*%<bytesPerElemStr>, ics, %<bytesPerElemStr>);
+              ics += %<bytesPerElemStr>;
+            }
+          }
+        }
+        %break
+
+      %case 3
+        {
+          int i, j;
+          for (i=0; i<nChans; i++) {
+            byte_T *buff = (byte_T *)%<LibBlockDWorkAddr(BUFF,"","",0)> + (i * %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>);
+            byte_T *ics  = (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)> + i * %<bytesPerElemStr>;
+            for (j=0; j<%<LibBlockParameter(Delays,"","",0)>; j++) {
+              memcpy(buff + %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> * %<bytesPerElemStr>, ics, %<bytesPerElemStr>);
+              %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+              while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+              ics += %<nChans> * %<bytesPerElemStr>;
+            }
+          }
+        }
+        %break
+
+    %endswitch
+  %else
+    %<getCopyICsFcnName(block)>(\
+                            (byte_T *)%<LibBlockDWorkAddr(ICs_dworkRef, "", "", 0)>,\
+                            (byte_T *)%<LibBlockParameterAddr(IC, "", "", 0)>,\
+    %if ICs_CopyFcnIndex == 0
+                             %<ICs_nChans>*%<ICs_dWorkRows>,\
+    %else
+                             %<ICs_nChans>,\
+                             %<ICs_dWorkRows>,\
+    %endif
+                             %<ICs_bytesPerElementStr>\
+    %if  ICs_CopyFcnIndex == 2
+                             , %<ICs_dataPortWidth>\
+    %endif
+    );
+  %endif
+%endfunction
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the delay buffer and counters to their initial values.
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+  %if resetport
+    %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+  %endif
+  %<resetStates(block)>
+%endfunction
+
+
+%% Function: Update ===========================================================
+%%
+%function Update(block, system) Output
+%%
+%if (!IS_DIRECT_FEED) 
+  /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if diffPortRates && GenerateSampleHitCode
+    if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { %<LibTaskSFcnComment("InputPortIdx0")>
+  %else
+    {
+  %endif
+    %if ((nSamps==1) && (nChans==1))
+      const int_T bytesPerElem = %<bytesPerElemStr>;
+      int_T bufferStart;
+      
+      /* Scalar input */
+      bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+      memcpy(((byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>) + (bufferStart*bytesPerElem), \
+                         %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>, bytesPerElem);
+      %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += 1;
+      while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+    %else
+      const byte_T *u = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+      %if (nSamps==1)
+        %if (incrementDelayPerSample == 0) && (incrementDelayPerChannel == 0)
+          %% Sample-based non-scalar input
+          %% or Frame-based row input
+          const int_T bytesPerElem = %<bytesPerElemStr>;
+          byte_T      *buff        = (byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>;
+          int_T        chanCount   = %<nChans>; 
+        
+          buff += %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> * bytesPerElem;
+          /* %<nChans>-channel input (1 sample per channel) */
+          while (chanCount--) {
+            memcpy(buff, u, bytesPerElem);
+            u    += bytesPerElem;
+            buff += %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+          }
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += 1;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+        %else
+          %% Sample-based non-scalar input
+          %% or Frame-based row input
+          const int_T bytesPerElem = %<bytesPerElemStr>;
+          byte_T      *buff        = (byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>;
+          const int_T  buflenBytes = %<buflen> * bytesPerElem;
+          int_T        bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+          int_T        chanCount   = %<nChans>; 
+        
+          /* %<nChans>-channel input (1 sample per channel) */
+          if (++bufferStart == %<buflen>) bufferStart = 0;
+          buff += bufferStart*bytesPerElem;
+          while (chanCount-- > 0) {
+            memcpy(buff, u, bytesPerElem);
+            u    += bytesPerElem;
+            buff += buflenBytes;
+          }
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+        %endif
+      %elseif (nChans==1)
+        %if incrementDelayPerSample == 0
+          int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+          int_T copy1size   = bufferStart <= (%<LibBlockParameter(Delays,"","",0)> - %<nSamps>)?
+                              %<nSamps> :
+                              %<LibBlockParameter(Delays,"","",0)> - bufferStart;
+
+          memcpy(((byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>) + (bufferStart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+          %% Next memcpy may be 0 bytes long
+          memcpy((byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+        %else
+          const int_T bytesPerElem = %<bytesPerElemStr>;
+          int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+          int_T sampCount   = %<nSamps>;
+        
+          /* Frame-based column input (1 channel, %<nSamps> samples) */
+          while (sampCount-- > 0) {
+            if (++bufferStart == %<buflen>) bufferStart = 0;
+            memcpy(((byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>) + (bufferStart*bytesPerElem), u, bytesPerElem);
+            u += bytesPerElem;
+          }
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+        %endif
+      %else
+        byte_T *buff = (byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>;
+        %if (incrementDelayPerSample == 0) && (incrementDelayPerChannel == 0)
+          int_T i=%<nChans>;
+          int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+          int_T copy1size   = bufferStart <= (%<LibBlockParameter(Delays,"","",0)> - %<nSamps>)?
+                              %<nSamps> :
+                              %<LibBlockParameter(Delays,"","",0)> - bufferStart;
+
+          while (i--) {
+            memcpy(buff + (bufferStart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+            memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+            u += %<nSamps> * %<bytesPerElemStr>;
+            buff += %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+          }
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<LibBlockParameter(Delays,"","",0)>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<LibBlockParameter(Delays,"","",0)>;
+        %else
+          const int_T bytesPerElem = %<bytesPerElemStr>;
+          int_T   i;
+        
+          /* Frame-based %<nSamps>-by-%<nChans> matrix input */
+          for (i=0; i < %<nChans * buflen>; i += %<buflen>) { /* Channel loop */
+            int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+            int_T sampCount   = %<nSamps>;
+      
+            while (sampCount-- > 0) { /* Sample loop */
+              if (++bufferStart == %<buflen>) bufferStart = 0;
+              memcpy((buff + (bufferStart + i)*bytesPerElem), u, bytesPerElem);
+              u += bytesPerElem;
+            }
+          }
+          %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+          while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+        %endif
+      %endif
+    %endif
+  }
+
+%endif
+
+%endfunction %% Update
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if diffPortRates
+    %if GenerateSampleHitCode
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { %<LibTaskSFcnComment("InputPortIdx0")>
+    %else
+      {
+    %endif
+  %endif
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<resetStates(block)> \
+      }
+    %endif
+    %% SCENARIO-SPECIFIC CODE:
+    %% Valid scenarios:
+    %%
+    %% - Scalar input and scalar delay
+    %% - Multi-channel input, 1 sample per channel, scalar delay
+    %% - Multi-channel input, 1 sample per channel, non-scalar delay
+    %% - Frame-based col vector input, scalar delay
+    %% - Frame-based col vector input, column delay
+    %% - Frame-based full-matrix input, scalar delay
+    %% - Frame-based full-matrix input, row delay
+    %% - Frame-based full-matrix input, column delay
+    %% - Frame-based full-matrix input, matrix delay
+    %%
+    
+    %assign delayLen = LibBlockParameterSize(Delays)[1]
+    %if (nChans==1) && (nSamps==1)
+        %%
+        %% SCALAR INPUT AND SCALAR DELAY
+        %%
+        %<ScalarInputScalarDelay(block)>
+    %elseif (nSamps == 1)
+        %%
+        %% MULTI-CHANNEL SINGLE-SAMPLE CASES (nChans > 1; nSamps == 1)
+        %%
+        %if (incrementDelayPerSample == 0) && (incrementDelayPerChannel == 0)
+            %<MultiChannelInputScalarDelay(block)>
+        %else
+            %<MultiChannelInputNonScalarDelay(block)>
+        %endif
+    %else
+        %%
+        %% FRAME-BASED CASES (nChans >= 1; nSamps > 1)
+        %%
+        %if nChans==1
+            %% SINGLE-CHANNEL FRAME-BASED CASE (FRAME-BASED COL VECTOR INPUT)
+            %if (incrementDelayPerSample == 0)
+                %<FrameColumnInputScalarDelay(block)>
+            %else
+                %<FrameColumnInputColumnDelay(block)>
+            %endif
+        %else
+            %% FRAME-BASED FULL MATRIX INPUT
+            %if (incrementDelayPerSample == 0) && (incrementDelayPerChannel == 0)
+                %<FrameMatrixInputScalarDelay(block)>
+            %elseif (incrementDelayPerSample == 0) && (incrementDelayPerChannel == 1)
+                %<FrameMatrixInputRowDelay(block)>
+            %elseif (incrementDelayPerSample == 1) && (incrementDelayPerChannel == 0) && (delayLen == nSamps)
+                %<FrameMatrixInputColDelay(block)>
+            %else
+                %<FrameMatrixInputMatrixDelay(block)>
+            %endif
+        %endif
+    %endif
+  %if diffPortRates
+    }
+  %endif
+    
+%endfunction  %% Outputs
+
+
+%% Function: OutputsForTID =====================================================
+%%
+%function OutputsForTID(block, system, tid) Output
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %assign block.GenerateSampleHitCode = 0
+    %<Outputs(block, system)>
+  %endif
+%endfunction %% OutputsForTID
+
+
+%% Function: UpdateForTID ======================================================
+%%
+%function UpdateForTID(block, system, tid) Output
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %assign block.GenerateSampleHitCode = 0
+    %<Update(block, system)>
+  %endif
+%endfunction %% UpdateForTID
+
+
+%% Function: ScalarInputScalarDelay ==========================================================
+%%
+%function ScalarInputScalarDelay(block) Output
+  %%
+  %% nChans = 1; nSamps = 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = F;
+  %%
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Block is NOT in direct feedthrough mode
+    %%
+  {
+    int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+
+    memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>, ((byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)> + (ti*%<bytesPerElemStr>)), %<bytesPerElemStr>);
+    
+  }
+  %else
+    %%
+    %% Block is in direct feedthrough mode
+    %%
+    /* Scalar input, zero delay */
+    memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>, %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>, %<bytesPerElemStr>);
+  %endif
+%endfunction  %% ScalarInputScalarDelay
+
+
+%% Function: MultiChannelInputScalarDelay ==========================================================
+%%
+%function MultiChannelInputScalarDelay(block) Output
+  %%
+  %% nChans > 1; nSamps = 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = F;
+  %%
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Block is NOT in direct feedthrough mode
+    %%
+      {
+        int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+        const byte_T *buff         = (const byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+        byte_T       *y            = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+        const int_T   bytesPerElem = %<bytesPerElemStr>;
+        int_T         chanCount    = %<nChans>;
+    
+        buff += ti * bytesPerElem;
+        while (chanCount--) { /* Channel loop */
+          memcpy(y, buff, bytesPerElem);
+          y    += bytesPerElem;
+          buff += %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+        }
+      }
+  %else
+    /* %<nChans>-channel input (1 sample per channel), zero delay */
+    %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT)>
+  %endif
+%endfunction  %% MultiChannelInputScalarDelay
+
+
+%% Function: MultiChannelInputNonScalarDelay ==========================================================
+%%
+%function MultiChannelInputNonScalarDelay(block) Output
+  /* %<nChans>-channel input (1 sample per channel), non-scalar delay */
+  {
+  %%
+  %% nChans > 1; nSamps = 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = T;
+  %%
+  byte_T       *y            = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  const int_T   bytesPerElem = %<bytesPerElemStr>;
+  const int_T   buflenBytes  = %<buflen> * bytesPerElem;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    const byte_T *buff         = (const byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         i;
+    
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> - %<LibBlockParameter(Delays,"i","",0)>;
+      if (++ti < 0) ti += %<buflen>;
+      memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+      y    += bytesPerElem;
+      buff += buflenBytes;
+    }
+  %else
+    %%
+    %% Direct feedthrough mode
+    %%
+    const byte_T *u            = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    byte_T       *buff         = (byte_T *)       %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         bufferStart  = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> + 1;
+    int_T         i;
+    
+    if (bufferStart == %<buflen>) bufferStart = 0;
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T ti = bufferStart - %<LibBlockParameter(Delays,"i","",0)>;
+      if (ti < 0) ti += %<buflen>;
+      memcpy((buff + bufferStart*bytesPerElem), u, bytesPerElem);
+      memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+      u    += bytesPerElem;
+      y    += bytesPerElem;
+      buff += buflenBytes;
+    }
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>++;
+    while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+  %endif
+  }
+%endfunction  %% MultiChannelInputNonScalarDelay
+
+
+%% Function: FrameColumnInputScalarDelay ==========================================================
+%%
+%function FrameColumnInputScalarDelay(block) Output
+  /* Frame-based column input (1 channel, %<nSamps> samples), scalar delay */
+  {
+  %%
+  %% nChans = 1; nSamps > 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = F;
+  %%
+  byte_T      *y            = (byte_T *) %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+    int_T copy1size   = bufferStart <= (%<LibBlockParameter(Delays,"","",0)> - %<nSamps>)?
+                            %<nSamps> :
+                            %<LibBlockParameter(Delays,"","",0)> - bufferStart;
+        
+    memcpy(y, ((byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>) + (bufferStart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+    memcpy(y + copy1size * %<bytesPerElemStr>, (byte_T *) %<LibBlockDWorkAddr(BUFF,"","",0)>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+  %else
+    %%
+    %% Direct feedthrough mode
+    %% 
+    %if (SFcnParamSettings.isZeroDelay)
+      %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT)>
+    %else
+      byte_T       *u            = (byte_T *) %<LibBlockInputSignalAddr(OUTPORT, "", "", 0)>;
+      int_T         bytesInBuffer = %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+      int_T         bytesNotInBuffer = %<nSamps> * %<bytesPerElemStr> - bytesInBuffer;
+      memcpy(y, %<LibBlockDWorkAddr(BUFF, "", "", 0)>, bytesInBuffer);
+      memcpy(y + bytesInBuffer, u, bytesNotInBuffer);
+      memcpy(%<LibBlockDWorkAddr(BUFF, "", "", 0)>, u +  bytesNotInBuffer, bytesInBuffer);
+    %endif
+  %endif
+  }
+%endfunction  %% FrameColumnInputScalarDelay
+
+
+%% Function: FrameColumnInputColumnDelay ==========================================================
+%%
+%function FrameColumnInputColumnDelay(block) Output
+  /* Frame-based column input (1 channel, %<nSamps> samples), col delay vector */
+  {
+  %%
+  %% nChans = 1; nSamps > 1;
+  %% incrementDelayPerSample = T; incrementDelayPerChannel = F;
+  %%
+  byte_T      *y            = (byte_T *) %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  const int_T  bytesPerElem = %<bytesPerElemStr>;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    int_T j = 0;
+    
+    while (j++ < %<nSamps>) { /* Loop over samples in channel */
+      int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> - %<LibBlockParameter(Delays,"j-1","",0)> + j;
+      if (ti < 0) ti += %<buflen>;
+      memcpy(y, ((byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)> + ti*bytesPerElem), bytesPerElem);
+      y += bytesPerElem;
+    }
+  %else
+    %%
+    %% Direct feedthrough mode 
+    %% 
+    const byte_T *u            = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    byte_T       *buff         = (byte_T *)       %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         bufferStart  = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+    int_T         j            = 0;
+    
+    while (j < %<nSamps>) { /* Loop over samples in channel */
+      int_T ti;
+      
+      if (++bufferStart == %<buflen>) bufferStart = 0;
+      ti = bufferStart - %<LibBlockParameter(Delays,"j++","",0)>;
+      if (ti < 0) ti += %<buflen>;
+      
+      memcpy((buff + bufferStart*bytesPerElem), u, bytesPerElem);
+      memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+      u += bytesPerElem;
+      y += bytesPerElem;
+    }
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+    while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+  %endif
+  }
+%endfunction  %% FrameColumnInputColumnDelay
+
+
+%% Function: FrameMatrixInputScalarDelay ==========================================================
+%%
+%function FrameMatrixInputScalarDelay(block) Output
+  /* Frame-based %<nSamps>-by-%<nChans> matrix input, scalar delay */
+  {
+  %%
+  %% nChans > 1; nSamps > 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = F;
+  %%
+  %if (IS_DIRECT_FEED) && (SFcnParamSettings.isZeroDelay)
+      %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT)>
+  %else
+    byte_T *y     = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    byte_T *buff  = (byte_T *)%<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T   chanCount    = %<nChans>;
+    const int_T   bytesPerChan = %<nSamps> * %<bytesPerElemStr>;
+    %if (!IS_DIRECT_FEED)
+      %%
+      %% Direct feedthrough? NO
+      %%
+      while (chanCount--) {
+        int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+        int_T copy1size   = bufferStart <= (%<LibBlockParameter(Delays,"","",0)> - %<nSamps>)?
+                            %<nSamps> :
+                            %<LibBlockParameter(Delays,"","",0)> - bufferStart;
+        
+        memcpy(y, buff + (bufferStart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+        memcpy(y + copy1size * %<bytesPerElemStr>, buff, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+        y += bytesPerChan;
+        buff += %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+      }
+    %else
+      %%
+      %% Direct feedthrough mode
+      %%
+      %if (SFcnParamSettings.isZeroDelay)
+        %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT)>
+      %else
+        const byte_T *u     = (byte_T *)%<LibBlockInputSignalAddr(OUTPORT, "", "", 0)>;
+        const int_T   bytesInBuffer    = %<LibBlockParameter(Delays,"","",0)> * %<bytesPerElemStr>;
+        const int_T   bytesNotInBuffer = %<nSamps> * %<bytesPerElemStr> - bytesInBuffer;
+        while (chanCount--) {
+          memcpy(y, buff, bytesInBuffer);
+          memcpy(y + bytesInBuffer, u, bytesNotInBuffer);
+          memcpy(buff, u +  bytesNotInBuffer, bytesInBuffer);
+          y += bytesPerChan;
+          u += bytesPerChan;
+          buff += bytesInBuffer;
+        }
+      %endif
+    %endif
+  %endif
+  }
+%endfunction  %% FrameMatrixInputScalarDelay
+
+
+%% Function: FrameMatrixInputRowDelay ==========================================================
+%%
+%function FrameMatrixInputRowDelay(block) Output
+  /* Frame-based %<nSamps>-by-%<nChans> matrix input, row delay vector */
+  {
+  %%
+  %% nChans > 1; nSamps > 1;
+  %% incrementDelayPerSample = F; incrementDelayPerChannel = T;
+  %%
+  byte_T       *y            = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  const int_T   bytesPerElem = %<bytesPerElemStr>;
+  const int_T   buflenBytes  = %<buflen> * bytesPerElem;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    const byte_T *buff = (const byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         i;
+    
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T j = 0;
+      while (j++ < %<nSamps>) { /* Sample loop */
+        int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> - %<LibBlockParameter(Delays,"i","",0)> + j;
+        if (ti < 0) ti += %<buflen>;
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+  %else
+    %%
+    %% Direct feedthrough mode
+    %%
+    const byte_T *u    = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    byte_T       *buff = (byte_T *)       %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         i;
+    
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+      int_T j = %<nSamps>;
+      while (j-- > 0) { /* Sample loop */
+        int_T ti;
+        
+        if (++bufferStart == %<buflen>) bufferStart = 0;
+        ti = bufferStart - %<LibBlockParameter(Delays,"i","",0)>;
+        if (ti < 0) ti += %<buflen>;
+        memcpy((buff + bufferStart*bytesPerElem), u, bytesPerElem);
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        u += bytesPerElem;
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+    while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+  %endif
+  }
+%endfunction  %% FrameMatrixInputRowDelay
+
+
+%% Function: FrameMatrixInputColDelay ==========================================================
+%%
+%function FrameMatrixInputColDelay(block) Output
+  /* Frame-based %<nSamps>-by-%<nChans> matrix input, col delay vector */
+  {
+  %%
+  %% nChans > 1; nSamps > 1;
+  %% incrementDelayPerSample = T; incrementDelayPerChannel = F;
+  %%
+  byte_T       *y            = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  const int_T   bytesPerElem = %<bytesPerElemStr>;
+  const int_T   buflenBytes  = %<buflen> * bytesPerElem;
+  int_T         chanCount    = %<nChans>;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    const byte_T *buff = (const byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+
+    while (chanCount-- > 0) { /* Channel loop */
+      int_T j = 0;
+      while (j++ < %<nSamps>) { /* Sample loop */
+        int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> - %<LibBlockParameter(Delays,"j-1","",0)> + j;
+        if (ti < 0) ti += %<buflen>;
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+  %else
+    %%
+    %% Direct feedthrough mode
+    %%
+    const byte_T *u    = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    byte_T       *buff = (byte_T *)       %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+
+    while (chanCount-- > 0) { /* Channel loop */
+      int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+      int_T j = 0;
+      while (j < %<nSamps>) { /* Sample loop */
+        int_T ti;
+
+        if (++bufferStart == %<buflen>) bufferStart = 0;
+        ti = bufferStart - %<LibBlockParameter(Delays,"j++","",0)>;
+        if (ti < 0) ti += %<buflen>;
+        memcpy((buff + bufferStart*bytesPerElem), u, bytesPerElem);
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        u += bytesPerElem;
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+    while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+  %endif
+  }
+%endfunction  %% FrameMatrixInputColDelay
+
+
+%% Function: FrameMatrixInputMatrixDelay ==========================================================
+%%
+%function FrameMatrixInputMatrixDelay(block) Output
+  /* Frame-based %<nSamps>-by-%<nChans> matrix input, matrix delay */
+  {
+  %%
+  %% nChans > 1; nSamps > 1;
+  %% incrementDelayPerSample = T; incrementDelayPerChannel = F;
+  %%
+  byte_T       *y            = (byte_T *)       %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+  const int_T   bytesPerElem = %<bytesPerElemStr>;
+  const int_T   buflenBytes  = %<buflen> * bytesPerElem;
+  %if (!IS_DIRECT_FEED)
+    %%
+    %% Direct feedthrough? NO
+    %%
+    const byte_T *buff = (const byte_T *) %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         i;
+    
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T j = 0;
+      while (j++ < %<nSamps>) { /* Sample loop */
+        %assign delayIndexString = "i*%<nSamps> + j - 1"
+        int_T ti = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> - %<LibBlockParameter(Delays,delayIndexString,"",0)> + j;
+        if (ti < 0) ti += %<buflen>;
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+  %else
+    %%
+    %% Direct feedthrough mode
+    %%
+    const byte_T *u    = (const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>;
+    byte_T       *buff = (byte_T *)       %<LibBlockDWorkAddr(BUFF, "", "", 0)>;
+    int_T         i;
+    
+    for (i=0; i < %<nChans>; i++) { /* Channel loop */
+      int_T bufferStart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+      int_T j = 0;
+      while (j++ < %<nSamps>) { /* Sample loop */
+        int_T ti;
+        if (++bufferStart == %<buflen>) bufferStart = 0;
+        %assign delayIndexString = "i*%<nSamps> + j - 1"
+        ti = bufferStart - %<LibBlockParameter(Delays,delayIndexString,"",0)>;
+        if (ti < 0) ti += %<buflen>;
+        memcpy((buff + bufferStart*bytesPerElem), u, bytesPerElem);
+        memcpy(y, (buff + ti*bytesPerElem), bytesPerElem);
+        u += bytesPerElem;
+        y += bytesPerElem;
+      }
+      buff += buflenBytes;
+    }
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<nSamps>;
+    while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<buflen>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<buflen>;
+  %endif
+  }
+%endfunction  %% FrameMatrixInputMatrixDelay
+
+
+%% [EOF] sdspdly2.tlc
+

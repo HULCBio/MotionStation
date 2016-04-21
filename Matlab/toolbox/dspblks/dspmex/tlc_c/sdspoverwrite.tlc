@@ -1,0 +1,116 @@
+%% $RCSfile: sdspoverwrite.tlc,v $
+%%   
+%% $Date: 2004/04/12 23:09:17 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Overwrite Values S-function block for sdspoverwrite.c
+%%
+
+%implements sdspoverwrite "C"
+
+
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign INPORT1 = 0
+  %assign INPORT2 = 1
+  %assign OUTPORT = 0
+  %%
+  %assign use2ndInPort           = SFcnParamSettings.PUuse2ndInPort
+  %%
+  %assign bytesPerElmt           = SFcnParamSettings.BytesPerElmt
+  %assign numColSampsToCopy      = SFcnParamSettings.NumColSampsToCopy
+  %assign colStartIndex          = SFcnParamSettings.ColStartIndex
+  %assign colEndIndex            = SFcnParamSettings.ColEndIndex
+  %assign totalSamplesPerColumn  = SFcnParamSettings.TotalBytesPerColumn / bytesPerElmt
+  %%
+  %assign offsetSamplesPerCol    = SFcnParamSettings.OffsetBytesPerCol/bytesPerElmt
+  %assign incrementSamplesPerCol = SFcnParamSettings.IncrementPerCol/bytesPerElmt
+  %%
+  %assign INP1_COMPLEX           = LibBlockInputSignalIsComplex(INPORT1)  
+  %assign INP2_REAL              = (use2ndInPort) ?                             \
+                                   (!(LibBlockInputSignalIsComplex(INPORT2) )): \
+                                   0
+  %%
+  %assign nIP2orEB               = (use2ndInPort) ?                        \
+                                   LibBlockInputSignalWidth(INPORT2) :     \
+                                   LibBlockParameterSize(OverWritingVal)[1]
+  %%
+  %assign block = block + INPORT1 + INPORT2 + OUTPORT
+  %assign block = block + use2ndInPort  
+  %assign block = block + bytesPerElmt + numColSampsToCopy + colStartIndex + colEndIndex \
+                        + totalSamplesPerColumn + offsetSamplesPerCol + incrementSamplesPerCol 
+  %assign block = block + INP1_COMPLEX + INP2_REAL
+  %assign block = block + nIP2orEB
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset Overwrite (%<ParamSettings.FunctionName>) - '%<Name>' - Output */
+{
+    %assign bytesPerColumnToCopy = (%<bytesPerElmt>) * (%<numColSampsToCopy>)
+    %assign need_copy            = (LibBlockInputSignalBufferDstPort(INPORT1) != OUTPORT)
+    %assign dataTypeNameIP1      = LibBlockInputSignalDataTypeName(INPORT1,"")
+    %<dataTypeNameIP1> *y      = (%<dataTypeNameIP1> *) %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>;
+    %<dataTypeNameIP1> *pValue = 0;
+    int_T colIdx;
+    
+    %if (need_copy)
+      %<LibBlockCopyInputsToOutputs(INPORT1, OUTPORT)>
+    %endif %% need_copy
+    
+    %if (use2ndInPort)
+        %if ( INP1_COMPLEX && INP2_REAL) 
+            {
+            %assign dataTypeNameIP2  = LibBlockInputSignalDataTypeName(INPORT2,"")
+            %assign dTypeID_IP2      = LibBlockInputSignalDataTypeId(INPORT2)
+            const %<dataTypeNameIP2> *u2 = (const %<dataTypeNameIP2> *)%<LibBlockInputSignalAddr(INPORT2, "", "", 0)>;
+            int_T i = %<LibBlockInputSignalWidth(INPORT2)>;   
+            pValue  = (%<dataTypeNameIP1> *)%<LibBlockDWorkAddr(Real2ComplexIP2,"","",0)>;  
+            
+            /* interleave Real Data With Imaginary Element */
+            while(i--) {
+                pValue->re = *u2++;
+                pValue++->im = %<SLibGetGroundValueFromId(dTypeID_IP2)>;
+                        } 
+            pValue -= %<LibBlockInputSignalWidth(INPORT2)>;
+             }
+        %else 
+            pValue  = (%<dataTypeNameIP1> *)%<LibBlockInputSignalAddr(INPORT2, "", "", 0)>;
+        %endif %% end (INP1_COMPLEX && INP2_REAL)
+     %else
+            pValue  = (%<dataTypeNameIP1> *)%<LibBlockParameterAddr(OverWritingVal,  "", "", 0)>;
+     %endif  %% end (use2ndInPort)
+         
+       y += %<colStartIndex> * %<totalSamplesPerColumn>;
+        
+        /* Loop from starting column index through ending column index */
+        
+        for (colIdx = %<colStartIndex>; colIdx <= %<colEndIndex>; colIdx++) {
+                        
+            %if (%<nIP2orEB> ==1)  
+              {
+              /* MWDSP_CopyScalarICs */
+              int_T i = %<numColSampsToCopy>;
+              int_T tmpIncre = 0;
+              while (i-- > 0) {
+                 memcpy( y + tmpIncre + %<offsetSamplesPerCol>, pValue, %<bytesPerElmt> );
+                 tmpIncre ++;
+                            }
+               }
+            %else 
+              memcpy(y+ %<offsetSamplesPerCol>,pValue,%<numColSampsToCopy>*%<bytesPerElmt>);
+              pValue +=%<numColSampsToCopy>;
+            %endif 
+            
+            /* Bump output pointer for next time */
+            y += %<incrementSamplesPerCol>;
+                                                                            }
+}
+%endfunction  %% Outputs    
+    
+%% [EOF] sdspoverwrite.tlc

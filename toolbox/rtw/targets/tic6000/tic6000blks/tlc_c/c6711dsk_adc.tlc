@@ -1,0 +1,234 @@
+%% $RCSfile: c6711dsk_adc.tlc,v $
+%% $Revision: 1.1.6.2 $ $Date: 2004/04/08 21:01:03 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% tlc for the Target for C6711 DSK
+
+%implements c6711dsk_adc "C"
+
+%% Global variables (TLC variables added to CompiledModel):
+%%    c6711dsk_adc_instance
+%%       Determines whether the A/D block has appeared in the model.
+%%
+%%    c6000_codec_source_gain
+%%       Indicates the source gain.
+
+
+%% Include external c6000 functions ==========================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+
+
+%% Function: isNormalized ===============================================
+%% Abstract:
+%%     Determine if normalization is to be applied.
+%%     NOTE: This is more complicated than simply returning the status
+%%           of the scaling flag, since we must "ignore" the scaling
+%%           flag in certain modes.
+%%      
+%function isNormalized(block) void
+    %%
+    %if (DataType == "INTEGER")
+        %return 0  %% Ignore the scaling flag; no normalization needed
+    %else
+        %return (Scaling == "NORMALIZE")
+    %endif
+    %%
+%endfunction %% isNormalized
+
+
+%% Function: DeclareScalingFactor ===============================================
+%% Abstract:
+%%  Outputs declaration of scaling factor constants.
+%%      16-bit signed   - scaling factor = 1/32768
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockOutputSignalDataTypeName(0,"")
+        const %<castType> ADCScaleFactor = 1.0 / 32768.0;
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+%% Function: GetNextOutput ====================================================
+%% Abstract:
+%%     Build the next output from LibBlockOutputSignal and increments
+%%     according to FrameSize.
+%%      
+%function GetNextOutput(block,channel)
+    %%
+    %if FrameSize > 1
+        %assign OutputString =  "%<LibBlockOutputSignal(0,"i++","",0)>"
+    %else
+        %assign OutputString =  "%<LibBlockOutputSignal(0,"","",0)>"
+    %endif %% FrameSize
+    %return OutputString
+    %%
+%endfunction %% GetNextOutput
+
+
+%% Function: GetOutput ====================================================
+%% Abstract:
+%%     Build the output from LibBlockOutputSignal
+%%      
+%function GetOutput(block,channel)
+    %%
+    %assign OutputString =  "%<LibBlockOutputSignalAddr(0,"","",0)>"
+    %return OutputString
+    %%
+%endfunction %% GetOutput
+
+
+%% Function: ApplyScaling ===============================================
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%
+%%     The codec for c6711 DSK has signed 16-bit data format. The
+%%     scaling has the following form:
+%%
+%%              mode        output string
+%%         (1) signed-16:   "(%<inStr> * ADCScaleFactor)"
+%%             The associated scale factor variable is:
+%%                          const real_T ADCScaleFactor = 1.0 / 32768.0;
+%%
+%%     where inStr is the input variable string (or expression).
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block, inStr) void
+    %%
+    %assign DataCast = "(" + LibBlockOutputSignalDataTypeName(0,"") + ")"
+    %if isNormalized(block)
+        %assign ScaleString = "%<DataCast>%<inStr> * ADCScaleFactor"
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaleString = "%<DataCast>%<inStr>"
+    %endif
+    %return ScaleString
+    %%
+%endfunction %% ApplyScaling
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block,system) void
+    %%
+    %<AddParamsToBlock(block)>
+    %%
+    %if !JustCreatedCompiledModelRecord("c6711dsk_adc_instance")
+        %error "Only one C6711DSK codec ADC block is allowed in a model."
+    %endif
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ============================================================
+%%
+%%  Initialize serial port and codec and start receiving
+%%  data into ping-pong buffers.
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%
+    %<Create_config_codec_input(block)>\
+    config_codec_input();
+    %%
+%endfunction %% Start
+
+
+%% Function: Outputs ==========================================================
+%%
+%%  Read input buffer (when ready), and convert
+%%  to output format and send out.
+%%
+%function Outputs(block,system) Output
+    %%
+    %assign castType = LibBlockOutputSignalDataTypeName(0,"")
+    %%    
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>\
+    const short *restrict i_buf = (const short*) adcBuffPtr;
+    %<castType> *restrict o_buf = %<GetOutput(block, "")>;
+    int_T i=0;   
+    %%
+    %% Determine data alignment shifts:
+    %%     
+    %assign UnscaledMonoInputExpression = "(int) i_buf[i]"     
+    %assign MonoInputExpression = ApplyScaling(block, "%<UnscaledMonoInputExpression>")       
+    %%
+    %% Transfer A/D data to output buffer:
+    %%
+    %if FrameSize > 1
+        
+        #pragma UNROLL(2)
+        #pragma MUST_ITERATE(%<FrameSize>,%<FrameSize>,%<FrameSize>)
+        for (i=0; i<%<FrameSize>; i++) {
+    %else
+    %endif
+        %%
+        %%<GetNextOutput(block, "")> = %<MonoInputExpression>;
+        o_buf[i] = %<MonoInputExpression>;
+
+        %%
+    %if FrameSize > 1
+    }
+    %endif
+    %%
+    %if (LinkerCommandFile == "Full_memory_map")
+ 	    %openfile tmpBuf
+ 	    if (%<LibIsSampleHit(TID)>) {
+            clean_adc_L2Cache();
+        }
+	    %closefile tmpBuf
+	    %<LibSystemOutputCustomCode(system, tmpBuf, "trailer")>     
+    %endif
+}
+    %%
+%endfunction %% Outputs
+
+
+%% Function: AddParamsToBlock =================================================
+%%
+%%  Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+    %%
+    %assign SourceGain    = SFcnParamSettings.SourceGain
+    %assign SampleRate    = SFcnParamSettings.SampleRate
+    %assign FrameSize     = SFcnParamSettings.FrameSize
+    %assign MicGain       = SFcnParamSettings.MicGain
+    %assign AdcSource     = SFcnParamSettings.AdcSource
+    %assign DataFormat    = SFcnParamSettings.DataFormat
+    %assign DataType      = SFcnParamSettings.DataType
+    %assign Scaling       = SFcnParamSettings.Scaling
+    %%
+    %assign block = block + MicGain + SourceGain + AdcSource \
+                  + DataFormat + FrameSize + SampleRate + DataType + Scaling
+    %%
+    %% Make selected parameters available globally to other functions:
+    %%   
+    %assign c6000_codec_source_gain = SourceGain
+    %assign ::CompiledModel = ::CompiledModel + c6000_codec_source_gain
+    %%
+    %assign c6000_adc_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_adc_data_format
+    %%    
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] c6711dsk_adc.tlc

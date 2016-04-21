@@ -1,0 +1,16 @@
+function q = istform(t)
+%ISTFORM True for valid geometric transformation structure.
+%   ISTFORM(T) returns 1 if R is a valid geometric transformation structure,
+%   such as one created by MAKETFORM, and 0 otherwise.
+% 
+%   See also MAKETFORM, TFORMFWD, TFORMINV, FLIPTFORM.
+
+%   Copyright 1993-2003 The MathWorks, Inc.
+%   $Revision: 1.3.4.1 $ $Date: 2003/01/26 05:59:57 $
+
+q = isa(t,'struct') ...
+    & isfield(t,'ndims_in') ...
+    & isfield(t,'ndims_out') ...
+    & isfield(t,'forward_fcn') ...
+    & isfield(t,'inverse_fcn') ...
+    & isfield(t,'tdata');

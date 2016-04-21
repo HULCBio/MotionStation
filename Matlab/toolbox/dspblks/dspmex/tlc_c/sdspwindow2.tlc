@@ -1,0 +1,343 @@
+%%
+%% Abstract: Target file for the S-Function sdspwindow2.cpp
+%%           Used for the Window Function Block
+%%
+%% $RCSfile: sdspwindow2.tlc,v $
+%% Copyright 1995-2002 The MathWorks, Inc.
+%% $Revision: 1.22.4.2 $ $Date: 2004/04/08 20:50:08 $
+
+%implements "sdspwindow2" "C"
+
+%% Function: BlockInstanceSetup =================================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+%endfunction
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%
+%%
+%function Start(block, system) Output
+    %assign outMode = SFcnParamSettings.OutputMode
+    %%
+    %if (outMode == "GenerateOnly") || !LibIsEqual(TID, "constant")
+        %%
+        %if (outMode == "GenerateOnly")
+            %assign nChans = 1
+        %else
+            %assign INPORT  = 0
+            %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+            %assign inDims  = LibBlockInputSignalDimensions(INPORT)
+            %assign inCols  = (numDims == 2) ? inDims[1] : 1
+            %assign inRows  = inDims[0]
+            %%
+            %assign considerInputAsVector = (numDims == 1) || (inCols == 1) || (inRows == 1)
+            %%
+            %if ( considerInputAsVector && (!LibBlockInputSignalIsFrameData(INPORT)) )
+                %assign nChans = 1
+            %else
+                %assign nChans = inCols
+            %endif
+        %endif
+        %%
+        %assign N = LibDataOutputPortWidth(0) / nChans
+        %assign genPortIdx = (outMode == "GenerateOnly") ? 0 : 1
+        %%
+        %%
+        %if (outMode != "ApplyOnly")
+          %%
+          %% GenerateOnly or GenerateAndApply
+          %%
+	  %% Comment out the following begin-condition for the R12.1post web downloadable
+          %% Corresponding code declaring a constant output expression has also been 
+	  %% commented out in the mex source file.
+          %% %if !LibBlockOutputSignalIsConstExpr(genPortIdx)
+              %%
+              %% Not a constant output expression
+              %% We must copy the parameter into the block I/O vector
+              %% These are the window samples being "output" on the
+              %% block's "Generate" port
+              %%
+              %% Note: these windows are NEVER complex (that is not supported)
+              %assign DTYPE_STR = LibBlockOutputSignalDataTypeName(genPortIdx,"%<tRealPart>")
+              %%
+              /* Signal Processing Blockset Window (%<ParamSettings.FunctionName>) - '%<Name>'
+               * Copy window samples to the block output port buffer
+               */
+              %if (N > 1)
+                memcpy(%<LibBlockOutputSignalAddr(genPortIdx,"","",0)>, \
+                       %<LibBlockParameterAddr(WindowSamples,"","",0)>, \
+                       %<N> * sizeof(%<DTYPE_STR>));
+              %else
+                memcpy(%<LibBlockOutputSignalAddr(genPortIdx,"","",0)>, \
+                       %<LibBlockParameterAddr(WindowSamples,"","",0)>, \
+                       sizeof(%<DTYPE_STR>));
+              %endif
+        %endif
+    %endif
+
+%endfunction
+
+
+%function GetWindowSample(varName)
+        %assign outMode = SFcnParamSettings.OutputMode
+	%if outMode == "ApplyOnly"
+          %return LibBlockParameter(WindowSamples,varName,"",0)
+          %%
+	%else
+	  %return LibBlockOutputSignal(1,varName,"",0)
+	%endif
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%
+%%
+%function Outputs(block, system) Output
+  %assign outMode = SFcnParamSettings.OutputMode
+  %if outMode != "GenerateOnly" && !LibIsEqual(TID, "constant")
+    %assign INPORT = 0
+    %assign inDT = FixPt_GetInputDataType(INPORT)
+
+    %if FixPt_DataTypeIsFloat(inDT)
+      %<FloatPointInlineCode(block)>
+    %else
+      %<FixedPointInlineCode(block)>
+    %endif
+  %endif
+%endfunction %% Outputs
+
+
+%% Function: FixedPointInlineCode ==============================================
+%% Abstract:
+%%
+%%
+%function FixedPointInlineCode(block) Output
+  %assign outMode = SFcnParamSettings.OutputMode
+  %%
+  %if outMode != "GenerateOnly" && !LibIsEqual(TID, "constant")
+    /* Signal Processing Blockset Window (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %%
+    %% outMode must be "ApplyOnly" or "ApplyAndGenerate"
+
+    %% If there is an inport, then the the first outport is the windowed output.
+    %% The window output may or may not be present, but if it is, it is taken care
+    %% of in the START function.
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+
+    %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+    %assign inDims  = LibBlockInputSignalDimensions(INPORT)
+    %assign inCols  = (numDims == 2) ? inDims[1] : 1
+    %assign inRows  = inDims[0]
+    %%
+    %assign considerInputAsVector = (numDims == 1) || (inCols == 1) || (inRows == 1)
+    %%
+    %if ( considerInputAsVector && (!LibBlockInputSignalIsFrameData(INPORT)) )
+      %assign nChannels = 1
+    %else
+      %assign nChannels = inCols
+    %endif
+    %%
+    %assign samplesPerChannel = LibDataInputPortWidth(INPORT) / nChannels
+    %%
+    %assign inDType    = FixPt_GetInputDataType(INPORT)
+    %assign outDType   = FixPt_GetOutputDataType(OUTPORT)
+    %assign winDType   = DSPFixPt_GetParameterDataType(WindowSamples)
+    %assign prodDType  = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+    %assign prodLabel  = "prod"
+    
+    %if nChannels > 1
+      /* Apply window to %<nChannels> channels */
+    %else
+      /* Apply window */
+    %endif
+    {
+      %<prodDType.Name> %<prodLabel>;
+      int_T i;
+      int_T iw = 0;
+      for (i=0; i<%<inRows*inCols>; i++) {
+        %%
+        %if LibBlockOutputSignalIsComplex(OUTPORT)
+          /*
+           * prod = Ui * W
+           * Yi   = prod
+           */
+          %assign Ui = LibBlockInputSignal(INPORT,"i","","%<tImagPart>0")
+          %assign W  = GetWindowSample("iw")
+          %assign Yi = LibBlockOutputSignal(OUTPORT,"i","","%<tImagPart>0")
+          %<FixPt_Multiply(prodLabel, prodDType, Ui, inDType, W, winDType, FixPtRoundingMode, FixPtSaturationMode)>
+          %<FixPt_Fix2FixAlwaysOutput(Yi, outDType, prodLabel, prodDType, FixPtRoundingMode, FixPtSaturationMode)>
+        %endif
+        /*
+         * prod = Ur * W
+         * Yr   = prod
+         */
+        %assign Ur = LibBlockInputSignal(INPORT,"i","","%<tRealPart>0")
+        %assign W  = GetWindowSample("iw")
+        %assign Yr = LibBlockOutputSignal(OUTPORT,"i","","%<tRealPart>0")
+        %<FixPt_Multiply(prodLabel, prodDType, Ur, inDType, W, winDType, FixPtRoundingMode, FixPtSaturationMode)>
+        %<FixPt_Fix2FixAlwaysOutput(Yr, outDType, prodLabel, prodDType, FixPtRoundingMode, FixPtSaturationMode)>
+        iw++;
+        %if (samplesPerChannel < (inRows*inCols))
+          if (iw == %<samplesPerChannel>) iw = 0;
+        %endif
+      }
+    }
+  %endif
+    
+%endfunction %% FixedPointInlineCode
+
+
+%% Function: FloatPointInlineCode ==============================================
+%% Abstract:
+%%
+%%
+%function FloatPointInlineCode(block) Output
+  %assign outMode = SFcnParamSettings.OutputMode
+  %%
+  %if outMode != "GenerateOnly" && !LibIsEqual(TID, "constant")
+    /* Signal Processing Blockset Window (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %%
+    %% outMode must be "ApplyOnly" or "ApplyAndGenerate"
+    %assign INPORT  = 0
+    %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+    %assign inDims  = LibBlockInputSignalDimensions(INPORT)
+    %assign inCols  = (numDims == 2) ? inDims[1] : 1
+    %assign inRows  = inDims[0]
+    %%
+    %assign considerInputAsVector = (numDims == 1) || (inCols == 1) || (inRows == 1)
+    %%
+    %if ( considerInputAsVector && (!LibBlockInputSignalIsFrameData(INPORT)) )
+      %assign nChannels = 1
+    %else
+      %assign nChannels = inCols
+    %endif
+    %%
+    %assign samplesPerChannel = LibDataInputPortWidth(INPORT) / nChannels
+    %%
+    %if nChannels > 1
+      %%
+      /* Apply window to %<nChannels> channels */
+      {
+        %if LibBlockInputSignalBufferDstPort(0) == 0
+          /* In-place window computation: */
+          
+          int_T i;
+          int_T iw = 0;
+          for (i=0; i<%<inRows*inCols>; i++) {
+            %%
+            %% Sharing buffers:
+            %%
+            %if LibBlockOutputSignalIsComplex(0)
+              %% Yi *= w
+              %<LibBlockOutputSignal(0,"i","","%<tImagPart>0")> *= %<GetWindowSample("iw")>;
+            %endif
+            %% Yr *= w
+            %<LibBlockOutputSignal(0,"i","","%<tRealPart>0")> *= %<GetWindowSample("iw++")>;
+            if (iw == %<samplesPerChannel>) iw = 0;
+          }
+          
+        %else
+          %% Not sharing buffers:
+          
+          int_T i;
+          int_T iw = 0;
+          for (i=0; i<%<inRows*inCols>; i++) {
+            %%
+            %if LibBlockOutputSignalIsComplex(0)
+              %% Yi = Ui * W
+              %<LibBlockOutputSignal(0,"i","","%<tImagPart>0")> = ...
+                %<LibBlockInputSignal( 0,"i","","%<tImagPart>0")> * %<GetWindowSample("iw")>;
+            %endif
+            %% Yr = Ur * W
+            %<LibBlockOutputSignal(0,"i","","%<tRealPart>0")> = ...
+              %<LibBlockInputSignal( 0,"i","","%<tRealPart>0")> * %<GetWindowSample("iw++")>;
+            if (iw == %<samplesPerChannel>) iw = 0;
+          }
+          
+        %endif
+        %%
+      }
+      %%
+      %%
+    %else
+      %% Single Channel
+      %%
+        
+      %if LibBlockInputSignalBufferDstPort(0) != 0
+      %%
+      %% Not sharing buffers:
+      %%
+      %% Yr = Ur * w
+      %if (inRows*inCols == 1) 
+          %<LibBlockOutputSignal(0,"0","","%<tRealPart>0")> = ...
+              %<LibBlockInputSignal(0,"0","","%<tRealPart>0")> * %<GetWindowSample("0")>;
+	  %%
+	  %if LibBlockOutputSignalIsComplex(0)
+              %% Yi = Ui * w
+	      %<LibBlockOutputSignal(0,"0","","%<tImagPart>0")> = ...
+	          %<LibBlockInputSignal(0,"0","","%<tImagPart>0")> * %<GetWindowSample("0")>;
+	  %endif
+              
+
+      %else 
+      {
+         int_T i;
+         for (i=0; i<%<inRows*inCols>; i++) {
+	    %<LibBlockOutputSignal(0,"i","","%<tRealPart>0")> = ...
+                %<LibBlockInputSignal(0,"i","","%<tRealPart>0")> * %<GetWindowSample("i")>;
+	    %%
+	    %if LibBlockOutputSignalIsComplex(0)
+                %% Yi = Ui * w
+	        %<LibBlockOutputSignal(0,"i","","%<tImagPart>0")> = ...
+	            %<LibBlockInputSignal(0,"i","","%<tImagPart>0")> * %<GetWindowSample("i")>;
+	    %endif
+         }
+       } 
+       %endif  
+       
+       %else
+        %%
+        %% Sharing buffers:
+        %%
+            %% Yr *= w
+	    %%
+              
+            %if (inRows*inCols == 1)
+                %<LibBlockOutputSignal(0,"0","","%<tRealPart>0")> *= %<GetWindowSample("0")>;
+	        %if LibBlockOutputSignalIsComplex(0)
+                    %% Yi *= w
+	            %<LibBlockOutputSignal(0,"0","","%<tImagPart>0")> *= %<GetWindowSample("0")>;
+	        %endif
+            %else
+            {
+                int_T i;
+                for (i=0; i<%<inRows*inCols>; i++) {
+                    %<LibBlockOutputSignal(0,"i","","%<tRealPart>0")> *= %<GetWindowSample("i")>;
+	            %if LibBlockOutputSignalIsComplex(0)
+                        %% Yi *= w
+	                %<LibBlockOutputSignal(0,"i","","%<tImagPart>0")> *= %<GetWindowSample("i")>;
+	            %endif
+                }
+            }
+            %endif
+              
+       %endif
+        
+    %endif
+
+  %endif
+
+%endfunction %% FloatPointInlineCode
+
+%% EOF: sdspwindow2.tlc

@@ -1,0 +1,565 @@
+%%
+%% $Revision.4 $
+%%
+%% Abstract:
+%%   This TLC library file contains library routines in support of the
+%%   Stateflow / RTW interface.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+
+%if EXISTS("_SFLIB_") == 0
+%assign _SFLIB_ = 1
+
+%addtorecord CompiledModel MachineInitializeCache ""
+%addtorecord CompiledModel MachineTerminateCache  ""
+
+%function SLibMachineInitializeIsEmpty() void
+  %return WHITE_SPACE(MachineInitializeCache)
+%endfunction
+
+%function SLibMachineTerminateIsEmpty() void
+  %return WHITE_SPACE(MachineTerminateCache)
+%endfunction
+
+%function SLibSetMachineInitialize(code) void
+  %if MachineInitializeCache != ""
+    %% Should only be called once by RTW
+    %<LibReportFatalError("MachineInitializeCache should be empty")>
+  %endif
+  %if !WHITE_SPACE(code)
+    %assign CompiledModel.MachineInitializeCache = code
+  %endif
+%endfunction
+
+%function SLibSetMachineTerminate(code) void
+  %if MachineTerminateCache != ""
+    %% Should only be called once by RTW
+    %<LibReportFatalError("MachineTerminateCache should be empty")>
+  %endif
+  %if !WHITE_SPACE(code)
+    %assign CompiledModel.MachineTerminateCache = code
+  %endif
+%endfunction
+
+%function SLibWriteMachineInitialize() void
+  %return MachineInitializeCache
+%endfunction
+
+%function SLibWriteMachineTerminate() void
+  %return MachineTerminateCache
+%endfunction
+
+
+%% Function: LibSFUpdateAccessFlagsOfAllInstances ==============================
+%% Abstract:
+%%      Updates the access flags for the chart based on another instance that
+%%      has already generated the code for the library chart.
+%%
+%%      block      = block record for the chart
+%%      chartIndex = the index of the Chart record
+%%
+%% WISH at this point this is not doing anything
+%function LibSFUpdateAccessFlagsOfAllInstances(block,chartIndex) void
+  %if chartIndex<0
+    %% single instance case do nothing
+    %return ""
+  %endif
+  %assign blockInstances = ...
+    CompiledModel.SFLibraryNames.Chart[chartIndex].ReferencedBy
+  %assign numberOfBlockInstances = SIZE(blockInstances,0)
+  %if numberOfBlockInstances > 1
+    %foreach idx = numberOfBlockInstances
+      %assign sysIdx = blockInstances[idx][0]
+      %assign blkIdx = blockInstances[idx][1]
+      %assign instanceBlock = CompiledModel.System[sysIdx].Block[blkIdx]
+    %endforeach
+  %endif
+%endfunction
+
+
+%% Function: LibSFGetChartIndexAndGenerate =====================================
+%% Abstract:
+%%      This is used to decide whether to call the TLC file to generate code.
+%%
+%%      chartName:
+%%               the name of the library Chart
+%%      returns:
+%%               -2 : if a library chart that has already been generated
+%%               -1 : if a single instance chart (generate it)
+%%               0-N: the chart Index into the Chart records (generate it and
+%%                    mark it as generated
+%%
+%function LibSFGetChartIndexAndGenerate(chartName) void
+  %assign chartIndex = -1
+  %foreach idx = SFLibraryNames.NumUniqueCharts
+    %if SFLibraryNames.Chart[idx].Name == chartName
+      %assign chartIndex = idx
+    %endif
+  %endforeach
+
+  %if chartIndex<0
+    %% single instance case return -1
+    %return chartIndex
+  %endif
+  %if EXISTS("SFLibraryNames.Chart[chartIndex].HitCount")
+    %return -2
+  %else
+    %assign HitCount = 1
+    %assign CompiledModel.SFLibraryNames.Chart[chartIndex] = ...
+      CompiledModel.SFLibraryNames.Chart[chartIndex] + HitCount
+    %return chartIndex
+  %endif
+%endfunction
+
+
+%% Function: LibSFGetCurrentTaskTime ===========================================
+%% Abstract:
+%%      Return the correct string for accessing the task time for the given
+%%      chart.
+%%
+%%      block = Block record for the stateflow chart
+%%
+%function LibSFGetCurrentTaskTime(block) void
+  %return LibGetTaskTimeFromTID(block)
+%endfunction
+
+
+%% Function: LibSFChartInstance ================================================
+%% Abstract:
+%%      Return the correct string for accessing the chartInstance stucture. When
+%%      the chart in not multi-instanced, direct access is used.
+%%
+%%      block = Block record for the stateflow chart
+%%
+%function LibSFChartInstance(block) void
+    %<SETFIELD(block,"ChartInstanceAccessed",1)>
+   	%return "%<LibBlockDWork(ChartInstance,"","",0)>."
+%endfunction
+
+%function LibSFChartInstanceNoMemberRef(block) void
+    %<SETFIELD(block,"ChartInstanceAccessed",1)>
+   	%return LibBlockDWork(ChartInstance,"","",0)
+%endfunction
+
+%function LibSFChartInstanceArg(block) void
+    %<SETFIELD(block,"ChartInstanceAccessed",1)>
+   	%return ""
+%endfunction
+
+%function SLibResetSFChartInstanceAccessed(block) void
+  %<SETFIELD(block,"ChartInstanceAccessed",0)>
+%endfunction
+
+%function SLibGetSFChartInstanceAccessed(block) void
+  %return block.ChartInstanceAccessed
+%endfunction
+
+%function SLibGetSFEventName() void
+  %return CompiledModel.SFEventName
+%endfunction
+
+%function SLibGetSystemFcn(sysIdx) void
+  %if ISFIELD(System[sysIdx], "%<::BlockFcn>Fcn")
+    %return SLibSystemFcnInfoRecord(System[sysIdx], ::BlockFcn)
+  %elseif ::BlockFcn == "OutputUpdate"
+    %return SLibSystemFcnInfoRecord(System[sysIdx], "Output")
+  %endif
+%endfunction
+
+%function LibSFPassThruArgs(block, isEmpty) void
+  %if !ISFIELD(block, "PassThroughArgs")
+    %<LibSFPassThruPairsForce(block)>
+  %endif
+  %assign passThroughArgs = block.PassThroughArgs
+  %if ISEMPTY(passThroughArgs)
+    %if isEmpty
+      %assign passThroughArgs = ""
+    %else
+      %assign passThroughArgs = "NULL"
+    %endif
+  %endif
+  %return passThroughArgs
+%endfunction
+
+%function LibSFPassThruDummy(block) void
+  %return ""
+%endfunction
+
+%function LibSFPassThruPairs(block, isEmpty) void
+  %if !ISFIELD(block, "PassThroughArgDefs")
+    %<LibSFPassThruPairsForce(block)>
+  %endif
+  %assign passThroughArgDefs = block.PassThroughArgDefs
+  %if ISEMPTY(passThroughArgDefs)
+    %if isEmpty
+      %assign passThroughArgDefs = "void"
+    %else
+      %assign passThroughArgDefs = "void *reserved"
+    %endif
+  %endif
+  %return passThroughArgDefs
+%endfunction
+
+%function LibSFSetPassThruArgs(block, argDefs, args) void
+  %if !ISFIELD(block, "PassThroughArgDefs")
+    %addtorecord block PassThroughArgDefs argDefs
+    %addtorecord block PassThroughArgs args
+  %else
+    %<SETFIELD(block, "PassThroughArgDefs", argDefs)>
+    %<SETFIELD(block, "PassThroughArgs", args)>
+  %endif
+%endfunction
+
+%function LibSFResetPassThruArgs(block) void
+  %<LibSFSetPassThruArgs(block, "", "")>
+%endfunction
+
+%function LibSFResetProtoTypeInfo(block) void
+  %with block
+    %if !ISFIELD(SFInfo, "ChartInstancePrototype")
+      %addtorecord SFInfo ChartInstancePrototype "void"
+      %addtorecord SFInfo ChartInstanceCommaPrototype ""
+      %addtorecord SFInfo ChartInstanceArgument ""
+      %addtorecord SFInfo ChartInstanceCommaArgument ""
+      %addtorecord SFInfo SFChartEntryPoint ""
+    %else
+      %<SETFIELD(SFInfo, "ChartInstancePrototype", "void")>
+      %<SETFIELD(SFInfo, "ChartInstanceCommaPrototype", "")>
+      %<SETFIELD(SFInfo, "ChartInstanceArgument", "")>
+      %<SETFIELD(SFInfo, "ChartInstanceCommaArgument", "")>
+      %<SETFIELD(SFInfo, "SFChartEntryPoint", "")>
+    %endif
+  %endwith
+%endfunction
+
+%function LibSFSetProtoTypeInfo(block) void
+  %with block
+    %assign SFInfo.ChartInstancePrototype = SFInfo.ChartInstanceTypedef + ...
+      " *chartInstance, " + LibSFPassThruPairs(block, 0)
+    %assign SFInfo.ChartInstanceCommaPrototype = ...
+      SFInfo.ChartInstanceTypedef + ","
+    %assign SFInfo.ChartInstanceArgument = "chartInstance," + ...
+      LibSFPassThruArgs(block, 0)
+    %assign SFInfo.ChartInstanceCommaArgument = ...
+      SFInfo.ChartInstanceArgument + ","
+    %assign SFInfo.ChartInitializeFcn = LibSFUniquePrefix(block) + ...
+      SFInfo.ChartInitializeFcn
+    %assign SFInfo.ChartOutputsFcn = LibSFUniquePrefix(block) + ...
+      SFInfo.ChartOutputsFcn
+    %assign SFInfo.SFChartEntryPoint = ...
+      "void %<SFInfo.ChartOutputsFcn>(%<SFInfo.ChartInstancePrototype>)"
+  %endwith
+%endfunction
+
+%function LibSFPassThruPairsForce(block) void
+  %assign sysIdx = block.BlockIdx[0]
+  %if System[sysIdx].RTWSystemCode != 2
+    %if UsingMalloc
+      %assign passThroughArgDefs = "%<tSimStructType> *%<tSimStruct>"
+      %assign passThroughArgs = "%<tSimStruct>"
+      %if ::BlockFcnAccessed.DWork == 1  && ...
+	    (CodeFormat != "S-Function" || Accelerator)
+	    %assign passThroughArgDefs = passThroughArgDefs + ",%<tDWorkType> *%<tDWork>"
+	    %assign passThroughArgs = passThroughArgs + ",%<tDWork>"
+      %endif
+      %if ::BlockFcnAccessed.B == 1
+	    %assign passThroughArgDefs = passThroughArgDefs + ",%<tBlockIOType> *%<tBlockIO>"
+	    %assign passThroughArgs = passThroughArgs + ",%<tBlockIO>"
+      %endif
+      %if ::BlockFcnAccessed.P == 1
+	    %assign passThroughArgDefs = passThroughArgDefs + ",%<tParametersType> *%<tParameters>"
+	    %assign passThroughArgs = passThroughArgs + ",%<tParameters>"
+      %endif
+      %<LibSFSetPassThruArgs(block, passThroughArgDefs, passThroughArgs)>      
+    %else
+      %<LibSFResetPassThruArgs(block)>
+    %endif
+  %else
+    %assign fcnInfo = SLibGetSystemFcn(sysIdx)
+    %assign passThroughArgDefs = fcnInfo.Params
+    %assign passThroughArgs = FEVAL("rtwprivate", "getargstr", passThroughArgDefs)
+    %if ISEMPTY(passThroughArgs)
+      %<LibSFResetPassThruArgs(block)>
+    %else
+      %<LibSFSetPassThruArgs(block, passThroughArgDefs, passThroughArgs)>
+    %endif
+  %endif
+  %return block.PassThroughArgDefs
+%endfunction
+
+
+%function LibSFUniquePrefix(block) void
+  %return "S%<block.BlockIdx[0]>_%<block.BlockIdx[2]>_"
+%endfunction
+
+%function LibSFOutputFcnCallInitialize(block, idx) void
+   %return ""    %% Unconnected Function call
+%endfunction
+
+%function LibSFOutputFcnCallEnable(block, idx) void
+  %assign ::CompiledModel.HaveSeparateSourceFiles = 1
+  %if NumSFcnSysOutputCalls == 0
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCallEnable, no Function Calls.
+  %endif
+  %if idx >= NumSFcnSysOutputCalls
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCallEnable,outside valid range.
+  %endif
+  %with SFcnSystemOutputCall[idx]
+    %if ISEQUAL(BlockToCall,"unconnected")
+      %return ""    %% Unconnected Function call
+    %else
+      %assign sysIdx = BlockToCall[0]
+      %assign blkIdx = BlockToCall[1]
+      %assign ssBlock = System[sysIdx].Block[blkIdx]
+      %assign tidVal = ParamSettings.SampleTimesToSet[0][1]
+      %assign retVal = LibExecuteFcnEnable(ssBlock, FcnPortElement, tidVal)
+      %if (!WHITE_SPACE(retVal))
+	%return retVal
+      %else
+	%return ""
+      %endif
+    %endif
+  %endwith
+%endfunction
+
+%function LibSFOutputFcnCallDisable(block, idx) void
+  %assign ::CompiledModel.HaveSeparateSourceFiles = 1
+  %if NumSFcnSysOutputCalls == 0
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCallDisable, no Function Calls.
+  %endif
+  %if idx >= NumSFcnSysOutputCalls
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCallDisable,outside valid range.
+  %endif
+  %with SFcnSystemOutputCall[idx]
+      %if ISEQUAL(BlockToCall,"unconnected")
+	%return ""    %% Unconnected Function call
+      %else
+	%assign sysIdx = BlockToCall[0]
+	%assign blkIdx = BlockToCall[1]
+	%assign ssBlock = System[sysIdx].Block[blkIdx]
+	%assign tidVal  = ParamSettings.SampleTimesToSet[0][1]
+	%assign retVal = LibExecuteFcnDisable(ssBlock, FcnPortElement, tidVal)
+	%if (!WHITE_SPACE(retVal))
+	  %return retVal
+	%else
+	  %return ""
+	%endif
+      %endif
+  %endwith
+%endfunction
+
+%% Function: LibSFOutputFcnCall ================================================
+%% Abstract:
+%%      Return the correct string for making a function-call.  When
+%%      possible, direct calling is done, otherwise function-pointers are used.
+%%
+%%      block = Block record for the stateflow chart
+%%      idx   = number of the element being accessed
+%%
+%function LibSFOutputFcnCall(block, idx) void
+  %assign ::CompiledModel.HaveSeparateSourceFiles = 1
+  %if NumSFcnSysOutputCalls == 0
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCall, no Function Calls.
+  %endif
+  %if idx >= NumSFcnSysOutputCalls
+    %error Invalid idx: %<idx> arg in LibSFOutputFcnCall,outside valid range.
+  %endif
+  %with SFcnSystemOutputCall[idx]
+    %if ISEQUAL(BlockToCall,"unconnected")
+      %return ""    %% Unconnected Function call
+    %else
+      %assign sysIdx = BlockToCall[0]
+      %assign blkIdx = BlockToCall[1]
+      %assign ssBlock = CompiledModel.System[sysIdx].Block[blkIdx]
+      %assign tidVal = ParamSettings.SampleTimesToSet[0][1]
+      %assign retVal = LibExecuteFcnCall(ssBlock, FcnPortElement, tidVal)
+      %if (!WHITE_SPACE(retVal))
+	%return retVal
+      %else
+	%return ""
+      %endif
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: LibSFOutputs ======================================================
+%% Abstract:
+%%      Return the correct string for accessing the charts outputs.  When
+%%      possible, direct access is done, otherwise pointer access is used.
+%%      NOTE: port 0 is reserved by Stateflow for function-call output events
+%%
+%%      block = Block record for the stateflow chart
+%%      port  = number of the port being accessed
+%%      idx   = number or string for the element being accessed
+%%
+%function LibSFOutputs(block, port, idx) void
+  %if port==0
+    %error LibSfOutputs cannot be called for port 0 reserved for function calls
+  %endif
+  %if port>=NumDataOutputPorts
+    %error Invalid port number %<port> passed to LibSFOutputs
+  %endif
+  %if TYPE(idx) == "Number"
+    %if idx >= LibBlockOutputSignalWidth(port)
+      %error Invalid idx: %<idx> arg in LibSFOutputs, outside valid range.
+    %endif
+    %return LibBlockOutputSignal(port,"","",idx)
+  %else
+    %<LibBlockOutputSignalAddr(port,idx,"",0)>
+    %return LibBlockOutputSignal(port,idx,"",0)
+  %endif
+%endfunction
+
+
+%% Function: LibSFOutputArray ==================================================
+%% Abstract:
+%%      Return the correct string for accessing a chart output array.  
+%%      block = Block record for the stateflow chart
+%%      port  = number of the port being accessed
+%%
+%function LibSFOutputArray(block, port, unused) void
+  %if port==0
+    %error LibSfOutputs cannot be called for port 0 reserved for function calls
+  %endif
+  %if port>=NumDataOutputPorts
+    %error Invalid port number %<port> passed to LibSFOutputs
+  %endif
+  %return LibBlockOutputSignalAddr(port,"","",0)
+%endfunction
+
+
+%% Function: LibSFInputs ======================================================
+%% Abstract:
+%%      Return the correct string for accessing the charts inputs.  When
+%%      possible, direct access is done, otherwise pointer access is used.
+%%
+%%      block = Block record for the stateflow chart
+%%      port  = number of the port being accessed
+%%      idx   = number or string for the element being accessed
+%%
+%function LibSFInputs(block, port, idx) void
+  %if port>=NumDataInputPorts
+    %error Invalid port number %<port> passed to LibSFInputs
+  %endif
+  %if NumDataInputPorts > 0
+    %if TYPE(idx) == "Number"
+      %if !(DataInputPort[port].Width >= idx && idx >=0)
+        %error Invalid idx: %<idx> arg in LibSFInputs, outside valid range.
+      %endif
+      %return LibBlockInputSignal(port,"","",idx)
+    %else
+      %<LibBlockInputSignalAddr(port,idx,"",0)>
+      %return LibBlockInputSignal(port,idx,"",0)
+    %endif
+  %else
+    %error Invalid call to LibSFInputs, no inputs for %<LibGetFormattedBlockPath(block)>
+  %endif
+%endfunction
+
+
+%% Function: LibSFInputArray ==================================================
+%% Abstract:
+%%      Return the correct string for accessing a chart input array.  
+%%      block = Block record for the stateflow chart
+%%      port  = number of the port being accessed
+%%
+%function LibSFInputArray(block, port, unused) void
+  %if port>=NumDataInputPorts
+    %error Invalid port number %<port> passed to LibSFInputs
+  %endif
+  %if NumDataInputPorts > 0
+    %return LibBlockInputSignalAddr(port,"","",0)
+  %else
+    %error Invalid call to LibSFInputArray, no inputs for %<LibGetFormattedBlockPath(block)>
+  %endif
+%endfunction
+
+
+%function SLibGetSystemStateflowFcnCache(ss)
+  %assign sfFcn = ""
+  %if !SLibSystemStateflowFcnCacheIsEmpty(ss)
+    %assign sfFcn = "\n" +  ss.Instance.CachedStateflowFcnCode
+  %endif
+  %return sfFcn
+%endfunction
+
+
+%function SLibAppendToSystemStateflowFcnCache(ss, buff) void
+  %if !WHITE_SPACE(buff)
+    %assign ss.Instance.CachedStateflowFcnCode = ss.Instance.CachedStateflowFcnCode + buff
+  %endif
+%endfunction
+
+
+%function SLibSystemStateflowFcnCacheIsEmpty(ss) void
+  %if !WHITE_SPACE(ss.Instance.CachedStateflowFcnCode)
+    %return TLC_FALSE
+  %else
+    %return TLC_TRUE
+  %endif
+%endfunction
+
+%function SFLibLookupUtilityFunction(fcnName)
+  %if !ISFIELD(FixPtUtils,"%<fcnName>")
+    %if !ISFIELD(CompiledModel, "StateflowSharedFunctions")
+      %return TLC_FALSE
+    %else
+      %if ISFIELD(CompiledModel.StateflowSharedFunctions, "%<fcnName>")
+        %return TLC_TRUE
+      %else
+        %return TLC_FALSE
+      %endif
+    %endif
+  %else
+    %if !ISFIELD(CompiledModel, "StateflowSharedFunctions")
+      SFLibInsertUtilityFunctionDecl(fcnName)
+      %return TLC_TRUE
+    %else
+      %if !ISFIELD(CompiledModel.StateflowSharedFunctions, "%<fcnName>")
+        SFLibInsertUtilityFunctionDecl(fcnName)
+        %return TLC_TRUE
+      %else
+        %return TLC_TRUE
+      %endif
+    %endif
+  %endif
+%endfunction
+
+%function SFLibInsertUtilityFunction(fcnName) void 
+      %if !ISFIELD(CompiledModel, "StateflowSharedFunctions")
+         %createrecord StateflowSharedFunctionsRecord {%<fcnName> 1}
+         %addtorecord CompiledModel StateflowSharedFunctions StateflowSharedFunctionsRecord
+      %else 
+         %addtorecord CompiledModel.StateflowSharedFunctions %<fcnName> 1 
+      %endif
+      %assign tmpRet = SETFIELD(FixPtUtils,"%<fcnName>",1)
+%endfunction
+
+%function SFLibLookupUtilityFunctionDecl(fcnName)
+   %if !ISFIELD(CompiledModel, "StateflowSharedFunctionsDecl")
+      %return TLC_FALSE
+   %else
+      %if ISFIELD(CompiledModel.StateflowSharedFunctionsDecl, "%<fcnName>")
+         %return TLC_TRUE
+      %else
+      %return TLC_FALSE
+      %endif
+   %endif
+%endfunction
+
+%function SFLibInsertUtilityFunctionDecl(fcnName) void 
+      %if !ISFIELD(CompiledModel, "StateflowSharedFunctionsDecl")
+         %createrecord StateflowSharedFunctionsDeclRecord {%<fcnName> 1}
+         %addtorecord CompiledModel StateflowSharedFunctionsDecl StateflowSharedFunctionsDeclRecord
+      %else 
+         %addtorecord CompiledModel.StateflowSharedFunctionsDecl %<fcnName> 1 
+      %endif
+%endfunction
+
+
+
+%endif %% _SFLIB_
+
+%% [EOF] sflib.tlc

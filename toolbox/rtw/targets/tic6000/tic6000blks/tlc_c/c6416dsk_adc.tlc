@@ -1,0 +1,228 @@
+%% $RCSfile: c6416dsk_adc.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:12 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% tlc for the Target for C6416DSK
+
+%implements c6416dsk_adc "C"
+
+
+%% Global variables (TLC variables added to CompiledModel):
+%%    aic23_adc_instance
+%%       Determines whether the A/D block has appeared in the model.
+%%
+%%    c6000_codec_source_gain
+%%       Indicates the source gain.
+
+
+%% Include external c6000 functions ==========================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+
+
+%% Function: isNormalized ===============================================
+%% Abstract:
+%%     Determine if normalization is to be applied.
+%%     NOTE: This is more complicated than simply returning the status
+%%           of the scaling flag, since we must "ignore" the scaling
+%%           flag in certain modes.
+%%      
+%function isNormalized(block) void
+
+    %if (DataType == "INTEGER")
+        %% Ignore the scaling flag:
+        %return 0  %% no normalization to be performed
+    %else
+        %% Normalization is allowed
+        %% Return true if the flag is set to normalization
+        %return (Scaling == "NORMALIZE")
+    %endif
+
+%endfunction %% isNormalized
+
+
+
+%% Function: DeclareScalingFactor ===============================================
+%% Abstract:
+%%  Outputs declaration of scaling factor constants.
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockOutputSignalDataTypeName(0,"")
+        %%
+        %if (DataFormat == "16BIT")
+            const %<castType> ADCScaleFactor = 1.0 / 32768.0;
+        %elseif (DataFormat == "20BIT")
+            const %<castType> ADCScaleFactor = 1.0 / 524288.0;
+        %elseif (DataFormat == "24BIT")
+            const %<castType> ADCScaleFactor = 1.0 / 8388608.0;
+        %elseif (DataFormat == "32BIT")
+            const %<castType> ADCScaleFactor = 1.0 / 2147483648.0;
+        %endif
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+
+%% Function: ApplyScaling ===============================================
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%   output string
+%%   "(%<inStr> * ADCScaleFactor)"
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block, inStr) void
+
+    %% Determine Data Cast
+    %assign DataCast = "(" + LibBlockOutputSignalDataTypeName(0,"") + ")"
+
+    %if isNormalized(block)
+        %assign ScaleString = "%<DataCast>%<inStr> * ADCScaleFactor"
+
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaleString = "%<DataCast>%<inStr>"
+    %endif
+
+    %return ScaleString
+
+%endfunction %% ApplyScaling
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+
+    %if !JustCreatedCompiledModelRecord("aic23_adc_instance")
+        %error "Only one ADC block is allowed in a model."
+    %endif
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ============================================================
+%%
+%%  Initialize serial port and codec and start receiving
+%%  data into ping-pong buffers.
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%
+    %<Create_config_codec_input(block)>\
+    config_codec_input();
+    %%   
+%endfunction %% Start
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%%  Read input buffer (when ready), and convert
+%%  to output format and send out.
+%%
+%function Outputs(block,system) Output
+%assign AdcBuffExpression = ApplyScaling(block,"*adcBuffPtr")
+%assign AdcBuffExpression2 = ApplyScaling(block,"*(adcBuffPtr+1)")
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>
+
+    %if FrameSize > 1
+        int_T i;
+        for(i = 0; i < %<FrameSize>; i++) {
+        %if (Stereo == "CODEC_MONO")
+            %<LibBlockOutputSignal(0,"i","",0)> = %<AdcBuffExpression>;
+            /* Skip Right side for mono mode */
+            adcBuffPtr += 2;
+        %else
+            /*  Left  */
+            %<LibBlockOutputSignal(0,"i","",0)> = %<AdcBuffExpression>;
+            /*  Right  */
+            %<LibBlockOutputSignal(0,"i + %<FrameSize>","",0)> = %<AdcBuffExpression2>;
+            adcBuffPtr += 2;
+        %endif
+        }
+    %else  %% FrameSize==1:
+        %if (Stereo == "CODEC_MONO")
+            %<LibBlockOutputSignal(0,"","",0)> = %<AdcBuffExpression>;
+            /* Skip Right side for mono mode */
+            adcBuffPtr += 2;
+        %else
+            /*  Left  */
+            %<LibBlockOutputSignal(0,"0","",0)> = %<AdcBuffExpression>;
+            /*  Right  */
+            %<LibBlockOutputSignal(0,"1","",0)> = %<AdcBuffExpression2>;
+            adcBuffPtr += 2;
+        %endif
+    %endif
+    %% Clean cache 
+    %if (LinkerCommandFile == "Full_memory_map")
+ 	    %openfile tmpBuf
+ 	    if (%<LibIsSampleHit(TID)>) {
+            clean_adc_L2Cache();
+        }
+	    %closefile tmpBuf
+	    %<LibSystemOutputCustomCode(system, tmpBuf, "trailer")>     
+    %endif
+
+}
+
+%endfunction %% Outputs
+
+
+
+%% Function: AddParamsToBlock =================================================
+%%
+%%  Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+    %assign SourceGain    = SFcnParamSettings.SourceGain
+    %assign SampleRate    = SFcnParamSettings.SampleRate
+    %assign FrameSize     = SFcnParamSettings.FrameSize
+    %assign MicGain       = SFcnParamSettings.MicGain
+    %assign Stereo        = SFcnParamSettings.Stereo
+    %assign AdcSource     = SFcnParamSettings.AdcSource
+    %assign DataFormat    = SFcnParamSettings.DataFormat
+    %assign DataType      = SFcnParamSettings.DataType
+    %assign Scaling       = SFcnParamSettings.Scaling
+    %%
+    %assign block = block + Stereo + MicGain + SourceGain + AdcSource \
+                  + DataFormat + FrameSize + SampleRate + DataType + Scaling
+
+    %% Make selected parameters available globally to other functions:
+    %%
+    %assign c6000_codec_source_gain = SourceGain
+    %assign ::CompiledModel = ::CompiledModel + c6000_codec_source_gain
+    %%
+    %assign c6000_adc_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_adc_data_format
+    %%
+    %assign c6000_AdcSource = AdcSource
+    %assign ::CompiledModel = ::CompiledModel + c6000_AdcSource
+    %%
+    %assign c6000_MicGain = MicGain
+    %assign ::CompiledModel = ::CompiledModel + c6000_MicGain
+    %%
+    %assign ::CompiledModel = ::CompiledModel + SampleRate
+    
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] 

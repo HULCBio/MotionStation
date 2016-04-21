@@ -1,0 +1,252 @@
+%% $RCSfile: sdsp2norm2.tlc,v $
+%% $Revision: 1.13.4.2 $  $Date: 2004/04/12 23:08:05 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdsp2norm2.c
+%%
+
+%implements "sdsp2norm2" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(INPORT)
+    %assign isFixpt = !FixPt_DataTypeIsFloat(inDT)
+    %assign block = block + isFixpt
+    %if (isFixpt)
+        %assign outDT  = FixPt_GetOutputDataType(OUTPORT)
+        %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+        %assign accDT  = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+        %assign block  = block + inDT + inDT + outDT + prodDT + accDT
+    %endif
+    %%
+    %% NormType enumerations:
+    %assign NORM   = 1
+    %%
+    %assign NumDims = LibBlockInputSignalNumDimensions(INPORT)
+    %assign InDims  = LibBlockInputSignalDimensions(INPORT)
+    %assign InCols  = (NumDims == 2) ? InDims[1] : 1
+    %assign InRows  = InDims[0]
+    %%
+    %assign Bias    = SFcnParamSettings.Bias
+    %assign Sqr     = CAST("Number", SFcnParamSettings.NormType)
+
+    %assign framebased = LibBlockOutputSignalIsFrameData(OUTPORT)
+
+    %if(!framebased && InRows == 1 && InCols != 1)
+        %% Treat single rows as a column vector when not framebased
+        %assign InRows = InCols  
+        %assign InCols = 1
+    %endif
+
+    %assign cmplx   = LibBlockOutputSignalIsComplex(OUTPORT)
+
+    %assign dtype_name    =   LibBlockInputSignalDataTypeName(INPORT, "")
+    %assign dtype2_name   =   LibBlockInputSignalDataTypeName(INPORT, tRealPart)
+    %assign isDouble      =   (LibBlockInputSignalDataTypeId(INPORT) == tSS_DOUBLE)
+
+    %assign block = block +  INPORT + OUTPORT + NORM   + isDouble  + ...
+                             InCols + InRows  + Sqr    + Bias    + ...
+                             cmplx  + dtype_name       + dtype2_name
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract: Compute the norm of a vector
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Normalization (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %assign inplace = (LibBlockInputSignalBufferDstPort(INPORT) == OUTPORT)
+    {
+        %if isFixpt
+            %<FixptNorm( )> \
+        %else
+            %if inplace
+                %<FltptNormInplace( )> \
+            %else
+                %<FltptNorm( )> \
+            %endif
+        %endif
+    }
+
+%endfunction %% Outputs
+
+
+%% Function: FixptNorm ============================
+%%
+%function FixptNorm( ) Output 
+%%
+%createrecord RndSat  { roundingMode FixPtRoundingMode; overflowMode FixPtSaturationMode}
+%createrecord inRec   { label LibBlockInputSignal(INPORT,"idx","","0");   dTypeRec inDT;   isComplex cmplx }
+%createrecord outRec  { label LibBlockOutputSignal(OUTPORT,"idx","","0"); dTypeRec outDT;  isComplex cmplx }
+%createrecord prodRec { label "prod";                                     dTypeRec prodDT; isComplex 0 }
+%createrecord acc0Rec { label "acc0";                                     dTypeRec accDT;  isComplex 0 }
+%createrecord acc1Rec { label "acc1";                                     dTypeRec accDT;  isComplex 0 }
+%createrecord biasRec { label LibBlockParameter(BIAS, "", "", "0");       dTypeRec accDT;  isComplex 0 }
+%%
+    %<accDT.Name> acc1 = 0;
+    %<prodDT.Name> prod = 0;
+    int_T idx=0;
+    int_T i;
+    %if InCols > 1
+      int_T c;
+      for(c=0; c<%<InCols>; c++) {
+    %endif
+        %<accDT.Name> acc0 = 0;
+        /* Determine energy (sum of squares): */ 
+        for(i=0; i<%<InRows>; i++) {
+            %<DSPFixptLibNorm(acc1Rec, inRec, prodRec, RndSat)> \
+            %<DSPFixptLibPlusEquals(acc0Rec, acc1Rec, RndSat)>  \
+            idx++;
+        }
+        %if Bias != 0
+            %<DSPFixptLibPlusEquals(acc0Rec, biasRec, RndSat)>  \
+        %endif
+        /* Back up to beginning of output column. */
+        idx -= %<InRows>;  
+        /* Normalize input vector */
+        for(i=0; i<%<InRows>; i++) {
+            %<DSPFixptLibDivide(outRec, inRec, acc0Rec, RndSat)>
+            idx++;
+        }
+    %if InCols > 1
+      }
+    %endif
+    %%
+%endfunction %% FixptNorm
+
+
+%% Function: FltptNormCore ============================
+%%
+%function FltptNormCore( ) Output 
+%%
+
+    %assign unity     = isDouble?  1.0     : 1.0F
+    %assign sqrt_call = isDouble? "sqrt(E)" : "(real32_T)sqrt((real_T)E)"
+
+    %if Bias == 0
+        %if Sqr == NORM
+            /* Normalize input vector by 2-norm: */
+            E = %<unity> / %<sqrt_call>;
+        %else
+            /* Normalize input vector by squared 2-norm: */
+            E = %<unity> / E;
+        %endif
+    %else
+        %if Sqr == NORM
+            /* Normalize input vector by 2-norm: */
+            E = %<unity> / (%<sqrt_call> + %<Bias>);
+        %else
+            /* Normalize input vector by squared 2-norm: */
+            E = %<unity> / (E + %<Bias>);
+        %endif
+    %endif
+    %%
+%endfunction %% FltptNormCore
+
+
+%% Function: FltptNormInplace ============================
+%%
+%function FltptNormInplace( ) Output 
+%%
+    %<dtype_name> *y = %<LibBlockOutputSignalAddr(OUTPORT,"","", 0)>;
+    int_T     inRows = %<InRows>;
+    %%
+    %if InCols > 1
+      int_T     inCols = %<InCols>;
+      int_T     c;
+      
+      for(c=0; c<inCols; c++) {
+    %endif
+        %<dtype2_name>  E = 0.0;          
+        int_T i;
+
+        /* Determine energy (sum of squares): */ 
+        for(i=inRows; i-- > 0; ) {
+            %if !cmplx
+                E += *y * *y;
+%% Pointer increment separated to fix alpha compiler warning
+                y++;
+            %else
+                E += CMAGSQ(*y);
+                y++;
+            %endif
+        }
+        %%
+        %<FltptNormCore( )> \
+        %%
+        y -= inRows;  /* Back up to beginning of output column. */
+        for(i=inRows; i-- > 0; ) {
+            %if !cmplx
+                *y++ *= E;
+            %else
+                y->re *= E;
+                (y++)->im *= E;
+            %endif
+        }
+    %if InCols > 1
+      }
+    %endif
+    %%
+%endfunction %% FltptNormInplace
+
+
+%% Function: FltptNorm ===================================
+%%
+%function FltptNorm( ) Output 
+%%
+    %<dtype_name> *y  = %<LibBlockOutputSignalAddr(OUTPORT,"","", 0)>;
+    const %<dtype_name> *u0 = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    int_T     inRows = %<InRows>;
+    %%
+    %if InCols > 1
+      int_T     inCols = %<InCols>;
+      int_T     c;
+
+      for(c=0; c<inCols; c++) {
+    %endif
+        %<dtype2_name>  E = 0.0;          
+        int_T i;
+
+        /* Determine energy (sum of squares): */ 
+        for(i=inRows; i-- > 0; ) {
+            %if !cmplx
+                E += *u0 * *u0;
+%% Pointer increment separated to fix alpha compiler warning
+                u0++;
+            %else
+                E += CMAGSQ(*u0);
+                u0++;
+            %endif
+        }
+        %%
+        %<FltptNormCore( )> \
+        %%
+        u0 -= inRows; /* Back up to beginning of input column. */
+        for(i=inRows; i-- > 0; ) {
+            %if !cmplx
+                *y++ = *u0++ * E;
+            %else
+                y->re     = u0->re * E;
+                (y++)->im = (u0++)->im * E;
+            %endif
+        }
+    %if InCols > 1
+      }
+    %endif
+    %%
+%endfunction %% FltptNorm
+
+
+%% EOF: sdsp2norm2.tlc

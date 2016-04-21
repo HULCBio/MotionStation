@@ -1,0 +1,1200 @@
+%% Abstract: Register C6200 TLC replacement functions ====================
+%%
+%% Copyright 2002-2004 The MathWorks, Inc.
+%% $RCSfile: c62_sum.tlc,v $
+%% $Revision: 1.10.4.1 $ $Date: 2004/01/22 18:26:05 $
+%%
+%%construct v-table for TI-specific TLC replacement of fixed-point
+%%Outputs function for Simulink built-in blocks: Product, Sum, Gain
+%%
+%%
+%implements * "C"
+
+%%----------------------------------------------------------------------
+%% Functions In this file:
+%% C62_OutputsFixpt          - Entry point to this file.
+%% C62_FixPtSum              - Gain Block routine entry point.
+%% C62_MulCreateNameFunction - Creates a unique C function name.
+%%----------------------------------------------------------------------
+
+%% Function: C62_OutputsFixpt =================================================
+%% Abstract:
+%%   TI C62-specific Output function for fixpt mode
+%%   Output function for fixpt mode
+%%   This block can operate in an element by element vector addition
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are added to
+%%   produce a scalar output.
+%%
+%function C62_OutputsFixpt(block, system) Output
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign casesToHandle = 1 + y0IsComplex
+    %assign nameForComment = "Fixed-Point Sum Block"
+    %%
+    %% create header comment
+    %%
+    %openfile commentBuffer
+    %%
+    * %<nameForComment>: %<MaskBlockName>
+    *
+    %%
+    %% the output to be created
+    %%
+    %if LibDataOutputPortWidth(0) > 1
+      %assign opstr = "*  y[i] = "
+    %else
+      %assign opstr = "*  y = "
+    %endif
+    %%
+    %% handle case of multiple input ports
+    %%
+    %if NumDataInputPorts > 1
+      %%
+      %% handle each input port
+      %%
+      %foreach ipIdx = NumDataInputPorts
+	%%
+	%% get sign symbol for current input
+	%%
+	%assign signOp = ParamSettings.Inputs[ipIdx]
+	%%
+	%% special treatment of first input
+	%%
+	%if ipIdx == 0
+	  %%
+	  %% only subtraction cause op symbol
+	  %%  add puts out no op for first input
+	  %%
+	  %if signOp == "-"
+	    %assign opstr = opstr + "-"
+	  %endif
+	  %%
+	  %% handle inputs after first
+	  %%
+	%else
+	  %if signOp == "-"
+	    %assign opstr = opstr + " -"
+	  %else
+	    %assign opstr = opstr + " +"
+	  %endif
+	%endif
+	%%
+	%% handle wide inputs
+	%%
+	%if LibDataInputPortWidth(ipIdx) > 1
+	  %%
+	  %assign opstr = opstr + " u" + STRING(ipIdx) + "[i]"
+	  %%
+	  %% handle scalar inputs
+	  %%
+	%else
+	  %%
+	  %assign opstr = opstr + " u" + STRING(ipIdx)
+	%endif
+      %endforeach
+      %%
+      %% width of signal
+      %%
+      %if LibDataOutputPortWidth(0) > 1
+	%assign opstr = opstr + "    i = 0 to " + STRING(LibDataOutputPortWidth(0)-1)
+      %endif
+      %%
+      %% handle case of single input ports
+      %%
+    %else
+      %%
+      %% get sign symbol for the input port
+      %%
+      %assign signOp = ParamSettings.Inputs[0]
+      %%
+      %% handle subtraction
+      %%
+      %if signOp == "-"
+	%%
+	%% handle case of only one input scalar
+	%%
+	%if LibDataInputPortWidth(0) == 1
+	  %%
+	  %assign opstr = opstr + " -u0    (negation)"
+	  %%
+	  %% handle case less five or more scalars on input port
+	  %%
+	%elseif LibDataInputPortWidth(0) >= 5
+	  %%
+	  %assign opstr = opstr + " - u0[0] - u0[1] - ... - u0["
+	  %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+	  %%
+	  %% handle case less than five scalars on input port
+	  %%
+	%else
+	  %%
+	  %% handle each scalar
+	  %%
+	  %foreach i = LibDataInputPortWidth(0)
+	    %%
+	    %assign opstr = opstr + " - u0[" + STRING(i) + "]"
+	  %endforeach
+	%endif
+	%%
+	%% handle addition
+	%%
+      %else
+	%%
+	%% handle case of only one input scalar
+	%%
+	%if LibDataInputPortWidth(0) == 1
+	  %%
+	  %assign opstr = opstr + " +u0   (Trivial Addition!)"
+	  %%
+	  %% handle case more than five scalars on input port
+	  %%
+	%elseif LibDataInputPortWidth(0) >= 5
+	  %%
+	  %assign opstr = opstr + "u0[0] + u0[1] + ... + u0["
+	  %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+	  %%
+	  %% handle case less than five scalars on input port
+	  %%
+	%else
+	  %%
+	  %% handle each scalar
+	  %%
+	  %foreach i = LibDataInputPortWidth(0)
+	    %%
+	    %if i == 0
+	      %%
+	      %assign opstr = opstr + " u0[0]"
+	    %else
+	      %assign opstr = opstr + " + u0[" + STRING(i) + "]"
+	    %endif
+	  %endforeach
+	%endif
+      %endif
+    %endif
+    %%
+    %% spit out operation string
+    %%
+    %<opstr>
+    *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+    %closefile commentBuffer
+    %%
+    %<LibCacheBlockComment(block,commentBuffer)>\
+    %%
+    %openfile outBuffer
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create Bias Free version of output Data Type
+    %%
+    %copyrecord y0NoBiasDT y0DT
+    %%
+    %assign y0NoBiasDT.Bias = 0.0
+    %%
+    %% set up data type records
+    %%   just creating a true (nonalias) record outside the for loop to
+    %%   prevent segv.  the current value is irrelevant
+    %%
+    %copyrecord uiNoBiasDT y0DT
+    %%
+    %% define temporary variable to hold cast versions of inputs
+    %%
+    %assign castInLabel = "castIn"
+    %%
+    %openfile gutsOfAdd
+    %%
+    %assign castInWasUsed = 0
+    %%
+    %%  Handle case of multiple input port
+    %%  element by element vector addition/subtraction
+    %%
+    %if NumDataInputPorts > 1
+      %%
+      %% Roll around signal width (Note: a curly brace is opened and closed
+      %% by the loop roller.  Therefore, if the block is not going to roll
+      %% we need to open and close them ourselves).
+      %%
+      %assign rollVars = ["U", "Y"]
+      %%
+%if C62_FixPtSum() == 0
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% handle real then if necessary imag parts
+	%%
+	%foreach iCase = casesToHandle
+	  %%
+	  %assign riSigIdx = FLib_ReImIdx(sigIdx,iCase)
+	  %%
+	  %assign y0Label = LibBlockOutputSignal(0, "", lcv,    riSigIdx)
+	  %%
+	  %% Initialize output to the input bias sum if necessary
+	  %%
+	  %if idxInputUsedToInitOutput < 0
+	    %%
+	    %<y0Label> = %<InitNetBiasValue[0]>;  /* initialize output */
+	    %%
+	  %else
+	    %%
+	    %assign uiDT = FixPt_GetInputDataType(idxInputUsedToInitOutput)
+	    %assign uiLabel = LibBlockInputSignal(idxInputUsedToInitOutput, "", lcv, riSigIdx)
+	    %%
+	    %% create Bias Free version of input Data Type
+	    %%
+	    %<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+	    %%
+	    %assign uiNoBiasDT.Bias = 0.0
+	    %%
+	    %% cast input to outputs data type
+	    %% and use result to initialize output
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0Label,y0NoBiasDT,...
+	      uiLabel,uiNoBiasDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	  %%
+	  %% handle each input port
+	  %%
+	  %foreach ipIdx = NumDataInputPorts
+	    %%
+	    %if ipIdx != idxInputUsedToInitOutput
+	      %%
+	      %% nothing to do for imag part unless input is complex
+	      %%
+	      %if (iCase == 0) || LibBlockInputSignalIsComplex(ipIdx)
+		%%
+		%% get add or subtract symbol
+		%%
+		%assign signOp = ParamSettings.Inputs[ipIdx]
+		%%
+		%% Get ith input
+		%%
+		%assign uiDT = FixPt_GetInputDataType(ipIdx)
+		%assign uiLabel = LibBlockInputSignal(ipIdx, "", lcv, riSigIdx)
+		%%
+		%% create Bias Free version of input Data Type
+		%%
+		%<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+		%%
+		%assign uiNoBiasDT.Bias = 0.0
+		%%
+		%% cast input to outputs data type
+		%% add or subtract input from output
+		%%
+		%assign retVecStr = FixPt_Fix2Fix(castInLabel,y0NoBiasDT,...
+		  uiLabel,    uiNoBiasDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)
+		%%
+		%if SIZE(retVecStr,1) == 3
+		  %%
+		  %% for trivial or simple casts do not assign results
+		  %% to temporary variable.  Use them in the next expression directly
+		  %%
+		  %assign inExpr = retVecStr[1]
+		%else
+		  %assign inExpr = castInLabel
+		  %%
+		  %assign castInWasUsed = 1
+		%endif
+		%%
+		%if (signOp == "+")
+		  %<FixPt_AccumPos(y0Label, y0NoBiasDT,...
+		    inExpr, y0NoBiasDT,...
+		    FixPtSaturationMode)>\
+		%else
+		  %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+		    inExpr, y0NoBiasDT,...
+		    FixPtSaturationMode)>\
+		%endif
+		%%
+	      %endif %% end handling imag part for complex outputs
+	    %endif
+	  %endforeach %% each input
+	  %%
+	  %% Initialize output to the input bias sum if necessary
+	  %%
+	  %if DoEndNetBias
+	    %%
+	    %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+	      STRING(EndNetBiasValue[0]),y0NoBiasDT,...
+	      FixPtSaturationMode)>\
+	  %endif
+	%endforeach %% iCase real and imag
+      %endroll
+%endif      
+      %%
+      %% case of single input port "collapsed"
+      %% to form scalar output
+    %else
+      %%
+      %% get sign symbol for the input port
+      %%
+      %assign signOp = ParamSettings.Inputs[0]
+      %%
+      %% Get input data type
+      %%
+      %assign uiDT = FixPt_GetInputDataType(0)
+      %%
+      %% create Bias Free version of input Data Type
+      %%
+      %<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+      %%
+      %assign uiNoBiasDT.Bias = 0.0
+      %%
+      %% handle real then if necessary imag parts
+      %%
+      %foreach iCase = casesToHandle
+	%%
+	%assign y0Label = LibBlockOutputSignal(0, "", "", FLib_ReImIdx(0,iCase))
+	%%
+	%% Initialize output to the input bias sum if necessary
+	%%
+	%if ( idxInputUsedToInitOutput < 0 )
+	  %%
+	  %<y0Label> = %<InitNetBiasValue[0]>;  /* initialize output */
+	  %assign curRollRegions = RollRegions
+	  %%
+	  %% special treatment to first input if output not already
+	  %% initialized
+	  %%
+	%else
+	  %%
+	  %assign uiLabel = LibBlockInputSignal(0, "", "", FLib_ReImIdx(0,iCase))
+	  %%
+	  %% cast input to outputs data type
+	  %% and use result to initialize output
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(y0Label,y0NoBiasDT,...
+	    uiLabel,uiNoBiasDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	  %assign curRollRegions = LibRemoveRollRegions(RollRegions,0)
+	%endif
+	%%
+	%if SIZE(curRollRegions,0)
+	  %%
+	  %% Roll around input
+	  %%
+	  %assign rollVars = ["U"]
+	  %%
+%if C62_FixPtSum() == 0
+	  %roll sigIdx = curRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %%
+	    %assign uiLabel = LibBlockInputSignal(0, "", lcv, FLib_ReImIdx(sigIdx,iCase))
+	    %%
+	    %% cast input to outputs data type
+	    %% add or subtract input from output
+	    %%
+	    %assign retVecStr = FixPt_Fix2Fix(castInLabel,y0NoBiasDT,...
+	      uiLabel,    uiNoBiasDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)
+	    %%
+	    %if SIZE(retVecStr,1) == 3
+	      %%
+	      %% for trivial or simple casts do not assign results
+	      %% to temporary variable.  Use them in the next expression directly
+	      %%
+	      %assign inExpr = retVecStr[1]
+	    %else
+	      %assign inExpr = castInLabel
+	      %%
+	      %assign castInWasUsed = 1
+	    %endif
+	    %%
+	    %if (signOp == "+")
+	      %<FixPt_AccumPos(y0Label, y0NoBiasDT,...
+		inExpr, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %else
+	      %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+		inExpr, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %endif
+	  %endroll
+%endif
+	%endif
+	%%
+	%% Initialize output to the input bias sum if necessary
+	%%
+	%if DoEndNetBias
+	  %%
+	  %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+	    STRING(EndNetBiasValue[0]),y0NoBiasDT,...
+	    FixPtSaturationMode)>\
+	%endif
+      %endforeach %% iCase real imag
+    %endif   %% Number of input ports
+    %%
+    %closefile gutsOfAdd
+    %%
+    %if castInWasUsed
+      {
+	%<y0NoBiasDT.NativeType> %<castInLabel>;
+	
+	%<gutsOfAdd>\
+      }
+    %else
+      %<gutsOfAdd>\
+    %endif
+    %%
+    %%
+    %% blank line for formating
+    
+    %closefile outBuffer
+    %return outBuffer
+
+%endfunction %% C62_OutputsFixpt
+
+
+
+
+
+%% Function: C62_FixPtSum =====================================================
+%% Abstract:
+%%   Sum code generation entry point. Checks to see if the input data TYPE
+%%   is acceptable for optimization. if optimization cannot be done, return
+%%   0 to generate the old generic code. return 1 when optimized code
+%%   is generated.
+%%
+%function C62_FixPtSum() Output
+  %%
+  %if NumDataInputPorts ==1
+    %return 0
+  %endif
+  %%
+  %% The block cannot have zero rounding
+  %%
+  %if FixPtRoundingMode == "Zero"
+    %return 0
+  %endif
+  %%
+  %% Inputs must be atleast 2
+  %%
+  %if NumDataInputPorts > 2
+    %return 0
+  %endif
+  %%
+  %% this IS TEMPORARY for R13
+  %%
+  %if FixPt_GetInputDataType(0).ActualBits  != 16 || ...
+      FixPt_GetInputDataType(1).ActualBits  != 16
+      %return 0
+  %endif
+  %if ParamSettings.Inputs[0]=="-" || ParamSettings.Inputs[1]=="-"
+      %return 0
+  %endif
+  %%
+  %% Only 16 and 32 bits data input is acceptable
+  %%
+  %if FixPt_GetInputDataType(0).ActualBits  != 16 && ...
+      FixPt_GetInputDataType(0).ActualBits  != 32 && ...
+      FixPt_GetInputDataType(1).ActualBits  != 16 && ...
+      FixPt_GetInputDataType(1).ActualBits  != 32
+      %return 0
+  %endif
+  %%
+  %% Only 16 and 32 bits data output is acceptable
+  %%
+  %if FixPt_GetOutputDataType(0).ActualBits != 16 && ...
+      FixPt_GetOutputDataType(0).ActualBits != 32
+      %return 0
+  %endif
+  %%
+  %% avoid unsigned mode
+  %%
+  %if FixPt_GetInputDataType(0).ComplexName == "cuint32_T" || ...
+      FixPt_GetInputDataType(0).ComplexName == "cuint16_T" || ...
+      FixPt_GetInputDataType(0).NativeType  == "uint32_T"  || ...
+      FixPt_GetInputDataType(0).NativeType  == "uint16_T"  || ...
+      FixPt_GetInputDataType(1).ComplexName == "cuint32_T" || ...
+      FixPt_GetInputDataType(1).ComplexName == "cuint16_T" || ...
+      FixPt_GetInputDataType(1).NativeType  == "uint32_T"  || ...
+      FixPt_GetInputDataType(1).NativeType  == "uint16_T"
+      %return 0
+  %endif
+  %%
+  %% Must be equal scaling
+  %%
+  %if FixPt_GetInputDataType(0).FixedExp != FixPt_GetInputDataType(1).FixedExp
+    %return 0
+  %endif
+  %%
+  %return C62_SumWriteFunction()
+%endfunction %% C62_FixPtSum()
+
+
+
+
+
+%% Function: C62_SumCreateNameFunction ========================================
+%% Abstract:
+%%   Returns a unique C function name.
+%%
+%function C62_SumCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %%
+  %assign fname = "Sum_" + TOUT + STRING(BITSOUT)
+  %%
+  %%
+  %%
+  %if !SWAP
+    %assign fname = fname+"_"+TIN1+STRING(BITSIN1)+"plus"+TIN2+STRING(BITSIN2)
+  %else
+    %assign fname = fname+"_"+TIN2+STRING(BITSIN2)+"plus"+TIN1+STRING(BITSIN1)
+  %endif
+  %%
+  %%
+  %%
+  %if EVEN
+    %assign fname = fname+"_Even"
+  %endif
+  %%
+  %%
+  %%
+  %if SHIFT>0
+    %assign fname = fname + "_SR%<SHIFT>"
+  %elseif SHIFT<0
+    %assign fname = fname + "_SL%<-SHIFT>"
+  %endif
+  %%
+  %%
+  %%
+  %if SAT
+    %assign fname = fname + "_Sat"
+  %endif
+  %%
+  %%
+  %%
+  %if ROUND==1
+    %assign fname = fname + "_Near"
+  %elseif ROUND==2
+    %assign fname = fname + "_Ceil"
+  %endif
+  %%
+  %%
+  %%
+  %if %<DataInputPort[0].Width>==1 || %<DataInputPort[1].Width>==1
+    %assign fname = fname + "_Scalar"
+  %endif
+  %%
+  %return fname
+  %%
+%endfunction %% C62_SumCreateNameFunction
+
+
+
+
+
+%% Function: C62_SumWriteFunction =============================================
+%% Abstract:
+%%   Write a C function into a separate file. Inserts the function call in
+%%   main body of the code.
+%%
+%function C62_SumWriteFunction() Output
+  %%
+  %% Name of the C library file
+  %%
+  %assign FNHEADER = "MW_c62xx_clib"
+  %%
+  %% Check Output data TYPE.
+  %%
+  %if LibBlockOutputSignalIsComplex(0)
+    %assign TYPEOUT = FixPt_GetOutputDataType(0).ComplexName 
+    %assign TOUT = "C"
+  %else
+    %assign TYPEOUT = FixPt_GetOutputDataType(0).NativeType
+    %assign TOUT = "I"
+  %endif
+  %%
+  %% Check input 1 data TYPE.
+  %%
+  %if LibBlockInputSignalIsComplex(0)
+    %assign TYPEIN1 = FixPt_GetInputDataType(0).ComplexName
+    %assign TIN1 = "C"
+  %else
+    %assign TYPEIN1 = FixPt_GetInputDataType(0).NativeType
+    %assign TIN1 = "I"
+  %endif
+  %%
+  %% Check input 2 data TYPE.
+  %%
+  %if LibBlockInputSignalIsComplex(1)
+    %assign TYPEIN2 = FixPt_GetInputDataType(1).ComplexName
+    %assign TIN2 = "C"
+  %else
+    %assign TYPEIN2 = FixPt_GetInputDataType(1).NativeType
+    %assign TIN2 = "I"
+  %endif
+  %%
+  %% Several constant assignments
+  %%
+  %assign SAT      = 0
+  %assign ROUND    = 0
+  %assign SWAP     = 0
+  %assign EVEN     = 0
+  %assign BITSIN1  = FixPt_GetInputDataType(0).ActualBits
+  %assign BITSIN2  = FixPt_GetInputDataType(1).ActualBits
+  %assign BITSOUT  = FixPt_GetOutputDataType(0).ActualBits
+  %assign SI1      = FixPt_GetInputDataType(0).FixedExp
+  %assign SI2      = FixPt_GetInputDataType(1).FixedExp
+  %assign SO       = FixPt_GetOutputDataType(0).FixedExp
+  %assign NSIZE    = %<DataInputPort[0].Width>
+  %if NSIZE < %<DataInputPort[1].Width>
+    %assign NSIZE    = %<DataInputPort[1].Width>
+  %endif
+  %assign NEWENTRY = 1
+  %assign EvenStr  = "Odd"
+  %assign SHIFT    = SO - SI1
+  %assign SCALAR   = 0
+  %%
+  %if SI1!=SI2
+    %%
+    %% cannot still handle multiple scaling inputs
+    %%
+  	%return 0
+  %endif
+  %%
+  %%
+  %% Set saturation mode accordingly
+  %%
+  %if FixPtSaturationMode == "Saturate"
+    %assign SAT = 1
+  %endif
+  %%
+  %% Set rounding mode accoringly
+  %%
+  %if FixPtRoundingMode == "Nearest"
+    %assign ROUND = 1
+  %elseif FixPtRoundingMode == "Ceiling"
+    %assign ROUND = 2
+  %endif
+  %%
+  %% Determine if the Vector length is even or odd.
+  %%
+  %if NSIZE/2 == (NSIZE+1)/2
+    %assign EVEN = 1
+    %assign EvenStr = "Even"
+  %endif
+  %%
+  %% Create temporary function name
+  %%
+  %assign fname = "Sum_" + TOUT + STRING(BITSOUT) + "_" 
+  %if (TIN1=="I" && TIN2=="C") || ...
+      (TIN1=="I" && TIN2=="I" && BITSIN1==32 && BITSIN2==16)
+      %assign fname = fname + ...
+                      TIN2 + STRING(BITSIN2) + "x" + TIN1 + ...
+                      STRING(BITSIN1) + "_" + EvenStr
+      %%
+  %else
+      %assign fname = fname + ...
+                      TIN1 + STRING(BITSIN1) + "x" + TIN2 + ...
+                      STRING(BITSIN2) + "_" + EvenStr
+  %endif
+  %%
+  %% Get the C function name
+  %%
+  %assign fnameS = C62_SumCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %%
+  %% Is the C function already in the libaray?
+  %%
+  %if ISFIELD(FixPtUtils,fnameS)
+    %assign NEWENTRY = 0
+  %endif
+  %%
+  %% for those C function not in the libraray.
+  %%
+  %if NEWENTRY
+    %%
+    %% do some processing when the C file is first created.
+    %%
+    %if JustCreatedCompiledModelRecord("_MW_c62xx_clib_")
+      %%
+      %% this part is executed when the C file is first created.
+      %%
+      %openfile cfile = FNHEADER + ".c"
+      %openfile hfile = FNHEADER + ".h"
+
+      %selectfile cfile
+      %%
+      %% Write into the C file
+      %%
+      #include "rtwtypes.h"
+      #ifndef RESTRICT
+      #define RESTRICT restrict
+      #endif
+      %%
+      %selectfile hfile
+      %%
+      %% Write into the header file
+      %%
+      #define RESTRICT restrict
+      
+    %else
+      %%
+      %% Because this file has been already created, open
+      %% the file in append mode.
+      %%
+      %openfile cfile = FNHEADER + ".c", "a"
+      %openfile hfile = FNHEADER + ".h", "a"
+      %%
+    %endif
+    %%
+    %selectfile cfile
+    %%
+    %% Write into the C file
+    %%
+    %if NumDataInputPorts>1
+      %<C62_SumVector2Elements(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                               EVEN,SHIFT,SAT,ROUND,SWAP,NSIZE)>
+      %%
+    %else
+      %%
+      %% if the input is a scalar, do not do any processing.
+      %%
+      %closefile cfile
+      %closefile hfile
+      %return 0
+      %%
+    %endif
+    %%
+    %selectfile hfile
+    %%
+    extern %<fnameS>
+    (
+      const %<TYPEIN1> * RESTRICT in1, 
+      const %<TYPEIN2> * RESTRICT in2,
+      %<TYPEOUT>       * RESTRICT out,
+      const int N,
+      int shift,
+      const int sat_mode,
+      const int round  // 0=floor, 1=nearest, 2=ceiling
+    );
+    %% Record this entry
+    %assign tmp = SETFIELD(FixPtUtils,fnameS,1)
+    %closefile cfile
+    %closefile hfile
+    %%
+    %endif %% NEWENTRY
+    %%
+    %% These entries are inlined
+    %%
+    %assign fnameS = C62_SumCreateNameFunction(TOUT,BITSOUT,TIN1,...
+                       BITSIN1,TIN2,BITSIN2,...
+                       EVEN,SHIFT,SAT,ROUND,SWAP,NSIZE)
+    {
+      %<fnameS>(
+        %<LibBlockInputSignalAddr(0,"0","",0)>, /* Input 1 */
+        %<LibBlockInputSignalAddr(1,"0","",0)>, /* Input 2 */
+        %<LibBlockOutputSignalAddr(0,"0","",0)>, /* Output */
+        %<NSIZE>, /* Array Size */
+        %<SHIFT>, /* Shifts */
+        %<SAT>, /* Saturation */
+        %<ROUND>); /* Rounding */
+    }
+    %%
+    %return 1
+    %%
+%endfunction %% C62_SumWriteFunction
+
+
+
+
+
+%% Function: C62_SumWriteFunction =============================================
+%% Abstract:
+%%   Generate the body of the optimized code.
+%%
+%function C62_SumVector2Elements(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,...
+                               BITSIN2,EVEN,SHIFT,SAT,ROUND,...
+                               SWAP,NSIZE) Output
+  %%
+  %assign fnameS = C62_SumCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,...
+                               TIN2,BITSIN2,EVEN,SHIFT,SAT,ROUND,...
+                               SWAP,NSIZE)
+  %%
+  %assign UNSIGNED = 0
+  %%
+  %assign WIDTH1 = %<DataInputPort[0].Width>
+  %assign WIDTH2 = %<DataInputPort[1].Width>
+  %%
+  %% get the sign op of inputs
+  %%
+  %assign signOp1 = ParamSettings.Inputs[0]
+  %assign signOp2 = ParamSettings.Inputs[1]
+  %assign signOp  = ""
+  %if signOp1 == "+"
+    %assign signOp1 = ""
+  %endif
+  %if signOp2 == "+"
+    %assign signOp2 = ""
+  %endif
+  %if signOp1=="-" && signOp2=="-"
+    %assign signOp = "-"
+  %endif
+  %%
+  %% get the data TYPE of the input 1
+  %%
+  %if TIN1=="C"
+    %assign TYPE1 = FixPt_GetInputDataType(0).ComplexName
+  %else
+    %assign TYPE1 = FixPt_GetInputDataType(0).NativeType
+  %endif
+  %%
+  %% get the data TYPE of the input 2
+  %%
+  %if TIN2=="C"
+    %assign TYPE2 = FixPt_GetInputDataType(1).ComplexName
+  %else
+    %assign TYPE2 = FixPt_GetInputDataType(1).NativeType
+  %endif
+  %%
+  %% get the data TYPE of the output
+  %%
+  %if TOUT=="C"
+    %assign TYPEO = FixPt_GetOutputDataType(0).ComplexName
+  %else
+    %assign TYPEO = FixPt_GetOutputDataType(0).NativeType
+  %endif
+  %%
+  %% use special processing for unsigned inputs
+  %%
+  %if TYPE1=="uint32_T" || TYPE2=="uint32_T"
+    %assign UNSIGNED = 1
+  %endif
+
+  %%
+  %% Write function body
+  %%
+  void %<fnameS>
+  (
+    const %<TYPE1> * RESTRICT in1, 
+    const %<TYPE2> * RESTRICT in2,
+    %<TYPEO>       * RESTRICT out,
+    const int N,
+    int shift,
+    const int sat_mode,
+    const int round  // 0=floor, 1=nearest, 2=ceiling
+  )
+  %%
+  %if TIN1=="I" && TIN2=="I" && TOUT=="I" && ...
+      BITSIN1==32 && BITSIN2==32 && BITSOUT==32
+    {
+      int i;
+      register long xx1, yy1, zz1;
+      register int shcount = _abs(shift);
+      %if ROUND && SHIFT>0
+        register int delta;
+      %endif
+      
+      %if ROUND==1 && SHIFT>0
+        delta = 1<<(shift-1);
+      %elseif ROUND==2 && SHIFT>0
+        delta = (1<<shift)-1;
+      %endif
+      
+      %if WIDTH1==1
+        xx1 = in1[0];
+      %endif
+      %%
+      %if WIDTH2==1
+        yy1 = in2[0];
+      %endif
+      
+      
+      #pragma MUST_ITERATE(%<NSIZE>)
+      #pragma UNROLL(2)
+      for (i=0;i<N;i++)
+      {
+      	%if WIDTH1!=1
+      	  xx1 = in1[i];
+      	%endif
+      	%%
+      	%if WIDTH2!=1
+      	  yy1 = in2[i];
+      	%endif
+      	%%
+      	zz1 = %<signOp1>xx1+(%<signOp2>yy1);
+      	%if ROUND && SHIFT>0
+      	zz1 += delta;
+      	%endif
+      	%%
+      	%if SHIFT>0
+      	  zz1 >>= shcount;
+      	%elseif SHIFT<0
+      	  %if SAT
+      	    zz1 = _sshl(zz1,shcount);
+      	  %else
+      	    zz1 <<= shcount;
+      	  %endif
+      	%endif
+      	%%
+      	%if SAT
+      	  zz1 = _sat(zz1);
+      	%endif
+      	out[i] = zz1;
+      }
+    }
+    %return
+  %endif
+  %%
+  {
+  %%
+  %% Identifier list
+  %%
+    int i;
+  %%
+  %if TIN1=="C"
+    register %<TYPE1> xx1;
+  %elseif UNSIGNED || BITSIN1==32 || BITSIN2==32
+    register long xx1;
+  %else
+    register int xx1;
+  %endif
+  %%
+  %if TIN2=="C"
+    register %<TYPE2> yy1;
+  %elseif UNSIGNED || BITSIN1==32 || BITSIN2==32
+    register long yy1;
+  %else
+    register int yy1;
+  %endif
+  %%
+  %if TOUT=="C"
+    register struct cint40_T
+    {
+  	  long re;
+  	  long im;
+    } zz1;
+  %elseif UNSIGNED || BITSIN1==32 || BITSIN2==32
+    register long zz1;
+  %else
+  register int zz1;
+  %endif
+  %%
+  register int shcount = _abs(shift);
+  %%
+  %if ROUND && SHIFT>0
+    register int delta;
+  %endif
+
+  %%
+  %assign BITROUND = ""
+  %if SHIFT>0 && (BITSIN1==32 || BITSIN2==32)
+    shcount--;
+    shift--;
+    %if ROUND
+      %assign BITROUND = "+1"
+    %endif
+  %endif
+  %% function processing Starts here.
+  %%
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shift-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shift)-1;
+  %endif
+  %%
+  %% Adding Vector with scalar
+  %%
+  %if WIDTH1==1
+    %if TIN1=="C"
+      %if SHIFT>0 && (BITSIN1==32 || BITSIN2==32)
+        xx1.re = (in1[0].re%<BITROUND>)>>1;
+        xx1.im = (in1[0].im%<BITROUND>)>>1;
+      %else
+        xx1.re = in1[0].re;
+        xx1.im = in1[0].im;
+      %endif
+    %else
+      %if SHIFT>0 && (BITSIN1==32 || BITSIN2==32)
+        xx1 = (in1[0]%<BITROUND>)>>1;
+      %else
+        xx1 = in1[0];
+      %endif
+    %endif
+  %endif
+  %%
+  %if WIDTH2==1
+    %if TIN2=="C"
+      %if SHIFT>0 && (BITSIN2==32  || BITSIN1==32)
+        yy1.re = (in2[0].re%<BITROUND>)>>1;
+        yy1.im = (in2[0].im%<BITROUND>)>>1;
+      %else
+        yy1.re = in2[0].re;
+        yy1.im = in2[0].im;
+      %endif
+    %else
+      %if SHIFT>0 && (BITSIN2==32 || BITSIN1==32)
+        yy1 = (in2[0]%<BITROUND>)>>1;
+      %else
+        yy1 = in2[0];
+      %endif
+    %endif
+  %endif
+
+  #pragma MUST_ITERATE(%<NSIZE>)
+  #pragma UNROLL(2)
+  for (i=0;i<N;i++)
+  {
+  %if WIDTH1!=1
+    %if TIN1=="C"
+      %if SHIFT>0 && (BITSIN1==32 || BITSIN2==32)
+        xx1.re = (in1[i].re%<BITROUND>)>>1;
+        xx1.im = (in1[i].im%<BITROUND>)>>1;
+      %else
+        xx1.re = in1[i].re;
+        xx1.im = in1[i].im;
+      %endif
+    %else
+      %if SHIFT>0 && (BITSIN1==32 || BITSIN2==32)
+        xx1 = (in1[i]%<BITROUND>)>>1;
+      %else
+        xx1 = in1[i];
+      %endif
+    %endif
+  %endif
+  %%
+  %if WIDTH2!=1
+    %if TIN2=="C"
+      %if SHIFT>0 && (BITSIN2==32 || BITSIN1==32)
+        yy1.re = (in2[i].re%<BITROUND>)>>1;
+        yy1.im = (in2[i].im%<BITROUND>)>>1;
+      %else
+        yy1.re = in2[i].re;
+        yy1.im = in2[i].im;
+      %endif
+    %else
+      %if SHIFT>0 && (BITSIN2==32 || BITSIN1==32)
+        yy1 = (in2[i]%<BITROUND>)>>1;
+      %else
+        yy1 = in2[i];
+      %endif
+    %endif
+  %endif
+  %%
+  %% special processing for saturation modes
+  %%
+  %if (0)
+    %if TOUT=="C" && TIN1=="C" && TIN2=="C"
+      zz1.re = (long)xx1.re+(long)yy1.re; %%_lsadd((long)xx1.re,(long)yy1.re);
+      zz1.im = _lsadd((long)xx1.im,(long)yy1.im);
+    %elseif TOUT=="C" && TIN1!="C" && TIN2=="C"
+      zz1.re = (long)xx1+(long)yy1.re; %% _lsadd((long)xx1,(long)yy1.re);
+      zz1.im = (long)yy1.im; %% _lsadd(0,(long)yy1.im);
+    %elseif TOUT=="C" && TIN1=="C" && TIN2!="C"
+      zz1.re = (long)xx1.re+(long)yy1; %% _lsadd((long)xx1.re,(long)yy1);
+      zz1.im = xx1.im; %% _lsadd((long)xx1.im,0);
+    %else
+      %if UNSIGNED
+        zz1 = _lsadd(xx1,yy1);
+      %else
+        zz1 = xx1+yy1; %%_sadd(xx1,yy1);
+      %endif
+    %endif
+  %else
+    %if TOUT=="C" && TIN1=="C" && TIN2=="C"
+      %if signOp == ""
+        zz1.re = %<signOp1>(long)xx1.re + (%<signOp2>(long)yy1.re);
+        zz1.im = %<signOp1>(long)xx1.im + (%<signOp2>(long)yy1.im);
+      %else
+        zz1.re = %<signOp>((long)xx1.re + (long)yy1.re);
+        zz1.im = %<signOp>((long)xx1.im + (long)yy1.im);
+      %endif      
+    %elseif TOUT=="C" && TIN1!="C" && TIN2=="C"
+      %if signOp == ""
+        zz1.re = %<signOp1>(long)xx1 + (%<signOp2>(long)yy1.re);
+        zz1.im = %<signOp2>(long)yy1.im;
+      %else
+        zz1.re = %<signOp>((long)xx1 + (long)yy1.re);
+        zz1.im = %<signOp>(long)yy1.im;
+      %endif
+    %elseif TOUT=="C" && TIN1=="C" && TIN2!="C"
+      %if signOp == ""
+        zz1.re = %<signOp1>(long)xx1.re + (%<signOp2>(long)yy1);
+        zz1.im = %<signOp1>(long)xx1.im;
+      %else
+        zz1.re = %<signOp>((long)xx1.re + (long)yy1);
+        zz1.im = %<signOp>(long)xx1.im;
+      %endif
+    %else
+      %if signOp == ""
+        zz1 = %<signOp1>xx1 + (%<signOp2>yy1);
+      %else
+        zz1 = %<signOp>(xx1 + yy1);
+      %endif
+    %endif
+  %endif
+  %%
+  %% special processing for positive shifts
+  %%
+  %if SHIFT>0
+    %if TOUT=="C"
+      %if ROUND
+        /* round */
+        zz1.re += delta; %% _lsadd((long)zz1.re,delta);
+        zz1.im += delta; %% _lsadd((long)zz1.im,delta);
+      %endif
+      zz1.re >>= shcount;
+      zz1.im >>= shcount;
+    %else
+      %if ROUND
+        %if UNSIGNED
+          zz1 = _lsadd(zz1,delta);     /* round */
+        %else
+          zz1 += delta; %% _sadd(zz1,delta);     /* round */
+        %endif
+      %endif
+      zz1 >>= shcount;
+    %endif
+  %endif
+  %%
+  %% special processing for negative shifts
+  %%
+  %if SHIFT<0 && SAT==0
+    %if TOUT=="C"
+      zz1.re <<= shcount;
+      zz1.im <<= shcount;
+    %else
+      zz1 <<= shcount;
+    %endif
+  %elseif SHIFT<0 && SAT==1
+    %if TOUT=="C"
+      zz1.re = _sshl((long)zz1.re,shcount);
+      zz1.im = _sshl((long)zz1.im,shcount);
+    %else
+      zz1 = _sshl(zz1,shcount);
+    %endif
+  %endif
+  %%
+  %% special processing for 16 bit Outputs
+  %%
+  %if SAT && BITSOUT==16
+    %if TOUT=="C"
+      zz1.re = _sshl((int)zz1.re,16)>>16;
+      zz1.im = _sshl((int)zz1.im,16)>>16;
+    %else
+      zz1 = _sshl(zz1,16)>>16;
+    %endif
+  %endif
+  %%
+  %% store the result
+  %%
+  %if TOUT=="C"
+    out[i].re = zz1.re;
+    out[i].im = zz1.im;
+  %else
+    %if (UNSIGNED || BITSIN1==32 || BITSIN2==32) && SAT && BITSOUT==32
+      zz1 = _sat(zz1);
+    %endif
+    out[i] = zz1;
+  %endif
+  }
+}
+%endfunction %% C62_SumVector2Elements

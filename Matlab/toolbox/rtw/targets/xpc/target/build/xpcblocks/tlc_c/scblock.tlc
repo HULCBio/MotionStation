@@ -1,0 +1,162 @@
+%% $Revision: 1.19.6.1 $ $Date: 2003/11/13 06:22:48 $
+%% scblock.tlc - xPC Target, Scope Block TLC for build
+%% Copyright 1996-2003 The MathWorks, Inc.
+
+%implements "scblock" "C"
+
+%function BlockTypeSetup(block, system) void
+  %openfile buf
+  #include <windows.h>
+  %closefile buf
+  %<LibCacheIncludes(buf)>
+  %openfile buf
+  static int (XPCCALLCONV * rl32eScopeExists)(int ScopeNo);
+  static int (XPCCALLCONV * rl32eDefScope)(int ScopeNo, int ScopeType);
+  static void (XPCCALLCONV * rl32eAddSignal)(int ScopeNo, int SignalNo);
+  static void (XPCCALLCONV * rl32eSetScope)(int ScopeNo, int action, double value);
+  static void (XPCCALLCONV *xpceFSScopeSet)(int ScopeNo, const char *filename,
+                                         int mode, unsigned int writeSize);
+  static void (XPCCALLCONV * rl32eSetTargetScope)(int ScopeNo, int action, double value);
+  static void (XPCCALLCONV * rl32eRestartAcquisition)(int ScopeNo);
+  static void (XPCCALLCONV * xpceScopeAcqOK)(int ScopeNo, int *scopeAcqOK);
+  %closefile buf
+  %<LibSourceFileCustomCode(buf, "header")>
+
+  %openfile buf
+  {
+      void *module = GetModuleHandle(NULL);
+      %<getProcAddress("rl32eScopeExists")>
+      %<getProcAddress("rl32eDefScope")>
+      %<getProcAddress("rl32eAddSignal")>
+      %<getProcAddress("rl32eSetScope")>
+      %<getProcAddress("xpceFSScopeSet")>
+      %<getProcAddress("rl32eSetTargetScope")>
+      %<getProcAddress("rl32eRestartAcquisition")>
+      %<getProcAddress("xpceScopeAcqOK")>
+    }
+  %closefile buf
+  %<LibMdlStartCustomCode(buf, "execution")>
+%endfunction
+
+
+%% Function: Start ============================================================
+%%
+%% Abstract:
+%%
+%function Start(block, system) Output
+  /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %assign scopeno = CAST("Number", SFcnParamSettings.ScopeNo)
+    %assign scopetype = CAST("Number", SFcnParamSettings.ScopeType)
+    %assign viewmode = CAST("Number", SFcnParamSettings.ViewMode)
+    %assign grid = CAST("Number", SFcnParamSettings.Grid)
+    %assign ylimitsl = CAST("Real", SFcnParamSettings.YLimits[0])
+    %assign ylimitsu = CAST("Real", SFcnParamSettings.YLimits[1])
+    %assign autostart = CAST("Number", SFcnParamSettings.AutoStart)
+    %assign nosamples = CAST("Number", SFcnParamSettings.NoSamples)
+    %assign interleave = CAST("Number", SFcnParamSettings.Interleave)
+    %assign triggermode = CAST("Number", SFcnParamSettings.TriggerMode)
+    %assign triggersignal = CAST("Number", SFcnParamSettings.TriggerSignal)
+    %assign triggerlevel = CAST("Real", SFcnParamSettings.TriggerLevel)
+    %assign triggerslope = CAST("Number", SFcnParamSettings.TriggerSlope)
+    %assign triggerscope = CAST("Number", SFcnParamSettings.TriggerScope)
+    %assign noprepostsamples = CAST("Number", SFcnParamSettings.NoPrePostSamples)
+    %assign triggerscsample = CAST("Number", SFcnParamSettings.TriggerSample)
+    %assign filename = SFcnParamSettings.Filename
+    %assign mode = SFcnParamSettings.Mode
+    %assign writesize = CAST("Number", SFcnParamSettings.WriteSize)
+    %assign autorestart = CAST("Number", SFcnParamSettings.AutoRestart)
+
+    {
+      int i;
+    if ((i = rl32eScopeExists(%<scopeno>)) == 0) {
+      if ((i = rl32eDefScope(%<scopeno>,%<scopetype>)) != 0) {
+        printf("Error creating scope %<scopeno>\n");
+      } else {
+        %assign ip = block.DataInputPort
+        %if triggersignal > ip.Width
+          %assign warntxt = "Invalid triggersignal %<triggersignal> " ...
+            "(input width is %<ip.Width>). Resetting to 1.\n"
+          %<LibReportWarning(warntxt)>
+          %assign triggersignal = 1.0
+        %endif
+
+        %with System[NumSystems-1]
+          %with block
+            %foreach IOidx=ip.Width
+              %assign sigRec = SLibGetSourceRecordAndMapInfo(ip, IOidx, TLC_TRUE)
+              %if sigRec.mapSrc == "b"
+                %assign sigIdent  = sigRec.identi
+                %assign sigOffset = sigRec.signalOffset
+                %assign sigWidth  = sigRec.sigRec.Width
+                rl32eAddSignal(%<scopeno>, SCBLOCKPATCHSTART&%<sigIdent>SCBLOCKPATCHSINDEX%<sigOffset>SCBLOCKPATCHSWIDTH%<sigWidth>SCBLOCKPATCHEND);
+              %endif
+            %endforeach
+            rl32eSetScope(%<scopeno>, 4, %<nosamples>);
+            rl32eSetScope(%<scopeno>, 40, %<noprepostsamples>);
+            rl32eSetScope(%<scopeno>, 7, %<interleave>);
+            rl32eSetScope(%<scopeno>, 0, %<triggermode-1>);
+            %if scopetype == 3
+              %if mode == "commit"
+                %assign mode = 1
+              %else
+                %assign mode = 0
+              %endif
+              xpceFSScopeSet(%<scopeno>, "%<filename>", %<mode>, %<writesize>);
+              rl32eSetScope (%<scopeno>, 11,             %<autorestart>);
+            %endif
+            %assign sigRec = SLibGetSourceRecordAndMapInfo(ip, triggersignal-1, TLC_TRUE)
+            %if sigRec.mapSrc == "B" || sigRec.mapSrc == "b"
+              %assign sigIdent  = sigRec.identi
+              %assign sigOffset = sigRec.signalOffset
+              %assign sigWidth  = sigRec.sigRec.Width
+              rl32eSetScope(%<scopeno>, 3, SCBLOCKPATCHSTART&%<sigIdent>SCBLOCKPATCHSINDEX%<sigOffset>SCBLOCKPATCHSWIDTH%<sigWidth>SCBLOCKPATCHEND);
+            %endif
+            rl32eSetScope(%<scopeno>, 1, %<triggerlevel>);
+            rl32eSetScope(%<scopeno>, 2, %<triggerslope-1>);
+            rl32eSetScope(%<scopeno>, 8, %<-triggerscope>);
+            rl32eSetScope(%<scopeno>, 10, %<triggerscsample>);
+          %endwith %% block
+        %endwith %% System[NumSystems-1]
+        %if scopetype==2
+        %if viewmode==1
+        rl32eSetTargetScope(%<scopeno>, 1, 0.0);
+        %endif
+        %if viewmode==3
+        rl32eSetTargetScope(%<scopeno>, 1, 2.0);
+        %endif
+        %if viewmode==4
+        rl32eSetTargetScope(%<scopeno>, 1, 3.0);
+        %endif
+        %if !grid
+        rl32eSetTargetScope(%<scopeno>, 3, 0.0);
+        %endif
+        rl32eSetTargetScope(%<scopeno>, 11, %<ylimitsl>);
+        rl32eSetTargetScope(%<scopeno>, 10, %<ylimitsu>);
+        %endif
+        xpceScopeAcqOK(%<scopeno>, &%<LibBlockIWork(AcquireOK, "", "", 0)>);
+        }
+      }
+   %if autostart
+     if (i) {
+         rl32eRestartAcquisition(%<scopeno>);
+     }
+   %endif
+   }
+%endfunction %% Start
+
+%function Outputs(block, system) Output
+  /* ok to acquire for %<Name> */
+  %<LibBlockIWork(AcquireOK, "", "", 0)> = 1;
+%endfunction
+
+%function getProcAddress(fname)
+  %assign ret = ...
+    "%<fname> = (void *)GetProcAddress(module, \"%<fname>\");\n" + ...
+    "if (%<fname> == NULL) {\n" + ...
+    "printf(\"Error resolving function %<fname>\\n\");\n" + ...
+    "return;\n" + ...
+    "}\n"
+  %return ret
+%endfunction
+
+%% EOF: scblock.tlc

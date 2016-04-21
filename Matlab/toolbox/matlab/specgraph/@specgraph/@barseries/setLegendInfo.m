@@ -1,0 +1,26 @@
+function setLegendInfo(this)
+%SETLEGENDINFO Set legendinfo 
+
+%   Copyright 1984-2004 The MathWorks, Inc. 
+
+p = get(this,'children');
+cdata = get(p,'cdata');
+if iscell(cdata), return; end % deserializing
+cdata = repmat(cdata(1),1,5);
+
+if length(this.BarPeers) == 1
+  % set the last point to 2 to get the clim scaled correctly
+  cdata(end) = 2;
+end
+
+legendinfo(this,'patch',...
+    'LineWidth',this.LineWidth,...
+    'EdgeColor',this.EdgeColor,...
+    'FaceColor',this.FaceColor,...
+    'LineStyle',this.LineStyle,...
+    'XData',[0 0 1 1 0],...
+    'YData',[0 1 1 0 0],...
+    'CData',cdata,...
+    'CDataMapping',this.CDataMapping);
+
+setappdata(double(this),'LegendLegendType','patch');

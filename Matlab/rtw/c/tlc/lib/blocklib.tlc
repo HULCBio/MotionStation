@@ -1,0 +1,1507 @@
+%%
+%% $Revision: 1.1.6.11 $
+%%
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   This TLC library contains all the routines for accessing internal block
+%%   information.
+%%
+
+%if EXISTS("_BLOCKLIB_") == 0
+%assign _BLOCKLIB_ = 1
+
+%%
+%% (1) Global Library Functions (Lib functions)
+%%
+
+%% Function: FcnGetLocalDWorkPath ==============================================
+%% Abstract:
+%%   This function returns the identifier path for a DWork element.
+%%   (e.g. "rtDW.sub1.sub2., localDW->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%     sysIdx   - System containing dwork
+%%      csIdx   - System instance containing dwork
+%% accessSysIdx - System accessing this dwork
+%%
+%function FcnGetLocalDWorkPath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross = System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalDWorkPathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+%function FcnGetLocalDWorkPathHelper(sysIdx, csIdx, accessSysIdx, cross) void
+  %assign tmpSysIdx = sysIdx
+  %assign tmpCsIdx  = csIdx
+  %assign ans = ""
+
+  %foreach counter = NumSystems %% Similar to while 1. Break the loop when done
+
+    %assert (tmpSysIdx <= accessSysIdx)
+
+    %if tmpSysIdx < accessSysIdx
+      %assign cs    = System[tmpSysIdx].CallSites[tmpCsIdx]
+
+      %if SLibSystemHasOwnDataScope(System[tmpSysIdx])
+        %assign ssBlk = System[cs[2]].Block[cs[3]]
+	%assign ans = "%<ssBlk.CallSiteInfo.StructId>." + ans
+      %endif
+
+      %% Updated values for next iteration
+      %assign tmpSysIdx = cs[0]
+      %assign tmpCsIdx  = cs[1]
+
+    %else
+      %<LibAccessArg(System[tmpSysIdx].Interface.DWorkArgDef)>
+      %if (tmpSysIdx == (NumSystems-1)) %% root
+	%assign ::BlockFcnAccessed.DWork = 1
+	%assign ans = "%<tDWork>%<DWorkQualifier>" + ans
+      %else
+	%assign isMdlRefSysReg = IsModelReferenceBaseSys(System[tmpSysIdx]) && ...
+	  ::BlockFcn == "Registration"
+
+	%if !isMdlRefSysReg && cross
+	  %<LibAccessGlobalArg(System[tmpSysIdx].Interface.DWorkArgDef)>
+	  %assign ans = "%<GetGlobalPrefix()>DW_%<System[tmpSysIdx].SystemIdx>->" + ans
+	%else
+	  %assign ans = "localDW->" + ans
+        %endif
+      %endif
+
+      %break %%done
+    %endif
+
+  %endforeach
+  %return ans
+%endfunction
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDiscreteState =================
+%% Abstract:
+%%   Returns a string corresponding to the specified block discrete state
+%%   (DSTATE) element.
+%%
+%function LibBlockDiscreteState(ucv, lcv, idx) void
+
+  %% See Also:
+  %%   LibBlockContinuousState
+  %%
+
+  %assign dwIdx = DiscStates[1]
+  %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(dwRec.DataTypeIdx)
+    %if dTypeId == tSS_DOUBLE || dTypeId == tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"State")>
+    %endif
+    %%END_ASSERT
+  %endif
+
+  %createrecord optionalArgs {}
+  %with FcnLoopInfo(ucv, lcv, idx)
+    %return FcnSimpleGetDWork(dwRec, dwIdx, DiscStates[0], "xd", optionalArgs)
+  %endwith
+%endfunction %% LibBlockDiscreteState
+
+%% Function: FcnGetLocalCStatePath =============================================
+%% Abstract:
+%%   This function returns the identifier path for a CState element.
+%%   (eg. "rtX.sub1.sub2., localXC->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%      sysIdx - Where does the signal live ?
+%%       csIdx - Which instance do you want see ?
+%% accessSysIdx - Where do want to see the signal ?
+%%
+%function FcnGetLocalCStatePath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross =  System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalCStatePathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+
+%function FcnGetLocalCStatePathHelper(sysIdx, csIdx, accessSysIdx, cross)
+  %if (sysIdx == (NumSystems-1))
+    %<LibAccessArg(System[sysIdx].Interface.ContStatesArgDef)>
+    %assign ::BlockFcnAccessed.XC = 1
+    %return "%<tContState>%<XQualifier>"
+  %elseif sysIdx == accessSysIdx
+    %assign isMdlRefSysReg = IsModelReferenceBaseSys(System[sysIdx]) && ...
+                             ::BlockFcn == "Registration"
+    %<LibAccessArg(System[sysIdx].Interface.ContStatesArgDef)>
+    %if !isMdlRefSysReg && cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.ContStatesArgDef)>
+      %return "%<GetGlobalPrefix()>X_%<System[sysIdx].SystemIdx>->"
+    %else
+      %return "localX->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return  FcnGetLocalCStatePathHelper(cs[0], cs[1], accessSysIdx,cross)
+    %else
+      %return  FcnGetLocalCStatePathHelper(cs[0], cs[1], accessSysIdx,cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else  %% (sysIdx > accessSysIdx) global access
+    %% global access: the states are declared in the root level of
+    %% the hierarchy and so need to be accessed from there (possibly
+    %% because this system is a non-reused function)
+    %return FcnGetLocalCStatePathHelper(sysIdx, csIdx, NumSystems-1,cross)
+  %endif
+%endfunction
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockContinuousState ===============
+%% Abstract:
+%%   Returns a string corresponding to the specified block continuous state
+%%   (CSTATE) element.
+%%
+%% See Also:
+%%   LibBlockDiscreteState
+%%
+%function LibBlockContinuousState(ucv, lcv, idx) void
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %<SLibCacheIntegerOnlyWarning(Name,"State")>
+    %%END_ASSERT
+  %endif
+
+  %return SLibContinuousState(cs, ucv, lcv, idx, ...
+    System[cs.SigSrc[0]].HStructDeclSystemIdx)
+
+%endfunction %% LibBlockContinuousState
+
+
+%% Function SLibContinuousState ================================================
+%% Abstract:
+%%   Returns a string corresponding to the specified continuous state element.
+%%
+%function SLibContinuousState(cs, ucv, lcv, idx,accessSysIdx) void
+
+  %% ucv and empty index handling
+  %if ucv != "" || TYPE(idx) != "Number"
+    %assign idx = 0
+  %endif
+
+  %assign blk = System[cs.SigSrc[0]].Block[cs.SigSrc[2]]
+  %assign sigIndexer = ""
+  
+  %if (TYPE(blk.Type) == "Identifier" && blk.Type == "ModelReference")
+    %% This is a structure 
+    %assert(idx == 0)
+  %else
+    %assign sigIndexer = SLibGet1DArrayIndexer(cs.Width, ucv, lcv, idx)
+  %endif
+  
+  %assign cstatePath = ...
+    FcnGetLocalCStatePath(cs.SigSrc[0], cs.SigSrc[1], accessSysIdx)
+  
+  %if ucv != "" || lcv == "" || (lcv != "" && cs.Width == 1)
+    %return "%<cstatePath>%<cs.Identifier>%<sigIndexer>"
+  %else
+    %% rolling
+    %return "xc%<sigIndexer>"
+  %endif
+
+%endfunction %% SLibContinuousState
+
+%% SLibContinuousStateAddr ================================================
+%%
+%% This function provides special handling to access the continuous statesof
+%% model reference blocks. For other blocks it is the same as adding "&" to
+%% the frount of value returned from LibBlockContinuousState
+%%
+%function SLibContinuousStateAddr() void
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %<SLibCacheIntegerOnlyWarning(Name,"State")>
+    %%END_ASSERT
+  %endif
+
+  %assign accSysIdx = System[cs.SigSrc[0]].HStructDeclSystemIdx
+  %assign path = FcnGetLocalCStatePath(cs.SigSrc[0], cs.SigSrc[1], accSysIdx)
+  %assign base = "%<path>%<cs.Identifier>"
+  %if cs.Width == 1 || Type == "ModelReference"
+    %assign base = "&(%<base>)"
+  %endif
+  %return base
+%endfunction %% SLibContinuousStateAddr
+
+%% Function: FcnGetLocalCStateDerivativePath ===================================
+%% Abstract:
+%%   This function returns the identifier path for a CState derivative element.
+%%   (eg. "rtX.sub1.sub2., localXC->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%      sysIdx - Where does the signal live ?
+%%       csIdx - Which instance do you want see ?
+%% accessSysIdx - Where do want to see the signal ?
+%%
+%function FcnGetLocalCStateDerivativePath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross =  System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalCStateDerivativePathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+
+%function FcnGetLocalCStateDerivativePathHelper(sysIdx, csIdx, accessSysIdx, cross) void
+  %if (sysIdx == (NumSystems-1))
+    %assign ::BlockFcnAccessed.dXC = 1
+    %return "%<tXdot>->"
+  %elseif sysIdx == accessSysIdx
+    %assign isMdlRefSysReg = IsModelReferenceBaseSys(System[sysIdx]) && ...
+      ::BlockFcn == "Registration"
+    %<LibAccessArg(System[sysIdx].Interface.ContStatesDerivativeArgDef)>
+    %if !isMdlRefSysReg && cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.ContStatesDerivativeArgDef)>
+      %return "%<GetGlobalPrefix()>Xdot_%<System[sysIdx].SystemIdx>->"
+    %else
+      %return "localXdot->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return   FcnGetLocalCStateDerivativePathHelper(cs[0], cs[1], accessSysIdx, cross)
+    %else
+      %return   FcnGetLocalCStateDerivativePathHelper(cs[0], cs[1], accessSysIdx, cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else  %% (sysIdx > accessSysIdx) global access
+    %% global access: the states are declared in the root level of
+    %% the hierarchy and so need to be accessed from there (possibly
+    %% because this system is a non-reused function)
+    %return FcnGetLocalCStateDerivativePathHelper(sysIdx, csIdx, NumSystems-1, cross)
+  %endif
+%endfunction
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockContinuousStateDerivative ====
+%% Abstract:
+%%   Returns a string corresponding to the specified block continuous state
+%%   (CSTATE) element.
+%%
+%% See Also:
+%%   LibBlockDiscreteState
+%%
+%function LibBlockContinuousStateDerivative(ucv, lcv, idx) void
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %<SLibCacheIntegerOnlyWarning(Name,"StateDerivatives")>
+  %endif
+
+  %return SLibContinuousStateDerivative(cs, ucv, lcv, idx)
+%endfunction %% LibBlockContinuousStateDerivative
+
+
+%% Function SLibContinuousStateDerivative ===========================
+%% Abstract:
+%%   Returns a string corresponding to the specified continuous state element.
+%%
+%function SLibContinuousStateDerivative(cs, ucv, lcv, idx) void
+  
+  %% ucv and empty index handling
+  %if ucv != "" || TYPE(idx) != "Number"
+    %assign idx = 0
+  %endif
+
+  %assign sigIndexer = SLibGet1DArrayIndexer(cs.Width, ucv, lcv, idx)
+
+  %assign dxPath = ...
+    FcnGetLocalCStateDerivativePath(cs.SigSrc[0], cs.SigSrc[1], ...
+    System[cs.SigSrc[0]].HStructDeclSystemIdx)
+
+
+  %if ucv != "" || lcv == "" || (lcv != "" && cs.Width == 1)
+    %return "%<dxPath>%<cs.Identifier>%<sigIndexer>"
+  %else
+    %% rolling
+    %return "xdot%<sigIndexer>"
+  %endif
+%endfunction %% SLibContinuousStateDerivative
+
+
+%% Function SLibContinuousStateDerivativeAddr ==================================
+%%
+%function SLibContinuousStateDerivativeAddr() void
+
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %<SLibCacheIntegerOnlyWarning(Name,"StateDerivatives")>
+    %%END_ASSERT
+  %endif
+
+  %assign accSysIdx = System[cs.SigSrc[0]].HStructDeclSystemIdx
+  %assign path = FcnGetLocalCStateDerivativePath(cs.SigSrc[0], cs.SigSrc[1], accSysIdx)
+  %assign base = "%<path>%<cs.Identifier>"
+  %if cs.Width == 1 || Type == "ModelReference"
+    %assign base = "&(%<base>)"
+  %endif
+  %return base
+
+%endfunction %% SLibContinuousStateDerivativeAddr
+
+
+%% Function: FcnGetLocalContStateDisabledPath ==================================
+%% Abstract:
+%%   This function returns the identifier path for a CState element.
+%%   (eg. "rtX.sub1.sub2., localXC->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%      sysIdx - Where does the signal live ?
+%%       csIdx - Which instance do you want see ?
+%% accessSysIdx - Where do want to see the signal ?
+%%
+%function FcnGetLocalContStateDisabledPath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross =  System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalContStateDisabledPathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+
+%function FcnGetLocalContStateDisabledPathHelper(sysIdx, csIdx, accessSysIdx, cross) void
+  %if (sysIdx == (NumSystems-1))
+    %assign ::BlockFcnAccessed.Xdis = 1
+    %return "%<tXdis>->"
+  %elseif sysIdx == accessSysIdx
+    %assign isMdlRefSysReg = IsModelReferenceBaseSys(System[sysIdx]) && ...
+      ::BlockFcn == "Registration"
+    %<LibAccessArg(System[sysIdx].Interface.ContStatesDisabledArgDef)>
+    %if  !isMdlRefSysReg && cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.ContStatesDisabledArgDef)>
+      %return "%<GetGlobalPrefix()>Xdis_%<System[sysIdx].SystemIdx>->"
+    %else
+      %return "localXdis->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return   FcnGetLocalContStateDisabledPathHelper(cs[0], cs[1], accessSysIdx, cross)
+    %else
+      %return   FcnGetLocalContStateDisabledPathHelper(cs[0], cs[1], accessSysIdx, cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else  %% (sysIdx > accessSysIdx) global access
+    %% global access: the states are declared in the root level of
+    %% the hierarchy and so need to be accessed from there (possibly
+    %% because this system is a non-reused function)
+    %return FcnGetLocalContStateDisabledPathHelper(sysIdx, csIdx, NumSystems-1, cross)
+  %endif
+%endfunction
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockContStateDisabled ====
+%% Abstract:
+%%   Returns a string corresponding to the specified block continuous state
+%%   (CSTATE) element.
+%%
+%% See Also:
+%%   LibBlockDiscreteState
+%%
+%function LibBlockContStateDisabled(ucv, lcv, idx) void
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %<SLibCacheIntegerOnlyWarning(Name,"StateDerivatives")>
+  %endif
+
+  %return SLibContStateDisabled(cs, ucv, lcv, idx)
+%endfunction %% LibBlockContStateDisabled
+
+
+%% Function SLibContStateDisabled ============================================
+%% Abstract:
+%%   Returns a string corresponding to the specified continuous state element.
+%%
+%function SLibContStateDisabled(cs, ucv, lcv, idx) void
+
+  %% ucv and empty index handling
+  %if ucv != "" || TYPE(idx) != "Number"
+    %assign idx = 0
+  %endif
+
+  %assign sigIndexer = SLibGet1DArrayIndexer(cs.Width, ucv, lcv, idx)
+
+  %assign disPath = ...
+    FcnGetLocalContStateDisabledPath(cs.SigSrc[0], cs.SigSrc[1], ...
+    System[cs.SigSrc[0]].HStructDeclSystemIdx)
+
+
+  %if ucv != "" || lcv == "" || (lcv != "" && cs.Width == 1)
+    %return "%<disPath>%<cs.Identifier>%<sigIndexer>"
+  %else
+    %% rolling
+    %return "xdis%<sigIndexer>"
+  %endif
+%endfunction %% SLibContStateDisabled
+
+%% Function SLibContStateDisabledAddr ==================================
+%%
+%function SLibContStateDisabledAddr() void
+
+  %assign cs = CompiledModel.ContStates.ContState[ContStates[1]]
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %<SLibCacheIntegerOnlyWarning(Name,"StateDerivatives")>
+    %%END_ASSERT
+  %endif
+
+  %assign accSysIdx = System[cs.SigSrc[0]].HStructDeclSystemIdx
+  %assign path = FcnGetLocalContStateDisabledPath(cs.SigSrc[0], cs.SigSrc[1], accSysIdx)
+  %assign base = "%<path>%<cs.Identifier>"
+  %if cs.Width == 1 || Type == "ModelReference"
+    %assign base = "&(%<base>)"
+  %endif
+  %return base
+
+%endfunction %% SLibContStateDisabledAddr
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockRWork =========================
+%% Abstract:
+%%   Returns a string corresponding to the specified block RWORK element.
+%%
+%%   The first argument, "definedrwork", would typically be a symbol defined
+%%   in the mdlRTW() routine of the C MEX file with something like the code
+%%   below.
+%%
+%%     ssWriteRTWWorkVect([...], "RWork", [...], "MyRWorkName", [...])
+%%
+%%  Alternately, if no such RWork defines have been made, "definedrwork" will
+%%  be ignored and the raw RWork vector will be accessed.  In this case
+%%  all uses in a loop rolling context are disallowed.
+%%
+%function LibBlockRWork(definedrwork, ucv, lcv, idx) void
+
+  %% Set use of floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %<SLibCacheIntegerOnlyWarning(Name,"WorkVector")>
+    %%END_ASSERT
+  %endif
+
+  %with FcnLoopInfo(ucv, lcv, idx)
+    %return FcnBlockXWork(definedrwork, RWork, NumRWorkDefines, "r")
+  %endwith
+
+%endfunction %% LibBlockRWork
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockIWork =========================
+%% Abstract:
+%%   Returns a string corresponding to the specified block IWORK element.
+%%
+%%   See LibBlockRWork().
+%%
+%function LibBlockIWork(definediwork, ucv, lcv, idx) void
+
+  %with FcnLoopInfo(ucv, lcv, idx)
+    %return FcnBlockXWork(definediwork, IWork, NumIWorkDefines, "i")
+  %endwith
+
+%endfunction %% LibBlockIWork
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockPWork =========================
+%% Abstract:
+%%   Returns a string corresponding to the specified block PWORK element.
+%%
+%%   See LibBlockRWork().
+%%
+%function LibBlockPWork(definedpwork, ucv, lcv, idx) void
+
+  %with FcnLoopInfo(ucv, lcv, idx)
+    %return FcnBlockXWork(definedpwork, PWork, NumPWorkDefines, "p")
+  %endwith
+
+%endfunction %% LibBlockPWork
+
+
+%function FcnBlockXWork(definedxwork, XWork, NumXWorkDefines, XWorkVarNamePrefix) void
+
+  %assign dwIdx = XWork[1]
+  %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+
+  %if (NumXWorkDefines > 0)
+    %assign rollName = XWorkVarNamePrefix + "w_" + definedxwork.Name
+    %createrecord optionalArgs ...
+    { ...
+      StartIdx definedxwork.StartIndex; ...
+      DotName  "." + definedxwork.Name  ...
+    }
+    %return FcnSimpleGetDWork(dwRec, dwIdx, definedxwork.Width, rollName, ...
+                              optionalArgs)
+  %else
+
+    %% prevent loop rolling if XWork is not explicitly defined
+    %if Lcv != ""
+      %%START_ASSERT
+      %setcommandswitch "-v1"
+      %assign errTxt = "Don't know how to roll " + dwRec.Origin + " for " ...
+	"%<Type> Block: %<LibGetFormattedBlockPath(block)>"
+      %exit RTW Fatal: %<errTxt>
+      %%END_ASSERT
+    %endif
+
+    %if TYPE(definedxwork) == "Scope"
+      %createrecord optionalArgs { Name definedxwork.Name }
+    %else
+      %createrecord optionalArgs {}
+    %endif
+    %return FcnNonRollingDWork(dwRec, dwIdx, XWork[0], optionalArgs)
+
+  %endif
+
+%endfunction %% FcnBlockXWork
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockMode ==========================
+%% Abstract:
+%%   Returns a string corresponding to the specified block MODE element.
+%%
+%function LibBlockMode(ucv, lcv, idx) void
+
+  %% See Also:
+  %%   LibBlockRWork, LibBlockIWork, LibBlockPWork
+  %%
+
+
+  %assign dwIdx = ModeVector[1]
+  %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+  %createrecord optionalArgs {}
+
+  %with FcnLoopInfo(ucv, lcv, idx)
+    %return FcnSimpleGetDWork(dwRec, dwIdx, ModeVector[0], "mode", optionalArgs)
+  %endwith
+%endfunction %% LibBlockMode
+
+%% Function: FcnGetDworkRec ====================================================
+%% Abstract:
+%%  return data store memory's dwork record
+%%
+%function FcnGetDworkAndRec(DworkIn) void
+  %%
+  %% Dwork can be an identifier or a record. For simplicity, if it is an
+  %% identifier, create a local record.
+  %assign isRecord = TLC_TRUE
+  %assign idNum    = ["",0]
+  %assign interface = []
+
+  %if TYPE(DworkIn) == "Identifier" || TYPE(DworkIn) == "String"
+    %assign idNum = IDNUM(DworkIn) %%"di", "Di" or "dpi"
+    %assign isRecord = TLC_FALSE
+  %endif
+
+  %if isRecord %% passed as record
+    %assign dwork = DworkIn
+    %if ISFIELD(dwork, "SigSrc") %% passed global DWork record
+      %assign dwRec = dwork
+    %else %% passed local block DWork record
+      %assign dwIdx = dwork.FirstRootIdx
+      %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+    %endif
+  %else %% passed as 'Di', 'di' or 'dpi' string
+    %if (idNum[0] == "d" || idNum[0] == "D")
+      %assign firstRootIdx =  idNum[1]
+    %else %% dpi
+      %% Get the relative index and convert it to the global index
+      %assign relIdx        = idNum[1]
+      %assign hStructSysIdx = System[SystemIdx].HStructDeclSystemIdx
+      %assign interface     = System[hStructSysIdx].Interface
+      %assign firstRootIdx  = interface.CanonicalDWorkArgDef[relIdx].FirstSignalSrc
+    %endif
+    %createrecord dwork { Name DworkIn; FirstRootIdx %<firstRootIdx>}
+    %assign dwRec = CompiledModel.DWorks.DWork[firstRootIdx]
+  %endif
+
+  %% Now we have a dwork record, and the FirstRootIdx is a global index
+  %if NumDWork < 1 && isRecord
+    %%START_ASSERT
+    %setcommandswitch "-v1"
+    %assign errTxt = "DWork must be defined for %<Type> Block: " ...
+      "%<LibGetFormattedBlockPath(System[BlockIdx[0]].Block[BlockIdx[2]])>"
+    %exit RTW Fatal: %<errTxt>
+    %%END_ASSERT
+  %endif
+
+  %createrecord dworkAndRec { DWork dwork; DWorkRec dwRec ; IsRecord isRecord ; IdNum idNum; Interface interface }
+  %return dworkAndRec
+
+%endfunction %% FcnGetDworkAndRec
+
+
+%% Function: FcnGetDworkContentsOrAddress ======================================
+%% Abstract:
+%%   Returns a string corresponding to the contents or address of the
+%%   specified dwork element. Dwork can be
+%%     1- a record which contains two fields, i.e., Name and FirstRootIdx
+%%        In this case, the Dwork is used by its owner, i.e., the dwork
+%%        is local to the block.
+%%     2- an identifier, i.e., di, Di or dpi, where
+%%       Di   -> The block is accessing another block's dwork. The blocks
+%%               are in the root system.
+%%               ('i' is an index to the global dwork table)
+%%       di   -> The block is accessing another block's dwork. The blocks
+%%               are parented by the same reused system.
+%%               ('i' is an index to the global dwork table)
+%%       dpi  -> The block is parented by a reused system, and is accessing
+%%               another block's dwork that is outside of the reused system.
+%%               ('i' is a relative index to System's CanonicalDWork)
+%%
+%function FcnGetDworkContentsOrAddress(access, DworkIn, ucv, lcv, sigIdx) void
+
+  %assign dworkAndRec = FcnGetDworkAndRec(DworkIn)
+  %assign dwork = dworkAndRec.DWork
+  %assign dwRec = dworkAndRec.DWorkRec
+  %assign isRecord = dworkAndRec.IsRecord
+  %assign idNum = dworkAndRec.IdNum
+  %assign interface = dworkAndRec.Interface
+
+  %% First split sigIdx into idx and reim
+  %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+  %assign reim    = tmpVect[0]
+  %assign idx     = tmpVect[1]
+
+  %% The imaginary part of a non-complex dwork is ""
+  %if !SLibDWorkIsComplex(dwRec) && reim == tImagPart
+    %return ""
+  %endif
+
+  %% Check for floating-point types if integer only code
+  %if PurelyIntegerCode
+    %%START_ASSERT
+    %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(SLibGetRecordDataTypeId(dwRec))
+    %if dTypeId == tSS_DOUBLE || dTypeId == tSS_SINGLE
+      %<SLibCacheIntegerOnlyWarning(Name,"WorkVector")>
+    %endif
+    %%END_ASSERT
+  %endif
+
+  %assign dwId  = "%<dwRec.Identifier>"
+  %assign width = dwRec.Width
+  %assign sigIndexer = SLibGet1DArrayIndexer(width, ucv, lcv, idx)
+
+  %assign hasCustomStorage = LibHasCustomStorage(dwRec)
+  %assign pureSFcnTarget = (CodeFormat == "S-Function" && !Accelerator)
+  
+  %if  ucv != "" || lcv == "" || (lcv != "" && width == 1)
+    %% ucv specified, or not rolling, or rolling but scalar
+    %if pureSFcnTarget
+      %with FcnLoopInfo(ucv, lcv, idx)
+	%assign answer = FcnGetGlobalDWork(dwRec, dwork.FirstRootIdx, width, 0)
+      %endwith
+    %else
+      %if dwRec.StorageClass != "Auto"
+	%if hasCustomStorage
+	  %assign answer = LibCustomData(dwRec,access,sigIndexer,reim)
+	  %return answer
+	%else
+	  %assign answer = "%<dwId>%<sigIndexer>"
+	%endif
+      %else
+        %assign cross =  CrossNoArgFcnBound
+	%if isRecord || idNum[0] == "d" || idNum[0] == "D"
+	  %assign idxVec = SLibGetSystemAndCallSideIndex(dwRec)
+	  %assign dwPath = FcnGetLocalDWorkPathHelper(idxVec[0], ...
+	                      idxVec[1], HStructDeclSystemIdx, cross)
+	  %assign answer = dwPath + dwId + sigIndexer
+	%else
+	  %assign dworkArgDef = interface.CanonicalDWorkArgDef[idNum[1]]
+	  %assign dworkArgDefId = dworkArgDef.Identifier
+          %if cross
+            %<LibAccessGlobalArg(dworkArgDef)>
+            %assign name = "%<GetGlobalPrefix()>_%<dworkArgDefId>_%<HStructDeclSystemIdx>" %% dwork name
+
+            %if width == 1
+              %assign answer = "(*%<name>)"
+            %else
+              %assign answer = name + sigIndexer
+            %endif
+
+          %else
+            %assert idNum[0] == "dp"
+            %assign name = dworkArgDef.Identifier %% canonical arg name
+
+            %if width == 1
+              %assign answer = "(*%<name>)"
+            %else
+              %assign answer = name + sigIndexer
+            %endif
+          %endif
+	  %assign hStructSysIdx = System[SystemIdx].HStructDeclSystemIdx
+	  %assign interface     = System[hStructSysIdx].Interface
+	  %<LibAccessArg(dworkArgDef)>
+	%endif
+      %endif
+    %endif
+  %else
+    %% rolling
+    %assign answer = "dw_%<dwork.Name>%<sigIndexer>"
+  %endif
+
+  %if SLibDWorkIsComplex(dwRec) && reim != ""
+    %assign answer = answer + ".%<reim>"
+  %endif
+
+  %assign scalarIEP = ((dwRec.StorageClass == "ImportedExternPointer") && ...
+                       (width == 1))
+  %if (access == "address") && (!scalarIEP)
+    %assign answer = "&" + answer
+  %elseif ((access == "contents") && (scalarIEP) && (!pureSFcnTarget))
+    %assign answer = "(*%<answer>)"
+  %endif
+  %return answer
+
+%endfunction %% FcnGetDworkContentsOrAddress
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkAddr =====================
+%% Abstract:
+%%   Returns a string corresponding to the address of the specified block DWORK
+%%   element.
+%%
+%function LibBlockDWorkAddr(dwork, ucv, lcv, idx) void
+
+  %return FcnGetDworkContentsOrAddress("address", dwork, ucv, lcv, idx)
+
+%endfunction %% LibBlockDWorkAddr
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWork =========================
+%% Abstract:
+%%   Returns a string corresponding to the specified block DWORK element.
+%%
+%%   Note, the last input argument is overloaded to handle complex DWorks:
+%%
+%%   sigIdx = "re3" => returns the real part of element 3 if the dwork is
+%%                      complex, otherwise returns element 3.
+%%   sigIdx = "im3" => returns the imaginary part of element 3 if the dwork
+%%                      is complex, otherwise returns "".
+%%   sigIdx = "3"   => returns the complex container of element 3, if
+%%                     dwork is complex, otherwise returns element 3.
+%%
+%%   If either ucv or lcv is specified (i.e. it is not equal to  "") then
+%%   the index part of the last input argument (sigIdx) is ignored.
+%%
+%function LibBlockDWork(dwork, ucv, lcv, idx) void
+  %return FcnGetDworkContentsOrAddress("contents", dwork, ucv, lcv, idx)
+%endfunction %% LibBlockDWork
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkWidth ====================
+%% Abstract:
+%%   Returns the width of specified block DWORK.
+%%
+%function LibBlockDWorkWidth(dwork) void
+  %return CompiledModel.DWorks.DWork[dwork.FirstRootIdx].Width
+%endfunction %% LibBlockDWorkWidth
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkStorageClass =============
+%% Abstract:
+%%   Returns the storage class of specified block DWORK.
+%%
+%% Function: LibBlockDWorkStorageClass(dwork) void
+%function LibBlockDWorkStorageClass(dwork) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+  %return dwRec.StorageClass
+%endfunction %% LibBlockDWorkStorageClass
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkStorageTypeQualifer ======
+%% Abstract:
+%%   Returns the storage type qualifier of specified block DWORK.
+%%
+%% Function: LibBlockDWorkStorageTypeQualifier(dwork) void
+%function LibBlockDWorkStorageTypeQualifier(dwork) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+  %return dwRec.StorageTypeQualifier
+%endfunction %% LibBlockDWorkStorageTypeQualifier
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkDataTypeId ===============
+%% Abstract:
+%%   Returns the data type Id of specified block DWORK.
+%%
+%function LibBlockDWorkDataTypeId(dwork) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+  %return SLibGetRecordDataTypeId(dwRec)
+%endfunction %% LibBlockDWorkDataTypeId
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkDataTypeName =============
+%% Abstract:
+%%   Returns the data type name of specified block DWORK.
+%%
+%function LibBlockDWorkDataTypeName(dwork, reim) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+  %return SLibGetRecordDataTypeName(dwRec, reim)
+%endfunction %% LibBlockDWorkDataTypeName
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkIsComplex ================
+%% Abstract:
+%%   Returns 1 if the specified block DWORK is complex, returns 0 otherwise.
+%%
+%function LibBlockDWorkIsComplex(dwork) void
+  %assign cSig = CompiledModel.DWorks.DWork[dwork.FirstRootIdx].ComplexSignal
+  %return (cSig == "yes")
+%endfunction %% LibBlockDWorkIsComplex
+
+
+%% Function: SLibDWorkIsComplex ================================================
+%% Abstract:
+%%   Returns 1 if the specified DWORK record is complex, returns 0 otherwise.
+%%
+%function SLibDWorkIsComplex(dwRec) void
+  %return (dwRec.ComplexSignal == "yes")
+%endfunction %% SLibDWorkIsComplex
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkUsedAsDiscreteState ======
+%% Abstract:
+%%   Returns 1 if the specified block DWORK is used as a discrete state,
+%%   returns 0 otherwise.
+%%
+%function LibBlockDWorkUsedAsDiscreteState(dwork) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+  %return (dwRec.UsedAs == "DSTATE")
+%endfunction %% LibBlockDWorkUsedAsDiscreteState
+
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockDWorkName =====================
+%% Abstract:
+%%   Returns the name of specified block DWORK.
+%%
+%function LibBlockDWorkName(dwork) void
+  %return STRING(dwork.Name)
+%endfunction %% LibBlockDWorkName
+
+
+%% Function: FcnGetLocalZCEPath ================================================
+%% Abstract:
+%%   This function return the identifier path for a DWork element.
+%%   (e.g. "rtPrevZCSigState.sub1.sub2., localPrevZC->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%     sysIdx   - System containing zero crossing event
+%%      csIdx   - System instance containing dwork
+%% accessSysIdx - System accessing this dwork
+%%
+%function FcnGetLocalZCEPath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross =  System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalZCEPathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+
+%function FcnGetLocalZCEPathHelper(sysIdx, csIdx, accessSysIdx, cross) void
+  %if (sysIdx == (NumSystems-1))
+    %assign ::BlockFcnAccessed.PrevZC = 1
+    %<LibAccessArg(System[sysIdx].Interface.ZCEventArgDef)>
+    %return "%<tPrevZCState>%<PrevZCQualifier>"
+  %elseif sysIdx == accessSysIdx
+    %assign isMdlRefSysReg = IsModelReferenceBaseSys(System[sysIdx]) && ...
+      ::BlockFcn == "Registration"
+    %<LibAccessArg(System[sysIdx].Interface.ZCEventArgDef)>
+    %if !isMdlRefSysReg && cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.ZCEventArgDef)>
+      %return "%<GetGlobalPrefix()>ZCE_%<System[sysIdx].SystemIdx>->"
+    %else
+      %return "localZCE->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return  FcnGetLocalZCEPathHelper(cs[0], cs[1], accessSysIdx, cross)
+    %else
+      %return  FcnGetLocalZCEPathHelper(cs[0], cs[1], accessSysIdx, cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else %% (sysIdx > accessSysIdx) global access
+    %return FcnGetLocalZCEPathHelper(sysIdx, csIdx, NumSystems-1, cross)
+  %endif
+%endfunction
+
+%% Function: SLibGetSystemAndCallSideIndex =====================================
+%% Abstract:
+%%   This function robustly determines the system and callsite index for a
+%%   record considering the special nature of subsystem blocks.
+%%
+%function SLibGetSystemAndCallSideIndex(rec)
+  %assign retVal = [-1, -1]
+  %assign sysIdx = rec.SigSrc[0]
+  %assign  csIdx = rec.SigSrc[1]
+  %assign blk = System[sysIdx].Block[rec.SigSrc[2]]
+  %if blk.Type == "SubSystem"
+    %assign pSysIdx = sysIdx
+    %assign sysIdx = blk.CallSiteInfo.SystemIdx
+    %if csIdx > 0
+      %assign numFirstCallSites = 0
+      %foreach idx = SIZE(System[sysIdx].CallSites)[0]
+	%if System[sysIdx].CallSites[idx][0] == pSysIdx && ...
+	    System[sysIdx].CallSites[idx][1] == 0
+	  %assign numFirstCallSites = numFirstCallSites + 1
+	%endif
+      %endforeach
+      %assign csIdx = (numFirstCallSites * csIdx) + blk.CallSiteIdx
+    %else
+      %assign csIdx = blk.CallSiteIdx
+    %endif
+  %endif
+  %assign retVal[0] = sysIdx
+  %assign retVal[1] = csIdx
+  %return retVal
+%endfunction
+
+
+%% Function: LibBlockPrevZCState ===============================================
+%% Abstract:
+%%   LibBlockPrevZCState returns the appropriate element for the previous
+%%   zero crossing state based on ucv, lcv, and pzcIdx.
+%%
+%%   Arguments:
+%%        ucv: User control variable string
+%%        lcv: Loop control variable string
+%%        pzcIdx: Previous zero crossing index
+%%
+%function LibBlockPrevZCState(ucv, lcv, pzcIdx) void
+
+  %assign zc = CompiledModel.ZCEvents.ZCEvent[ZCEvents[1]]
+  %return SLibPrevZCState(zc, ucv, lcv, pzcIdx)
+
+%endfunction %% LibBlockPrevZCState
+
+%% Function: SLibPrevZCState ===================================================
+%% Abstract:
+%%   SLibPrevZCState returns the appropriate identifier for the previous
+%%   zero crossing state based on the ZCE record ucv, lcv, and pzcIdx.
+%%
+%%   Arguments:
+%%         zc: global zero crossing record
+%%        ucv: User control variable string
+%%        lcv: Loop control variable string
+%%        pzcIdx: Previous zero crossing index
+%%
+%function SLibPrevZCState(zc, ucv, lcv, pzcIdx) void
+
+  %assign  sigIndexer = SLibGet1DArrayIndexer(zc.Width, ucv, lcv, pzcIdx)
+
+  %if ucv != "" || lcv == "" || (lcv != "" && zc.Width == 1)
+    %% user control variable specified, not rolling, or rolling a scalar
+    %assign idxVec = SLibGetSystemAndCallSideIndex(zc)
+    %assign sysIdx = idxVec[0]
+    %assign  csIdx = idxVec[1]
+    %assign zcPath = FcnGetLocalZCEPath(sysIdx, csIdx, HStructDeclSystemIdx)
+    %return "%<zcPath>%<zc.Identifier>%<sigIndexer>"
+  %else
+    %% rolling
+    %return "pzc%<sigIndexer>"
+  %endif
+%endfunction
+
+
+%% Function: FcnGetLocalNonSampledZCPath =====================================
+%% Abstract:
+%%   This function returns the identifier path for a NonSampledZC element.
+%%   (e.g. "rtPrevZCSigState.sub1.sub2., localPrevZC->sub1.sub2.")
+%%
+%% Arguments:
+%%
+%%     sysIdx   - System containing zero crossing
+%%      csIdx   - System instance containing zero crossing
+%% accessSysIdx - System accessing this zero crossing
+%%
+%function FcnGetLocalNonSampledZCPath(sysIdx, csIdx, accessSysIdx) void
+  %assign cross =  System[sysIdx].CrossNoArgFcnBound
+  %return FcnGetLocalNonSampledZCPathHelper(sysIdx, csIdx, accessSysIdx, cross)
+%endfunction
+
+%function FcnGetLocalNonSampledZCPathHelper(sysIdx, csIdx, accessSysIdx, cross) void
+  %if (sysIdx == (NumSystems-1))
+    %assign ::BlockFcnAccessed.NSZC = 1
+    %return "%<tNonsampledZC>->"
+    %%%<IOQualifier>
+  %elseif sysIdx == accessSysIdx
+    %assign isMdlRefSysReg = IsModelReferenceBaseSys(System[sysIdx]) && ...
+      ::BlockFcn == "Registration"
+    %<LibAccessArg(System[sysIdx].Interface.NonsampledZCArgDef)>
+    %if !isMdlRefSysReg && cross
+      %<LibAccessGlobalArg(System[sysIdx].Interface.NonsampledZCArgDef)>
+      %return "%<GetGlobalPrefix()>NSZC_%<System[sysIdx].SystemIdx>->"
+    %else
+      %return "localNSZC->"
+    %endif
+  %elseif sysIdx < accessSysIdx
+    %assign cs = System[sysIdx].CallSites[csIdx]
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %if !SLibSystemHasOwnDataScope(System[sysIdx])
+      %return  FcnGetLocalNonSampledZCPathHelper(cs[0], cs[1], accessSysIdx, cross)
+    %else
+      %return  FcnGetLocalNonSampledZCPathHelper(cs[0], cs[1], accessSysIdx, cross) + ...
+	"%<ssBlk.CallSiteInfo.StructId>."
+    %endif
+  %else %% (sysIdx > accessSysIdx) global access
+    %return FcnGetLocalNonSampledZCPathHelper(sysIdx, csIdx, NumSystems-1, cross)
+  %endif
+%endfunction
+
+%% DocFunction{BlkStateAndWorkVectFcns}: LibBlockNonSampledZC ================
+%% Abstract:
+%%   Returns a string corresponding to the specified block NonSampledZC.
+%%
+%%   LibBlockNonSampledZC returns the appropriate element for the non-sampled
+%%   zero crossing state based on ucv, lcv, and NonSampledZCIdx.
+%%
+%%   Arguments:
+%%        ucv: User control variable string
+%%        lcv: Loop control variable string
+%%        NonSampledZCIdx: Non-Sampled zero crossing index
+%%
+%function LibBlockNonSampledZC(ucv, lcv, NSZCIdx) void
+  %assign zcIdx = NonsampledZC[0].FirstRootIdx
+  %assign zc = CompiledModel.NonsampledZCs.NonsampledZC[zcIdx]
+  %% assign zc = CompiledModel.NonSampledZCs.NonSampledZC[NSZCIdx]
+  %return SLibNonSampledZCState(zc, ucv, lcv, NSZCIdx)
+%endfunction %% LibBlockNonSampledZCState
+
+%% Function: SLibNonSampledZCState ============================================
+%% Abstract:
+%%   SLibNonSampledZCState returns the appropriate identifier for the non
+%%   sampled zero crossing state based on the ZCE record ucv, lcv, and pzcIdx.
+%%
+%%   Arguments:
+%%         zc: global zero crossing record
+%%        ucv: User control variable string
+%%        lcv: Loop control variable string
+%%        NonSampledZCIdx: Non Sampled zero crossing index
+%%
+%function SLibNonSampledZCState(zc, ucv, lcv, NSZCIdx) void
+
+  %assign  sigIndexer = SLibGet1DArrayIndexer(zc.Width, ucv, lcv, NSZCIdx)
+
+  %if ucv != "" || lcv == "" || (lcv != "" && zc.Width == 1)
+    %% user control variable specified, not rolling, or rolling a scalar
+    %assign idxVec = SLibGetSystemAndCallSideIndex(zc)
+    %assign sysIdx = idxVec[0]
+    %assign  csIdx = idxVec[1]
+    %assign zcPath = FcnGetLocalNonSampledZCPath(sysIdx, csIdx, HStructDeclSystemIdx)
+    %return "%<zcPath>%<zc.Identifier>%<sigIndexer>"
+  %else
+    %% rolling
+    %return "nszc%<sigIndexer>"
+  %endif
+%endfunction
+
+
+%% Function: SLibNonsampledZCAddr ==============================================
+%%
+%function SLibNonsampledZCAddr() void
+
+  %assign zcIdx      = NonsampledZC[0].FirstRootIdx
+  %assign zc         = CompiledModel.NonsampledZCs.NonsampledZC[zcIdx]
+  %assign idxVec     = SLibGetSystemAndCallSideIndex(zc)
+  %assign sysIdx     = idxVec[0]
+  %assign csIdx      = idxVec[1]
+  %assign declSysIdx = HStructDeclSystemIdx
+  %assign path       = FcnGetLocalNonSampledZCPath(sysIdx, csIdx, declSysIdx)
+  %assign base       = "%<path>%<zc.Identifier>"
+  %if zc.Width == 1 || Type == "ModelReference"
+    %assign base = "&(%<base>)"
+  %endif
+  %return base
+  
+%endfunction %% SLibNonsampledZCAddr
+
+
+%% Function: LibBlockPortSampleTime ============================================
+%%
+%function LibBlockPortSampleTime(portTID)
+
+    %if PortBasedSampleTimes != "yes"
+      %<LibReportFatalError("LibBlockPortSampleTime called for block that does not have port-based sample times")>
+    %endif
+
+    %if TYPE(portTID) != "String"
+      %<LibReportFatalError("Incorrect portTID argument")>
+    %endif
+
+    %% Assume case of "InputPortIdxI" or "OutputPortIdxI"
+    %assign portLocAndIdx = IDNUM(portTID)
+    %if SIZE(portLocAndIdx,1) == 2
+      %if portLocAndIdx[1] >= 0
+	%assign port = portLocAndIdx[1]
+	%if portLocAndIdx[0] == "InputPortIdx" && port < NumDataInputPorts
+	  %if InputPortSampleTimes[port] == rtInf
+	    %return "constant"
+	  %else
+	    %return InputPortTIDs[port]
+	  %endif
+	%elseif portLocAndIdx[0]=="OutputPortIdx" && port < NumDataOutputPorts
+	  %if OutputPortSampleTimes[port] == rtInf
+	    %return "constant"
+	  %else
+	    %return OutputPortTIDs[port]
+	  %endif
+	%else
+	  %<LibReportFatalError("Incorrect portTID argument")>
+	%endif
+      %endif
+    %else
+      %<LibReportFatalError("Incorrect portTID argument")>
+    %endif
+
+%endfunction
+
+%% DocFunction{Sample Time Functions}: LibBlockSampleTime ======================
+%% Abstract:
+%%   Returns the block's sample time. The returned value depends on the sample
+%%   time classification of the block:
+%%
+%%      Block classification  Returned value
+%%      --------------------  --------------
+%%      Discrete blocks          A real number greater than zero,
+%%                               the block's actual sample time
+%%      Continuous blocks        0.0
+%%      Triggered blocks        -1.0
+%%      Constant blocks         -2.0
+%%
+%function LibBlockSampleTime(block) void
+  %assign tid = block.TID
+  %if TYPE(tid) == "Number"
+    %return CAST("Real", CompiledModel.SampleTime[tid].PeriodAndOffset[0])
+  %elseif ISEQUAL(tid, "triggered")
+    %return -1.0
+  %elseif ISEQUAL(tid, "constant")
+    %return -2.0
+  %else
+    %%START_ASSERT
+    %assign blockName = LibUnmangledPathName(Name)
+    %setcommandswitch "-v1"
+    %assign errTxt = "Cannot compute step size for TID=%<tid> in " ...
+      "%<block.Type> Block: %<LibGetFormattedBlockPath(block)>"
+    %exit RTW Fatal: %<errTxt>
+    %%END_ASSERT
+  %endif
+%endfunction %% LibBlockSampleTime
+
+%% DocFunction{Sample Time Functions}: LibSetVarNextHitTime ===================
+%% Abstract:
+%%   Generates code to set the next variable hit time. Blocks with
+%%   variable sample time must call this function in their output functions.
+%%
+%function LibSetVarNextHitTime(block,tNext) void
+    %assign tid = block.TID
+    %assign idx = CAST("Real", CompiledModel.SampleTime[tid].PeriodAndOffset[1])
+    %return "%<RTMuSetIdxed("VarNextHitTime", "(int_T)%<idx>", tNext)>"
+%endfunction %% LibSetVarNextHitTime
+
+%% DocFunction{Sample Time Functions}: LibPortBasedSampleTimeBlockIsTriggered ==
+%% Abstract:
+%%  Determines if the port-based S-function block is triggered
+%%
+%function LibPortBasedSampleTimeBlockIsTriggered(block) void
+    %assign tid = block.TID
+    %if LibTriggeredTID(tid)
+      %return 1
+    %else
+      %return 0
+    %endif
+%endfunction %% LibSetVarNextHitTime
+
+
+
+%%
+%% Special handling S-function target because we are accessing the XWork
+%% as a 'flat' array (not a structure).
+%%
+%function FcnGetGlobalDWork(dwRec, dwIdx, width, startIdx) void
+  %assign index = width == 1 ? ...
+    "[%<startIdx>]" : ...
+    SLibGet1DArrayIndexer(width, Ucv, Lcv, startIdx+Idx)
+  %return SLibGetGlobalDWorkIdentifier(dwRec, dwIdx) + index
+%endfunction
+
+
+%%
+%% Special handling S-function target because we are accessing the XWork
+%% as a 'flat' array (not a structure).
+%%
+%% Returns address with ssGetDWork macro for S-function target of the form:
+%%    ((real_T *) ssGetDWork(S, n))
+%%
+%function SLibGetGlobalDWorkIdentifier(dwRec, dwIdx) void
+  %assign ::BlockFcnAccessed.DWork = 1
+  %assign dtype = SLibGetRecordDataTypeName(dwRec, "")
+  %assign macro = "ssGetDWork(%<tSimStruct>, %<dwIdx>)"
+  %return "((%<dtype>*) %<macro>)"
+%endfunction
+
+
+%function SLibGetNameOfExtModeActiveDWork() void
+  %return "ExtModeActive"
+%endfunction
+
+%function SLibGetNameOfSubsysRanBCDWork() void
+  %return "SubsysRanBC"
+%endfunction
+
+
+%function FcnNonRollingDWork(dwRec, dwIdx, width, optionalArgs) void
+
+  %if !EXISTS(optionalArgs.StartIdx)
+    %addtorecord optionalArgs StartIdx 0
+  %endif
+  %if !EXISTS(optionalArgs.DotName)
+    %addtorecord optionalArgs DotName ""
+  %endif
+  %if !EXISTS(optionalArgs.Name)
+    %addtorecord optionalArgs Name ""
+  %endif
+
+  %if CodeFormat == "S-Function" && !Accelerator
+    %return FcnGetGlobalDWork(dwRec, dwIdx, width, optionalArgs.StartIdx)
+  %else
+    %assign idxVec = SLibGetSystemAndCallSideIndex(dwRec)
+    %assign sysIdx = idxVec[0]
+    %assign  csIdx = idxVec[1]
+    %assign dwPath = FcnGetLocalDWorkPath(sysIdx, csIdx, HStructDeclSystemIdx)
+
+    %return dwPath + dwRec.Identifier + optionalArgs.DotName + ...
+      SLibGet1DArrayIndexer(width, Ucv, Lcv, Idx)
+  %endif
+
+%endfunction
+
+%function FcnSimpleGetDWork(dwRec, dwIdx, width, rollName, optionalArgs) void
+    %if  Ucv != "" || Lcv == "" || (Lcv != "" && width == 1)
+      %% Ucv specified, not rolling, or rolling but it's scalar
+      %return FcnNonRollingDWork(dwRec, dwIdx, width, optionalArgs)
+    %else
+      %% rolling
+      %return rollName + SLibGet1DArrayIndexer(width, Ucv, Lcv, Idx)
+    %endif
+%endfunction
+
+%function FcnLoopInfo(ucv, lcv, idx) void
+  %% Ucv and empty index handling
+  %if ucv != "" || TYPE(idx) != "Number"
+    %assign idx = 0
+  %endif
+  %createrecord LoopInfo { Ucv ucv; Lcv lcv; Idx idx }
+  %return LoopInfo
+%endfunction
+
+%% LibBlockIsIndexZeroBased ====================================================
+%% Abstract:
+%%  Determines if the index mode of a block is "Zero-based"
+%%
+%function LibBlockIsIndexZeroBased(block) void
+  %assign zeroBased = 0
+  %with block
+    %assign zeroBased = (EXISTS(IndexMode) && IndexMode ==  "Zero-based")
+  %endwith
+  %return zeroBased
+%endfunction
+
+%% LibBlockIsIndexOneBased ====================================================
+%% Abstract:
+%%  Determines if the index mode of a block is "One-based"
+%%
+%function LibBlockIsIndexOneBased(block) void
+  %assign oneBased = 0
+  %with block
+    %assign oneBased = (EXISTS(IndexMode) && IndexMode ==  "One-based")
+  %endwith
+  %return oneBased
+%endfunction
+
+%% DocFunction{Output Signal Functions}: LibBlockOutputPortIndexMode ===========
+%% Purpose
+%%   Determines the index mode of a block's output port.
+%%
+%% Description
+%%   If a block's output port has been set as an index port and its indexing base is
+%%   marked as zero-based or one-based, this information gets written into the model.rtw
+%%   file. This function queries the indexing base in order to branch to different code
+%%   according to what the output port indexing base is.
+%%
+%% Returns
+%%   "" for a non-index port, and "Zero-based" or "One-based" otherwise.
+%%
+%% Arguments
+%%   block - block record
+%%   idx - port index
+%%
+%% Example
+%%   %if LibBlockOutputPortIndexMode(block, idx) == "Zero-based"
+%%      ...
+%%   %elseif LibBlockOutputPortIndexMode(block, idx) == "One-based"
+%%      ...
+%%   %else
+%%      ...
+%%   %endif
+%%
+%% See function in matlabroot/rtw/c/tlc/mw/blocklib.tlc.
+%%
+%function LibBlockOutputPortIndexMode(block, pidx) void
+  %assign ret = ""
+  %with block
+    %assert (pidx >= 0 && pidx < NumDataOutputPorts)
+    %if EXISTS(NumIndexOutputPorts)
+      %foreach n = NumIndexOutputPorts
+	%assign ip = IndexOutputPort[n]
+	%if ip.PortIdx == pidx
+	  %assign ret = ip.PortIndexMode
+	%endif
+      %endforeach
+    %endif
+  %endwith
+  %return ret
+%endfunction
+
+%% DocFunction{Input Signal Functions}: LibBlockInputPortIndexMode ===========
+%% Purpose
+%%   Determines the index mode of a block's input port.
+%%
+%% Description
+%%   If a block's input port has been set as an index port and its indexing base is
+%%   marked as zero-based or one-based, this information gets written into the model.rtw
+%%   file. This function queries the indexing base in order to branch to different code
+%%   according to what the input port indexing base is.
+%%
+%% Returns
+%%   "" for a non-index port, and "Zero-based" or "One-based" otherwise.
+%%
+%% Arguments
+%%   block - block record
+%%   idx - port index
+%%
+%% Example
+%%   %if LibBlockInputPortIndexMode(block, idx) == "Zero-based"
+%%      ...
+%%   %elseif LibBlockInputPortIndexMode(block, idx) == "One-based"
+%%      ...
+%%   %else
+%%      ...
+%%   %endif
+%%
+%% See function in matlabroot/rtw/c/tlc/mw/blocklib.tlc.
+%%
+%function LibBlockInputPortIndexMode(block, pidx) void
+  %assign ret = ""
+  %with block
+    %assert (pidx >= 0 && pidx < NumDataInputPorts)
+    %if EXISTS(NumIndexInputPorts)
+      %foreach n = NumIndexInputPorts
+	%assign ip = IndexInputPort[n]
+	%if ip.PortIdx == pidx
+	  %assign ret = ip.PortIndexMode
+	%endif
+      %endforeach
+    %endif
+  %endwith
+  %return ret
+%endfunction
+
+%% LibBlockNumInputPorts========================================================
+%% Abstract:
+%%  Returns the number of input ports for a given block record.
+%%
+%function LibBlockNumInputPorts(block) void
+  %return block.NumDataInputPorts
+%endfunction
+
+%% LibBlockNumOutputPorts=======================================================
+%% Abstract:
+%%  Returns the number of output ports for a given block record.
+%%
+%function LibBlockNumOutputPorts(block) void
+  %return block.NumDataOutputPorts
+%endfunction
+
+%endif %% _BLOCKLIB_
+
+%% LibBlockDWorkOwnerComment ===================================================
+%% Abstract:
+%%   Return the owner of the dwork in a form suitable for a comment
+%function LibBlockDWorkOwnerComment(dwRec)
+  %% If the graphical source is synthesized but the dwork has an object
+  %% report the object
+  %if dwRec.GrSrc[1] == -1 && dwRec.HasObject 
+    %if !ISEMPTY(dwRec.OrigIdentifier)
+      %assign id = dwRec.OrigIdentifier
+    %else
+      %assign id = dwRec.Identifier
+    %endif
+    %return "Simulink.Signal object '%<id>'"
+  
+  %% Else call SLibGrBlockName()
+  %else
+    %return "'%<SLibGrBlockName(dwRec.GrSrc)>'"
+
+  %endif
+%endfunction
+
+%% SLibBlockFcnRateGroupingCmpl ==================================
+%% Abstract:
+%%   Return true if function of block is rate grouped.
+%% 
+%function SLibBlockFcnRateGrouping(block,locFcnType) 
+  %assign fcnName    = "%<locFcnType>ForTID"
+  %with block
+  %assign numTIDs = TYPE(TID) == "Vector" ? SIZE(TID,1) : 1
+  
+  %assign retVal =  numTIDs>1 && ...
+    LibBlockFunctionExists(block, fcnName)
+  %endwith 
+  %return retVal  
+
+%endfunction
+
+%% SLibBlkHasMultirateCode(block) ==============================
+%% Abstract:
+%%   Return true if this block is more than one rate that may
+%% have code
+%function SLibBlkHasMultirateCode(block)
+  %with block
+    %assign blkHasMultirateCode = -1
+    %assign tmpBufferHasDumpedForTID0 = TLC_FALSE
+    
+    %if TYPE(TID) == "Vector"
+      %assign tid01Eq = ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+      %foreach tid = SIZE(TID,1)
+	%if TYPE(tid) == "Number" && tid > 0
+	  %% For tid01Eq=1, no code for tid1
+	  %if tid01Eq && (tid == 1)
+	    %continue
+	  %endif
+	  %assign blkHasMultirateCode = blkHasMultirateCode + 1
+	%elseif !tmpBufferHasDumpedForTID0
+	  %assign blkHasMultirateCode = blkHasMultirateCode + 1
+	  %assign tmpBufferHasDumpedForTID0 = TLC_TRUE
+	%endif
+	%if blkHasMultirateCode == 1
+	  %break
+	%endif
+      %endforeach
+    %endif
+  %endwith
+  
+  %return blkHasMultirateCode > 0
+%endfunction
+
+%% [EOF] blocklib.tlc

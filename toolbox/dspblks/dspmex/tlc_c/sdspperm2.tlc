@@ -1,0 +1,254 @@
+%% $RCSfile: sdspperm2.tlc,v $
+%% $Revision: 1.9.4.3 $ 
+%% $Date: 2004/04/12 23:09:21 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Permute a vector or a matrix by rows or columns
+
+%implements sdspperm2 "C"
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Permute Matrix (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign permute_rows = 1
+  %assign permute_cols = 2
+  %%
+  %assign INPORT_A  = 0
+  %assign INPORT_P  = 1
+  %assign OUTPORT   = 0
+  %%
+  %assign a_width   = LibBlockInputSignalWidth(INPORT_A)
+  %assign p_width   = LibBlockInputSignalWidth(INPORT_P)
+  %assign out_width = LibBlockOutputSignalWidth(OUTPORT)  
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT_A) != 0
+  %assign numDims   = LibBlockInputSignalNumDimensions(INPORT_A)
+  %assign dims      = LibBlockInputSignalDimensions(INPORT_A)
+  %assign rows      = dims[0]
+  %assign cols      = (numDims == 2) ? dims[1] : 1
+  %assign one_offset_indexing = SFcnParamSettings.PUone_based_indexing
+  %assign minus_idx_offset    = (one_offset_indexing)? "- 1": ""
+  %%
+  %assign DTYPE_STR = LibBlockInputSignalDataTypeName(INPORT_A,"%<tRealPart>")
+  %assign COMPLEX   = LibBlockInputSignalIsComplex(INPORT_A)
+  %%
+  %% If the signal input is unoriented, ignore the block's mode
+  %% parameter and just perform the operation on indices of the vector.
+  %assign modeParamFromBlockMask = SFcnParamSettings.MODE
+  %assign mode = (numDims == 2) ? modeParamFromBlockMask : permute_rows
+  %%
+  %if (mode==permute_cols && cols==1) || (mode==permute_rows && rows==1)
+    %%
+    %% Degenerate case where permute just copies input to output.
+    %% Index values in P are all clipped to equal 1.
+    %%
+    %if out_width == 1
+      /* Scalar output equals scalar input. */          
+      %<LibBlockOutputSignal(OUTPORT, "", "", 0)> = %<LibBlockInputSignal(INPORT_A, "", "", 0)>;
+    %else
+      %%
+      %% Non-scalar output
+      %%
+      %if mode == permute_cols
+        %% Permute columns, one column only in input,
+        %% output may have more than one column.
+        {
+          int_T i;
+          for (i = 0; i < %<p_width>; i++) {
+            /* Copy entire input column to each output column */
+            %if ((1+COMPLEX)*a_width) > 1
+              memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "i*%<a_width>", "", 0)>, \
+                     %<LibBlockInputSignalAddr(INPORT_A, "", "", 0)>, \
+                     %<(1+COMPLEX)*a_width>*sizeof(%<DTYPE_STR>));
+            %else
+              memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "i*%<a_width>", "", 0)>, \
+                     %<LibBlockInputSignalAddr(INPORT_A, "", "", 0)>, \
+                     sizeof(%<DTYPE_STR>));
+            %endif
+          }
+        }
+      %else
+        %% Permute rows, one row only in input,
+        %% output may have more than one row.
+        {
+            %if a_width == 1
+                int_T i= 0;
+                %if p_width > 1
+                  for(i=0; i < %<p_width>; i++) {
+                %endif
+                  %if COMPLEX
+                    memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "i", "", 0)>, \
+                           %<LibBlockInputSignalAddr(INPORT_A, "", "", 0)>, \
+                           2*sizeof(%<DTYPE_STR>) );
+                  %else
+                    memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "i", "", 0)>, \
+                           %<LibBlockInputSignalAddr(INPORT_A, "", "", 0)>, \
+                           sizeof(%<DTYPE_STR>) );
+                  %endif
+                %if p_width > 1
+                  }
+                %endif  
+            %else
+              %%
+              %% Non-scalar input
+              %%
+              int_T k = 0, m = 0;
+              int_T p;
+              for(p=0; p < %<a_width>; p++) {
+                %if p_width > 1
+                    int_T i;
+                    for(i=0; i < %<p_width>; i++) {
+                %endif  
+                  %if COMPLEX
+                        memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "%<p_width>*k + m", "", 0)>, \
+                               %<LibBlockInputSignalAddr(INPORT_A, "k", "", 0)>, \
+                               2*sizeof(%<DTYPE_STR>) );
+                  %else
+                        memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "%<p_width>*k + m", "", 0)>, \
+                               %<LibBlockInputSignalAddr(INPORT_A, "k", "", 0)>, \
+                               sizeof(%<DTYPE_STR>) );
+                  %endif
+                %if p_width > 1
+                    m++;
+                }
+                %endif
+                k++;
+                m = 0;    
+              }
+            %endif
+         }
+        %endif %% permute cols vs. rows
+      %endif %% non-scalar output
+  %else
+    %%
+    %% Inputs and mode allow permute to occur.
+    %%
+    %if mode == permute_cols
+      %%%%%%%%%%%%%%%%%%%%%
+      /* Permute columns */
+      %%%%%%%%%%%%%%%%%%%%%
+      {
+        %%
+        %if p_width > 1
+	  int_T i;
+
+          for (i=0; i<%<p_width>; i++) {
+            /* Convert to zero based indexing. */
+            int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "i", "", 0)> %<minus_idx_offset>);
+        %else
+          %%
+          %% Permute input is a scalar
+          %%
+          int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "", "", 0)> %<minus_idx_offset>); 
+        %endif
+        %%
+        /* Clip bad index */
+        if (i_idx < 0) {                  
+          i_idx = 0;         
+        } else if (i_idx > %<cols-1>) {    
+          i_idx = %<cols-1>;               
+        }
+        %%
+        %if rows > 1
+          {
+	    %if p_width == 1
+		int_T i = 0;
+	    %endif	
+            int_T A_idx = i_idx*%<rows>;
+            %if ((1+COMPLEX)*rows) > 1
+              memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "%<rows>*i", "", 0)>, \
+                   %<LibBlockInputSignalAddr(INPORT_A, "A_idx","",0)>, \
+                   %<(1+COMPLEX)*rows>*sizeof(%<DTYPE_STR>));
+            %else
+              memcpy(%<LibBlockOutputSignalAddr(OUTPORT, "%<rows>*i", "", 0)>, \
+                   %<LibBlockInputSignalAddr(INPORT_A, "A_idx","",0)>, \
+                   sizeof(%<DTYPE_STR>));
+            %endif
+          }
+        %else
+          %%
+          %% Permuting columns of row vector
+          %%
+	  %if p_width == 1
+            %<LibBlockOutputSignal(OUTPORT, "", "", 0)> = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	  %else
+	    %<LibBlockOutputSignal(OUTPORT, "i", "", 0)> = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	  %endif
+        %endif
+        %%
+        %if p_width > 1
+          } %% end for
+        %endif
+      }
+    %elseif mode == permute_rows
+      %%%%%%%%%%%%%%%%%%
+      /* Permute rows */
+      %%%%%%%%%%%%%%%%%%
+      {
+        %%
+        %if p_width > 1
+	  int_T i;
+          for (i=0; i<%<p_width>; i++) {
+            /* Convert to zero based indexing. */
+            int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "i", "", 0)> %<minus_idx_offset>);
+          %else
+            %%
+            %% Permute input is a scalar
+            %%
+            int_T i_idx = (int_T)(%<LibBlockInputSignal(INPORT_P, "", "", 0)> %<minus_idx_offset>);       
+          %endif
+          %%
+          /* Clip bad index */
+          if (i_idx < 0) {                
+            i_idx = 0;         
+          } else if (i_idx > %<rows-1>) {    
+            i_idx = %<rows-1>;               
+          }
+          %%  
+          %if cols > 1
+            {
+              int_T A_idx = i_idx;
+              int_T jNp = 0;
+              int_T j;
+	      %if p_width == 1
+		int_T i = 0;
+	      %endif
+              for(j=0; j < %<cols>; j++) {
+              %if COMPLEX
+                memcpy(  %<LibBlockOutputSignalAddr(OUTPORT, "i", "", 0)> + jNp, \
+                         %<LibBlockInputSignalAddr(INPORT_A, "A_idx", "", 0)>,\
+                         2*sizeof(%<DTYPE_STR>) );
+              %else
+                memcpy(  %<LibBlockOutputSignalAddr(OUTPORT, "i", "", 0)> + jNp, \
+                         %<LibBlockInputSignalAddr(INPORT_A, "A_idx", "", 0)>,\
+                         sizeof(%<DTYPE_STR>) );
+              %endif
+                /* # rows in output = length of perm vector */
+                A_idx  += %<rows>;
+                jNp += %<p_width>;
+              }
+            }
+          %else
+            %%
+            %% Permuting rows of column vector
+            %%
+	    %if p_width == 1
+              %<LibBlockOutputSignal(OUTPORT, "", "", 0)> = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	    %else
+	      %<LibBlockOutputSignal(OUTPORT, "i", "", 0)> = %<LibBlockInputSignal(INPORT_A, "i_idx", "", 0)>;
+	    %endif 
+          %endif
+          %%
+          %if p_width > 1
+          } %% end for
+        %endif
+      }
+    %endif %% Modes
+  %endif   %% Degenerate case
+%endfunction
+
+%% [EOF] sdspperm2.tlc
+
+

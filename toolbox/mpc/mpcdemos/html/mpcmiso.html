@@ -1,0 +1,840 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>MPC Control of a Multi-Input Single-Output system</title>
+      <meta name="generator" content="Microsoft FrontPage 4.0">
+      <meta name="date" content="2004-04-02">
+      <meta name="m-file" content="miso"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>MPC Control of a Multi-Input Single-Output system</h1>
+      <introduction></introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#2">MPC controller setup</a></li>
+            <li><a href="#10">Closed-loop MPC simulation using the command SIM</a></li>
+            <li><a href="#15">Closed-loop MPC simulation under model mismatch</a></li>
+            <li><a href="#17">Softening the constraints</a></li>
+            <li><a href="#23">User-specified state estimator</a></li>
+            <li><a href="#28">Open-loop simulation</a></li>
+            <li><a href="#31">Checking asymptotic properties</a></li>
+            <li><a href="#34">MPC control action (step-by-step simulation)</a></li>
+            <li><a href="#41">Linearization of MPC controller</a></li>
+            <li><a href="#46">Turning constraints off</a></li>
+            <li><a href="#49">MPC simulation using Simulink</a></li>
+            <li><a href="#55">Specifying a measurement noise model</a></li>
+         </ul>
+      </div>
+      <p>This demonstration shows several features of the MPC toolbox on a test system with one measured output, one manipulated variable,
+         one measured disturbance, and one unmeasured disturbance.
+      </p>
+      <p>Author: A. Bemporad</p>
+      <h2>MPC controller setup<a name="2"></a></h2> 
+      <p>We start defining the plant to be controlled</p><pre class="codeinput">sys=ss(tf({1,1,1},{[1 .5 1],[1 1],[.7 .5 1]}));
+</pre><p>Now, setup an MPC controller object</p><pre class="codeinput">Ts=.2;             <span class="comment">% sampling time</span>
+model=c2d(sys,Ts); <span class="comment">% prediction model</span>
+</pre><p>Define type of input signals: the first signal is a manipulated variable, the second signal is a measured disturbance, the
+         third one is an unmeasured disturbance
+      </p><pre class="codeinput">model=setmpcsignals(model,<span class="string">'MV'</span>,1,<span class="string">'MD'</span>,2,<span class="string">'UD'</span>,3);
+</pre><p>Define the structure of models used by the MPC controller</p><pre class="codeinput">Model=[]; <span class="comment">% reset structure Model</span>
+Model.Plant=model;
+<span class="comment">% Disturbance model: Integrator driven by white noise with variance=1000</span>
+Model.Disturbance=tf(sqrt(1000),[1 0]);
+</pre><p>Define prediction and control horizons</p><pre class="codeinput">p=[];       <span class="comment">% prediction horizon (take default one)</span>
+m=3;        <span class="comment">% control horizon</span>
+</pre><p>Let us assume default value for weights and build the MPC object</p><pre class="codeinput">MPCobj=mpc(Model,Ts,p,m);
+</pre><p>Define constraints on the manipulated variable</p><pre class="codeinput">MPCobj.MV=struct(<span class="string">'Min'</span>,0,<span class="string">'Max'</span>,1,<span class="string">'RateMin'</span>,-10,<span class="string">'RateMax'</span>,10);
+</pre><h2>Closed-loop MPC simulation using the command SIM<a name="10"></a></h2><pre class="codeinput">Tstop=30;           <span class="comment">% simulation time</span>
+
+Tf=round(Tstop/Ts); <span class="comment">% number of simulation steps</span>
+r=ones(Tf,1);       <span class="comment">% reference trajectory</span>
+v=[zeros(Tf/3,1);ones(2*Tf/3,1)];         <span class="comment">% measured disturbance trajectory</span>
+</pre><p>Run the closed-loop simulation and plot results</p><pre class="codeinput">close <span class="string">all</span>
+sim(MPCobj,Tf,r,v);
+</pre><img vspace="5" hspace="5" src="miso_01.png"> <img vspace="5" hspace="5" src="miso_02.png"> <p>We want to specify disturbance and noise signals. In order to do this, we create the MPC simulation object 'SimOptions'</p><pre class="codeinput">d=[zeros(2*Tf/3,1);-0.5*ones(Tf/3,1)];        <span class="comment">% unmeasured disturbance trajectory</span>
+
+SimOptions=mpcsimopt(MPCobj);
+SimOptions.Unmeas=d;                          <span class="comment">% unmeasured input disturbance</span>
+SimOptions.OutputNoise=.001*(rand(Tf,1)-.5);  <span class="comment">% output measurement noise</span>
+SimOptions.InputNoise=.05*(rand(Tf,1)-.5);    <span class="comment">% noise on manipulated variables</span>
+</pre><p>Run the closed-loop simulation and save the results to workspace</p><pre class="codeinput">[y,t,u,xp,xmpc]=sim(MPCobj,Tf,r,v,SimOptions);
+</pre><p>Plot results</p><pre class="codeinput">close <span class="string">all</span>
+subplot(211)
+plot(0:Tf-1,y,0:Tf-1,r)
+title(<span class="string">'Output'</span>);
+grid
+subplot(212)
+plot(0:Tf-1,u)
+title(<span class="string">'Input'</span>);
+grid
+</pre><img vspace="5" hspace="5" src="miso_03.png"> <h2>Closed-loop MPC simulation under model mismatch<a name="15"></a></h2> 
+      <p>We now want to test the robustness of the MPC controller against a model mismatch. Assume the true plant generating the data
+         is the following:
+      </p><pre class="codeinput">simModel=ss(tf({1,1,1},{[1 .8 1],[1 2],[.6 .6 1]}));
+simModel=setmpcsignals(simModel,<span class="string">'MV'</span>,1,<span class="string">'MD'</span>,2,<span class="string">'UD'</span>,3);
+simModel=struct(<span class="string">'Plant'</span>,simModel);
+simModel.Nominal.Y=0.1; <span class="comment">% The nominal value of the output of the true plant is 0.1</span>
+simModel.Nominal.X=-.1*[1 1 1 1 1];
+
+SimOptions.Model=simModel;
+SimOptions.plantinit=[0.1 0 -0.1 0 .05]; <span class="comment">% Initial state of the true plant</span>
+SimOptions.OutputNoise=[];  <span class="comment">% remove output measurement noise</span>
+SimOptions.InputNoise=[];   <span class="comment">% remove noise on manipulated variables</span>
+
+close <span class="string">all</span>
+sim(MPCobj,Tf,r,v,SimOptions);
+</pre><img vspace="5" hspace="5" src="miso_04.png"> <img vspace="5" hspace="5" src="miso_05.png"> <h2>Softening the constraints<a name="17"></a></h2> 
+      <p>Let us now relax the constraints on manipulated variables</p><pre class="codeinput">MPCobj.MV.MinECR=1;
+MPCobj.MV.MaxECR=1;
+
+<span class="comment">% Keep constraints on manipulated variable rates as hard constraints</span>
+MPCobj.MV.RateMinECR=0;
+MPCobj.MV.RateMaxECR=0;
+</pre><p>Define an output constraint</p><pre class="codeinput">MPCobj.OV=struct(<span class="string">'Max'</span>,1.1);
+</pre><p>and soften it</p><pre class="codeinput">MPCobj.OV.MaxECR=1;
+</pre><p>Run a new closed-loop simulation</p><pre class="codeinput">close <span class="string">all</span>
+sim(MPCobj,Tf,r,v);
+</pre><img vspace="5" hspace="5" src="miso_06.png"> <img vspace="5" hspace="5" src="miso_07.png"> <p>Input constraints have been slightly violated, output constraints have been quite violated. Let us penalize more output constraints 
+         and rerun the simulation
+      </p><pre class="codeinput">MPCobj.OV.MaxECR=0.001;  <span class="comment">% The closer to zero, the harder the constraint</span>
+close <span class="string">all</span>
+sim(MPCobj,Tf,r,v);
+</pre><img vspace="5" hspace="5" src="miso_08.png"> <img vspace="5" hspace="5" src="miso_09.png"> <h2>User-specified state estimator<a name="23"></a></h2> 
+      <p>The MPC toolbox is using by default a Kalman filter to estimate the state of plant, disturbance, and noise models. We may
+         want to provide our own observer.
+      </p>
+      <p>Let us first retrieve the default estimator gain (Kalman gain) and state-space matrices</p><pre class="codeinput">[M,A1,Cm1]=getestim(MPCobj);
+</pre><p>The default observer poles are:</p><pre class="codeinput">e=eig(A1-A1*M*Cm1);
+fprintf(<span class="string">'\nDefault observer poles: [%s]\n'</span>,sprintf(<span class="string">'%5.4f '</span>,e));
+</pre><pre class="codeoutput">
+Default observer poles: [0.5708 0.5708 0.9334 0.9334 0.4967 0.8189 ]
+</pre><p>We design now a state estimator for the MPC controller by pole-placement</p><pre class="codeinput">poles=[.8 .75 .7 .85 .6 .81];
+<span class="comment">%poles=3*[.10 .11 .12 .13 .14 .15];  % Fast observer</span>
+
+L=place(A1',Cm1',poles)';
+M=A1\L;
+setestim(MPCobj,M);  <span class="comment">% (the gain M is stored inside the MPC object)</span>
+</pre><h2>Open-loop simulation<a name="28"></a></h2> 
+      <p>Testing the behavior of the prediction model in open-loop is easy using method SIM. We must set the 'OpenLoop' flag on, and
+         provide the sequence of manipulated variables that excite the system
+      </p><pre class="codeinput">SimOptions.OpenLoop=<span class="string">'on'</span>;
+
+SimOptions.MVSignal=sin([0:Tf-1]'/10);
+</pre><p>As the reference signal will be ignored, we can avoid specifying it</p><pre class="codeinput">close <span class="string">all</span>
+sim(MPCobj,Tf,[],v,SimOptions);
+</pre><img vspace="5" hspace="5" src="miso_10.png"> <img vspace="5" hspace="5" src="miso_11.png"> <h2>Checking asymptotic properties<a name="31"></a></h2> 
+      <p>How can we know if the designed MPC controller will be able to reject constant output disturbances and track constant set-point
+         with zero offsets in steady-state ? We can compute the DC gain from output disturbances to controlled outputs using CLOFFSET
+      </p><pre class="codeinput">DC=cloffset(MPCobj);
+disp(sprintf(<span class="string">'DC gain from output disturbance to output = %5.8f (=%g) \n'</span>,DC,DC));
+</pre><pre class="codeoutput">DC gain from output disturbance to output = -0.00000000 (=-2.88658e-015) 
+
+</pre><p>A zero gain means that the output will track the desired set-point</p>
+      <h2>MPC control action (step-by-step simulation)<a name="34"></a></h2> 
+      <p>We may just want to compute the MPC control action inside our simulation code. Let's see an example.</p>
+      <p>First we get the discrete-time state-space matrices of the plant</p><pre class="codeinput">[A,B,C,D]=ssdata(model);
+
+Tstop=30;  <span class="comment">%Simulation time</span>
+
+x=[0 0 0 0 0]';         <span class="comment">% Initial state of the plant</span>
+xmpc=mpcstate(MPCobj);  <span class="comment">% Initial state of the MPC controller</span>
+r=1;                    <span class="comment">% Output reference trajectory</span>
+</pre><p>We store the closed-loop MPC trajectories in arrays YY,UU,XX,RR</p><pre class="codeinput">YY=[];
+UU=[];
+XX=[];
+RR=[];
+</pre><p>Main simulation loop</p><pre class="codeinput"><span class="keyword">for</span> t=0:round(Tstop/Ts)-1,
+    XX=[XX,x];
+
+    <span class="comment">% Define measured disturbance signal</span>
+    v=0;
+    <span class="keyword">if</span> t*Ts&gt;=10,
+        v=1;
+    <span class="keyword">end</span>
+
+    <span class="comment">% Define unmeasured disturbance signal</span>
+    d=0;
+    <span class="keyword">if</span> t*Ts&gt;=20,
+       d=-0.5;
+    <span class="keyword">end</span>
+
+    <span class="comment">% Plant equations: output update  (note: no feedthrough from MV to Y, D(:,1)=0)</span>
+    y=C*x+D(:,2)*v+D(:,3)*d;
+    YY=[YY,y];
+
+    <span class="comment">% Compute MPC law</span>
+    u=mpcmove(MPCobj,xmpc,y,r,v);
+
+    <span class="comment">% Plant equations: state update</span>
+    x=A*x+B(:,1)*u+B(:,2)*v+B(:,3)*d;
+
+    UU=[UU,u];
+<span class="keyword">end</span>
+
+<span class="comment">% Plot results</span>
+close <span class="string">all</span>
+subplot(211)
+plot(0:Ts:Tstop-Ts,YY)
+grid
+title(<span class="string">'Output'</span>);
+subplot(212)
+plot(0:Ts:Tstop-Ts,UU)
+grid
+title(<span class="string">'Input'</span>);
+</pre><img vspace="5" hspace="5" src="miso_12.png"> <p>If at any time during the simulation we want to check the optimal predicted trajectories, we can use an extended version of
+         MPCMOVE. Assume we want to start from the current state and have a set-point change to 0.5, and assume the measured disturbance
+         has disappeared
+      </p><pre class="codeinput">r=0.5;
+v=0;
+[u,Info]=mpcmove(MPCobj,xmpc,y,r,v);
+</pre><p>We now extract the optimal predicted trajectories</p><pre class="codeinput">topt=Info.Topt;
+yopt=Info.Yopt;
+uopt=Info.Uopt;
+
+close <span class="string">all</span>
+subplot(211)
+stairs(topt,yopt);
+title(<span class="string">'Optimal sequence of predicted outputs'</span>)
+grid
+subplot(212)
+stairs(topt,uopt);
+title(<span class="string">'Optimal sequence of manipulated variables'</span>)
+grid
+xmpc
+</pre><pre class="codeoutput">MPCSTATE object with fields
+          Plant: [-0.0451 0.4922 0.8187 0.0091 -0.3469]
+    Disturbance: -0.0633
+          Noise: [1x0 double]
+       LastMove: 0.3333
+
+</pre><img vspace="5" hspace="5" src="miso_13.png"> <h2>Linearization of MPC controller<a name="41"></a></h2> 
+      <p>When the constraints are not active, the MPC controller behaves like a linear controller. We can then get the state-space
+         form of the MPC controller
+      </p><pre class="codeinput">[LTIMPC,BLr,DLr,BLv,DLv]=ss(MPCobj);
+</pre><p>Get state-space matrices of linearized controller</p><pre class="codeinput">[AL,BL,CL,DL]=ssdata(LTIMPC);
+</pre><p>Simulate linear MPC closed-loop system and compare the linearized MPC controller with the original MPC controller with constraints
+         turned off
+      </p><pre class="codeinput">MPCobj.MV=[]; <span class="comment">% No input constraints</span>
+MPCobj.OV=[]; <span class="comment">% No output constraints</span>
+
+
+Tstop=5;  <span class="comment">%Simulation time</span>
+xL=zeros(size(BL)); <span class="comment">% Initial state of linearized MPC controller</span>
+x=[0 0 0 0 0]';     <span class="comment">% Initial state of plant</span>
+y=0;                <span class="comment">% Initial measured output</span>
+r=1;                <span class="comment">% Output reference set-point</span>
+u=0;                <span class="comment">% Previous input command</span>
+
+YY=[];
+XX=[];
+RR=[];
+
+xmpc=mpcstate(MPCobj);
+<span class="keyword">for</span> t=0:round(Tstop/Ts)-1,
+    YY=[YY,y];
+    XX=[XX,x];
+    v=0;
+    <span class="keyword">if</span> t*Ts&gt;=10,
+        v=1;
+    <span class="keyword">end</span>
+    d=0;
+    <span class="keyword">if</span> t*Ts&gt;=20,
+        d=-0.5;
+    <span class="keyword">end</span>
+    uold=u;
+
+    <span class="comment">% Compute the linear MPC control action</span>
+    u=CL*xL+DL*y+DLr*r+DLv*v;
+
+    <span class="comment">% Compare the input move with the one provided by MPCMOVE</span>
+    uMPC=mpcmove(MPCobj,xmpc,y,r,v);
+    disp(sprintf(<span class="string">'t=%5.2f, input move u=%7.4f (u=%7.4f is provided by MPCMOVE)'</span>,t*Ts,u,uMPC));
+
+    <span class="comment">% Update plant equations</span>
+    x=A*x+B(:,1)*u+B(:,2)*v+B(:,3)*d;
+
+    <span class="comment">% Update controller equations</span>
+    xL=AL*xL+BL*y+BLv*v+BLr*r;
+
+    <span class="comment">% Update output equations</span>
+    y=C*x+D(:,1)*u+D(:,2)*v+D(:,3)*d;
+<span class="keyword">end</span>
+</pre><pre class="codeoutput">t= 0.00, input move u= 5.2478 (u= 5.2478 is provided by MPCMOVE)
+t= 0.20, input move u= 3.0134 (u= 3.0134 is provided by MPCMOVE)
+t= 0.40, input move u= 0.2281 (u= 0.2281 is provided by MPCMOVE)
+t= 0.60, input move u=-0.9952 (u=-0.9952 is provided by MPCMOVE)
+t= 0.80, input move u=-0.8749 (u=-0.8749 is provided by MPCMOVE)
+t= 1.00, input move u=-0.2022 (u=-0.2022 is provided by MPCMOVE)
+t= 1.20, input move u= 0.4459 (u= 0.4459 is provided by MPCMOVE)
+t= 1.40, input move u= 0.8489 (u= 0.8489 is provided by MPCMOVE)
+t= 1.60, input move u= 1.0192 (u= 1.0192 is provided by MPCMOVE)
+t= 1.80, input move u= 1.0511 (u= 1.0511 is provided by MPCMOVE)
+t= 2.00, input move u= 1.0304 (u= 1.0304 is provided by MPCMOVE)
+t= 2.20, input move u= 1.0053 (u= 1.0053 is provided by MPCMOVE)
+t= 2.40, input move u= 0.9920 (u= 0.9920 is provided by MPCMOVE)
+t= 2.60, input move u= 0.9896 (u= 0.9896 is provided by MPCMOVE)
+t= 2.80, input move u= 0.9925 (u= 0.9925 is provided by MPCMOVE)
+t= 3.00, input move u= 0.9964 (u= 0.9964 is provided by MPCMOVE)
+t= 3.20, input move u= 0.9990 (u= 0.9990 is provided by MPCMOVE)
+t= 3.40, input move u= 1.0002 (u= 1.0002 is provided by MPCMOVE)
+t= 3.60, input move u= 1.0004 (u= 1.0004 is provided by MPCMOVE)
+t= 3.80, input move u= 1.0003 (u= 1.0003 is provided by MPCMOVE)
+t= 4.00, input move u= 1.0001 (u= 1.0001 is provided by MPCMOVE)
+t= 4.20, input move u= 1.0000 (u= 1.0000 is provided by MPCMOVE)
+t= 4.40, input move u= 0.9999 (u= 0.9999 is provided by MPCMOVE)
+t= 4.60, input move u= 1.0000 (u= 1.0000 is provided by MPCMOVE)
+t= 4.80, input move u= 1.0000 (u= 1.0000 is provided by MPCMOVE)
+</pre><p>Plot results</p><pre class="codeinput">close <span class="string">all</span>
+plot(0:Ts:Tstop-Ts,YY)
+grid
+</pre><img vspace="5" hspace="5" src="miso_14.png"> <h2>Turning constraints off<a name="46"></a></h2> 
+      <p>Running a closed-loop where all constraints are turned off is easy using SIM. We just specify an option in the SimOptions
+         structure:
+      </p><pre class="codeinput">SimOptions=mpcsimopt(MPCobj);
+SimOptions.Constr=<span class="string">'off'</span>; <span class="comment">% Remove all MPC constraints</span>
+
+SimOptions.Unmeas=d;                          <span class="comment">% unmeasured input disturbance</span>
+</pre><p>Run the closed-loop simulation and plot results</p><pre class="codeinput">close <span class="string">all</span>
+sim(MPCobj,Tf,r,v,SimOptions);
+</pre><img vspace="5" hspace="5" src="miso_15.png"> <img vspace="5" hspace="5" src="miso_16.png"> <h2>MPC simulation using Simulink<a name="49"></a></h2> 
+      <p>MPC can  be also used in a Simulink diagram. Let us recreate the MPC object</p><pre class="codeinput">Model.Disturbance=tf(sqrt(1000),[1 0]);
+p=[];
+m=3;
+MPCobj=mpc(Model,Ts,p,m);
+MPCobj.MV=struct(<span class="string">'Min'</span>,0,<span class="string">'Max'</span>,1,<span class="string">'RateMin'</span>,-10,<span class="string">'RateMax'</span>,10);
+</pre><p>The continuous-time plant to be controlled has the following state-space realization:</p><pre class="codeinput">[A,B,C,D]=ssdata(sys);
+</pre><p>Now simulate closed-loop MPC in Simulink</p><pre class="codeinput">Tstop=30;  <span class="comment">% Simulation time</span>
+</pre><p>Open the simulink diagram 'MPC_MISO.MDL'</p><pre class="codeinput">mpc_miso
+</pre><img vspace="5" hspace="5" src="miso_17.png">&nbsp;&nbsp;&nbsp;&nbsp; <p>Run simulation</p><pre class="codeinput">sim(<span class="string">'mpc_miso'</span>,Tstop)
+</pre>
+      <p>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      manipulated 
+      variable&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      measured output and reference<br>
+      <img vspace="5" hspace="5" src="miso_23.png"><img vspace="5" hspace="5" src="miso_24.png" width="262" height="227"> &nbsp;<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      measured disturbance&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      unmeasured disturbance<br>
+      <img vspace="5" hspace="5" src="miso_22.png"><img vspace="5" hspace="5" src="miso_25.png"></p>
+ <h2>Specifying a measurement noise model<a name="55"></a></h2> 
+      <p>Let's say we know that output measurements are affected by a sinusoidal measurement noise of frequency 0.1 Hz. We want to 
+         inform the MPC object about this so that state estimates can be improved 
+      </p><pre class="codeinput">omega=2*pi/10;
+MPCobj.Model.Noise=0.5*tf(omega^2,[1 0 omega^2]);
+</pre><p>We also revised the MPC design</p><pre class="codeinput">MPCobj.Model.Disturbance=.1; <span class="comment">% Model for unmeasured disturbance = white Gaussian noise with zero mean and variance 0.01</span>
+MPCobj.weights=struct(<span class="string">'MV'</span>,0,<span class="string">'MVRate'</span>,0.1,<span class="string">'OV'</span>,.005);
+MPCobj.predictionhorizon=40;
+MPCobj.controlhorizon=3;
+</pre><p>Open the simulink diagram 'MPC_MISONOISE.MDL'</p><pre class="codeinput">mpc_misonoise
+
+Tstop=150;  <span class="comment">%Simulation time</span>
+</pre><img vspace="5" hspace="5" src="miso_26.png">&nbsp;&nbsp;&nbsp;&nbsp; <p>Run simulation</p><pre class="codeinput">sim(<span class="string">'mpc_misonoise'</span>,Tstop);
+</pre>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      manipulated 
+      variable&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      measured output and reference<br>
+      &nbsp; <img vspace="5" hspace="5" src="miso_32.png"> <img vspace="5" hspace="5" src="miso_33.png" width="262" height="227"> <br> 
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      measured 
+      disturbance&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+      unmeasured disturbance<br>
+      &nbsp;<img vspace="5" hspace="5" src="miso_31.png"><img vspace="5" hspace="5" src="miso_34.png"> <p class="footer">Copyright 1990-2004 The MathWorks, Inc.<br> 
+         Published with MATLAB&reg; 7.0<br></p> 
+      <!--
+##### SOURCE BEGIN #####
+%% MPC Control of a Multi-Input Single-Output system
+
+%%
+% This demonstration shows several features of the MPC toolbox on a test
+% system with one measured output, one manipulated variable, one measured
+% disturbance, and one unmeasured disturbance.
+%
+% Author: A. Bemporad
+% Copyright 1990-2004 The MathWorks, Inc.  
+% $Revision: 1.1.4.1 $ 
+
+%% MPC controller setup
+
+%%
+% We start defining the plant to be controlled
+sys=ss(tf({1,1,1},{[1 .5 1],[1 1],[.7 .5 1]}));
+
+%%
+% Now, setup an MPC controller object
+Ts=.2;             % sampling time
+model=c2d(sys,Ts); % prediction model
+
+%%
+% Define type of input signals: the first signal is a manipulated variable,
+% the second signal is a measured disturbance, the third one is an
+% unmeasured disturbance
+model=setmpcsignals(model,'MV',1,'MD',2,'UD',3);
+
+%%
+% Define the structure of models used by the MPC controller
+Model=[]; % reset structure Model
+Model.Plant=model;
+% Disturbance model: Integrator driven by white noise with variance=1000
+Model.Disturbance=tf(sqrt(1000),[1 0]); 
+ 
+%%
+% Define prediction and control horizons
+p=[];       % prediction horizon (take default one)
+m=3;        % control horizon 
+
+%% 
+% Let us assume default value for weights and build the MPC object
+MPCobj=mpc(Model,Ts,p,m);
+
+%%
+% Define constraints on the manipulated variable
+MPCobj.MV=struct('Min',0,'Max',1,'RateMin',-10,'RateMax',10);
+
+%% Closed-loop MPC simulation using the command SIM
+
+Tstop=30;           % simulation time
+
+Tf=round(Tstop/Ts); % number of simulation steps
+r=ones(Tf,1);       % reference trajectory
+v=[zeros(Tf/3,1);ones(2*Tf/3,1)];         % measured disturbance trajectory
+
+%%
+% Run the closed-loop simulation and plot results
+close all
+sim(MPCobj,Tf,r,v);
+
+%%
+% We want to specify disturbance and noise signals. In order to do this,
+% we create the MPC simulation object 'SimOptions'
+d=[zeros(2*Tf/3,1);-0.5*ones(Tf/3,1)];        % unmeasured disturbance trajectory
+
+SimOptions=mpcsimopt(MPCobj);
+SimOptions.Unmeas=d;                          % unmeasured input disturbance
+SimOptions.OutputNoise=.001*(rand(Tf,1)-.5);  % output measurement noise
+SimOptions.InputNoise=.05*(rand(Tf,1)-.5);    % noise on manipulated variables
+
+%%
+% Run the closed-loop simulation and save the results to workspace
+[y,t,u,xp,xmpc]=sim(MPCobj,Tf,r,v,SimOptions);
+
+%%
+% Plot results
+close all
+subplot(211)
+plot(0:Tf-1,y,0:Tf-1,r)
+title('Output');
+grid
+subplot(212)
+plot(0:Tf-1,u)
+title('Input');
+grid
+
+%% Closed-loop MPC simulation under model mismatch
+
+%%
+% We now want to test the robustness of the MPC controller against a model
+% mismatch. Assume the true plant generating the data is the following:
+simModel=ss(tf({1,1,1},{[1 .8 1],[1 2],[.6 .6 1]}));
+simModel=setmpcsignals(simModel,'MV',1,'MD',2,'UD',3);
+simModel=struct('Plant',simModel);
+simModel.Nominal.Y=0.1; % The nominal value of the output of the true plant is 0.1
+simModel.Nominal.X=-.1*[1 1 1 1 1];
+
+SimOptions.Model=simModel;
+SimOptions.plantinit=[0.1 0 -0.1 0 .05]; % Initial state of the true plant
+SimOptions.OutputNoise=[];  % remove output measurement noise
+SimOptions.InputNoise=[];   % remove noise on manipulated variables
+
+close all
+sim(MPCobj,Tf,r,v,SimOptions);
+
+%% Softening the constraints
+
+%% 
+% Let us now relax the constraints on manipulated variables
+MPCobj.MV.MinECR=1;  
+MPCobj.MV.MaxECR=1;
+
+% Keep constraints on manipulated variable rates as hard constraints
+MPCobj.MV.RateMinECR=0;
+MPCobj.MV.RateMaxECR=0;
+
+%%
+% Define an output constraint
+MPCobj.OV=struct('Max',1.1);
+%%
+% and soften it
+MPCobj.OV.MaxECR=1;  
+
+%%
+% Run a new closed-loop simulation
+close all
+sim(MPCobj,Tf,r,v);
+
+%%
+% Input constraints have been slightly violated, output constraints have
+% been quite violated. Let us penalize more output constraints and rerun
+% the simulation
+
+MPCobj.OV.MaxECR=0.001;  % The closer to zero, the harder the constraint
+close all
+sim(MPCobj,Tf,r,v);
+
+
+%% User-specified state estimator
+
+%%
+% The MPC toolbox is using by default a Kalman filter to estimate the state
+% of plant, disturbance, and noise models. We may want to provide our own
+% observer.
+
+%% 
+% Let us first retrieve the default estimator gain (Kalman gain) and 
+% state-space matrices
+[M,A1,Cm1]=getestim(MPCobj);
+
+%%
+% The default observer poles are:
+e=eig(A1-A1*M*Cm1);
+fprintf('\nDefault observer poles: [%s]\n',sprintf('%5.4f ',e));
+
+%%
+% We design now a state estimator for the MPC controller by pole-placement
+
+poles=[.8 .75 .7 .85 .6 .81];
+%poles=3*[.10 .11 .12 .13 .14 .15];  % Fast observer
+
+L=place(A1',Cm1',poles)';
+M=A1\L;
+setestim(MPCobj,M);  % (the gain M is stored inside the MPC object)
+
+%% Open-loop simulation
+
+%%
+% Testing the behavior of the prediction model in open-loop is easy using
+% method SIM. We must set the 'OpenLoop' flag on, and provide the sequence
+% of manipulated variables that excite the system
+
+SimOptions.OpenLoop='on';
+
+SimOptions.MVSignal=sin([0:Tf-1]'/10); 
+
+%%
+% As the reference signal will be ignored, we can avoid specifying it
+
+close all
+sim(MPCobj,Tf,[],v,SimOptions);
+
+%% Checking asymptotic properties
+
+%%
+% How can we know if the designed MPC controller will be able to reject
+% constant output disturbances and track constant set-point with zero
+% offsets in steady-state ? We can compute the DC gain from output 
+% disturbances to controlled outputs using CLOFFSET
+
+DC=cloffset(MPCobj);
+disp(sprintf('DC gain from output disturbance to output = %5.8f (=%g) \n',DC,DC));
+
+%%
+% A zero gain means that the output will track the desired set-point
+
+
+%% MPC control action (step-by-step simulation)
+
+%%
+% We may just want to compute the MPC control action inside our simulation
+% code. Let's see an example.
+
+%%
+% First we get the discrete-time state-space matrices of the plant
+[A,B,C,D]=ssdata(model);
+
+Tstop=30;  %Simulation time
+
+x=[0 0 0 0 0]';         % Initial state of the plant
+xmpc=mpcstate(MPCobj);  % Initial state of the MPC controller
+r=1;                    % Output reference trajectory
+
+%%
+% We store the closed-loop MPC trajectories in arrays YY,UU,XX,RR
+YY=[];
+UU=[];
+XX=[];
+RR=[];
+
+%%
+% Main simulation loop
+for t=0:round(Tstop/Ts)-1,
+    XX=[XX,x];
+    
+    % Define measured disturbance signal
+    v=0;
+    if t*Ts>=10,
+        v=1;
+    end
+        
+    % Define unmeasured disturbance signal
+    d=0;
+    if t*Ts>=20,
+       d=-0.5;
+    end
+    
+    % Plant equations: output update  (note: no feedthrough from MV to Y, D(:,1)=0)
+    y=C*x+D(:,2)*v+D(:,3)*d;
+    YY=[YY,y];
+    
+    % Compute MPC law
+    u=mpcmove(MPCobj,xmpc,y,r,v);
+    
+    % Plant equations: state update
+    x=A*x+B(:,1)*u+B(:,2)*v+B(:,3)*d;
+  
+    UU=[UU,u];
+end
+
+% Plot results
+close all
+subplot(211)
+plot(0:Ts:Tstop-Ts,YY)
+grid
+title('Output');
+subplot(212)
+plot(0:Ts:Tstop-Ts,UU)
+grid
+title('Input');
+
+%%
+% If at any time during the simulation we want to check the optimal
+% predicted trajectories, we can use an extended version of MPCMOVE.
+% Assume we want to start from the current state and have a set-point
+% change to 0.5, and assume the measured disturbance has disappeared
+
+r=0.5;
+v=0;
+[u,Info]=mpcmove(MPCobj,xmpc,y,r,v);
+    
+%%
+% We now extract the optimal predicted trajectories
+topt=Info.Topt;
+yopt=Info.Yopt;
+uopt=Info.Uopt;
+
+close all
+subplot(211)
+stairs(topt,yopt);
+title('Optimal sequence of predicted outputs')
+grid
+subplot(212)
+stairs(topt,uopt);
+title('Optimal sequence of manipulated variables')
+grid
+xmpc
+
+%% Linearization of MPC controller
+
+%%
+% When the constraints are not active, the MPC controller behaves like a
+% linear controller. We can then get the state-space form of the MPC 
+% controller 
+[LTIMPC,BLr,DLr,BLv,DLv]=ss(MPCobj);
+
+%%
+% Get state-space matrices of linearized controller
+[AL,BL,CL,DL]=ssdata(LTIMPC);
+
+%%
+% Simulate linear MPC closed-loop system and compare the linearized MPC 
+% controller with the original MPC controller with constraints turned off
+
+MPCobj.MV=[]; % No input constraints
+MPCobj.OV=[]; % No output constraints
+
+
+Tstop=5;  %Simulation time
+xL=zeros(size(BL)); % Initial state of linearized MPC controller
+x=[0 0 0 0 0]';     % Initial state of plant
+y=0;                % Initial measured output
+r=1;                % Output reference set-point
+u=0;                % Previous input command
+
+YY=[];
+XX=[];
+RR=[];
+
+xmpc=mpcstate(MPCobj);  
+for t=0:round(Tstop/Ts)-1,
+    YY=[YY,y];
+    XX=[XX,x];
+    v=0;
+    if t*Ts>=10,
+        v=1;
+    end
+    d=0;
+    if t*Ts>=20,
+        d=-0.5;
+    end
+    uold=u;
+    
+    % Compute the linear MPC control action
+    u=CL*xL+DL*y+DLr*r+DLv*v;
+    
+    % Compare the input move with the one provided by MPCMOVE
+    uMPC=mpcmove(MPCobj,xmpc,y,r,v);
+    disp(sprintf('t=%5.2f, input move u=%7.4f (u=%7.4f is provided by MPCMOVE)',t*Ts,u,uMPC));
+    
+    % Update plant equations
+    x=A*x+B(:,1)*u+B(:,2)*v+B(:,3)*d;
+
+    % Update controller equations
+    xL=AL*xL+BL*y+BLv*v+BLr*r;
+
+    % Update output equations
+    y=C*x+D(:,1)*u+D(:,2)*v+D(:,3)*d;
+end
+
+%%
+% Plot results
+close all
+plot(0:Ts:Tstop-Ts,YY)
+grid
+
+%% Turning constraints off
+
+%% 
+% Running a closed-loop where all constraints are turned off is easy using
+% SIM. We just specify an option in the SimOptions structure:
+
+SimOptions=mpcsimopt(MPCobj);
+SimOptions.Constr='off'; % Remove all MPC constraints
+
+SimOptions.Unmeas=d;                          % unmeasured input disturbance
+
+%%
+% Run the closed-loop simulation and plot results
+close all
+sim(MPCobj,Tf,r,v,SimOptions);
+
+
+%% MPC simulation using Simulink
+
+%%
+% MPC can  be also used in a Simulink diagram. Let us recreate the MPC
+% object
+
+Model.Disturbance=tf(sqrt(1000),[1 0]); 
+p=[];
+m=3;
+MPCobj=mpc(Model,Ts,p,m);
+MPCobj.MV=struct('Min',0,'Max',1,'RateMin',-10,'RateMax',10);
+
+%%
+% The continuous-time plant to be controlled has the following state-space
+% realization:
+[A,B,C,D]=ssdata(sys);
+
+%%
+% Now simulate closed-loop MPC in Simulink
+
+Tstop=30;  % Simulation time
+
+%%
+% Open the simulink diagram 'MPC_MISO.MDL'
+mpc_miso   
+
+%%
+% Run simulation
+sim('mpc_miso',Tstop) 
+
+
+%% Specifying a measurement noise model
+
+%%
+% Let's say we know that output measurements are affected by a sinusoidal
+% measurement noise of frequency 0.1 Hz. We want to inform the MPC object
+% about this so that state estimates can be improved
+
+omega=2*pi/10;
+MPCobj.Model.Noise=0.5*tf(omega^2,[1 0 omega^2]);
+
+%%
+% We also revised the MPC design
+MPCobj.Model.Disturbance=.1; % Model for unmeasured disturbance = white Gaussian noise with zero mean and variance 0.01
+MPCobj.weights=struct('MV',0,'MVRate',0.1,'OV',.005);
+MPCobj.predictionhorizon=40;
+MPCobj.controlhorizon=3;
+
+%%
+% Open the simulink diagram 'MPC_MISONOISE.MDL'
+mpc_misonoise
+
+Tstop=150;  %Simulation time
+%%
+% Run simulation
+sim('mpc_misonoise',Tstop);
+##### SOURCE END #####
+-->
+   </body>
+</html>

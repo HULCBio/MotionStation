@@ -1,0 +1,136 @@
+%% ============================================================================
+%% $RCSfile: formatbody.tlc,v $
+%% $Revision: 1.8.4.10 $
+%% $Date: 2004/04/14 23:48:13 $
+%%
+%% Abstract:
+%%   This file gets the cached body code and formats it into the
+%%   CompiledModel.ModelFiles fields
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%selectfile NULL_FILE
+
+%% ============================================================================
+%% This file is responsible for generating the model.c file for the various 
+%% code formats. Currently supported code formats are:
+%% grt, grt_malloc, s-function (with accelerator)
+%%
+
+%if EXISTS("_FORMATBODY_") == 0
+%assign _FORMATBODY_ = 1
+
+%realformat "CONCISE"
+
+%% Function: SLibFormatBody ====================================================
+%% Abstract:
+%%   Function to create and cache the model.c file sections.
+%%
+%function SLibFormatBody() void
+  %assign isSfcnFmt            = (CodeFormat == "S-Function")
+  %assign isSfcnFmtAndNotAccel = isSfcnFmt && !Accelerator
+  %assign opFile = GetBaseFile("SystemBody")
+  
+  %if !IsModelReferenceTarget()
+    
+    %% Banner
+    %openfile tmpBuf
+  
+    %%
+    %% For Accelerator generate a comment about the appearance of
+    %% symbols based on RTW license
+    %%
+    %if Accelerator
+      %<LibGetAccelDisclaimer()>
+    %endif
+  
+    /*
+    * %<Name>.c
+    * 
+    %<SLibCommonHeaderInfo()>\
+    */
+    %closefile tmpBuf
+    %<SLibSetModelFileAttribute(opFile, "Banner", tmpBuf)>
+  
+    %% Necessary includes
+    %openfile tmpBuf
+    %if CodeFormat != "Embedded-C"
+      #include <math.h>
+      #include <string.h>
+    %endif
+    #include "%<Name>.h"
+    #include "%<Name>_private.h"
+    %if ExtMode
+      #include "ext_work.h"
+    %endif
+    %closefile tmpBuf
+    %<SLibSetModelFileAttribute(opFile, "Includes", tmpBuf)>
+  
+    %%
+    %% RTW global variables
+    %%  o Non-finites are in memory (S-function)
+    %%  o Grounds may be in memory
+    %%
+    %openfile tmpBuf
+    %if isSfcnFmtAndNotAccel
+      %% 
+      %% Create a fake access to nan so that the side-effect of the function causes
+      %% declaration of non-finites
+      %%
+      %assign nanVariable = LibRealNonFinite("nan")
+      
+      #if defined(MATLAB_MEX_FILE)
+      #include "rt_nonfinite.c"
+      #endif
+    %endif
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %<SLibSetModelFileAttribute(opFile, "Declarations", tmpBuf)>
+    %endif
+  
+    %%
+    %% Extern function prototype
+    %%
+    %if isSfcnFmtAndNotAccel
+      %<SLibSetSfcnExternProtos(OrigName, opFile)>
+    %endif
+  %endif %% %if !IsModelReferenceTarget()
+  
+  
+  %% This buffer may contains variable definition, and therefore,
+  %% must be dumped before root system functions
+  %% 
+  %openfile tmpBuf
+  %<SLibDumpSourceCodeCache()>\
+  %closefile tmpBuf
+  %<SLibSetModelFileAttribute(opFile, "Functions", tmpBuf)>
+  
+  %% We need to dump ground declarations for model reference too
+  %<SLibSetModelFileAttribute(opFile, "Declarations", LibDumpGroundDeclarations(0))>
+  
+  %% Perform S-Function parameter packaging for S-Function target
+  %% (adds mxClassOfVar to ModelParameters ==> used in SLibGetSystemBodyCache)
+  %if CodeFormat == "S-Function" && !Accelerator
+    %<SLibSfcnParams()>
+  %endif
+  
+  %%
+  %% Place code for all systems (including root) into ModelFiles
+  %%
+  %if CodeFormat == "Embedded-C"
+    %assign autoFunctions = SLibErtAutoFunctions()
+  %else
+    %openfile autoFunctions
+    %foreach sysIdx = NumSystems
+      %<SLibGetSystemBodyCache(System[sysIdx])>\
+    %endforeach
+    %closefile autoFunctions
+  %endif
+  
+  %assert (!IsModelReferenceTarget() || WHITE_SPACE(autoFunctions))
+  %<SLibSetModelFileAttribute(opFile, "Functions", autoFunctions)>
+%endfunction  
+
+%endif %% _FORMATBODY_
+
+%% [EOF] formatbody.tlc

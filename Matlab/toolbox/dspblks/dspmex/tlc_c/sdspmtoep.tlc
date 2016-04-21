@@ -1,0 +1,149 @@
+%% $RCSfile: sdspmtoep.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:09:10 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Construct a Toeplitz Matrix 
+
+%implements sdspmtoep "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Symmetric")>
+  %%
+%endfunction 
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Toeplitz (%<ParamSettings.FunctionName>) - %<Name> */  
+  %%
+  %assign INPORT0   = 0
+  %assign OUTPORT   = 0
+  %%
+  %if !IsInputPortContiguous(block,INPORT0)
+    %<LibDiscontiguousInputError(block)>
+  %endif 
+  %%
+  %assign symmetric = LibBlockParameterValue(Symmetric,0) == 1
+  %assign cplx_R    = (LibBlockInputSignalIsComplex(INPORT0) != 0)
+  %assign cplx_Y    = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)  
+  %assign dtype_R   = cplx_R ? "creal_T" : "real_T"  
+  %assign dtype_Y   = cplx_Y ? "creal_T" : "real_T"  
+  %assign LengthR   = LibDataInputPortWidth(INPORT0)
+
+  %%
+  %if symmetric
+    %% One input port - a row
+    %%
+    /* SYMMETRIC: */
+    {
+      %<dtype_R> *row = %<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dtype_Y> *y   = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+      int_T  i;
+      
+      for(i=0; i<%<LengthR>; i++) {
+	%<dtype_R> *u1  = row++;
+	int_T      idx = i;
+	int_T      j;
+	
+	for(j=0; j<%<LengthR>; j++) {
+	  %if !cplx_R
+	    %%
+	    %% REAL
+	    %%
+	    if ((--idx) < 0) {
+	      *y++ = *u1++;
+	    } else {
+	      *y++ = *u1--;
+	    }
+	  %else
+	    %%
+	    %% COMPLEX
+	    %%
+	    /*
+	     * Transfer the real part.
+	     * Take negative of imag part if we're in the lower triangle
+	     */
+	    y->re = u1->re;
+	    if ((--idx) < 0) {
+	      (y++)->im = (i<j) ? -((u1++)->im) : (u1++)->im;
+	    } else {
+	      (y++)->im = (i<j) ? -((u1--)->im) : (u1--)->im;
+	    }
+	  %endif
+	} %% while
+      } %% for
+    }
+    %else
+      %% Two input ports - one row, one column
+      %assign INPORT1 = 1
+      %%
+      %if !IsInputPortContiguous(block,INPORT1)
+	%<LibDiscontiguousInputError(block)>
+      %endif 
+      %%
+      %assign cplx_C  = (LibBlockInputSignalIsComplex(INPORT1) != 0)
+      %assign dtype_C = cplx_C ? "creal_T" : "real_T"  
+      %assign LengthC = LibDataInputPortWidth(INPORT1)
+      %%
+      /* ASYMMETRIC:
+      * row only effects the upper triangle of the matrix 
+      * col wins the diagonal conflict if row(1) ~= col(1)
+      * so we can ignore the first element of row 
+      */
+      {	 
+      %<dtype_R> *row = %<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dtype_C> *col = %<LibBlockInputSignalAddr(INPORT1, "", "", 0)>;
+      %<dtype_Y> *y   = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+      int_T  i;
+      
+      for(i=0; i<%<LengthC>; i++) {
+	%<dtype_C> *c1  = col++; /* reset to start at next element of col */
+	%<dtype_R> *r1  = row;   /* reset to start row */
+	int_T       j;
+	
+	for(j=0; j<%<LengthR>; j++) {
+	  %if (cplx_C && cplx_R) || (!cplx_C && !cplx_R)
+	    %%
+	    %% Both inputs the same type
+	    %%
+	    *y++ = (i <= j) ? *r1++ : *c1--;
+	    %%
+	  %elseif (!cplx_C && cplx_R)
+	    %%
+	    %% Real C and Complex R
+	    %%
+	    if(i<=j) {
+	      *y++ = *r1++;	      
+	    } else {
+	      y->re     = *c1--;
+	      (y++)->im = 0.0;      /* Real only */
+	    }	    
+	  %elseif (cplx_C && !cplx_R)
+	    %%
+	    %% Complex C and Real R
+	    %%
+	    if(i<=j) {
+	      y->re     = *r1++;
+	      (y++)->im = 0.0;      /* Real only */	      
+	    } else {
+	      *y++ = *c1--;
+	    }
+	  %else
+	    %error Unhandled input complexity case for Asymetric Toeplitz.
+	  %endif
+	}
+      }
+    }
+  %endif  
+
+%endfunction
+
+%% [EOF] sdspdotp.tlc

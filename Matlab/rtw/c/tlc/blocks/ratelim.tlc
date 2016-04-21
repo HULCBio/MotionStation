@@ -1,0 +1,1190 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Rate Limiter block target file
+%%
+
+%implements RateLimiter "C"
+
+%% Function: DiscreteUpdateFcn ==========================================
+%%
+%% Abstract:
+%%
+%function DiscreteUpdateFcn(y, dTypeName) Output
+  %%
+  %assign y = LibBlockOutputSignal(0, "", "", 0)
+  %%
+  (void)memcpy(&(%<LibBlockDWork(DWork[0], "", "", 0)>), &(%<y>), %<LibBlockOutputSignalWidth(0)>*sizeof(%<dTypeName>));
+  %%
+%endfunction
+
+
+%% Function: FcnParamIsZero ==========================================
+%%
+%% Abstract:
+%%
+%function FcnParamIsZero(param) void
+  %%
+  %assign paramIsZero = 1
+  %%
+  %if SLibBlockParameterIsTunable(param)
+    %%
+    %assign paramIsZero = 0
+    %%
+  %else
+    %%
+    %assign paramSize = LibBlockParameterSize(param)
+    %%
+    %foreach paramIdx = paramSize[1]
+      %%
+      %assign paramValue = LibBlockParameterValue(param, paramIdx)
+      %%
+      %if !FixPt_IsZeroNumericOrString(paramValue)
+	%assign paramIsZero = 0
+	%break
+      %endif
+      %%
+    %endforeach
+    %%    
+  %endif
+  %%
+  %return paramIsZero
+  %%
+%endfunction
+
+%% Function: FcnComputeSignedAtimesX ==========================================
+%%
+%% Abstract:
+%%
+%function FcnAddSignRemoveZeroLim(lim) void
+  %if FixPt_IsZeroNumericOrString(lim)
+    %return ""
+  %else
+    %return "+%<lim>"
+  %endif
+%endfunction %% FcnRemoveZeroLim
+
+
+%% Function: FcnComputeAtimesX ================================================
+%%
+%% Abstract:
+%%
+%function FcnComputeAtimesX(a,x) void
+  %if TYPE(a) == "Real"
+    %if a == 0.0
+     %return ""
+    %elseif a == 1.0
+      %return "+ %<x>"
+    %elseif a == -1.0
+      %return "- %<x>"
+    %else
+      %return "%<a>*%<x>"
+    %endif
+  %else
+    %return "%<a>*%<x>"
+  %endif
+%endfunction %% FcnComputeAtimesX
+
+
+%% Function: FcnComputeSignedAtimesX ==========================================
+%%
+%% Abstract:
+%%
+%function FcnComputeSignedAtimesX(a,x) void
+  %if TYPE(a) == "Real"
+    %if a == 0.0
+     %return ""
+    %elseif a == 1.0
+      %return "+ %<x>"
+    %elseif a == -1.0
+      %return "- %<x>"
+    %elseif a < 0.0
+      %return "%<a>*%<x>"
+    %else
+      %return "+ %<a>*%<x>"
+    %endif
+  %else
+    %return "+ %<a>*%<x>"
+  %endif
+%endfunction %% FcnComputeSignedAtimesX
+
+
+%% Function: BlockTypeSetup ===================================================
+%% Abstract:
+%%      Cache the function for accessing the alternating output banks
+%%
+%function BlockTypeSetup(block, system) void
+
+  %if SolverType == "VariableStep"
+    %openfile codeBuffer
+
+    /* Function: rt_GetBankPointer ============================================
+     * Abstract:
+     *      Get a pointer to the beginning of the appropriate bank.  
+     *      Return NULL if no data history is available.
+  
+     * Returns:
+     *      NULL - no data history is available
+     *      Address to most current output bank
+     */
+    void rt_GetBankPointer(double t, double *TimeA, double *TimeB,
+                           void* pLastA, void* pLastB, 
+			   double** pLastT, void** pLastY)
+    {
+        double  timeStampA = *TimeA;
+        double  timeStampB = *TimeB;
+  
+        if ((timeStampA >= t) && (timeStampB >= t)) {
+            *pLastT = NULL; /* no previous points */
+	    *pLastY = NULL;
+        } else {
+            /*
+             * Choose the appropriate bank
+             */
+            if (timeStampA < timeStampB) {
+                if (timeStampB < t) {
+                    *pLastT = TimeB;                /* use B */
+		    *pLastY = pLastB;
+                } else { /* timeStampB == t */
+                    *pLastT = TimeA;                /* use A */
+		    *pLastY = pLastA;
+                }
+            } else {     /* timeStampB <= timeStampA */
+                if (timeStampA < t) {
+                    *pLastT = TimeA;                /* use A */
+		    *pLastY = pLastA;
+                } else { /* timeStampA == t */
+                    *pLastT = TimeB;                /* use B */
+		    *pLastY = pLastB;
+                }
+            }
+        }
+  
+    } /* end rt_GetBankPointer */
+
+    %closefile codeBuffer
+    %<SLibCacheSourceCode(codeBuffer)>
+  %endif
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %if block.InFixptMode
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>
+    %%
+  %else
+    %%
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+  %%
+%endfunction
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Invalidate the stored  (in rwork[1 ... 2*blockWidth]) values of output
+%%      and input by setting the time stamp (stored in rwork[0]) to rtInf.
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  /* %<Type> Block: %<Name> */
+  %%
+  %if !LibIsContinuous(TID)
+    %% discrete
+    %assign icWidth = LibBlockParameterSize(InitialCondition)
+    %%
+    %assign dworkWidth = LibBlockOutputSignalWidth(0)
+    %%
+    %if icWidth[1] == dworkWidth && SLibBlockParameterIsTunable(InitialCondition)
+      %%
+      %assign ic = LibBlockParameter(InitialCondition, "", "", 0)
+      %%
+      %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+      %%
+      (void)memcpy(&%<LibBlockDWork(DWork[0], "", "", 0)>, &%<ic>, %<dworkWidth>*sizeof(%<dTypeName>));
+      %%
+    %else
+      %% scalar expansion
+      %%
+      %assign rollVars = ["<param>/InitialCondition", "<dwork>/DWORK1"]
+      %%
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+	%%
+	%assign ic = LibBlockParameter(InitialCondition, "", lcv, idx)
+	%%
+	%<lastY> = %<ic>;
+	%%
+      %endroll
+      %%
+    %endif
+    %%
+  %else
+    %% continuous
+    %if SolverType == "FixedStep"
+      %<LibBlockRWork(Time, "", "", 0)> = %<LibRealNonFinite(inf)>;
+    %else %% Variable step 
+      %<LibBlockRWork(TimeA, "", "", 0)> = %<LibRealNonFinite(inf)>;
+      %<LibBlockRWork(TimeB, "", "", 0)> = %<LibRealNonFinite(inf)>;
+    %endif
+    %%
+  %endif
+  %%
+%endfunction %% InitializeConditions
+
+
+%% Function: ContinuousOutput ===========================================================
+%%
+%% Abstract:
+%%	Limit the rate of change of a signal.  This is done by computing the
+%%      derivative output signal using:
+%%
+%%          rate = (u(i) - u(i-1))/deltaT
+%%
+%%          if rate < fallingLimit
+%%              y(i) = y(i-1) + deltaT * fallingRateLimit
+%%          else if rate > risingLimit
+%%              y(i) = y(i-1) + deltaT * risingRateLimit
+%%          else
+%%	        y(i) = y(i-1) + (u(i) - u(i-1))
+%%
+%function ContinuousOutputs(block, system) Output
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %if SolverType == "FixedStep"
+    %assign prevT = LibBlockRWork(Time, "", "", 0)
+  if (%<prevT> == %<LibRealNonFinite(inf)>) {
+    %assign rollVars = ["U", "Y"]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal( 0, "", lcv, idx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+      %<y> = %<u>;
+    %endroll
+  } else {
+    {
+      %<dTypeName> deltaT = (%<dTypeName>)(%<LibGetTaskTimeFromTID(block)> - %<prevT>);
+      %<dTypeName> rtRateLimiterRate;
+      %assign noutputs = LibBlockOutputSignalWidth(0)
+      %assign incRateWidth = SIZE(RisingSlewLimit.Value, 1)
+      %if incRateWidth < noutputs
+        %assign incRate = LibBlockParameter(RisingSlewLimit,"","",0)
+        %assign incStr = FcnComputeAtimesX(incRate,"deltaT")
+        %if incStr != ""
+          %<dTypeName> incVal = %<incStr>;
+          %assign incStr = "+incVal"
+        %endif
+      %endif
+      %assign decRateWidth = SIZE(FallingSlewLimit.Value, 1)
+      %if decRateWidth < noutputs
+        %assign decRate = LibBlockParameter(FallingSlewLimit,"","",0)
+        %assign decStr = FcnComputeAtimesX(decRate,"deltaT")
+        %if decStr != ""
+          %<dTypeName> decVal = %<decStr>;
+          %assign decStr = "+decVal"
+        %endif
+      %endif
+  
+    \
+      %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+	"<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+        %assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+        %assign u = LibBlockInputSignal(0, "", lcv, idx)
+        %%
+        %if incRateWidth == noutputs
+          %assign incRate = LibBlockParameter(RisingSlewLimit, "", lcv, idx)
+          %assign incStr = FcnComputeSignedAtimesX(incRate,"deltaT")
+        %endif
+        %%
+        %if decRateWidth == noutputs
+          %assign decRate = LibBlockParameter(FallingSlewLimit, "", lcv, idx)
+          %assign decStr = FcnComputeSignedAtimesX(decRate,"deltaT")
+        %endif
+        %%
+        rtRateLimiterRate = (%<u> - %<lastY>)/deltaT;
+        if (rtRateLimiterRate > %<incRate>) {
+          %<y> = %<lastY> %<incStr>;
+        } else if (rtRateLimiterRate < %<decRate>) {
+          %<y> = %<lastY> %<decStr>;
+        } else {
+          %<y> = %<u>;
+        }
+      %endroll
+    }
+  }
+  %else
+    %% Using Variable-step solver
+    %assign timeStampA = LibBlockRWork(TimeA, "", "", 0)
+    %assign timeStampB = LibBlockRWork(TimeB, "", "", 0)
+    %assign t          = LibGetTaskTimeFromTID(block)
+    {
+       double*       pLastT = NULL;
+       %<dTypeName>* pLastY = NULL;
+       %<dTypeName>* pLastA = &%<LibBlockDWork(DWork[0],"","",0)>;
+       %<dTypeName>* pLastB = &%<LibBlockDWork(DWork[1],"","",0)>;
+       
+       rt_GetBankPointer(%<t>, &%<timeStampA>, &%<timeStampB>,
+                         pLastA, pLastB,
+                         &pLastT, (void **)&pLastY);
+
+      if (pLastT == NULL) {
+        /* no data in storage bank - pass through input */
+        %assign rollVars = ["U", "Y"]
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+          %assign u = LibBlockInputSignal(0, "", lcv, idx)
+          %<y> = %<u>;
+        %endroll
+      } else {
+
+        %<dTypeName> deltaT = (%<dTypeName>)(%<t> - *pLastT);
+        %<dTypeName> rtRateLimiterRate;
+
+        %assign noutputs = LibBlockOutputSignalWidth(0)
+        %assign incRateWidth = SIZE(RisingSlewLimit.Value, 1)
+        %if incRateWidth < noutputs
+          %assign incRate = LibBlockParameter(RisingSlewLimit,"","",0)
+          %assign incStr = FcnComputeAtimesX(incRate,"deltaT")
+          %if incStr != ""
+            %<dTypeName> incVal = %<incStr>;
+            %assign incStr = "+incVal"
+          %endif
+        %endif
+        %assign decRateWidth = SIZE(FallingSlewLimit.Value, 1)
+        %if decRateWidth < noutputs
+          %assign decRate = LibBlockParameter(FallingSlewLimit,"","",0)
+          %assign decStr = FcnComputeAtimesX(decRate,"deltaT")
+          %if decStr != ""
+            %<dTypeName> decVal = %<decStr>;
+            %assign decStr = "+decVal"
+          %endif
+        %endif
+        %%
+        %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+	  "<param>/FallingSlewLimit"]
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+          %assign u = LibBlockInputSignal(0, "", lcv, idx)
+          %%
+          %if incRateWidth == noutputs
+            %assign incRate = LibBlockParameter(RisingSlewLimit, "", lcv, idx)
+            %assign incStr = FcnComputeSignedAtimesX(incRate,"deltaT")
+          %endif
+          %%
+          %if decRateWidth == noutputs
+            %assign decRate = LibBlockParameter(FallingSlewLimit, "", lcv, idx)
+            %assign decStr = FcnComputeSignedAtimesX(decRate,"deltaT")
+          %endif
+          %%
+          rtRateLimiterRate = (%<u> - *pLastY)/deltaT;
+          if (rtRateLimiterRate > %<incRate>) {
+            %<y> = *pLastY %<incStr>;
+          } else if (rtRateLimiterRate < %<decRate>) {
+            %<y> = *pLastY %<decStr>;
+          } else {
+            %<y> = %<u>;
+          }
+          pLastY++;
+        %endroll
+      }
+    }
+  %endif
+
+%endfunction %% ContinuousOutputs
+
+%% Function: DiscreteOutput ===========================================================
+%%
+%% Abstract:
+%%	Limit the rate of change of a signal.  This is done by computing the
+%%      derivative output signal using:
+%%
+%%          rtRateLimiterRate = (u(i) - u(i-1))
+%%
+%%          if rtRateLimiterRate < fallingLimit
+%%              y(i) = y(i-1) + fall
+%%          else if rtRateLimiterRate > risingLimit
+%%              y(i) = y(i-1) + rise
+%%          else
+%%	        y(i) = u(i)
+%%          end
+%%
+%function DiscreteOutputs(block, system) Output
+  %%
+  %assign riseTunable = SLibBlockParameterIsTunable(RisingSlewLimit)
+  %assign fallTunable = SLibBlockParameterIsTunable(FallingSlewLimit)
+  %%
+  %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+  %%
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %%
+  %assign yDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign dtZero = SLibGetGroundValueFromId(yDType) 
+  %%
+  %assign riseIsZero = FcnParamIsZero(RisingSlewLimit)
+  %assign fallIsZero = FcnParamIsZero(FallingSlewLimit)
+  %% 
+  %assign paramsAreZero = riseIsZero && fallIsZero
+  %%
+  %if !paramsAreZero
+    %% do not need this variable if all limit params are zero
+    %%
+    {
+    %%
+    %<dTypeName> rtRateLimiterRate;
+    %%
+    \
+    %%
+  %endif
+  %%
+  %if paramsAreZero
+    %%
+    %assign rollVars = ["Y", "<dwork>/DWORK1"]
+    %%
+  %elseif riseIsZero
+    %%
+    %assign rollVars = ["U", "Y", ...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %elseif fallIsZero
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<dwork>/DWORK1"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %endif
+  %%
+  %assign riseSize = LibBlockParameterSize(RisingSlewLimit)
+  %assign riseWidth = riseSize[0] * riseSize[1]
+  %%
+  %assign fallSize = LibBlockParameterSize(FallingSlewLimit)
+  %assign fallWidth = fallSize[0] * fallSize[1]
+  %%
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+    %assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+    %assign u = LibBlockInputSignal(0, "", lcv, idx)
+    %%
+    %assign incRateVal = LibBlockParameterValue(RisingSlewLimit, idx)
+    %%
+    %assign decRateVal = LibBlockParameterValue(FallingSlewLimit, idx)
+    %%
+    %if paramsAreZero || (FixPt_IsZeroNumericOrString(incRateVal) && ...
+      FixPt_IsZeroNumericOrString(decRateVal) && ...
+      !riseTunable && !fallTunable && ...
+      riseWidth < RollThreshold && fallWidth < RollThreshold)
+      %% all limit params all zero
+      %%
+      %<y> = %<lastY>;
+      %%
+    %else
+      %%
+      %if !riseTunable && ...
+	((riseWidth < RollThreshold && FixPt_IsZeroNumericOrString(incRateVal)) || riseIsZero)
+	%%
+	%assign incRate = ""
+	%assign incRateComp = dtZero
+	%%
+      %else
+	%%
+	%assign incRateComp = LibBlockParameter(RisingSlewLimit, "", lcv, idx)
+	%assign incRate = " + %<incRateComp>"
+	%%
+      %endif
+      %%
+      %if !fallTunable && ...
+	((fallWidth < RollThreshold && FixPt_IsZeroNumericOrString(decRateVal)) || fallIsZero)
+	%%
+	%assign decRate = ""
+	%assign decRateComp = dtZero
+	%%
+      %else
+	%%
+	%assign decRateComp = LibBlockParameter(FallingSlewLimit, "", lcv, idx)
+	%%
+	%assign decRate = " + %<decRateComp>"
+	%%
+      %endif
+      %%    
+      rtRateLimiterRate = (%<u> - %<lastY>);
+      %%
+      if (rtRateLimiterRate > %<incRateComp>) {
+        %%
+	%<y> = %<lastY>%<incRate>;
+	%%
+      } else if (rtRateLimiterRate < %<decRateComp>) {
+        %%
+	%<y> = %<lastY>%<decRate>;
+	%%
+      %if uDestPort != 0
+	%% input and output donot share memory
+      } else {
+        %%
+	%<y> = %<u>;
+	%% 
+      %endif
+      }
+      %%
+    %endif
+    %%  
+  %endroll
+  %%
+  %if !paramsAreZero
+    }
+  %endif
+  
+  %<DiscreteUpdateFcn(y, dTypeName)>
+  %%
+%endfunction %% DiscreteOutputs
+
+%% Function: FixptLessIntNumBitsOutputs ======================================================
+%%
+%% Abstract:
+%%	Limit the rate of change of a signal.  This is done by computing the
+%%      derivative output signal using:
+%%
+%%          rtRateLimiterRate = (u(i) - u(i-1))
+%%
+%%          if rtRateLimiterRate < fallingLimit
+%%              y(i) = y(i-1) + fall
+%%          else if rtRateLimiterRate > risingLimit
+%%              y(i) = y(i-1) + rise
+%%          else
+%%	        y(i) = u(i)
+%%          end
+%%
+%function FixptLessIntNumBitsOutputs(block, system) Output
+  %%
+  %assign riseTunable = SLibBlockParameterIsTunable(RisingSlewLimit)
+  %assign fallTunable = SLibBlockParameterIsTunable(FallingSlewLimit)
+  %%
+  %assign yDT = FixPt_GetOutputDataType(0)
+  %%
+  %if yDT.RequiredBits < IntegerSizes.IntNumBits
+    %%
+    %assign intLabel = "int"
+    %assign dtZero = "0"
+    %%
+  %elseif yDT.RequiredBits < IntegerSizes.LongNumBits
+    %%
+    %assign intLabel = "long"
+    %assign dtZero = "0L"
+    %%
+  %endif  
+      
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %%
+  %assign yDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign riseIsZero = FcnParamIsZero(RisingSlewLimit)
+  %assign fallIsZero = FcnParamIsZero(FallingSlewLimit)
+  %% 
+  %assign paramsAreZero = riseIsZero && fallIsZero
+  %%
+  %if !paramsAreZero
+    %% do not need this variable if all limit params are zero
+    %%
+    {
+    %%
+    %<intLabel> rtRateLimiterRate;
+    %%
+    \
+    %%
+  %endif
+  %%
+  %if paramsAreZero
+    %%
+    %assign rollVars = ["Y", "<dwork>/DWORK1"]
+    %%
+  %elseif riseIsZero
+    %%
+    %assign rollVars = ["U", "Y", ...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %elseif fallIsZero
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<dwork>/DWORK1"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %endif
+  %%
+  %assign riseSize = LibBlockParameterSize(RisingSlewLimit)
+  %assign riseWidth = riseSize[0] * riseSize[1]
+  %%
+  %assign fallSize = LibBlockParameterSize(FallingSlewLimit)
+  %assign fallWidth = fallSize[0] * fallSize[1]
+  %%
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+    %assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+    %assign u = LibBlockInputSignal(0, "", lcv, idx)
+    %%
+    %assign incRateVal = LibBlockParameterValue(RisingSlewLimit, idx)
+    %assign decRateVal = LibBlockParameterValue(FallingSlewLimit, idx)
+    %%
+    %if paramsAreZero || (FixPt_IsZeroNumericOrString(incRateVal) && ...
+      FixPt_IsZeroNumericOrString(decRateVal) && ...
+      !riseTunable && !fallTunable && ...
+      riseWidth < RollThreshold && fallWidth < RollThreshold)
+      %% all limit params all zero
+      %%
+      %<y> = %<lastY>;
+      %%
+    %else
+      %%
+      %if !riseTunable && ...
+	((riseWidth < RollThreshold && FixPt_IsZeroNumericOrString(incRateVal)) || riseIsZero)
+	%%
+	%assign incRate = ""
+	%assign incRateComp = dtZero
+	%%
+      %else
+	%%
+	%assign incRateComp = "(%<intLabel>)%<LibBlockParameter(RisingSlewLimit, "", lcv, idx)>"
+	%assign incRate = " + %<incRateComp>"
+	%%
+      %endif
+      %%
+      %if !fallTunable && ...
+	((fallWidth < RollThreshold && FixPt_IsZeroNumericOrString(decRateVal)) || fallIsZero)
+	%%
+	%assign decRate = ""
+	%assign decRateComp = dtZero
+	%%
+      %else
+	%%
+	%if yDT.IsSigned
+	  %%
+	  %assign decRateComp = "(%<intLabel>)%<LibBlockParameter(FallingSlewLimit, "", lcv, idx)>"
+	  %assign decRate = " + %<decRateComp>"
+	  %%
+	%else
+	  %%    
+	  %assign decRateComp = "(-1 * (%<intLabel>)%<LibBlockParameter(FallingSlewLimit, "", lcv, idx)>)"
+	  %assign decRate = " - %<LibBlockParameter(FallingSlewLimit, "", lcv, idx)>"
+	  %%
+	%endif
+	%%
+      %endif
+      %%
+      rtRateLimiterRate = ((%<intLabel>)%<u> - (%<intLabel>)%<lastY>);
+      %%
+      if (rtRateLimiterRate > %<incRateComp>) {
+        %%
+	%<y> = %<lastY>%<incRate>;
+	%%
+      } else if (rtRateLimiterRate < %<decRateComp>) {
+        %%
+	%<y> = %<lastY>%<decRate>;
+	%%
+      %if LibBlockInputSignalBufferDstPort(0) != 0
+	%%
+      } else {
+        %%
+	%<y> = %<u>;
+	%% 
+      %endif
+      }
+      %%
+    %endif
+    %%  
+  %endroll
+  %%
+  %if !paramsAreZero
+    }
+  %endif
+  
+  %<DiscreteUpdateFcn(y, dTypeName)>
+  %%
+%endfunction %% FixptLessIntNumBitsOutputs
+  
+  %%
+
+%% Function: FixptSignedOutputs ===========================================================
+%%
+%% Abstract:
+%%	Limit the rate of change of a signal.  This is done by computing the
+%%      derivative output signal using:
+%%
+%%          rise = risingRateLimit * deltaT
+%%          fall = fallingRateLimit * deltaT
+%%         
+%%     if u(i) >= 0 && y(i-1) =< 0
+%%        if u(i) > y(i-1) + rise
+%%           y(i) = y(i-1) + rise;
+%%        else
+%%           y(i) = u(i);
+%%        endif
+%%     elseif u(i) < 0 && y(i-1) > 0
+%%        if u(i) < y(i-1) + fall
+%%           y(i) = y(i-1) + fall;
+%%        else 
+%%           y(i) = u(i);
+%%        endif   
+%%     else
+%%        if (u(i) - y(i-1)) < fall
+%%           y(i) = y(i-1) + fall
+%%        else if (u(i) - y(i-1)) > rise
+%%           y(i) = y(i-1) + rise
+%%        else
+%%	     y(i) = u(i);
+%%        end
+%%     endif
+%%
+%function FixptSignedOutputs(block, system) Output
+  %%
+  %assign riseTunable = SLibBlockParameterIsTunable(RisingSlewLimit)
+  %assign fallTunable = SLibBlockParameterIsTunable(FallingSlewLimit)
+  %%
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %%
+  %assign riseIsZero = FcnParamIsZero(RisingSlewLimit)
+  %assign fallIsZero = FcnParamIsZero(FallingSlewLimit)
+  %% 
+  %assign paramsAreZero = riseIsZero && fallIsZero
+  %%
+  %if paramsAreZero
+    %%
+    %assign rollVars = ["Y", "<dwork>/DWORK1"]
+    %%
+  %elseif riseIsZero
+    %%
+    %assign rollVars = ["U", "Y", ...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %elseif fallIsZero
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<dwork>/DWORK1"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %endif
+  %%
+  %assign riseSize = LibBlockParameterSize(RisingSlewLimit)
+  %assign riseWidth = riseSize[0] * riseSize[1]
+  %%
+  %assign fallSize = LibBlockParameterSize(FallingSlewLimit)
+  %assign fallWidth = fallSize[0] * fallSize[1]
+  %%
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+    %assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+    %%
+    %assign u = LibBlockInputSignal(0, "", lcv, idx)
+    %%
+    %assign weightRiseLim = LibBlockParameter(RisingSlewLimit, "", lcv, idx)
+    %assign weightFallLim = LibBlockParameter(FallingSlewLimit, "", lcv, idx)
+    %%
+    %if paramsAreZero || (FixPt_IsZeroNumericOrString(weightFallLim) && ...
+      FixPt_IsZeroNumericOrString(weightRiseLim) && ...
+      !riseTunable && !fallTunable && ...
+      riseWidth < RollThreshold && fallWidth < RollThreshold)
+      %% riseLim and fallLim are zero
+      %%
+      %<y> = %<lastY>;
+      %%
+    %elseif !riseTunable && ...
+      (riseIsZero || (riseWidth < RollThreshold && FixPt_IsZeroNumericOrString(weightRiseLim)))
+      %% only riseLim is zero
+      %%
+      if (%<u> >= %<lastY>) {
+	%%
+	%<y> = %<lastY>;
+	%%
+      } else if (%<u> <= 0 && %<lastY> >= 0) {
+	%%
+	%<dTypeName> rtRateLimTmp = %<lastY> + %<weightFallLim>;
+	%%
+	if (%<u> <= rtRateLimTmp) {
+	  %<y> = rtRateLimTmp;
+	%if LibBlockInputSignalBufferDstPort(0) != 0  
+	} else {
+	  %<y> = %<u>;
+	%endif
+	}
+	%%
+      } else {
+	%%
+	if ((%<u> - %<lastY>) < %<weightFallLim>) {
+	  %<y> = %<lastY> + %<weightFallLim>;
+	%if LibBlockInputSignalBufferDstPort(0) != 0  
+	} else {
+	  %<y> = %<u>;
+	%endif
+	}	
+	%%
+      }
+      %% next empty line is for formatting
+      
+    %elseif !fallTunable && ...
+      (fallIsZero || (fallWidth < RollThreshold && FixPt_IsZeroNumericOrString(weightFallLim)))
+      %% only fallLim is zero
+      %%
+      if (%<u> <= %<lastY>) {
+	%%
+	%<y> = %<lastY>;
+	%%
+      } else if (%<u> >= 0 && %<lastY> <= 0) {
+	%%
+	%<dTypeName> rtRateLimTmp = %<lastY> + %<weightRiseLim>;
+	%%
+	if (%<u> >= rtRateLimTmp) {
+	  %<y> = rtRateLimTmp;
+	%if LibBlockInputSignalBufferDstPort(0) != 0
+	} else {
+	  %<y> = %<u>;
+	%endif
+	}
+	%%
+      } else {
+	%%
+	if ((%<u> - %<lastY>) > %<weightRiseLim>) {
+	  %<y> = %<lastY> + %<weightRiseLim>;
+	%if LibBlockInputSignalBufferDstPort(0) != 0  
+	} else {
+	  %<y> = %<u>;
+	%endif
+	}	
+	%%
+      }
+      %% next empty line is for formatting
+      
+    %else
+      %% no params are zero
+      %%
+      {
+	%<dTypeName> rtRateLimTmp;
+	if (%<u> >= 0 && %<lastY> <= 0) {
+	  %%
+	  rtRateLimTmp = %<lastY> + %<weightRiseLim>;
+	  %%
+	  if (%<u> >= rtRateLimTmp) {
+	    %<y> = rtRateLimTmp;
+	  %if LibBlockInputSignalBufferDstPort(0) != 0  
+	  } else {
+	    %<y> = %<u>;
+	  %endif
+	  }	  
+	  %%
+	} else if (%<u> <= 0 && %<lastY> >= 0) {
+	  %%
+	  rtRateLimTmp = %<lastY> + %<weightFallLim>;
+	  %%
+	  if (%<u> <= rtRateLimTmp) {
+	    %<y> = rtRateLimTmp;
+	  %if LibBlockInputSignalBufferDstPort(0) != 0  
+	  } else {
+	    %<y> = %<u>;
+	  %endif
+	  }
+	  %%
+	} else {
+	  %%
+	  rtRateLimTmp = %<u> - %<lastY>;
+	  %%
+	  if (rtRateLimTmp < %<weightFallLim>) {
+	    %<y> = %<lastY> + %<weightFallLim>;
+	  } else if (rtRateLimTmp > %<weightRiseLim>) {
+	    %<y> = %<lastY> + %<weightRiseLim>;
+	  %if LibBlockInputSignalBufferDstPort(0) != 0  
+	  } else {
+	    %<y> = %<u>;
+	  %endif  
+	  }
+	  %%
+	}
+      }
+      %% next empty line is for formatting
+      
+    %endif
+    %%	
+  %endroll
+  %%
+  
+   %<DiscreteUpdateFcn(y, dTypeName)>
+  %%
+%endfunction %% FixptSignedOutputs
+
+%% Function: FixptUnsignedOutputs ===========================================================
+%%
+%% Abstract:
+%%	Limit the rate of change of a signal.  This is done by computing the
+%%      derivative output signal using:
+%%
+%%   Offline compute:
+%%    
+%%     rise = risingRateLimit %% deltaT
+%%     fall = fallingRateLimit %% deltaT
+%%     negFall = -1.0 %% fall
+%% 
+%%   Online compute:
+%%      
+%%     if u(i) >= y(i-1)
+%%
+%%        if [u(i) - y(i-1)] > rise
+%%
+%%           y(i) = y(i-1) + rise; 
+%%
+%%        else
+%%
+%%           y(i) = u(i);
+%%
+%%        end
+%%     else
+%%        if (y(i-1) - u(i)) > negFall
+%%
+%%           y(i) = y(i-1) - negFall;
+%%
+%%        else
+%%
+%%           y(i) = u(i);
+%%
+%%        end
+%%     end 
+%%
+%function FixptUnsignedOutputs(block, system) Output
+  %%
+  %assign riseTunable = SLibBlockParameterIsTunable(RisingSlewLimit)
+  %assign fallTunable = SLibBlockParameterIsTunable(FallingSlewLimit)
+  %%
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  %%
+  %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+    "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+  %%
+  %assign riseIsZero = FcnParamIsZero(RisingSlewLimit)
+  %assign fallIsZero = FcnParamIsZero(FallingSlewLimit)
+  %% 
+  %assign paramsAreZero = riseIsZero && fallIsZero
+  %%
+  %if paramsAreZero
+    %%
+    %assign rollVars = ["Y", "<dwork>/DWORK1"]
+    %%
+  %elseif riseIsZero
+    %%
+    %assign rollVars = ["U", "Y", ...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %elseif fallIsZero
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<dwork>/DWORK1"]
+    %%
+  %else
+    %%
+    %assign rollVars = ["U", "Y", "<param>/RisingSlewLimit",...
+      "<param>/FallingSlewLimit", "<dwork>/DWORK1"]
+    %%
+  %endif
+  %%
+  %assign riseSize = LibBlockParameterSize(RisingSlewLimit)
+  %assign riseWidth = riseSize[0] * riseSize[1]
+  %%
+  %assign fallSize = LibBlockParameterSize(FallingSlewLimit)
+  %assign fallWidth = fallSize[0] * fallSize[1]
+  %%
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign y = LibBlockOutputSignal(0, "", lcv, idx)
+    %assign lastY = LibBlockDWork(DWork[0], "", lcv, idx)
+    %%
+    %assign u = LibBlockInputSignal(0, "", lcv, idx)
+    %%
+    %assign weightRiseLim = LibBlockParameter(RisingSlewLimit, "", lcv, idx)
+    %assign weightFallLim = LibBlockParameter(FallingSlewLimit, "", lcv, idx)
+    %%
+    %if paramsAreZero || (FixPt_IsZeroNumericOrString(weightRiseLim) && ...
+      FixPt_IsZeroNumericOrString(weightFallLim) && ...
+      !riseTunable && !fallTunable && ...
+      riseWidth < RollThreshold && fallWidth < RollThreshold)
+      %% riseLim and fallLim are unsigned zero
+      %%
+      %<y> = %<lastY>;
+      %%
+    %else
+      %%
+      if (%<u> >= %<lastY>) {
+	%%
+	%if !riseTunable && ...
+	  (riseIsZero || (riseWidth < RollThreshold && FixPt_IsZeroNumericOrString(weightRiseLim)))
+	  %% riselim is zero
+	  %%
+	  %<y> = %<lastY>;
+	  %%
+	%else
+	  %%
+	  if ((%<u> - %<lastY>) > %<weightRiseLim>) {
+	    %<y> = %<lastY> + %<weightRiseLim>;
+	  %if LibBlockInputSignalBufferDstPort(0) != 0   
+	  } else {
+	    %<y> = %<u>;  
+	  %endif
+	  }
+	  %%
+	%endif
+	%%
+      } else {
+	%%
+	%if !fallTunable && ...
+	  (fallIsZero || (fallWidth < RollThreshold && FixPt_IsZeroNumericOrString(weightFallLim)))
+	  %% falllim is zero
+	  %%
+	  %<y> = %<lastY>;
+	  %%
+	%else
+	  %%
+	  if ((%<lastY> - %<u>) > %<weightFallLim>) {
+	    %<y> = %<lastY> - %<weightFallLim>;
+	  %if LibBlockInputSignalBufferDstPort(0) != 0   
+	  } else {
+	    %<y> = %<u>;  
+	  %endif  
+	  }
+	  %%
+	%endif
+	%%  
+      }
+      %% next empty line is for formatting
+
+    %endif
+    %%
+  %endroll
+  %%
+  
+  %<DiscreteUpdateFcn(y, dTypeName)>
+  %%
+%endfunction %% FixptUnsignedOutputs
+
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%   Output function
+%%
+%function Outputs(block, system) Output
+  %%
+  %assign yDT = FixPt_GetOutputDataType(0)
+  %%
+  %if block.InFixptMode
+    %%
+    %if yDT.RequiredBits < IntegerSizes.LongNumBits
+      %%
+      %<FixptLessIntNumBitsOutputs(block,system)> 
+      %%
+    %elseif yDT.IsSigned
+      %% fixpt uses long
+      %%
+      %<FixptSignedOutputs(block, system)>
+      %%
+    %else
+      %%
+      %<FixptUnsignedOutputs(block, system)>
+      %%
+    %endif
+    %%
+  %else
+    %if LibIsContinuous(TID)
+      %<ContinuousOutputs(block, system)>
+    %else
+      %<DiscreteOutputs(block, system)>
+    %endif
+  %endif
+%endfunction %% Outputs
+
+%% Function: ContinuousUpdate ===========================================================
+%% Abstract:
+%% 	Update rwork which has the last time, output and input.
+%%
+%function ContinuousUpdate(block, system) Output
+  %assign dTypeName = LibBlockOutputSignalDataTypeName(0, "")
+  /* %<Type> Block: %<Name> */
+  {
+    %if SolverType == "VariableStep"
+      %<dTypeName> *pLastY;
+    %endif
+  \
+    %assign noutputs = LibBlockOutputSignalWidth(0)
+    %if SolverType == "FixedStep"
+      %if noutputs > 1
+        %assign y = LibBlockOutputSignal(0, "", "", 0)
+        %<dTypeName> *prevY = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+        (void)memcpy(prevY, &%<y>, %<noutputs>*sizeof(%<dTypeName>));
+      %else
+        %<LibBlockDWork(DWork[0],"","",0)> = %<LibBlockOutputSignal(0,"","",0)>;
+      %endif
+      %<LibBlockRWork(Time, "", "", 0)> = %<LibGetTaskTimeFromTID(block)>;
+    %else
+      %% Using Variable-step solver
+      %% Update the oldest of the last two banks.
+      %assign timeStampA = LibBlockRWork(TimeA, "", "", 0)
+      %assign timeStampB = LibBlockRWork(TimeB, "", "", 0)
+      if (%<timeStampA> == %<LibRealNonFinite(inf)>) {
+	%<timeStampA> = %<LibGetTaskTimeFromTID(block)>;
+	pLastY        = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+      } else if (%<timeStampB> == %<LibRealNonFinite(inf)>) {
+	%<timeStampB> = %<LibGetTaskTimeFromTID(block)>;
+	pLastY        = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+      } else if (%<timeStampA> < %<timeStampB>) {
+	%<timeStampA> = %<LibGetTaskTimeFromTID(block)>;
+	pLastY        = &%<LibBlockDWork(DWork[0], "", "", 0)>;
+      } else {
+	%<timeStampB> = %<LibGetTaskTimeFromTID(block)>;
+	pLastY        = &%<LibBlockDWork(DWork[1], "", "", 0)>;
+      }
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      (void)memcpy(pLastY, &%<y>, %<noutputs>*sizeof(%<dTypeName>));
+    %endif
+}
+
+%endfunction %% Update
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%% 	Update rwork which has the last time, output and input.
+%%
+%function Update(block, system) Output
+  %%
+  %if block.InFixptMode
+    %% do nothing
+  %else
+    %if LibIsContinuous(TID)
+      %<ContinuousUpdate(block, system)>
+    %else
+      %% do nothing
+    %endif
+  %endif
+%endfunction %% Update
+  
+  
+%% [EOF] ratelim.tlc

@@ -1,0 +1,2539 @@
+%% ============================================================================
+%% $RCSfile: modelrefsfcnlib.tlc,v $
+%% $Revision: 1.1.6.16 $
+%%
+%% Abstract:
+%%   This system file contains helper functions to create an
+%%   S-Function wrapper for any target.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+
+%include "ertmdlreftiming.tlc"
+
+%% Function DumpSFcnExternalInputs =========================================
+%% Abstract:
+%%   Generate the S-Function input signal registration for the generated ERT-
+%%   C-Code. This code will register the signal properties (like type and size)
+%%   for every ERT external input signal in the mdlInitializeSizes function.
+%%   The registration will be generated as follow:
+%%
+%%   /* Number of input ports */
+%%   if (!ssSetNumInputPorts(S, NumberOfInputPorts)) return;
+%%
+%%   ssSetInputPort<Property>(S, PortNumber, <PropertyValue`>);
+%%   ...
+%%
+%function DumpSFcnExternalInputs() Output
+  %with ExternalInputs
+    /* Number of input ports */
+    if (!ssSetNumInputPorts(S, %<NumExternalInputs>)) return;
+    %if NumExternalInputs > 0
+      %foreach idx = NumExternalInputs
+	%assign extInp = ExternalInput[idx]
+	%with extInp
+	  %assign portWidth    = Width
+	  %assign sampleTime   = SampleTime[TID].PeriodAndOffset[0]
+	  %assign offsetTime   = SampleTime[TID].PeriodAndOffset[1]
+	  %assign isComplex    = (ComplexSignal == "yes")
+	  %assign isFrame      = (FrameData == "yes")
+	  %assign directFT     = DirectFeedThrough == "yes"
+
+	  %if EXISTS("Dimensions") == 1
+	    %assign numDimensions = SIZE(%<Dimensions>,1)
+	  %else
+	    %assign numDimensions = 1
+	  %endif
+	  %if %<numDimensions> >= matrixDimensionThreshhold
+	    if(!ssSetInputPortMatrixDimensions(S, ...
+	      %<idx>, %<Dimensions[0]>, %<Dimensions[1]>)) return;
+	  %else
+	    if(!ssSetInputPortVectorDimension(S, ...
+	      %<idx>, %<portWidth>)) return;
+	  %endif
+	  %if isFrame
+	    ssSetInputPortFrameData(S, %<idx>, FRAME_YES);
+	  %else
+	    ssSetInputPortFrameData(S, %<idx>, FRAME_NO);
+	  %endif
+          %<SLibSfunRegisterAndSetDataType("input","S",idx,DataTypeIdx,"namedObject")>
+	  %if isComplex
+	    ssSetInputPortComplexSignal(S, %<idx>, COMPLEX_YES);
+	  %endif
+	  ssSetInputPortDirectFeedThrough(S, %<idx>, %<directFT>);
+          ssSetInputPortRequiredContiguous(S, %<idx>, 1);
+	  %% Will be refined in future
+	  ssSetInputPortOptimOpts(S, %<idx>, SS_NOT_REUSABLE_AND_GLOBAL);
+	  ssSetInputPortOverWritable(S, %<idx>, false);
+
+          %if ModelRefTsInheritance == "DISALLOW_SAMPLE_TIME_INHERITANCE"
+	    ssSetInputPortSampleTime(S, %<idx>, %<sampleTime>);
+	    ssSetInputPortOffsetTime(S, %<idx>, %<offsetTime>);
+	  %else
+	    ssSetInputPortSampleTime(S, %<idx>, -1);
+	  %endif
+
+	  %% model reference does not support constant input sample
+	  %% time
+	  %assert(TYPE(TID) == "Number")
+	  %assign CompiledModel.IsSampleTimeOnPort[TID]=1
+          
+          %if LibBlockIsIndexZeroBased(extInp)
+            ssSetZeroBasedIndexInputPort(S, %<idx>);
+          %elseif LibBlockIsIndexOneBased(extInp)
+            ssSetOneBasedIndexInputPort(S, %<idx>);
+          %endif
+	%endwith %% extInp
+      %endforeach
+    %endif
+  %endwith %% ExternalInputs
+%endfunction %% DumpSFcnExternalInputs
+
+
+%% Function GetStorageClassEnumFromStr ========================================
+%% Abstract:
+%%      Get enum str from string dumped in .rtw file
+%%
+%function GetStorageClassEnumFromStr(sc)
+  %assign retStr= "SS_RTW_STORAGE_AUTO"
+  %switch sc
+    %case "Auto"
+      %assign retStr = "SS_RTW_STORAGE_AUTO"
+      %break
+    %case "ExportedGlobal"
+      %assign retStr = "SS_RTW_STORAGE_EXPORTED_GLOBAL"
+      %break
+    %case "ImportedExtern"
+      %assign retStr = "SS_RTW_STORAGE_IMPORTED_EXTERN"
+      %break
+    %case "ImportedExternPointer"
+      %assign retStr = "SS_RTW_STORAGE_IMPORTED_EXTERN_POINTER"
+      %break
+    %case "Custom"
+      %assign retStr = "SS_RTW_STORAGE_CUSTOM"
+      %break
+    %default
+      %<LibReportFatalError("Unexpected storage class")>
+  %endswitch
+  %return retStr
+%endfunction %% GetStorageClassEnumFromStr
+
+
+%% Function AppendRTWStorageClassInfo =========================================
+%% Abstract:
+%%   Append info related to Storage class to the infoRec.
+%%   port can be an input port or output port record.
+%%
+%function AppendRTWStorageClassInfo(infoRec, port)
+  %assign id      = port.PropagatedRTWIdentifier
+  %assign stClass = port.PropagatedStorageClass
+  %assign stType  = port.PropagatedStorageTypeQualifier
+  %assign resSig  = port.ResolvedToSignalObject
+  %assign t       = port.TestPoint
+
+  %assign ssStClass = GetStorageClassEnumFromStr(stClass)
+  %if t == "no"
+    %assign tval = "0"
+  %else
+    %assign tval = "1"
+  %endif
+
+  %if id !=  ""
+    %assign infoRec.HasIdentifier = TLC_TRUE
+  %endif
+
+  %if ssStClass != "Auto"
+    %assign infoRec.HasStorageClass = TLC_TRUE
+  %endif
+
+  %if stType != ""
+    %assign infoRec.HasTypeQualifier = TLC_TRUE
+  %endif
+
+  %if resSig == "yes"
+    %assign resSig = "1"
+    %assign infoRec.HasResolved = TLC_TRUE
+  %else
+    %assign resSig = "0"
+  %endif
+    
+  %if tval != "0"
+    %assign infoRec.HasTestPoint = TLC_TRUE
+  %endif
+
+  %assign comma = infoRec.comma
+  %assign infoRec.RTWIdentifier = infoRec.RTWIdentifier + comma + "\"" + id + "\""
+  %assign infoRec.StorageClass  = infoRec.StorageClass  + comma +        ssStClass
+  %assign infoRec.StorageTypeQualifier = infoRec.StorageTypeQualifier+ comma + "\"" + stType + "\""
+  %assign infoRec.Resolved = infoRec.Resolved + comma + resSig
+  %assign infoRec.TestPoint =     infoRec.TestPoint     + comma +        tval
+  %assign infoRec.comma = ", "
+
+  %return infoRec
+%endfunction %% AppendRTWStorageClassInfo
+
+
+%% Function GetModelrefPortRTWStorageInfo =====================================
+%% Abstract:
+%%     Create a record and return info related to Signal storage class
+%%
+%function GetModelrefPortRTWStorageInfo()
+  %createrecord infoRec { \
+    RTWIdentifier        ""; \
+    StorageClass         ""; \
+    StorageTypeQualifier ""; \
+    Resolved             ""; \
+    TestPoint            ""; \
+    HasIdentifier        TLC_FALSE;  \
+    HasStorageClass      TLC_FALSE;  \
+    HasTypeQualifier     TLC_FALSE;  \
+    HasResolved          TLC_FALSE; \
+    HasTestPoint         TLC_FALSE;  \
+    comma                ""          \
+  }
+
+  %with ExternalInputs
+    %if NumExternalInputs > 0
+      %foreach idx = NumExternalInputs
+	%assign infoRec = AppendRTWStorageClassInfo(infoRec,ExternalInput[idx])
+      %endforeach
+    %endif
+  %endwith
+
+  %with ExternalOutputs
+    %if NumExternalOutputs > 0
+      %foreach idx = NumExternalOutputs
+	%assign extOut  = ExternalOutput[idx]
+	%assign infoRec = AppendRTWStorageClassInfo(infoRec,ExternalOutput[idx])
+      %endforeach
+    %endif
+  %endwith
+
+  %return infoRec
+%endfunction %%GetModelrefPortRTWStorageInfo
+
+
+
+%% Function GetSimstructRTWStorageInfo ========================================
+%% Abstract:
+%%     Dump code to set simstruct
+%%
+%%      (1) RTW identifiers
+%%      (2) RTW storage classes
+%%      (3) RTW storage class type qualifiers
+%%      (4) Signal labels resolved to signal objects
+%%      (5) Test points
+%%
+%function GetSimstructRTWStorageInfo()
+  %openfile tmpBuf
+  %assign portInfo = GetModelrefPortRTWStorageInfo()
+  %assign numPorts = ExternalOutputs.NumExternalOutputs + ...
+    ExternalInputs.NumExternalInputs
+
+  %if  portInfo.HasIdentifier
+    {
+      /* Input/output identifiers */
+      static char *identifiers[%<numPorts>] = {%<portInfo.RTWIdentifier>};
+      ssSetModelRefPortRTWIdentifiers(S, identifiers);
+    }
+  %endif
+
+  %if  portInfo.HasStorageClass
+    {
+      /* Input/output rtw storage classes */
+      static ssRTWStorageType storageClass[%<numPorts>] = {%<portInfo.StorageClass>};
+      ssSetModelRefPortRTWStorageClasses(S, storageClass);
+    }
+  %endif
+
+  %if  portInfo.HasTypeQualifier
+    {
+      /* Input/output rtw storage class types */
+      static char *storageClassType[%<numPorts>] = {%<portInfo.StorageTypeQualifier>};
+      ssSetModelRefPortRTWStorageTypeQualifiers(S, storageClassType);
+    }
+  %endif
+
+  %if  portInfo.HasResolved
+    {
+      /* Input/output signal labels must be resolved to signal objects */
+      static int_T resolved[%<numPorts>] = {%<portInfo.Resolved>};
+      ssSetModelRefPortResolvedToSignalObjects(S, resolved);
+    }
+  %endif
+  
+  %if  portInfo.HasTestPoint
+    {
+      /* Input/output test points */
+      static int_T testPt[%<numPorts>] = {%<portInfo.TestPoint>};
+      ssSetModelRefPortRTWTestPoints(S, testPt);
+    }
+  %endif
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% GetSimstructRTWStorageInfo
+
+
+%% Function GetModelrefNumConstOutput =========================================
+%% Abstract:
+%%     Return number of root output ports with constant sample times
+%%
+%function GetModelrefNumConstOutput()
+  %assign numConstOutput = 0
+  %with ExternalOutputs
+    %if NumExternalOutputs > 0
+      %foreach idx = ExternalOutputs.NumExternalOutputs
+	%assign extOut       = ExternalOutputs.ExternalOutput[idx]
+	%assign sysIdx       = extOut.Block[0]
+	%assign blkIdx       = extOut.Block[1]
+	%assign tid          = System[sysIdx].Block[blkIdx].TID
+	%if TYPE(tid) == "Identifier" && tid == "constant"
+	  %assign numConstOutput = numConstOutput + 1
+	%endif
+      %endforeach
+    %endif
+  %endwith %% ExternalOutputs
+  %return numConstOutput
+%endfunction %%GetModelrefNumConstOutput
+
+
+%% Function  MdlRefIsConstSampleBlock=========================================
+%% Abstract:
+%%       Return true if all block sample times are constant.
+%function MdlRefIsConstSampleBlock()
+  %assign topSys   = System[NumSystems-2]
+  %assign sysIdx   = topSys.CallSites[0][2]
+  %assign blkIdx   = topSys.CallSites[0][3]
+  %assign subssTID = System[sysIdx].Block[blkIdx].SubsystemTID
+  %assign numSubsystemTIDs = SIZE(subssTID, 1)
+  %assign isConst          = TLC_FALSE
+  %if numSubsystemTIDs == 1
+    %assign tid = subssTID
+    %if TYPE(tid) == "Identifier" && ISEQUAL("constant",tid)
+      %assign isConst = TLC_TRUE
+      %% Note that root inport blocks does not accept const sample
+      %% time.
+      %assert(ExternalInputs.NumExternalInputs == 0)
+    %endif
+  %endif
+  %return isConst
+%endfunction %%GetModelrefNumConstOutput
+
+
+%% Function  ===================================================================
+%% This logic should be moved to Simulink.
+%% (see geck 196605)
+%function MdlRefDisallowSampleTimeInheritance()
+  %if CompiledModel.ModelRefTsInheritance == "DISALLOW_SAMPLE_TIME_INHERITANCE"
+    %assign retVal = TLC_TRUE
+  %else
+    %assign isConstBlk     = %<MdlRefIsConstSampleBlock()>
+    %assign numConstOutput = %<GetModelrefNumConstOutput()>
+    %if (!isConstBlk && ExternalInputs.NumExternalInputs == 0 && ...
+      numConstOutput == ExternalOutputs.NumExternalOutputs)
+      %assign retVal = TLC_TRUE
+    %else
+      %assign retVal = TLC_FALSE
+    %endif
+  %endif
+  %return retVal
+%endfunction
+
+%% =============================================================================
+%%
+%function MdlRefIsVarStepMultiRate() void
+
+  %return ( IsModelReferenceForASimstructBasedTarget() && ...
+            SolverType == "VariableStep" && ...
+	    LibIsContinuous(0) && NumSampleTimes > 1)
+
+%endfunction
+
+
+%% Function DumpSFcnExternalOutputs ========================================
+%% Abstract:
+%%   Generate the S-Function output signal registration for the generated ERT-
+%%   C-Code. This code will register the signal properties (like type and size)
+%%   for every ERT external output signal in the mdlInitializeSizes function.
+%%   The registration will be generated as follow:
+%%
+%%   /* Number of output ports */
+%%   if (!ssSetNumOutputPorts(S, NumberOfOutputPorts)) return;
+%%
+%%   ssSetOutputPort<Property>(S, PortNumber, <PropertyValue>);
+%%   ...
+%%
+%function DumpSFcnExternalOutputs() Output
+  %with ExternalOutputs
+    /* Number of output ports */
+    if (!ssSetNumOutputPorts(S, %<NumExternalOutputs>)) return;
+    %if NumExternalOutputs > 0
+      %foreach idx = ExternalOutputs.NumExternalOutputs
+	%assign extOut       = ExternalOutputs.ExternalOutput[idx]
+	%assign sysIdx       = extOut.Block[0]
+	%assign blkIdx       = extOut.Block[1]
+	%assign outportBlock = System[sysIdx].Block[blkIdx]
+	%with System[sysIdx]
+	%with outportBlock
+	  %assign portWidth     = LibBlockInputSignalWidth(0)
+	  %assign dataTypeIdx   = LibBlockInputSignalDataTypeId(0)
+	  %assign dataTypeName  = CompiledModel.DataTypes.DataType[dataTypeIdx].DTName
+	  %assign numDimensions = LibBlockInputSignalNumDimensions(0)
+	  %assign isComplex     = LibBlockInputSignalIsComplex(0)
+	  %assign isFrame       = LibBlockInputSignalIsFrameData(0)
+
+	  %if TYPE(TID) == "Number"
+	    %assign sampleTime    = SampleTime[TID].PeriodAndOffset[0]
+	    %assign offsetTime    = SampleTime[TID].PeriodAndOffset[1]
+	    %assign isConstant    = 0
+	  %else
+	    %assign sampleTime    = "mxGetInf()"
+	    %assign offsetTime    = 0
+	    %assign isConstant    = 1
+	    %assert(TID == "constant")
+	  %endif
+
+	  %if %<numDimensions> >= matrixDimensionThreshhold
+	    %assign  dimensions = LibBlockInputSignalDimensions(0)
+	    if(!ssSetOutputPortMatrixDimensions(S, ...
+	      %<idx>, %<dimensions[0]>, %<dimensions[1]>)) return;
+	  %else
+	    if(!ssSetOutputPortVectorDimension(S, ...
+	      %<idx>, %<portWidth>)) return;
+	  %endif
+
+	  %if isFrame
+	    ssSetOutputPortFrameData(S, %<idx>, FRAME_YES);
+	  %else
+	    ssSetOutputPortFrameData(S, %<idx>, FRAME_NO);
+	  %endif
+
+          %<SLibSfunRegisterAndSetDataType("output","S",idx,dataTypeIdx,"namedObject")>
+
+	  %if isComplex
+	    ssSetOutputPortComplexSignal(S, %<idx>, COMPLEX_YES);
+	  %endif
+	  %% Sample time
+	  %% We may need to use subsystaem sample time
+	  %if ModelRefTsInheritance == "DISALLOW_SAMPLE_TIME_INHERITANCE" || isConstant
+	    ssSetOutputPortSampleTime(S, %<idx>, %<sampleTime>);
+	    ssSetOutputPortOffsetTime(S, %<idx>, %<offsetTime>);
+	  %else
+	    ssSetOutputPortSampleTime(S, %<idx>, -1);
+	  %endif
+
+	  %if ExternalOutput[idx].OkToMerge == "yes"
+	    ssSetOutputPortOkToMerge(S, %<idx>, SS_OK_TO_MERGE);
+	  %else
+	    ssSetOutputPortOkToMerge(S, %<idx>, SS_NOT_OK_TO_MERGE);
+	  %endif
+
+	  %% Possible settings
+	  %%  SS_NOT_REUSABLE_AND_GLOBAL
+          %%  SS_REUSABLE_AND_LOCAL
+          %%  SS_REUSABLE_AND_GLOBAL
+          %%  SS_NOT_REUSABLE_AND_LOCAL
+	  ssSetOutputPortOptimOpts(S, %<idx>, SS_NOT_REUSABLE_AND_GLOBAL);
+
+	  %if TYPE(TID) == "Number"
+	    %assign CompiledModel.IsSampleTimeOnPort[TID]=1
+	  %endif
+          
+          %if LibBlockIsIndexZeroBased(extOut)
+            ssSetZeroBasedIndexOutputPort(S, %<idx>);
+          %elseif LibBlockIsIndexOneBased(extOut)
+            ssSetOneBasedIndexOutputPort(S, %<idx>);
+          %endif
+	%endwith %% outportBlock
+	%endwith %% System[sysIdx]
+      %endforeach
+      %undef extOut, sysIdx, blkIdx
+    %endif
+  %endwith %% ExternalOutputs
+%endfunction %% DumpSFcnExternalOutputs
+
+%% Function: DumpTimeConditioningCode =========================================
+%% Abstract:
+%%
+%%
+%function DumpTimeConditioningCode() Output
+  %if !SLibSingleTasking()
+    {
+      int_T localTid = 0;
+      %foreach idx = NumSynchronousSampleTimes
+	if (ssIsSampleHit(S, %<idx>, tid )) {
+	  %if Tid01Eq && ISEQUAL(idx,1)
+	    localTid = 0;
+	  %else
+	    localTid = %<idx>;
+	  %endif
+	}
+      %endforeach
+      tid = localTid;
+    }
+  %endif
+%endfunction %% DumpTimeConditioningCode
+
+%% Function: GenerateSFunctionOutputSignalDefinition ==========================
+%% Abstract:
+%%   This function generates the S-Function output signal definition for the
+%%   mdlOutputs function.
+%%
+%% Syntax:
+%%   GenerateSFunctionOutputSignalDefinition(prefix)
+%%
+%% Arguments:
+%%   prefix - signal name prefix
+%%
+%% Returns:
+%%   real_T *<prefix>_0 = ssGetOutputPortSignal(S, 0);
+%%
+%function GenerateSFunctionOutputSignalDefinition(prefix) Output
+  %foreach idx = ExternalOutputs.NumExternalOutputs
+    %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+    %assign sysIdx       = extOut.Block[0]
+    %assign blkIdx       = extOut.Block[1]
+    %assign outportBlock = System[sysIdx].Block[blkIdx]
+    %with System[sysIdx]
+    %with outportBlock
+      %assign dataType  = LibBlockInputSignalDataTypeName(0, "")
+      %<dataType> *%<prefix>%<idx> = ssGetOutputPortSignal(S, %<idx>);
+    %endwith %% outportBlock
+    %endwith %% System[sysIdx]
+  %endforeach
+%endfunction %% GenerateSFunctionOutputSignalDefinition
+
+%% Function: GenerateConstOutputSignalConditioning ============================
+%% Abstract:
+%%   This function generates the necessary code to update outputs with conatant
+%%   sample time.
+%%
+%function GenerateConstOutputSignalConditioning(rolllimit) Output
+  %assign prefix       = "constY"
+
+  %% Decalre const outputs
+  %foreach idx = ExternalOutputs.NumExternalOutputs
+    %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+    %assign sysIdx       = extOut.Block[0]
+    %assign blkIdx       = extOut.Block[1]
+    %assign outportBlock = System[sysIdx].Block[blkIdx]
+    %assign tid          = System[sysIdx].Block[blkIdx].TID
+    %assign baseSysIdx   = NumSystems - 2
+
+    %assert(sysIdx == NumSystems - 1)
+
+    %if TYPE(tid) == "Identifier" && tid == "constant"
+      %with System[baseSysIdx]
+	%with outportBlock
+	  %assign dataType  = LibBlockInputSignalDataTypeName(0,"")
+	  %<dataType> *%<prefix>%<idx> = (%<dataType> *) ...
+	    ssGetOutputPortSignal(S, %<idx>);
+	%endwith %% outportBlock
+      %endwith %% System[sysIdx]
+    %endif
+  %endforeach
+
+  %% Initialize const output
+  %foreach idx = ExternalOutputs.NumExternalOutputs
+    %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+    %assign sysIdx       = extOut.Block[0]
+    %assign blkIdx       = extOut.Block[1]
+    %assign outportBlock = System[sysIdx].Block[blkIdx]
+    %assign tid          = System[sysIdx].Block[blkIdx].TID
+    %assign prefix       = "constY"
+
+    %assert(sysIdx == NumSystems - 1)
+
+    %if TYPE(tid) == "Identifier" && tid == "constant"
+      %with System[baseSysIdx]
+	%with outportBlock
+	  %assign portWidth = LibBlockInputSignalWidth(0)
+	  %if portWidth == 1
+	    %<prefix>%<idx>[0] = \
+	    %<LibBlockInputSignal(0, "", "", 0)>;
+	  %elseif portWidth < rolllimit
+	    %foreach sigIdx = portWidth
+	      %<prefix>%<idx>[%<sigIdx>] = \
+	      %<LibBlockInputSignal(0, "", "", sigIdx)>;
+	    %endforeach
+	  %else %% portWidth > rolllimit
+	    {
+	      int i = 0;
+	      for(i = 0; i < %<portWidth>; i++) {
+		%<prefix>%<idx>[i] =  \
+		%<LibBlockInputSignal(0, "i", "", 0)>;
+	      }
+	    }
+	  %endif
+	%endwith %% outportBlock
+      %endwith %% System[sysIdx]
+    %endif
+  %endforeach
+%endfunction %% GenerateConstOutputSignalConditioning
+
+
+%% ============================================================================
+%% S-FUNCTION FRAME FOR MODEL REFERENCE WRAPPER S-FCN CODE
+%%
+%% The S-Function <model>_sf.c is created as follows:
+%%
+%% #defines
+%%
+%% #includes
+%%
+%% external inputs structure definition and declaration
+%%
+%% external outputs structure definition and declaration
+%%
+%% imported and exported signal declaration
+%%
+%% static void mdlInitializeSizes(SimStruct *S) {
+%%
+%%   inputs and outputs signal type registration
+%%
+%% }
+%%
+%% static void mdlInitializeSampleTimes(SimStruct *S) {
+%%
+%%   number of sample times and sample rate registration
+%%
+%% }
+%%
+%% static void mdlInitializeConditions(SimStruct *S) {
+%%
+%%   initialization function call
+%%
+%% }
+%%
+%% static void mdlOutputs(SimStruct *S, int_T tid) {
+%%
+%%   Simulink S-Function inputs to inputs declaration
+%%
+%%   time conditioning
+%%
+%%   Output fcn call
+%%
+%%   outputs to Simulink S-Function outputs copy
+%%
+%% }
+%%
+%% static void mdlTerminate(SimStruct *S) {
+%%
+%%  termination function call
+%%
+%% }
+%%
+
+
+%% Function: SLibCacheModelRefSFcnProcessParametersFcn ========================
+%% Abstract:
+%%    The function generates the mdlProcessParameters function and sets the
+%%    declaration & body buffers in the model reference S-Function.
+%%
+%function SLibCacheModelRefSFcnProcessParametersFcn() void
+  %assert IsModelReferenceSimTarget()
+  %assign nTunableParams = 0
+  %%
+  %with CompiledModel.ModelParameters
+    %% For ModelReferenceSimTarget, all tunable global params must be in rtP.
+    %assert (NumInrtP == (NumParameters - NumConstPrmsWithInit - NumConstPrms))
+    %assign locIdx = 0
+    %openfile declBuffer
+    %foreach prmIdx=NumInrtP
+      %assign param    = Parameter[prmIdx]
+      %if (param.Tunable == "yes")
+	%assign tq             = SLibGetModelParameterTypeQualifier(param)
+	%assign dataType       = SLibGetRecordDataTypeName(param, "")
+	%assign ptr            = "GlobalPrm_%<locIdx>"
+	%% Generate local pointer for each global parameter
+	%%
+	%% For example:
+	%%   real_T *GlobalPrm_0 = NULL;
+	%%
+	%<tq> %<dataType> *%<ptr> = NULL;
+	%assign locIdx = locIdx+1
+      %endif %% (param.Tunable == "yes")
+    %endforeach %% prmIdx=NumInrtP
+    %closefile declBuffer
+    %assign nTunableParams = locIdx
+    %assign locIdx = 0
+    %openfile initBuffer
+    %if (nTunableParams > 0)
+      /* Initialize tunable global parameters */
+      %foreach prmIdx=NumInrtP
+	%assign param    = Parameter[prmIdx]
+	%if (param.Tunable == "yes")
+	  %assign tq       = SLibGetModelParameterTypeQualifier(param)
+	  %assign dataType = SLibGetRecordDataTypeName(param, "")
+	  %assign ptr      = "GlobalPrm_%<locIdx>"
+	  %assign prmWidth = LibBlockParameterWidth(param)
+	  %assign sizeStr  = prmWidth==1 ? "" : "*%<prmWidth>"
+	  %% Generate initialization:
+	  %% - Get pointer to new parameter value from block's run-time parameter
+	  %% - Copy this new value into the global variable (in rtP structure).
+	  %%
+	  %% For example:
+	  %%   if (!ssGetModelRefGlobalParamData(S, 0, (void **)(&GlobalParam_0)))
+	  %%       return;
+	  %%   (void)memcpy(&(rtP->paramName), GlobalParam_0, sizeof(real_T));
+	  %%
+	  if (!ssGetModelRefGlobalParamData(S, %<locIdx>, (void **)(&%<ptr>))) \
+	        return;
+	  (void)memcpy(%<LibModelParameterAddr(param, "", "", 0)>, %<ptr>, \
+	        sizeof(%<dataType>)%<sizeStr>);
+
+	  %assign locIdx = locIdx+1
+	%endif %% (param.Tunable == "yes")
+      %endforeach %% prmIdx=NumInrtP
+      %assert (locIdx == nTunableParams)
+    %endif %% (nTunableParams > 0)
+    %closefile initBuffer
+  %endwith %% CompiledModel.ModelParameters
+  %<SetModelrefSFunctionField("CachedProcessParametersDeclarations", declBuffer)>
+  %<SetModelrefSFunctionField("CachedProcessParametersBody", initBuffer)>
+  %return nTunableParams
+%endfunction %% SLibCacheModelRefSFcnProcessParametersFcn
+
+
+%% Function: CommonDeclarations ===============================================
+%% Abstract:
+%%    The function generates the common variable declarations needed
+%%  by mdlOutputs, mdlUpdate, ...
+%function CommonDeclarations() void
+  %openfile tmpBuf
+  %assign inportNamePrefix   = "InPort_"
+  %assign outportNamePrefix  = "OutPort_"
+  %assign paramArgNamePrefix = "ParamArg_"
+  %assign tmpSFcnSysIdx      = NumSystems-2
+  %assign tmpSFcnSystem      = System[tmpSFcnSysIdx]
+  %assign isRateGrouping     = SLibIsMultiRateAndRateGrouping(tmpSFcnSystem)
+  %with tmpSFcnSystem.Interface
+    %foreach argIdx=NumCanonicalInputArgDefs
+      %if FcnArgIsNeeded(CanonicalInputArgDef[argIdx])
+        %assign ci = CanonicalInputArgDef[argIdx]
+        %assign dataType      = SLibGetRecordDataTypeName(ci, "")
+	%assign inputPortInfo = ci.SignalSrc
+	%assign u_str_idx     = IDNUM(inputPortInfo[0])
+        %assign u_idx         = u_str_idx[1]
+        %% If the direct feedthrough is false, don't access the
+        %% input signal, set it to NULL and print a warning.
+        %if BlockFcn == "Output" && ...
+          ExternalInputs.ExternalInput[u_idx].DirectFeedThrough == "no"
+          %assign inputSig = "NULL"
+          %assign warnstr = "LibBlockInputSignal was used by a block " + ...
+            "in this model, but the direct feedthrough was set to " + ...
+            "false for root input port %<argIdx+1>. Please fix the TLC " + ...
+            "for the block reading this input port."
+          %<LibReportWarning(warnstr)>
+        %else
+          %assign inputSig = "ssGetInputPortSignal(S, %<u_idx>)"
+        %endif
+        const %<dataType> *%<inportNamePrefix>%<argIdx> = ...
+          (%<dataType> *) %<inputSig>;
+      %endif
+    %endforeach
+    %%
+    %foreach argIdx=NumCanonicalOutputArgDefs
+      %if FcnArgIsNeeded(CanonicalOutputArgDef[argIdx])
+	%assign idx = CanonicalOutputArgDef[argIdx].RootOutputIdx
+	%assign co = CanonicalOutputArgDef[argIdx]
+	%assign dataType = SLibGetRecordDataTypeName(co, "")
+	%<dataType> *%<outportNamePrefix>%<argIdx> = ...
+	  (%<dataType> *) ...
+	  ssGetOutputPortSignal(S, %<idx>);
+      %endif
+    %endforeach
+    %%
+    %with tmpSFcnSystem
+      %assign hasDwork = %<ModelrefBlockNeedsDwork()>
+      %if hasDwork
+	%<CompiledModel.Name>_sfcnDWork *dw = (%<CompiledModel.Name>_sfcnDWork *) ssGetDWork(S, 0);
+      %endif
+    %endwith
+    %%
+    %% Get the needed arguments from the simstruct.
+    %if FcnArgIsNeeded(ContStatesDerivativeArgDef)
+      %assign type = "rtXdot%<FcnGetSystemIdentifier(tmpSFcnSysIdx)>"
+      %<type> *rtxdot = (%<type> *)ssGetdX(S);
+    %endif
+    %%
+    %if FcnArgIsNeeded(ContStatesArgDef)
+      %assign type = "rtX%<FcnGetSystemIdentifier(tmpSFcnSysIdx)>"
+      %<type> *rtx = (%<type> *)ssGetContStates(S);
+    %endif
+    %%
+    %if FcnArgIsNeeded(ContStatesDisabledArgDef)
+      %assign type = "rtXdis%<FcnGetSystemIdentifier(tmpSFcnSysIdx)>"
+      %<type> *rtxdis = (%<type> *)ssGetContStateDisabled(S);
+    %endif
+    %%
+    %if FcnArgIsNeeded(NonsampledZCArgDef)
+      %assign type = "rtNSZC%<FcnGetSystemIdentifier(tmpSFcnSysIdx)>"
+      %<type> *rtnszc = (%<type> *)ssGetNonsampledZCs(S);
+    %endif
+    %% In the output fcn, we may be accessing signals in rtC or rtB
+    %% so we need to declare these local variables.
+    %if ::BlockFcn == "Output"
+      %if FcnArgIsNeeded(BlockIOArgDef)
+	rtB%<FcnGetSystemIdentifier(tmpSFcnSysIdx)> *localB = &(dw->rtb);
+      %endif
+    %endif
+    %%
+    %% NOTE: Canonical parameter (parameter arguments) must go last
+    %% because we initialize them by calling the model reference block.
+    %%
+    %if NumCanonicalPrmArgDefs > 0
+      %openfile prmArgDeclBuffer
+      %foreach argIdx=NumCanonicalPrmArgDefs
+	%assign canPrmDef = CanonicalPrmArgDef[argIdx]
+	%if FcnArgIsNeeded(canPrmDef)
+	  %assign dataType = SLibGetRecordDataTypeName(canPrmDef, "")
+	  %% Generate Parameter Argument Declaration:
+	  %%
+	  %% For example:
+	  %%   real_T *ParamArg_0 = NULL;
+	  %%
+	  %<dataType> *%<paramArgNamePrefix>%<argIdx> = NULL;
+	%endif
+      %endforeach
+      %closefile prmArgDeclBuffer
+      %if !WHITE_SPACE(prmArgDeclBuffer)
+	%<prmArgDeclBuffer>
+
+	/* Initialize parameter arguments */
+	%foreach argIdx=NumCanonicalPrmArgDefs
+	  %assign canPrmDef = CanonicalPrmArgDef[argIdx]
+	  %if FcnArgIsNeeded(canPrmDef)
+	    %assign dataType = SLibGetRecordDataTypeName(canPrmDef, "")
+	    %% Generate initialization:
+	    %%
+	    %% For example:
+	    %%   if (!ssGetModelRefParamArgData(S, 0, (void **)(&ParamArg0)))
+	    %%       return;
+	    %%
+	    if (!ssGetModelRefParamArgData(S, %<argIdx>, \
+	          (void **)(&%<paramArgNamePrefix>%<argIdx>))) return;
+	  %endif
+	%endforeach
+      %endif
+    %endif
+  %endwith
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+%% Function: SetModelrefSFunctionField ==============================================
+%% Abstract:
+%%    Sets the value of an existing field in the ModelrefSFunction record
+%function SetModelrefSFunctionField(fieldname, value) void
+  %if ISFIELD(System[NumSystems-2].ModelrefSFunction, fieldname)
+    %<SETFIELD(System[NumSystems-2].ModelrefSFunction, fieldname, value)>
+  %else
+    %<LibReportFatalError("SetModelrefSFunctionField, %<fieldname> does not exist")>
+  %endif
+%endfunction
+
+%% Function: AddToModelrefSFunctionField ============================================
+%% Abstract:
+%%    Adds to the value of an existing field in the ModelrefSFunction record
+%function AddToModelrefSFunctionField(fieldname, value) void
+  %if ISFIELD(System[NumSystems-2].ModelrefSFunction, fieldname)
+    %assign System[NumSystems-2].ModelrefSFunction.%<fieldname> = ...
+      System[NumSystems-2].ModelrefSFunction.%<fieldname> + value
+  %else
+    %<LibReportFatalError("AddToModelrefSFunctionField, %<fieldname> does not exist")>
+  %endif
+%endfunction
+
+%% Function: PrependToModelrefSFunctionField ========================================
+%% Abstract:
+%%    Adds to the beginning of a value of an existing field
+%%    in the ModelrefSFunction record
+%function PrependToModelrefSFunctionField(fieldname, value) void
+  %if ISFIELD(System[NumSystems-2].ModelrefSFunction, fieldname)
+    %assign System[NumSystems-2].ModelrefSFunction.%<fieldname> = ...
+      value + System[NumSystems-2].ModelrefSFunction.%<fieldname>
+  %else
+    %<LibReportFatalError("AddToModelrefSFunctionField, %<fieldname> does not exist")>
+  %endif
+%endfunction
+
+
+%% Function: CacheModelrefSysFcnMethod ==============================================
+%% Abstract:
+%%    This function caches the basic information for the RTW s-function
+%% methods.  Some of the methods (like mdlInitializeSizes) need specialized
+%% code so they won't go through this function
+%function CacheModelrefSysFcnMethod(methName) void
+  %% For S-Functions, the method names are slightly different
+  %% than the RTW function names
+  %if methName == "InitializeConditions"
+    %assign rtwName = "Initialize"
+  %elseif methName == "Outputs"
+    %assign rtwName = "Output"
+  %elseif methName == "Derivatives"
+    %assign rtwName = "Derivative"
+  %elseif methName == "ZeroCrossings"
+    %assign rtwName = "ZeroCrossing"
+  %else
+    %assign rtwName = methName
+  %endif
+  %assign rootSystem = System[NumSystems-1]
+  %assign ::BlockFcn = rtwName
+  %assign declBuf = CommonDeclarations()
+  %assign ::BlockFcn = "Unknown"
+
+  %openfile codeBuf
+
+  %if methName == "Start"
+
+    %% None finite values must be initialized in the start function
+    %% See LibDumpSfunTargetChecks why do we check for RT_MALLOC!
+
+    %assign nonFinitesBuffer = SLibGetSFcnNonFinite()
+    %if !WHITE_SPACE(nonFinitesBuffer)
+      #if defined(MATLAB_MEX_FILE)
+      %<nonFinitesBuffer>\
+      #endif
+    %endif
+  %endif
+  %assign subsys = System[NumSystems-2]
+  %if !LibSystemFcnIsEmpty(subsys, rtwName)
+    %with rootSystem
+      %<LibGenSystemFcnCall(subsys, rtwName, 0)>
+    %endwith
+  %endif
+  %closefile codeBuf
+
+  %<SetModelrefSFunctionField("Cached%<methName>Declarations", declBuf)>
+  %<SetModelrefSFunctionField("Cached%<methName>Body", codeBuf)>
+%endfunction
+
+%% Function: GetSFcnMethodPoundDefine ==========================================
+%% Abstract:
+%%  Get the #define that is written out the model_sf.c file.
+%function GetSFcnMethodPoundDefine(methodName) void
+  %assign retStr  = ""
+  %assign retStr1 = ""
+  %assign retStr2 = ""
+  %switch(methodName)
+    %case "InitializeSizes"
+    %case "InitializeSampleTimes"
+    %case "Outputs"
+    %case "Terminate"
+      %break
+    %case "InitializeConditions"
+      %assign retStr = "#define MDL_INITIALIZE_CONDITIONS"
+      %break
+    %case "SetWorkWidths"
+      %assign retStr = "#define MDL_SET_WORK_WIDTHS"
+      %break
+    %case "ProcessParameters"
+      %assign retStr  = "#define MDL_PROCESS_PARAMETERS"
+      %assign retStr1 = "#if defined(MATLAB_MEX_FILE)"
+      %assign retStr2 = "#endif"
+      %break
+    %case "Start"
+      %assign retStr = "#define MDL_START"
+      %break
+    %case "Enable"
+      %assign retStr = "#define RTW_GENERATED_ENABLE"
+      %break
+    %case "Disable"
+      %assign retStr = "#define RTW_GENERATED_DISABLE"
+      %break
+    %case "Update"
+      %assign retStr = "#define MDL_UPDATE"
+      %break
+    %case "ZeroCrossings"
+      %assign retStr = "#define MDL_ZERO_CROSSINGS"
+      %break
+    %case "Derivatives"
+      %assign retStr = "#define MDL_DERIVATIVES"
+      %break
+    %case "Projection"
+      %assign retStr = "#define MDL_PROJECTION"
+      %break
+    %case "SetInputPortSampleTime"
+      %assign retStr  = "#define MDL_SET_INPUT_PORT_SAMPLE_TIME"
+      %assign retStr1 = "#if defined(MATLAB_MEX_FILE)"
+      %assign retStr2 = "#endif"
+      %break
+    %case "SetOutputPortSampleTime"
+      %assign retStr  = "#define MDL_SET_OUTPUT_PORT_SAMPLE_TIME"
+      %assign retStr1 = "#if defined(MATLAB_MEX_FILE)"
+      %assign retStr2 = "#endif"
+      %break
+    %default
+      %% START_ASSERT
+      %assign errTxt = "Unhandled RTW S-Function method name"
+      %<LibReportFatalError(errTxt)>
+      %% END_ASSERT
+  %endswitch
+  %createrecord retRec { \
+      FcnDef       "%<retStr>"; \
+      MatlabMexDef "%<retStr1>"; \
+      MatlabMexEnd "%<retStr2>" \
+  }
+  %return retRec
+%endfunction
+
+%% Function: WriteModelrefSFunctionMethod ==========================================
+%% Abstract:
+%%  Output an RTW S-Function method.
+%function WriteModelrefSFunctionMethod(methodName) Output
+  %% Figure out if we need a TID argument
+  %switch(methodName)
+    %case "Outputs"
+    %case "Update"
+      %assign extraArg = ", int_T tid"
+      %break
+    %case "SetInputPortSampleTime"
+    %case "SetOutputPortSampleTime"
+      %assign extraArg = ",int_T portIdx,real_T sampleTime,real_T offsetTime"
+      %break
+    %default
+      %assign extraArg = ""
+  %endswitch
+  %with CompiledModel.System[NumSystems-2].ModelrefSFunction
+    %assign body = Cached%<methodName>Body
+    %if !WHITE_SPACE(body) || methodName == "Terminate" || ...
+      methodName == "Outputs"
+      %assign rec = GetSFcnMethodPoundDefine(methodName)
+      %if !WHITE_SPACE(rec.FcnDef)
+	%<rec.FcnDef>
+      %endif
+      %if !WHITE_SPACE(rec.MatlabMexDef)
+	 %<rec.MatlabMexDef>
+      %endif
+      /*
+      * Function: mdl%<methodName>
+      */
+      static void mdl%<methodName>(SimStruct *S%<extraArg>)
+      {
+        %assign decl = Cached%<methodName>Declarations
+        %<decl>\
+
+        %<body>\
+      }
+      %if !WHITE_SPACE(rec.MatlabMexEnd)
+	 %<rec.MatlabMexEnd>
+      %endif
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function:  GetConstBIOExternBuf ============================================
+%% Abstract:
+%%
+%function GetConstBIOExternBuf()
+  %openfile extCBIOExtern
+  %if !LibConstBlockIOInstanceIsEmpty()
+    extern rtC%<FcnGetSystemIdentifier(NumSystems-2)>  %<tConstBlockIOStruct>;
+  %endif
+  %closefile extCBIOExtern
+  %return extCBIOExtern
+%endfunction %% GetConstBIOExternBuf
+
+
+%% Function:  GetConstPrmExternBuf ============================================
+%% Abstract:
+%%
+%function GetConstPrmExternBuf()
+  %openfile extCPrmExtern
+  %if !SLibPrmBufferIsEmpty("Const", "Typedef")
+    /* Constant parameters (auto storage) */
+    extern const %<tConstParamType> %<tConstParamStruct>;
+  %endif
+  %closefile extCPrmExtern
+  %return extCPrmExtern
+%endfunction %% GetConstPrmExternBuf
+
+
+%% Function:  GetConstPrmWithInitExternBuf =====================================
+%% Abstract:
+%%
+%function GetConstPrmWithInitExternBuf()
+  %openfile extCPrmExtern
+  %if !SLibPrmBufferIsEmpty("ConstWithInit", "Typedef")
+    
+    /* Constant parameters with dynamic initialization (auto storage) */
+    extern %<tConstParamWithInitType> %<tConstParamWithInitStruct>;
+  %endif
+  %closefile extCPrmExtern
+  %return extCPrmExtern
+%endfunction %% GetConstPrmWithInitExternBuf
+
+
+%% Function: SLibWriteModelrefSFunctionMethods =================================
+%% Abstract:
+%%  Write out the RTW S-Function methods to a file.
+%function SLibWriteModelrefSFunctionMethods() void
+  %assign sFunctionName = "%<Name>_msf"
+  %assign opFile = SLibAddModelFile("SystemBody","Simulink", sFunctionName)
+
+  %assign cBIOExtBuf = GetConstBIOExternBuf()
+  %<SLibSetModelFileAttribute(opFile, "ExternData", cBIOExtBuf)>
+
+  %% Generate code for each of the sfcn methods
+  %openfile fcnsBuf
+  %<WriteModelrefSFunctionMethod("InitializeSizes")>
+  %<WriteModelrefSFunctionMethod("InitializeSampleTimes")>
+  %<WriteModelrefSFunctionMethod("SetInputPortSampleTime")>
+  %<WriteModelrefSFunctionMethod("SetOutputPortSampleTime")>
+  %<WriteModelrefSFunctionMethod("InitializeConditions")>
+  %<WriteModelrefSFunctionMethod("SetWorkWidths")>
+  %<WriteModelrefSFunctionMethod("ProcessParameters")>
+  %<WriteModelrefSFunctionMethod("Start")>
+  %<WriteModelrefSFunctionMethod("Enable")>
+  %<WriteModelrefSFunctionMethod("Disable")>
+  %<WriteModelrefSFunctionMethod("Outputs")>
+  %<WriteModelrefSFunctionMethod("Update")>
+  %<WriteModelrefSFunctionMethod("ZeroCrossings")>
+  %<WriteModelrefSFunctionMethod("Derivatives")>
+  %<WriteModelrefSFunctionMethod("Projection")>
+  %<WriteModelrefSFunctionMethod("Terminate")>
+  %closefile fcnsBuf
+
+  %<SLibSetModelFileAttribute(opFile, "Functions", fcnsBuf)>
+%endfunction
+
+%% Function: ModelrefBlockNeedsDwork ===========================================
+%% Abstract:
+%function ModelrefBlockNeedsDwork() void
+  %if System[NumSystems-2].HasBlockIOArg || System[NumSystems-2].HasDWorkArg ...
+    || !EmptyRealTimeObject || System[NumSystems-2].HasZCEventArg
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction %%ModelrefBlockNeedsDwork
+
+
+%% Function: SLibGenerateSFcnDWork =============================================
+%% Abstract:
+%%  Generate dwork structure for the reference model
+%%
+%function SLibModelReferenceGenerateDWork() void
+  %assert IsModelReferenceTarget()
+  %assign sysIdx = GetBaseSystemIdx()
+  %with System[sysIdx]
+    %openfile dwBuf
+    %if HasBlockIOArg
+      rtB%<FcnGetSystemIdentifier(sysIdx)> rtb;
+    %endif
+    %if HasDWorkArg
+      rtDW%<FcnGetSystemIdentifier(sysIdx)> rtdw;
+    %endif
+    %if !EmptyRealTimeObject
+      %<tSimStructType> rtm;
+    %endif
+    %if HasZCEventArg
+      rtZCE%<FcnGetSystemIdentifier(sysIdx)> rtzce;
+    %endif
+    %closefile dwBuf
+  %endwith
+  %assign opFile = GetBaseFile("SystemHeader")
+  %openfile dworkBuf
+  %if !WHITE_SPACE(dwBuf)
+
+    typedef struct _%<Name>_sfcnDWork {
+      %<dwBuf>\
+
+    } %<Name>_sfcnDWork;
+
+  %endif
+  %closefile dworkBuf
+  %<SLibSetModelFileAttribute(opFile, "Typedefs", dworkBuf)>
+%endfunction
+
+
+
+%% Function: LibGetFcnIn ======================================================
+%% Abstract:
+%%    Return fcnInfo record of the system.
+%function LibGetFcnInfo(system, fcnType, tid) void
+  %% Output may have been combined with update
+  %if fcnType == "Output" && !ISFIELD(system,"OutputFcn") &&  ...
+      !(ISFIELD(system,"OutputCalledInUpdate") &&  ...
+      system.OutputCalledInUpdate == "yes")
+    %assign fcnType = "OutputUpdate"
+  %endif
+  %if TYPE(tid) == "Number" && tid >=0  && ...
+    (fcnType == "Output" || fcnType == "Update" || ...
+    fcnType == "OutputUpdate") && ...
+    (SLibIsMultiRateAndRateGrouping(system) || ...
+    LibAsynchronousTriggeredTID(tid))
+      %assign tid = "TID%<tid>"
+  %else
+    %assign tid = ""
+  %endif
+  %assign fieldname = fcnType + "%<tid>FcnInfo"
+  %if ISFIELD(system.Instance, fieldname)
+    %assign fcnInfo = LibGetSystemField(system, fieldname)
+  %else
+    %assign fcnInfo = ""
+  %endif
+  %return fcnInfo
+%endfunction
+
+%% Function:  CreateModelrefSFunctionForTopSystem =================================
+%% Abstract:
+%%    Create ModelrefSFunction record for the hidden subsystem
+%function CreateModelrefSFunctionForTopSystem() void
+
+  %assert IsModelReferenceTarget()
+  %% If we are generating an S-function, add cached variables for
+  %% all the s-fcn entry points to the record ModelrefSFunction
+  %assert CompiledModel.NumSystems > 1
+
+  %addtorecord CompiledModel.System[NumSystems-2] ModelrefSFunction { ...
+    CachedInitializeSizesDeclarations ""; ...
+    CachedInitializeSizesBody ""; ...
+    CachedInitializeSampleTimesDeclarations ""; ...
+    CachedInitializeSampleTimesBody ""; ...
+    CachedInitializeConditionsDeclarations ""; ...
+    CachedInitializeConditionsBody ""; ...
+    CachedSetWorkWidthsDeclarations ""; ...
+    CachedSetWorkWidthsBody ""; ...
+    CachedProcessParametersDeclarations ""; ...
+    CachedProcessParametersBody ""; ...
+    CachedStartDeclarations ""; ...
+    CachedStartBody ""; ...
+    CachedEnableDeclarations ""; ...
+    CachedEnableBody ""; ...
+    CachedDisableDeclarations ""; ...
+    CachedDisableBody ""; ...
+    CachedOutputsDeclarations ""; ...
+    CachedOutputsBody ""; ...
+    CachedUpdateDeclarations ""; ...
+    CachedUpdateBody ""; ...
+    CachedZeroCrossingsDeclarations ""; ...
+    CachedZeroCrossingsBody ""; ...
+    CachedDerivativesDeclarations ""; ...
+    CachedDerivativesBody ""; ...
+    CachedProjectionDeclarations ""; ...
+    CachedProjectionBody ""; ...
+    CachedTerminateDeclarations ""; ...
+    CachedTerminateBody ""; ...
+    CachedSetInputPortSampleTimeDeclarations ""; ...
+    CachedSetInputPortSampleTimeBody "" ;...
+    CachedSetOutputPortSampleTimeDeclarations ""; ...
+    CachedSetOutputPortSampleTimeBody "" ...
+  }
+%endfunction
+
+
+%% Function:  LocalAppendZero =================================================
+%% Abstract:
+%%      Append the inStr with zero
+%function LocalAppendZero(inStr, comma, num) void
+  %foreach i = num
+    %assign inStr =  "%<inStr>%<comma>0"
+    %assign comma = ", "
+  %endforeach
+  %return inStr
+%endfunction
+
+%% Function FcnAppendToBlockInterface =========================================
+%% Abstract:
+%%    The following order is used in FcnGetAdditionalArgs and
+%%    FcnAddNeededParameter. We must use the same order:
+%%           Tid
+%%           CanonicalInput
+%%           CanonicalOutput
+%%           RTModel
+%%           BlockIO
+%%           ConstBlockIO (not needed. This is global for all instances)
+%%           DWork
+%%           Prm (?)
+%%           ContStates
+%%           ContStatesDerivative
+%%           ContStatesDisabled
+%%           NonsampledZC
+%%           ZCEvent
+%%           NumCanonicalPrm
+%%           CanDWork (?)
+%%
+%function FcnAppendToBlockInterface(sysIdx, accessSysIdx, sysFcn, tid, ...
+  blkInterface) void
+  %assign thisSystem = System[sysIdx]
+  %assign System[sysIdx].CurrentTID = tid
+  %assign currentTID     = tid
+  %assign isRateGrouping = TYPE(tid) == "Number"   && ...
+    SLibIsMultiRateAndRateGrouping(thisSystem) && ...
+    (sysFcn == "Output" || sysFcn == "Update" || sysFcn == "OutputUpdate")?1:0
+  %assign sysFcnName =""
+
+  %if sysFcn == "Registration"
+    %assign sysFcnName = "%<sysFcn>Fcn"
+  %else
+    %% LibSystemFcnIsEmpty has side affect. (When output is passed,
+    %% it may check for OutputUpdate!)
+    %if !ISFIELD(thisSystem,"%<sysFcn>Fcn") || ...
+      LibSystemFcnIsEmpty(thisSystem, sysFcn)
+      %return
+    %endif
+
+    %assign fcnRecord = LibGetFcnInfo(System[sysIdx], sysFcn, currentTID)
+    %assert (TYPE(fcnRecord) == "Scope")
+
+    %if !isRateGrouping && ...
+      !LibSystemFcnIsEmpty(thisSystem, sysFcn)
+      %assign sysFcnName = "%<sysFcn>Fcn"
+    %elseif !LibSystemFcnIsEmptyForTID(thisSystem, sysFcn)
+      %assign sysFcnName = "%<sysFcn>TID%<thisSystem.CurrentTID>Fcn"
+    %endif
+  %endif
+
+  %assign ::BlockFcn = sysFcn
+  %%
+  %%
+  %if sysFcn == "Registration"
+    %assign fcnName = GetModelRefRegistrationFcnName()
+  %else
+    %assign fcnName = "%<fcnRecord.Name>"
+  %endif
+  %%
+  %with System[sysIdx].Interface
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Canonical input argument
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %assign  comma = ""
+    %assign  inStr = ""
+    %assign  inCounter = 0
+    %assign  numInputs = ExternalInputs.NumExternalInputs
+    %foreach argIdx    = NumCanonicalInputArgDefs
+      %assign ci      = CanonicalInputArgDef[argIdx].SignalSrc
+      %assign U_idx   = IDNUM(ci[0])
+      %assign idx     = U_idx[1]
+
+      %assert (U_idx[0] == "U")
+
+      %% fill 0 for unused inputs
+      %assign numZeroToAdd = idx - inCounter
+      %if  numZeroToAdd > 0
+	%assign inStr = LocalAppendZero(inStr, comma, numZeroToAdd)
+	%assign comma = ", "
+      %endif
+      %assign inCounter = idx
+
+      %if FcnArgNeeded(CanonicalInputArgDef[argIdx],currentTID,isRateGrouping)
+	%if CanonicalInputArgDef[argIdx].ScalarPassByRef == "yes"
+	  %assign inStr = "%<inStr>%<comma>2"
+	%else
+	  %assign inStr = "%<inStr>%<comma>1"
+	%endif
+      %else
+	%assign inStr = "%<inStr>%<comma>0"
+      %endif
+      %assign comma = ", "
+      %assign inCounter = inCounter + 1
+    %endforeach
+
+    %assign numZeroToAdd = numInputs - inCounter
+    %if  numZeroToAdd > 0
+      %assign inStr = LocalAppendZero(inStr, comma, numZeroToAdd)
+      %assign comma = ", "
+    %endif
+    %assign inCounter = numInputs
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Canonical output argument
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %assign comma  = ""
+    %assign outStr = ""
+    %assign outCounter = 0
+    %assign  numOutputs = ExternalOutputs.NumExternalOutputs
+    %foreach argIdx   = NumCanonicalOutputArgDefs
+      %assign idx     = CanonicalOutputArgDef[argIdx].RootOutputIdx
+
+      %% fill 0 for unused outputs
+      %assign numZeroToAdd = idx - outCounter
+      %if  numZeroToAdd > 0
+	%assign outStr = LocalAppendZero(outStr, comma, numZeroToAdd)
+	%assign comma = ", "
+      %endif
+      %assign outCounter = idx
+
+      %if FcnArgNeeded(CanonicalOutputArgDef[argIdx],currentTID,isRateGrouping)
+	%assign outStr = "%<outStr>%<comma>1"
+      %else
+	%assign outStr = "%<outStr>%<comma>0"
+      %endif
+      %assign comma = ", "
+      %assign outCounter = outCounter + 1
+    %endforeach
+
+    %assign numZeroToAdd = numOutputs - outCounter
+    %if  numZeroToAdd > 0
+      %assign outStr = LocalAppendZero(outStr, comma, numZeroToAdd)
+      %assign comma = ", "
+    %endif
+    %assign outCounter = numOutputs
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Other flags
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Args: [TID, rtModel, BlockIo, DWork, CState, CStateDriv, CStateDis, ZC, ZCEvent]
+
+    %% Note the following order is used in blocks/modelref.tlc.
+    %% If you update this order, you must update the order in modelref.tlc.
+    %% [TID, rtModel, BlockIo, DWork, CState, CStateDriv, CStateDis, ZC, ZCEvent]
+    %assign numArgs = 9
+    %assign args = ""
+    %assign comma = ""
+    %% TID
+    %assign val = LibSystemFcnNeedsTID(System[sysIdx], sysFcn)
+    %assign args = "%<args>%<comma>%<val>"
+    %assign comma = ", "
+    %%rtModel
+    %assign val = FcnArgNeeded(RTMArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %assign comma = ", "
+    %% BlockIo argument
+    %assign val = FcnArgNeeded(BlockIOArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% DWork argument
+    %assign val = FcnArgNeeded(DWorkArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% Continuous States argument
+    %assign val = FcnArgNeeded(ContStatesArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% Continuous States Derivative argument
+    %assign val = FcnArgNeeded(ContStatesDerivativeArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% Continuous States Disabled argument
+    %assign val = FcnArgNeeded(ContStatesDisabledArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% Non Sampled Zero Crossing argument
+    %assign val = FcnArgNeeded(NonsampledZCArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %% ZCEvent H-Valuct argument
+    %assign val = FcnArgNeeded(ZCEventArgDef,currentTID,isRateGrouping)
+    %assign args = "%<args>%<comma>%<val>"
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Canonical parameter argument
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %assign comma  = ""
+    %assign prmStr = ""
+    %foreach argIdx = NumCanonicalPrmArgDefs
+      %assign argDef = CanonicalPrmArgDef[argIdx]
+      %if (argDef.OriginalDataTypeIdx != -1)
+      %if FcnArgNeeded(argDef,currentTID,isRateGrouping)
+	  %assign prmWidth = LibBlockParameterWidth(argDef)
+	%assign prmStr = "%<prmStr>%<comma>%<prmWidth>"
+      %else
+	%assign prmStr = "%<prmStr>%<comma>0"
+      %endif
+      %assign comma = ", "
+      %endif
+    %endforeach
+
+    %createrecord BlkFcnRec { \
+      FcnName "%<fcnName>";   \
+      ArgInfo [%<args>];      \
+      Outputs [%<outStr>];    \
+      Inputs  [%<inStr>];     \
+      PrmArgs [%<prmStr>]     \
+    }
+
+    %assign ::BlockFcn = "Unknown"
+  %endwith %% System[sysIdx].Interface
+
+  %if sysFcnName != ""
+  %addtorecord blkInterface %<sysFcnName> %<BlkFcnRec>
+  %endif
+
+%endfunction %%FcnAppendToBlockInterface
+
+
+%% Function: SLibModelReferenceRegFcnArgs ===================================
+%% Abstract:
+%%   Generate model fcn arg list.
+%%
+%% isCallSite = TLC_TRUE (called from modelrefsfcn)
+%%            = TLC_FALSE (called from ertreg)
+%%
+%% The following order should be maintianied for ref args. See GetFunctionStr()
+%%           TID
+%%           CanonicalInput
+%%           CanonicalOutput
+%%           SimStruct
+%%           rtModel
+%%           BlockIO
+%%           ConstBlockIO (?)
+%%           DWork
+%%           Prm (?)
+%%           ContStates
+%%           ContStatesDerivative
+%%           ContStatesDisabled
+%%           NonsampledZC
+%%           ZCEvent
+%%           NumCanonicalPrm
+%%           CanDWork (?)
+%%
+%function SLibModelReferenceRegFcnArgs(isCallSite) void
+  %assign recArgs = []
+  %assign rootSystem        = System[NumSystems-1]
+  %assign baseSystem        = System[NumSystems-2]
+  %assign isRateGrouping    = SLibIsMultiRateAndRateGrouping(rootSystem)
+
+  %assign ::BlockFcn = "Registration"
+
+  %if !IsModelReferenceForASimstructBasedTarget()
+    %% ModelInitializeIsEmpty is computed in ertreg.tlc
+    %% Why do we need this?  Who calls it with 0?
+    %if ::ModelInitializeFcnUsesFirstTime
+      %if isCallSite
+	%assign recArgs = recArgs + "1"
+      %else
+	%assign recArgs = recArgs + "boolean_T firstTime"
+      %endif
+    %endif
+
+    %if !SuppressErrorStatus
+      %if isCallSite
+	%assign recArgs = recArgs + "&(ssGetErrorStatus(S))"
+      %else
+	%assign recArgs = recArgs + "const char **rt_errorStatus"
+      %endif
+    %endif
+
+    %if RTMStopReqAccessed()
+      %if isCallSite
+	%assign recArgs = recArgs + "&(ssGetStopRequested(S))"
+      %else
+	%assign recArgs = recArgs + "boolean_T *rt_stopRequested"
+      %endif
+    %endif
+
+    %if LibIsContinuous(0)
+      %assign recArgs = recArgs + "RTWSolverInfo *rt_solverInfo"
+    %endif
+  
+  %else
+    %if isCallSite
+      %assign recArgs = recArgs + "S"
+    %else
+      %assign recArgs = recArgs + "%<tMdlRefSfcnSType> %<tMdlRefSfcnS>"
+    %endif
+  %endif %% !IsModelReferenceForASimstructBasedTarget()
+
+  %% Pass the timing info to the registration function
+  %if ::ModelReferenceTargetWithGlobalTiming
+    %if isCallSite
+      %assign recArgs = recArgs + "ssGetTimingBridge(S)"
+    %else
+      %assign recArgs = recArgs + "const rtTimingBridge *timingBridge"
+    %endif
+  %endif
+
+  %% Only loop over the sample times if the model reference
+  %% block will not become constant.
+  %if !MdlRefIsConstSampleBlock() && MdlRefDisallowSampleTimeInheritance()
+    %foreach idx = NumSynchronousSampleTimes
+      %if isCallSite
+        %% Map the s-function TID to the root model TID
+        %assign recArgs = recArgs + "ssGetSampleTimeTaskID(S, %<idx>)"
+      %else
+        %assign recArgs = recArgs + "int_T mdlref_TID%<idx>"
+      %endif
+    %endforeach
+  %endif
+
+  %with baseSystem.Interface
+
+    %if FcnArgNeeded(RTMArgDef,rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign tSSCaller = "&(dw->rtm)"
+        %assign recArgs = recArgs + "%<tSSCaller>"
+      %else
+	%assign recArgs = recArgs + "%<tSimStructType> *%<tSimStruct>"
+      %endif
+    %endif
+
+    %if FcnArgNeeded(BlockIOArgDef,rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign blockIOCaller = "&(dw->rtb)"
+        %assign recArgs = recArgs + "%<blockIOCaller>"
+      %else
+        %assign blockIOCallee = "localB"
+        %assign blockIOType = "rtB%<FcnGetSystemIdentifier(NumSystems-2)>"
+        %assign recArgs = recArgs + "%<blockIOType> *%<blockIOCallee>"
+      %endif
+    %endif
+    %if FcnArgNeeded(DWorkArgDef,rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign dworkCaller = "&(dw->rtdw)"
+        %assign recArgs = recArgs + "%<dworkCaller>"
+      %else
+        %assign dworkCallee = "localDW"
+        %assign dworkType = "rtDW%<FcnGetSystemIdentifier(NumSystems-2)>"
+        %assign recArgs = recArgs + "%<dworkType> *%<dworkCallee>"
+      %endif
+    %endif
+    %if FcnArgNeeded(ContStatesArgDef,rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign contStateCaller = "rtx"
+        %assign recArgs = recArgs + "%<contStateCaller>"
+      %else
+        %assign contState = "localX"
+        %assign contStateType = "rtX%<FcnGetSystemIdentifier(NumSystems-2)>"
+        %assign recArgs = recArgs + "%<contStateType> *%<contState>"
+      %endif
+    %endif
+    %if FcnArgNeeded(ContStatesDerivativeArgDef, ...
+                     rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign contDerivStateCaller = "rtdx"
+        %assign recArgs = recArgs + "%<contDerivStateCaller>"
+      %else
+        %assign contDerivState = "localdX"
+        %assign contDerivStateType = ...
+            "rtdX%<FcnGetSystemIdentifier(NumSystems-2)>"
+        %assign recArgs = recArgs + "%<contDerivStateType> *%<contDerivState>"
+      %endif
+    %endif
+    %if FcnArgNeeded(ZCEventArgDef,rootSystem.CurrentTID,isRateGrouping)
+      %if isCallSite
+        %assign prevZCCaller = "&(dw->rtzce)"
+        %assign recArgs = recArgs + "%<prevZCCaller>"
+      %else
+        %assign prevZCCallee = "localZCE"
+        %assign prevZCType = "rtZCE%<FcnGetSystemIdentifier(NumSystems-2)>"
+        %assign recArgs = recArgs + "%<prevZCType> *%<prevZCCallee>"
+      %endif
+    %endif
+  %endwith
+
+  %assign ::BlockFcn = "Unknown"
+
+  %if ISEMPTY(recArgs)
+    %if isCallSite
+      %return ""
+    %else
+      %return "void"
+    %endif
+  %endif
+
+  %foreach idx = SIZE(recArgs,1)
+    %if idx == 0
+      %assign fcnArgs = recArgs[idx]
+    %else
+      %assign fcnArgs = fcnArgs + ", %<recArgs[idx]>"
+    %endif
+  %endforeach
+
+  %return fcnArgs
+%endfunction
+
+
+%% Function: GetFunctionStr  ==================================================
+%% Abstract:
+%%     The following order is used in FcnGetAdditionalArgs and
+%%     FcnAddNeededParameter. We must use the same order:
+%%           TID
+%%           CanonicalInput
+%%           CanonicalOutput
+%%           SimStruct
+%%           rtModel
+%%           BlockIO
+%%           ConstBlockIO (?)
+%%           DWork
+%%           Prm (?)
+%%           ContStates
+%%           ContStatesDerivative
+%%           ContStatesDisabled
+%%           NonsampledZC
+%%           ZCEvent
+%%           NumCanonicalPrm
+%%           CanDWork (?)
+%function GetFunctionStr(block, sysFcn, instIdx, tid)
+  %assign sysFcnName = ISEQUAL(tid,"") ? ...
+    "%<sysFcn>Fcn" :  "%<sysFcn>TID%<tid>Fcn"
+  %assign retStr = ""
+  %assign blockInterface = GetModelrefInterface(block)
+  %assign fcnInfo = blockInterface.%<sysFcnName>
+  %assign fcnName = fcnInfo.FcnName
+  %assign comma = ""
+  %assign args  = ""
+  %assign canInputInfo = fcnInfo.Inputs
+  %assign canOutputInfo = fcnInfo.Outputs
+  %assign canPrmArgInfo = fcnInfo.PrmArgs
+  %assign baseSystemIdx = GetBaseSystemIdx()
+
+  %% If we aren't generating the registration function, then
+  %% instanceIdx must be 0 since we don't use it.
+  %assert (sysFcnName == "RegistrationFcn") || (instIdx == 0)
+
+  %assign TIDIdx = 0
+  %assign RTModelIdx = 1
+  %assign BlockIOIdx = 2
+  %assign DWorkIdx   = 3
+  %assign ContStatesIdx = 4
+  %assign ContStatesDerivativeIdx = 5
+  %assign ContStatesDisabledIdx   = 6
+  %assign NonsampledZCIdx = 7
+  %assign ZCEventIdx      = 8
+  %%
+
+  %if (sysFcnName == "RegistrationFcn" && !IsSimstructBasedTarget())
+    %% firstTime (only for registration)
+    %if ::ModelInitializeFcnUsesFirstTime
+      %assign arg = "firstTime"
+      %assign args = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %else
+      %assign arg = "1"
+      %assign args = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+    
+    %if !SuppressErrorStatus
+      %assign arg = "%<RTMGet("ErrorStatusPointer")>"
+      %assign args = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+    
+    %if blockInterface.StopReqAccessed
+      %if IsModelReferenceTarget()
+	%assign arg = "rt_stopRequested"
+      %else
+        %assign arg = "%<RTMGet("StopRequestedPtr")>"
+      %endif
+      %assign args = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+    
+    %if TYPE(TID) == "Vector"
+      %assign tid0 = TID[0]
+    %else
+      %assign tid0 = TID
+    %endif
+    %% For continuous time referenced models, pass the
+    %% solverInfo to the submodel.  In the case of
+    %% non-ERT top models, the solverInfo is a pointer
+    %% in the rtModel, but for ERT it's not a pointer.
+    %if TYPE(tid0) == "Number" && LibIsContinuous(tid0)
+      %if IsModelReferenceTarget()
+        %assign arg = "rt_solverInfo"
+      %elseif CodeFormat == "Embedded-C"
+        %assign arg = "&(%<RTMGet("RTWSolverInfo")>)"
+      %else
+        %assign arg = "%<RTMGet("RTWSolverInfo")>"
+      %endif
+      %assign args = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+  %endif
+  %%
+  %%
+  %% TID
+  %if fcnInfo.ArgInfo[TIDIdx] == 1
+    %assert sysFcnName != "RegistrationFcn"
+    %if ISEQUAL(tid,"")
+      %assign arg = LibTID()
+    %else
+      %assign arg = %<tid>
+    %endif
+    %assign args = "%<args>%<comma>%<arg>"
+    %assign comma = ", "
+  %endif
+  %assign NumInputs = blockInterface.NumInputs
+  %foreach argIdx = NumInputs
+    %if canInputInfo[argIdx] > 0
+      %assert sysFcnName != "RegistrationFcn"
+      %assign width = LibBlockInputSignalWidth(argIdx)
+      %if width > 1 || (canInputInfo[argIdx] == 2) %% ScalarPassByRef
+	%assign arg   = LibBlockInputSignalAddr(argIdx, "", "", 0)
+      %else
+	%assign arg   = LibBlockInputSignal(argIdx, "", "", 0)
+      %endif
+      %assign args  = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+  %endforeach
+  %%
+  %%
+  %assign NumOutputs = blockInterface.NumOutputs
+  %foreach argIdx=NumOutputs
+    %if canOutputInfo[argIdx] == 1
+      %assert sysFcnName != "RegistrationFcn"
+      %assign arg   = LibBlockOutputSignalAddr(argIdx, "", "", 0)
+      %assign args  = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+  %endforeach
+  %%
+  %% SimStruct
+  %if sysFcnName == "RegistrationFcn" && IsSimstructBasedTarget()
+    %assign args = "%<args>%<comma>%<tMdlRefSfcnS>"
+    %assign comma = ", "
+  %endif
+
+  %% Pass the timing info to the registration function
+  %if sysFcnName == "RegistrationFcn"
+    %if ::UseGlobalTimingForModelReference
+      %if IsModelReferenceTarget()
+        %assert ::ModelReferenceTargetWithGlobalTiming
+        %assign args = "%<args>%<comma>timingBridge"
+      %else 
+        %if CodeFormat == "Embedded-C"
+          %assign args = "%<args>%<comma>&%<::tMdlRefTimingBridge>"
+        %else
+          %assign args = "%<args>%<comma>ssGetTimingBridge(%<tSimStruct>)"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+
+    %if blockInterface.DisallowSampleTimeInheritance
+      %% constant is handled in the loop
+      %foreach idx = NumSynchronousSampleTimes
+	%assign childTID = MapParentTID2ChildTID(block, idx)
+	%if childTID != -1
+	  %if IsModelReferenceTarget()
+	    %assign args = "%<args>%<comma>mdlref_TID%<idx>"
+	  %else
+	    %assign args = "%<args>%<comma>%<idx>"
+	  %endif
+	%endif
+	%assign comma = ", "
+      %endforeach
+    %endif
+  %endif
+
+  %%
+  %% RTModel
+  %if fcnInfo.ArgInfo[RTModelIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.DWorks.DWork[DWork.FirstRootIdx].Identifier
+    %else
+      %assign arg  =  LibBlockDWork(DWork, "","","0")
+    %endif
+    %assign args = "%<args>%<comma>&(%<arg>.rtm)"
+    %assign comma = ", "
+  %endif
+  %%
+  %% BlockIO
+  %if fcnInfo.ArgInfo[BlockIOIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.DWorks.DWork[DWork.FirstRootIdx].Identifier
+    %else
+      %assign arg  =  LibBlockDWork(DWork, "","","0")
+    %endif
+    %assign args = "%<args>%<comma>&(%<arg>.rtb)"
+    %assign comma = ", "
+  %endif
+  %%
+  %% DWork
+  %if fcnInfo.ArgInfo[DWorkIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.DWorks.DWork[DWork.FirstRootIdx].Identifier
+    %else
+      %assign arg  =  LibBlockDWork(DWork, "","","0")
+    %endif
+    %assign args = "%<args>%<comma>&(%<arg>.rtdw)"
+    %assign comma = ", "
+  %endif
+  %% All the rest will be supported when ERT supports continuous states/time, we
+  %% must test them when that is online.
+  %%
+  %% ContStates
+  %if fcnInfo.ArgInfo[ContStatesIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalCStatePath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.ContStates.ContState[ContStates[1]].Identifier
+      %assign arg = "&(%<arg>)"
+    %else
+      %assign arg  =  SLibContinuousStateAddr()
+    %endif
+    %assign args = "%<args>%<comma>%<arg>"
+    %assign comma = ", "
+  %endif
+  %%
+  %% ContStatesDerivative
+  %if fcnInfo.ArgInfo[ContStatesDerivativeIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalCStateDerivativePath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.ContStates.ContState[ContStates[1]].Identifier
+    %else
+      %assign arg  =  SLibContinuousStateDerivativeAddr()
+    %endif
+    %assign args = "%<args>%<comma>%<arg>"
+    %assign comma = ", "
+  %endif
+  %%
+  %% ContStatesDisabled
+  %if fcnInfo.ArgInfo[ContStatesDisabledIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalContStateDisabledPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.ContStates.ContState[ContStates[1]].Identifier
+    %else
+      %assign arg = SLibContStateDisabledAddr()
+    %endif
+    %assign args = "%<args>%<comma>%<arg>"
+    %assign comma = ", "
+  %endif
+  %%
+  %% NonsampledZC
+  %if fcnInfo.ArgInfo[NonsampledZCIdx] == 1
+    %if sysFcnName == "RegistrationFcn"
+      %assign arg = FcnGetLocalNonSampledZCPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.NonsampledZCs.NonsampledZC[NonsampledZC[0].FirstRootIdx]
+    %else
+      %assign arg  = SLibNonsampledZCAddr()
+    %endif
+    %assign args = "%<args>%<comma>%<arg>"
+    %assign comma = ", "
+  %endif
+  %%
+  %% ZCEvent
+  %if fcnInfo.ArgInfo[ZCEventIdx] == 1
+    %if sysFcn == "RegistrationFcn"
+      %assign arg = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSystemIdx)
+      %assign arg = arg + CompiledModel.DWorks.DWork[DWork.FirstRootIdx].Identifier
+    %else
+      %assign arg  =  LibBlockDWork(DWork, "","","0")
+    %endif
+    %assign args = "%<args>%<comma>&(%<arg>.rtzce)"
+    %assign comma = ", "
+  %endif
+  %%
+  %% Parameter Arguments
+  %assign numPrmArgs = SIZE(fcnInfo.PrmArgs,1)
+  %foreach argIdx=numPrmArgs
+    %if canPrmArgInfo[argIdx] >= 1
+      %assign param = block.Parameter[argIdx]
+      %if canPrmArgInfo[argIdx] == 1
+	%assign arg   = LibBlockParameter(param, "", "", 0)
+      %else
+	%assign arg   = LibBlockParameterAddr(param, "", "", 0)
+      %endif
+      %assign args  = "%<args>%<comma>%<arg>"
+      %assign comma = ", "
+    %endif
+  %endforeach
+
+  %assign retStr = "%<fcnName>" + "(" + "%<args>" + ");"
+
+  %return retStr
+%endfunction
+
+%% Function: GetModelRefFcnNeedsTID  ===========================================
+%% Abstract:
+%%     Returns whether this function uses TID in the argument list, we only
+%% need to check this for the update and output functions.
+%function GetModelRefFcnNeedsTID(block, sysFcn)
+  %assert (sysFcn == "UpdateFcn") || (sysFcn == "OutputFcn") || ...
+    (sysFcn == "OutputUpdateFcn")
+  %% Note that the TIDidx must match the index in GetFunctionStr above.
+  %assign TIDIdx = 0
+  %assign needsTID = 0
+
+  %with block
+    %assign blockInterface = GetModelrefInterface(block)
+    %if ISFIELD(blockInterface, "%<sysFcn>")
+      %assign needsTID = blockInterface.%<sysFcn>.ArgInfo[TIDIdx]
+    %endif
+  %endwith
+  %return needsTID
+%endfunction
+
+%% Function: CallModelrefBlockRegFcns  =========================================
+%% Abstract:
+%%    Call all child model reference block registration functions.
+%function CallModelrefBlockRegFcns(mdlRefBlks)
+  %openfile modelrefBuffer
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %if ::UseGlobalTimingForModelReference
+    %assign hFile = SLibAddModelFile("SystemHeader",...
+      "Simulink","%<CompiledModel.Name>")
+    %assign cFile = SLibAddModelFile("SystemBody",...
+      "Simulink","%<CompiledModel.Name>")
+    %% We only need to declare a local timing bridge
+    %% for ERT based targets.  If the target is simstruc based
+    %% (like RSIM), then the simstruc will already have a timing bridge.
+    %if !IsModelReferenceTarget() && CodeFormat == "Embedded-C"
+      %openfile hbuffer
+      #include "rt_timing_bridge.h"
+      
+      %closefile hbuffer
+      %<SLibSetModelFileAttribute(hFile, "Includes", hbuffer)>
+      %openfile cbuffer
+      rtTimingBridge %<::tMdlRefTimingBridge>;
+      %closefile cbuffer
+      %<SLibSetModelFileAttribute(cFile, "Declarations", cbuffer)>
+      {
+        static void *clockTickPtrs[%<NumSynchronousSampleTimes>];
+        static void *clockTickHPtrs[%<NumSynchronousSampleTimes>];
+        %if RTMTimePtrIsReqFcn() || RTMTaskTimeIsReqFcnForTID(0)
+          static time_T *taskTimePtrs;
+        %endif
+        %if CompiledModel.SingleRate != "yes"
+          static void *taskCounterPtrs[%<NumSynchronousSampleTimes>];
+          %if ERTPerTaskSampleHitsIsReqFcn()
+            %assign rateTransitionSize = ...
+              "(%<NumSynchronousSampleTimes> * %<NumSynchronousSampleTimes>)"
+            static boolean_T *rateTransitionPtrs[%<rateTransitionSize>];
+          %endif
+        %endif
+        
+        %<::tMdlRefTimingBridge>.nTasks = %<NumSynchronousSampleTimes>;
+        
+        %foreach idx = NumSynchronousSampleTimes
+          %if RTMClockTickForTIDIsReqFcn(idx)
+            clockTickPtrs[%<idx>] = &(%<RTMGet("ClockTick%<idx>")>);
+            %if RTMLongClockTickForTIDIsReqFcn(idx)
+              clockTickHPtrs[%<idx>] = &(%<RTMGet("ClockTickH%<idx>")>);
+            %endif
+          %else
+            clockTickPtrs[%<idx>] = NULL;
+          %endif
+        %endforeach
+        %<::tMdlRefTimingBridge>.clockTick = clockTickPtrs;
+        %<::tMdlRefTimingBridge>.clockTickH = clockTickHPtrs;
+        
+        %if CompiledModel.SingleRate != "yes"
+          %assign cTick = RTMGet("TaskCounters")
+          %assign dtId = SampleTime[0].TaskCounterDataTypeId
+          %assert dtId == tSS_UINT32 || dtId == tSS_UINT8
+          %assign taskCounterDT = (dtId == tSS_UINT32) ? "false" : "true"
+          %foreach idx = NumSynchronousSampleTimes
+            taskCounterPtrs[%<idx>] = ...
+              &(%<cTick>.%<SLibERTMultiRateCounterField(idx)>);
+          %endforeach
+          %<::tMdlRefTimingBridge>.taskCounter = taskCounterPtrs;
+          %<::tMdlRefTimingBridge>.taskCounterDataType = ...
+            %<LibGetDataTypeEnumFromId(dtId)>;
+          
+          %if ERTPerTaskSampleHitsIsReqFcn()
+            %assign shMat = RTMGet("PerTaskSampleHits")
+            %foreach i = NumSynchronousSampleTimes 
+              %foreach j = NumSynchronousSampleTimes
+                %if CompiledModel.ActualMultiRateSampleHits[i][j] == 1
+                  %assign val = "%<RTMGet("PerTaskSampleHits")>."...
+                    "%<SLibERTMultiRateTimingField(j,i)>"
+                  rateTransitionPtrs[%<i>*%<NumSynchronousSampleTimes> + %<j>] \ 
+                  = &(%<val>);
+                %endif
+              %endforeach
+            %endforeach
+            %<::tMdlRefTimingBridge>.rateTransition = rateTransitionPtrs;
+          %endif
+        %endif
+        
+        %if RTMTimePtrIsReqFcn() || RTMTaskTimeIsReqFcnForTID(0)
+          taskTimePtrs = %<RTMGet("TPtr")>;
+          %<::tMdlRefTimingBridge>.taskTime = (void **)&taskTimePtrs;
+        %endif
+        
+        %if RTMFirstInitCondFlagIsReqFcn()
+          %<::tMdlRefTimingBridge>.firstInitCond = &%<RTMIs("FirstInitCond")>;
+        %endif
+      }
+    %endif
+  %endif
+  %with System[baseSysIdx]
+     %foreach rowIdx = SIZE(mdlRefBlks,0)
+       %assign mdlRefInfo = mdlRefBlks[rowIdx]
+       %assign mSysIdx = mdlRefInfo[0]
+       %assign bIdx    = mdlRefInfo[1]
+       %assign instIdx = mdlRefInfo[2]
+       %with System[mSysIdx].Block[bIdx]
+	 %assign blk = System[mSysIdx].Block[bIdx]
+	 %assign blockInterface = GetModelrefInterface(blk)
+	 %if ISFIELD(blockInterface, "RegistrationFcn")
+	   /* Model Initialize fcn for %<Type> block %<Name> */
+	   %<GetFunctionStr(System[mSysIdx].Block[bIdx], ...
+	     "Registration", instIdx, "")>
+	 %endif
+	 %if RTWCAPIStates == 1
+	   %assign rtm1 = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSysIdx)
+	   %assign rtm2 = DWorks.DWork[DWork.FirstRootIdx].Identifier
+	   %assign rtm = rtm1 + rtm2 + ".rtm"
+	   rtwCAPI_SetChildMMI(%<RTMGet("DataMapInfo")>.mmi, %<rowIdx>, &(%<rtm>.DataMapInfo.mmi));
+	   %assign tmpVec = [%<mdlRefInfo[3]>, %<mdlRefInfo[4]>]
+	   %assign bpath = STRING(SLibMangledGrBlockPath(tmpVec))
+           %% This function does a deep dive so we only want to do it
+	   %% for the top (note: the engine takes care of this in sim)
+	   %if !IsModelReferenceTarget()
+	     { 
+	     char * tempStr = rtwCAPI_EncodePath("%<bpath>");
+	     rtwCAPI_UpdateFullPaths(&(%<rtm>.DataMapInfo.mmi),tempStr);
+	     utFree(tempStr);
+	     }
+	   %endif
+	   rtwCAPI_SetPath(%<rtm>.DataMapInfo.mmi, "%<bpath>");
+	 %endif
+
+       %endwith
+     %endforeach
+   %endwith
+   %closefile modelrefBuffer
+   %return modelrefBuffer
+%endfunction %%CallModelrefBlockRegFcns
+
+
+%% Function: CallModelrefBlockFreeFullPaths  ===================================
+%% Abstract:
+%%    Call rtwCAPI_SetFreeFullPaths
+%function CallModelrefBlockFreeFullPaths(mdlRefBlks)
+  %openfile modelrefBuffer
+  %if (RTWCAPIStates == 1) &&  ...
+    !IsModelReferenceTarget() && HasModelReferenceBlocks()
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %with System[baseSysIdx]
+     %foreach rowIdx = SIZE(mdlRefBlks,0)
+       %assign mdlRefInfo = mdlRefBlks[rowIdx]
+       %assign mSysIdx = mdlRefInfo[0]
+       %assign bIdx    = mdlRefInfo[1]
+       %assign instIdx = mdlRefInfo[2]
+       %with System[mSysIdx].Block[bIdx]
+	 %assign blk = System[mSysIdx].Block[bIdx]
+	 %assign blockInterface = GetModelrefInterface(blk)
+
+	   %assign rtm1 = FcnGetLocalDWorkPath(BlockIdx[0], instIdx, baseSysIdx)
+	   %assign rtm2 = DWorks.DWork[DWork.FirstRootIdx].Identifier
+	   %assign rtm = rtm1 + rtm2 + ".rtm"
+
+	   %assign tmpVec = [%<mdlRefInfo[3]>, %<mdlRefInfo[4]>]
+           %% This function does a deep dive so we only want to do it
+	   %% for the top (note: the engine takes care of this in sim)
+	   rtwCAPI_FreeFullPaths(&(%<rtm>.DataMapInfo.mmi));
+
+       %endwith
+     %endforeach
+   %endwith
+   %endif
+   %closefile modelrefBuffer
+   %return modelrefBuffer
+%endfunction %%CallModelrefBlockFreePath
+
+
+%% Function: GenModelReferenceSimTargetSFcnOutputOrUpdate =====================
+%%
+%function GenModelReferenceSimTargetSFcnOutputOrUpdate(sysFcn)
+
+  %assert (IsModelReferenceSimTarget())
+  %openfile tmpBuffer
+
+  %assert(::BlockFcn == sysFcn)
+  %assert(sysFcn == "Output" || sysFcn == "Update")
+
+  %assign subsys = System[NumSystems-2]
+  %openfile TimeCondBuf
+  %if NumSampleTimes > 1 && LibSystemFcnNeedsTID(subsys, sysFcn)
+    %<DumpTimeConditioningCode()>
+  %endif
+  %closefile TimeCondBuf
+  %%
+  %with System[NumSystems-1]
+    %if !SLibIsRateGrouping()
+      %if !LibSystemFcnIsEmpty(subsys, sysFcn)
+	%% non-rate grouping code
+	%if NumSynchronousSampleTimes > 1 && LibSystemFcnNeedsTID(subsys, sysFcn)
+	  %<TimeCondBuf>
+	%endif
+	%<LibGenSystemFcnCall(subsys, sysFcn, 0)>
+      %endif
+    %else
+      %<TimeCondBuf>
+      %foreach tid = NumSynchronousSampleTimes
+	%assign subsys.CurrentTID = ...
+	  (NumSynchronousSampleTimes > 1 && SLibIsRateGrouping()) ? tid : ""
+	%if !LibSystemFcnIsEmptyForTID(subsys, sysFcn)
+	  %openfile tmpBuf
+	  %<LibGenSystemFcnCall(subsys, sysFcn, 0)>
+	  %closefile tmpBuf
+	  %if !WHITE_SPACE(tmpBuf)
+	    %if sysFcn == "Output" && LibIsContinuous(tid)
+	      if (ssIsSampleHit(S, %<tid>, tid) || ssIsMinorTimeStep(S)) {
+		%<tmpBuf>
+	      }
+	    %else
+	      if (ssIsSampleHit(S, %<tid>, tid)) {
+		%<tmpBuf>
+	      }
+	    %endif
+	  %endif
+	%endif
+      %endforeach
+      %assign subsys.CurrentTID = -1
+    %endif
+  %endwith
+  %closefile tmpBuffer
+  %return(tmpBuffer)
+%endfunction %% GenModelReferenceSimTargetSFcnOutputOrUpdate
+
+%% Function: SLibGenModelRefGlobalParamReg ====================================
+%% Abstract:
+%%
+%function SLibGenModelRefGlobalParamReg() void
+
+  %assign s = "S"
+  %assign nTunableParams = 0
+
+  %with CompiledModel.ModelParameters
+    %assert (NumInrtP == (NumParameters - NumConstPrmsWithInit - NumConstPrms))
+    %openfile regBufferBody
+    %foreach prmIdx=NumInrtP
+      %assign param = Parameter[prmIdx]
+      %if (param.Tunable == "yes")
+	%assign identi = param.Identifier
+	%assign isComplex = param.ComplexSignal
+	%%
+	%% Special handling for dimensions
+	%%
+	%assign dims = LibBlockParameterDimensions(param)
+	%assign nDims = SIZE(dims, 1)
+	%assign dimsStr = "%<dims[0]>"
+	%foreach prevIdx = nDims-1
+	  %assign nextDim = dims[prevIdx+1]
+	  %assign dimsStr = "%<dimsStr>,%<nextDim>"
+	%endforeach
+	{
+	  int_T locDims[%<nDims>] = {%<dimsStr>};
+	  %%
+	  %% Special handling for data type
+	  %%
+	  %assign dtStr = ""
+	  %assign dtId = param.OriginalDataTypeIdx
+	  %assert (dtId != -1)
+	  %if LibIsBuiltInDataType(dtId)
+	    %assign dtStr = LibGetDataTypeEnumFromId(dtId)
+	  %endif
+	  %%
+	  %if !WHITE_SPACE(dtStr)
+	    ssRegModelRefGlobalParam( \
+	    %<s>, \
+	    %<nTunableParams>, \
+	    "%<identi>", \
+	    1, \ %% xxx (pjackson) Remove isUsed before submitting
+	    %<nDims>, \
+	    locDims, \
+	    %<isComplex>, \
+	    %<dtStr>, \
+	    SS_RTW_STORAGE_EXPORTED_GLOBAL);
+	  %else
+	    %%
+	    %assign curDT = FixPt_GetDataTypeFromIndex(dtId)
+	    %%
+	    %if curDT.IsFixedPoint
+	      %assign dtOverride = 0
+	      %if FixPt_DataTypeIsFloat(curDT)
+		ssRegModelRefScaledDoubleGlobalParam( \
+	      %else
+		ssRegModelRefFixptGlobalParam( \
+	      %endif
+	      %<s>, \
+	      %<nTunableParams>, \
+	      "%<identi>", \
+	      1, \ %% xxx (pjackson) Remove isUsed before submitting
+	      %<nDims>, \
+	      locDims, \
+	      %<isComplex>,
+	      %<curDT.IsSigned>, \
+	      %<curDT.RequiredBits>, \
+	      %<curDT.FracSlope>, \
+	      %<curDT.FixedExp>, \
+	      %<curDT.Bias>, \
+	      %<dtOverride>, \
+	      SS_RTW_STORAGE_EXPORTED_GLOBAL);
+	    %else
+	      %assign errTxt = ...
+		"User-defined data types not supported for interface parameters."
+	      %<LibReportFatalError(errTxt)>
+	    %endif
+	  %endif
+	}
+	%assign nTunableParams = nTunableParams+1
+      %endif %% (param.Tunable == "yes")
+    %endforeach %% prmIdx=NumInrtP
+    %closefile regBufferBody
+  %endwith %% CompiledModel.ModelParameters
+
+  %openfile regBuffer
+  %if nTunableParams > 0
+    /* ModelRef: Global parameters */
+    if (!ssSetNumModelRefGlobalParams(S, %<nTunableParams>)) return;
+
+    %<regBufferBody>
+  %endif
+  %closefile regBuffer
+
+  %return regBuffer
+%endfunction %% SLibGenModelRefGlobalParamReg
+
+%% Function: SLibGenModelRefParamArgReg =======================================
+%% Abstract:
+%%
+%function SLibGenModelRefParamArgReg(sys) void
+
+  %assign s = "S"
+
+  %openfile regBuffer
+  %with sys.Interface
+    %if NumCanonicalPrmArgDefs > 0
+      /* ModelRef: Parameter arguments */
+      if (!ssSetNumModelRefParamArgs(S, %<NumCanonicalPrmArgDefs>)) return;
+
+      %foreach argIdx=NumCanonicalPrmArgDefs
+	%assign canPrmDef = CanonicalPrmArgDef[argIdx]
+	%assign identi = canPrmDef.Identifier
+	%assign isComplex = (canPrmDef.ComplexSignal == "yes")
+	%assign isUsed = (canPrmDef.IsUsed == "yes")
+	%%
+	%% Special handling for dimensions
+	%%
+	%assign dims   = LibBlockParameterDimensions(canPrmDef)
+	%assign nDims  = SIZE(dims, 1)
+	%assign dimsStr = "%<dims[0]>"
+	%foreach prevIdx = nDims-1
+	  %assign nextDim = dims[prevIdx+1]
+	  %assign dimsStr = "%<dimsStr>,%<nextDim>"
+	%endforeach
+	{
+	  int_T locDims[%<nDims>] = {%<dimsStr>};
+	  %%
+	  %% Special handling for data type
+	  %%
+	  %assign dtStr = ""
+	  %assign dtId = canPrmDef.OriginalDataTypeIdx
+	  %if (dtId == -1)
+	    %assert (isUsed == 0)
+	    %assign dtStr = "DYNAMICALLY_TYPED"
+	  %elseif LibIsBuiltInDataType(dtId)
+	    %assign dtStr = LibGetDataTypeEnumFromId(dtId)
+	  %endif
+	  %%
+	  %if !WHITE_SPACE(dtStr)
+	    ssRegModelRefParamArg( \
+	    %<s>, \
+	    %<argIdx>, \
+	    "%<identi>", \
+	    %<isUsed>, \
+	    %<nDims>, \
+	    locDims, \
+	    %<isComplex>, \
+	    %<dtStr>);
+	  %else
+	    %%
+	    %assign curDT = FixPt_GetDataTypeFromIndex(dtId)
+	    %%
+	    %if curDT.IsFixedPoint
+	      %assign dtOverride = 0
+	      %if FixPt_DataTypeIsFloat(curDT)
+		ssRegModelRefScaledDoubleParamArg( \
+	      %else
+		ssRegModelRefFixptParamArg( \
+	      %endif
+	      %<s>, \
+	      %<argIdx>, \
+	      "%<identi>", \
+	      %<isUsed>, \
+	      %<nDims>, \
+	      locDims, \
+	      %<isComplex>,
+	      %<curDT.IsSigned>, \
+	      %<curDT.RequiredBits>, \
+	      %<curDT.FracSlope>, \
+	      %<curDT.FixedExp>, \
+	      %<curDT.Bias>, \
+	      %<dtOverride>);
+	    %else
+	      %assign errTxt = ...
+		"User-defined data types not supported for interface parameters."
+	      %<LibReportFatalError(errTxt)>
+	    %endif
+	  %endif
+	}
+      %endforeach %% argIdx=NumCanonicalInputArgDefs
+    %endif %% NumCanonicalPrmArgDefs > 0
+  %endwith %% sys
+  %closefile regBuffer
+
+  %return regBuffer
+%endfunction %% SLibGenModelRefParamArgReg
+
+%% =============================================================================
+%%
+%function ModelrefCacheVarStepSolverResetCode(ss) void
+
+  %openfile tmpBuf
+  %if SolverType == "VariableStep"
+    %assign nDU = SolverResetInfo.NumNonContDerivSignals
+    %if nDU > 0
+      %foreach idx = nDU
+	%assign du = SolverResetInfo.NonContDerivSignal[idx]
+	%assign sigSrc  = du.SigSrc
+	%assign startEl = du.StartEl
+	%assign regLen  = du.RegionLen
+	%assign dtype   = LibGetDataTypeNameFromId(du.DataTypeIdx)
+	%assign nchar = "%<regLen>*sizeof(%<dtype>)"
+	%assign idNum = IDNUM(sigSrc)
+	%%
+	%switch idNum[0]
+	  %case "u"
+	    %% xxx{Murali} later
+	    %break
+	  %case "y"
+	    %assign opIdx        = idNum[1]
+	    %assign interface    = ss.Interface
+	    %assign canOutputArg = interface.CanonicalOutputArgDef[opIdx]
+	    %assign name  = canOutputArg.Identifier
+	    %assign addr  = "&%<name>[%<startEl>]"
+	    %<LibAccessArg(canOutputArg)>
+	    %break
+	  %default
+	    %assign bo = BlockOutputs.GlobalBlockOutput[idNum[1]]
+	    %assert (bo.Invariant == "no")
+	    %assert (bo.ComplexSignal == "no")
+	    %assert (bo.Width >= regLen + startEl)
+	    %%
+	    %with ss
+	      %assign boPath = FcnGetLocalBlockIOPath(bo.SigSrc[0], bo.SigSrc[1], ss.SystemIdx)
+	    %endwith
+	    %%
+	    %assign name  = "%<boPath>%<bo.Identifier>"
+	    %assign opW   = (bo.Width == 1) ? "" : "[%<startEl>]"
+	    %assign addr  = "&%<name>%<opW>"
+	    %break
+	%endswitch
+	%%
+	%<RTMAddRecArry(...
+	  "NonContDerivSignal%<idx>",  ...
+	  "nonContDerivSignal%<idx>",  ...
+	  "", ...
+	  dtype, ...
+	  "", ...
+	  [0, 0, 0, 0], ...
+	  regLen, ...
+	  "RTMAlwaysReqIsReqFcn()")>
+	%%
+	%assign du = RTMGet("NonContDerivSignal%<idx>")
+	if (memcmp(%<du>, (char*)%<addr>, %<nchar>) != 0) {
+	  (void)memcpy(%<du>, (char*)%<addr>, %<nchar>);
+	  %<RTMSetSolverNeedsReset()>;
+	}
+      %endforeach
+    %endif
+  %endif %% SolverType == "VariableStep"
+  %closefile tmpBuf
+  %addtorecord ss MdlRefVarStepSolverResetCode tmpBuf
+
+%endfunction
+
+%function SLibWriteMdlRefExportedMdlInfo() void
+
+  %with CompiledModel
+    %assign cFile = SLibAddModelFile("SystemBody","Simulink",Name)
+    %assign hFile = SLibAddModelFile("SystemHeader","Simulink",Name)
+    
+    %openfile tmpBuffer
+    RegMdlInfo rtMdlInfo_%<Name>[%<ExportedMdlInfo.NumExportedMdlInfo>] = {
+    %foreach idIdx = ExportedMdlInfo.NumExportedMdlInfo
+      %assign id = ExportedMdlInfo.ExportedMdlInfo[idIdx]
+      %if ISEMPTY(id.BPath) || WHITE_SPACE(id.BPath)
+	{"%<id.Id>", %<id.Class>, %<id.Alias>, %<id.Port>, NULL}\
+      %else
+	{"%<id.Id>", %<id.Class>, %<id.Alias>, %<id.Port>, "%<id.BPath>"}\
+      %endif
+      %if idIdx < (ExportedMdlInfo.NumExportedMdlInfo-1)
+	,
+      %endif
+    %endforeach
+    };
+    %closefile tmpBuffer
+    %<SLibSetModelFileAttribute(cFile, "Definitions", tmpBuffer)>
+    
+    %openfile tmpBuffer
+    extern RegMdlInfo rtMdlInfo_%<Name>[%<ExportedMdlInfo.NumExportedMdlInfo>];
+    %closefile tmpBuffer
+    %<SLibSetModelFileAttribute(hFile, "Declarations", tmpBuffer)>
+
+    %openfile tmpBuffer
+    #define rtNumMdlInfo_%<Name> %<ExportedMdlInfo.NumExportedMdlInfo>
+    %closefile tmpBuffer
+    %<SLibSetModelFileAttribute(hFile, "Defines", tmpBuffer)>
+
+    %openfile tmpBuffer
+    %foreach idIdx = ReferencedModels.NumReferencedModels
+      %assign modelName = ReferencedModels.ReferencedModel[idIdx].Name
+      ssRegModelRefMdlInfo(S, "%<modelName>", rtMdlInfo_%<modelName>, rtNumMdlInfo_%<modelName>);
+    %endforeach
+    %assign modelName = Name
+    ssRegModelRefMdlInfo(S, "%<modelName>", rtMdlInfo_%<modelName>, rtNumMdlInfo_%<modelName>);
+    %closefile tmpBuffer
+    
+  %endwith
+  
+  %return tmpBuffer
+%endfunction
+
+%function SLibWriteMdlRefChildMdls() void
+  %openfile tmpBuffer
+  %with CompiledModel
+    %if ChildMdls.NumChildMdls > 0 
+      {
+	ModelRefChildModelInfo childModels[%<ChildMdls.NumChildMdls>] = {
+	%foreach mdlIdx = (ChildMdls.NumChildMdls -1)
+	  %assign childMdlName = ChildMdls.ChildMdl[mdlIdx].MdlName  
+	  %assign childMdlPath = ChildMdls.ChildMdl[mdlIdx].RefPath
+	  %assign childMdlSingleInst = ChildMdls.ChildMdl[mdlIdx].IsSingleInst
+	  "%<childMdlName>","%<childMdlPath>",%<childMdlSingleInst>,
+	%endforeach
+	%assign childMdlName = ChildMdls.ChildMdl[ChildMdls.NumChildMdls-1].MdlName  
+	%assign childMdlPath = ChildMdls.ChildMdl[ChildMdls.NumChildMdls-1].RefPath
+	%assign childMdlSingleInst = ChildMdls.ChildMdl[ChildMdls.NumChildMdls-1].IsSingleInst
+	"%<childMdlName>","%<childMdlPath>",%<childMdlSingleInst>};
+	ssRegModelRefChildModel(S,%<ChildMdls.NumChildMdls>,childModels);
+      }
+    %endif
+  %endwith
+  %closefile tmpBuffer
+  %return tmpBuffer
+%endfunction
+
+%% Function: FcnInitializeModelRefGlobalTimingEngine ===========================
+%% Abstract:
+%%    Declare all the global variables necessary for the global timing engine
+%% and initialize these variables in the registration function
+%function FcnInitializeModelRefGlobalTimingEngine() Output
+  %assert ::ModelReferenceTargetWithGlobalTiming
+  %assign cFile = SLibAddModelFile("SystemBody","Simulink",CompiledModel.Name)
+  %assign hFile = SLibAddModelFile("SystemHeader","Simulink","%<CompiledModel.Name>")
+  %assign hpFile = SLibAddModelFile("SystemHeader","Simulink","%<CompiledModel.Name>_private")
+  %openfile cbuffer
+  int_T %<::tMdlRefGlobalTID>[%<NumSynchronousSampleTimes>];
+  const rtTimingBridge *%<::tMdlRefTimingBridge>;
+
+  %closefile cbuffer
+  %<SLibSetModelFileAttribute(cFile, "Definitions", cbuffer)>
+  %openfile hbuffer
+  %% We need to include the file that has the typedef
+  #include "rt_timing_bridge.h"
+
+  %closefile hbuffer
+  %<SLibSetModelFileAttribute(hFile, "Includes", hbuffer)>
+  %openfile hpbuffer
+  extern int_T %<::tMdlRefGlobalTID>[%<NumSynchronousSampleTimes>];
+  extern const rtTimingBridge *%<::tMdlRefTimingBridge>;
+
+  %closefile hpbuffer
+  %<SLibSetModelFileAttribute(hpFile, "ExternData", hpbuffer)>
+
+  /* setup the global timing engine */
+  %if !MdlRefIsConstSampleBlock() && MdlRefDisallowSampleTimeInheritance()
+    %foreach idx = NumSynchronousSampleTimes
+      %<::tMdlRefGlobalTID>[%<idx>] = mdlref_TID%<idx>;
+    %endforeach
+  %endif
+  %<::tMdlRefTimingBridge> = timingBridge;
+%endfunction
+
+%% EOF modelrefsfcnlib.tlc

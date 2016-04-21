@@ -1,0 +1,298 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Efficient Narrow Transition-Band FIR Filter Design</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-19">
+      <meta name="m-file" content="ifirdemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Efficient Narrow Transition-Band FIR Filter Design</h1>
+      <introduction>
+         <p>One of the drawbacks of using FIR filters is that the filter order tends to grow inversely proportional to the transition
+            bandwidth of the filter. This demo showcases efficient designs of FIR filters with very narrow transition-bands using the
+            interpolated FIR (IFIR) function.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Design of a Filter with Narrow Transition Bandwidth</a></li>
+            <li><a href="#4">Interpolated FIR (IFIR) Design</a></li>
+            <li><a href="#6">Upsampling the Filter</a></li>
+            <li><a href="#8">Removing the Spectral Replica</a></li>
+            <li><a href="#12">Overall Filter Response</a></li>
+            <li><a href="#13">Multirate Implementations</a></li>
+         </ul>
+      </div>
+      <h2>Design of a Filter with Narrow Transition Bandwidth<a name="1"></a></h2>
+      <p>Consider the following design specifications:</p><pre class="codeinput">Rpass = 0.001;  <span class="comment">% Passband ripple</span>
+Fpass = 0.13;   <span class="comment">% Passband edge</span>
+Rstop = 0.0005; <span class="comment">% Stopband ripple</span>
+Fstop = 0.14;   <span class="comment">% Stopband edge</span>
+</pre><p>A regular linear-phase equiripple design that meets the specs can be designed with:</p><pre class="codeinput">F= [0 Fpass Fstop 1];
+A = [1 1 0 0];
+R = [Rpass Rstop];
+b = firgr(<span class="string">'minorder'</span>,F,A,R);
+hfvt = fvtool(b,<span class="string">'Analysis'</span>,<span class="string">'info'</span>);
+set(hfvt, <span class="string">'Color'</span>, [1 1 1]);
+</pre><img vspace="5" hspace="5" src="ifirdemo_01.png"> <p>The filter length required turns out to be 694 taps.</p>
+      <h2>Interpolated FIR (IFIR) Design<a name="4"></a></h2>
+      <p>From multirate signal processing theory, it is well-known that upsampling a signal compresses its spectrum. This fact is used
+         in IFIR design. Instead of directly designing a filter that meets the transition band requirements, we design a filter that
+         meets L*Fpass and L*Fstop as its band-edges, where L is the interpolation factor (that is, we stretch the transition width
+         by a factor of L). Because the filter order grows inversely proportional to the transition width, the filter order required
+         to meet the "stretched-out" specs is significantly lower than the filter order required to meet the original specs.
+      </p>
+      <p>For example, suppose L = 4.</p><pre class="codeinput">L = 4; <span class="comment">% Interpolation factor</span>
+F = [0 Fpass*L Fstop*L 1];
+bstrech = firgr(<span class="string">'minorder'</span>,F,A,R);
+set(hfvt, <span class="string">'Filters'</span>, dfilt.dffir(bstrech));
+</pre><img vspace="5" hspace="5" src="ifirdemo_02.png"> <p>The filter length required reduces to 174 taps</p>
+      <h2>Upsampling the Filter<a name="6"></a></h2>
+      <p>We have reduced the filter length significantly. Of course, that is not the filter that we wanted. If we now upsample the
+         impulse response by a factor of L, the spectrum is compressed by such a factor and we meet the original transition band requirements:
+      </p><pre class="codeinput">bup = upsample(bstrech,L);
+set(hfvt, <span class="string">'Filters'</span>, [dfilt.dffir(b), dfilt.dffir(bup)], <span class="keyword">...</span>
+    <span class="string">'Analysis'</span>, <span class="string">'magnitude'</span>);
+legend(hfvt,<span class="string">'Original design'</span>,<span class="string">'Stretched and upsampled design'</span>);
+</pre><img vspace="5" hspace="5" src="ifirdemo_03.png"> <p>The upsampled "stretched" design has a total length of 696 which is slightly larger than the original design (694). So the
+         overall delay in the filter is slightly larger. However, there are only 174 nonzero multipliers. Unfortunately, we don't yet
+         have the lowpass filter we need. The upsampling has introduced unwanted spectral replicas. The idea of IFIR design is to cascade
+         the upsampled filter with a low order lowpass filter that removes this spectral replicas.
+      </p>
+      <h2>Removing the Spectral Replica<a name="8"></a></h2>
+      <p>Rather than continuing the design "by hand", we will now use the IFIR function. IFIR returns the two filters (the upsampled
+         filter and the replica suppressor filter).
+      </p>
+      <p>We can choose different levels of optimization in the design:</p><pre class="codeinput">[h,g]=ifir(L,<span class="string">'low'</span>,[Fpass Fstop],R,<span class="string">'simple'</span>);
+set(hfvt, <span class="string">'Filters'</span>, [dfilt.dffir(h),dfilt.dffir(g)]);
+legend(hfvt,<span class="string">'Simple design, upsampled filter'</span>,<span class="string">'Simple design, replica suppressor'</span>);
+</pre><img vspace="5" hspace="5" src="ifirdemo_04.png"> <pre class="codeinput">[h2,g2]=ifir(L,<span class="string">'low'</span>,[Fpass Fstop],R,<span class="string">'intermediate'</span>);
+set(hfvt, <span class="string">'Filters'</span>, [dfilt.dffir(h2),dfilt.dffir(g2)]);
+legend(hfvt,<span class="string">'Intermediate design, upsampled filter'</span>,<span class="keyword">...</span>
+    <span class="string">'Intermediate design, replica suppressor'</span>);
+</pre><img vspace="5" hspace="5" src="ifirdemo_05.png"> <pre class="codeinput">[h3,g3]=ifir(L,<span class="string">'low'</span>,[Fpass Fstop],R,<span class="string">'advanced'</span>);
+set(hfvt, <span class="string">'Filters'</span>, [dfilt.dffir(h3),dfilt.dffir(g3)]);
+legend(hfvt,<span class="string">'Advanced design, upsampled filter'</span>,<span class="keyword">...</span>
+    <span class="string">'Advanced design, replica suppressor'</span>);
+</pre><img vspace="5" hspace="5" src="ifirdemo_06.png"> <p>In the 'simple' case, the replica suppressor filter is a simple lowpass filter (this case is the most robust and also the
+         fastest design). In the 'intermediate' case, the replica suppressor filter is designed with a don't-care region (where the
+         periodic filter already provides the required attenuation). This results in a (slight) reduction of filter order in some cases.
+         The 'advanced' design is much more involved. It jointly optimizes the periodic filter and the replica suppressor filter in
+         order to achieve the required specs. The result is significant savings in the order of the replica suppressor filter and a
+         slighter savings in the order of the periodic filter.
+      </p>
+      <h2>Overall Filter Response<a name="12"></a></h2>
+      <p>The overall filter response can be found by forming a cascade of the two filters for each case:</p><pre class="codeinput">Hoverall = cascade(dfilt.dffir(h),dfilt.dffir(g));
+Hoverall2 = cascade(dfilt.dffir(h2),dfilt.dffir(g2));
+Hoverall3 = cascade(dfilt.dffir(h3),dfilt.dffir(g3));
+set(hfvt, <span class="string">'Filters'</span>, [Hoverall,Hoverall2,Hoverall3]);
+legend(hfvt,<span class="string">'Simple design'</span>,<span class="string">'Intermediate design'</span>,<span class="keyword">...</span>
+    <span class="string">'Advanced design'</span>);
+</pre><img vspace="5" hspace="5" src="ifirdemo_07.png"> <h2>Multirate Implementations<a name="13"></a></h2>
+      <p>Because the periodic filter has many zeros, it lends itself nicely to multirate implementation. Instead of implementing it
+         as a function of z^L, it can be placed after a downsampler (by a factor of L) -by making use of the noble identities- as a
+         function of z. The reduction of the sampling rate will make things more efficient anyway, since the bandwidth of the signal
+         will be reduced significantly by this lowpass filter. Otherwise the Nyquist sampling criterion will be unnecessarily over-satisfied,
+         resulting in inefficient processing due to redundant information.
+      </p>
+      <p class="footer">Copyright 1999-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Efficient Narrow Transition-Band FIR Filter Design
+% One of the drawbacks of using FIR filters is that the filter order tends
+% to grow inversely proportional to the transition bandwidth of the filter.
+% This demo showcases efficient designs of FIR filters with very narrow
+% transition-bands using the interpolated FIR (IFIR) function.
+%
+
+% Copyright 1999-2004 The MathWorks, Inc.
+% $Revision: 1.2.6.2.2.2 $  $Date: 2004/04/14 15:56:28 $
+
+%% Design of a Filter with Narrow Transition Bandwidth
+% Consider the following design specifications:
+
+Rpass = 0.001;  % Passband ripple
+Fpass = 0.13;   % Passband edge
+Rstop = 0.0005; % Stopband ripple
+Fstop = 0.14;   % Stopband edge
+
+%%
+% A regular linear-phase equiripple design that meets the specs can be
+% designed with:
+
+F= [0 Fpass Fstop 1];
+A = [1 1 0 0];
+R = [Rpass Rstop];
+b = firgr('minorder',F,A,R);
+hfvt = fvtool(b,'Analysis','info');
+set(hfvt, 'Color', [1 1 1]);
+
+%%
+% The filter length required turns out to be 694 taps.
+
+%% Interpolated FIR (IFIR) Design
+% From multirate signal processing theory, it is well-known that upsampling
+% a signal compresses its spectrum. This fact is used in IFIR design.
+% Instead of directly designing a filter that meets the transition band
+% requirements, we design a filter that meets L*Fpass and L*Fstop as its
+% band-edges, where L is the interpolation factor (that is, we stretch the
+% transition width by a factor of L). Because the filter order grows
+% inversely proportional to the transition width, the filter order required
+% to meet the "stretched-out" specs is significantly lower than the filter
+% order required to meet the original specs.
+%
+% For example, suppose L = 4. 
+
+L = 4; % Interpolation factor
+F = [0 Fpass*L Fstop*L 1];
+bstrech = firgr('minorder',F,A,R);
+set(hfvt, 'Filters', dfilt.dffir(bstrech));
+
+%%
+% The filter length required reduces to 174 taps
+
+%% Upsampling the Filter
+% We have reduced the filter length significantly. Of course, that is not
+% the filter that we wanted. If we now upsample the impulse response by a
+% factor of L, the spectrum is compressed by such a factor and we meet the
+% original transition band requirements:
+
+bup = upsample(bstrech,L);
+set(hfvt, 'Filters', [dfilt.dffir(b), dfilt.dffir(bup)], ...
+    'Analysis', 'magnitude');
+legend(hfvt,'Original design','Stretched and upsampled design');
+
+%%
+% The upsampled "stretched" design has a total length of 696 which is
+% slightly larger than the original design (694). So the overall delay in
+% the filter is slightly larger. However, there are only 174 nonzero
+% multipliers. Unfortunately, we don't yet have the lowpass filter we need.
+% The upsampling has introduced unwanted spectral replicas. The idea of
+% IFIR design is to cascade the upsampled filter with a low order lowpass
+% filter that removes this spectral replicas.
+
+%% Removing the Spectral Replica
+% Rather than continuing the design "by hand", we will now use the IFIR
+% function. IFIR returns the two filters (the upsampled filter and the
+% replica suppressor filter).
+%
+% We can choose different levels of optimization in the design:
+
+[h,g]=ifir(L,'low',[Fpass Fstop],R,'simple');
+set(hfvt, 'Filters', [dfilt.dffir(h),dfilt.dffir(g)]);
+legend(hfvt,'Simple design, upsampled filter','Simple design, replica suppressor');
+
+%%
+[h2,g2]=ifir(L,'low',[Fpass Fstop],R,'intermediate');
+set(hfvt, 'Filters', [dfilt.dffir(h2),dfilt.dffir(g2)]);
+legend(hfvt,'Intermediate design, upsampled filter',...
+    'Intermediate design, replica suppressor');
+
+%%
+[h3,g3]=ifir(L,'low',[Fpass Fstop],R,'advanced');
+set(hfvt, 'Filters', [dfilt.dffir(h3),dfilt.dffir(g3)]);
+legend(hfvt,'Advanced design, upsampled filter',...
+    'Advanced design, replica suppressor');
+
+%%
+% In the 'simple' case, the replica suppressor filter is a simple lowpass
+% filter (this case is the most robust and also the fastest design). In the
+% 'intermediate' case, the replica suppressor filter is designed with a
+% don't-care region (where the periodic filter already provides the
+% required attenuation). This results in a (slight) reduction of filter
+% order in some cases. The 'advanced' design is much more involved. It
+% jointly optimizes the periodic filter and the replica suppressor filter in
+% order to achieve the required specs. The result is significant savings in
+% the order of the replica suppressor filter and a slighter savings in the
+% order of the periodic filter.
+
+%% Overall Filter Response
+% The overall filter response can be found by forming a cascade of the two
+% filters for each case:
+
+Hoverall = cascade(dfilt.dffir(h),dfilt.dffir(g));
+Hoverall2 = cascade(dfilt.dffir(h2),dfilt.dffir(g2));
+Hoverall3 = cascade(dfilt.dffir(h3),dfilt.dffir(g3));
+set(hfvt, 'Filters', [Hoverall,Hoverall2,Hoverall3]);
+legend(hfvt,'Simple design','Intermediate design',...
+    'Advanced design');
+
+%% Multirate Implementations
+% Because the periodic filter has many zeros, it lends itself nicely to
+% multirate implementation. Instead of implementing it as a function of
+% z^L, it can be placed after a downsampler (by a factor of L) -by making
+% use of the noble identities- as a function of z. The reduction of the
+% sampling rate will make things more efficient anyway, since the bandwidth
+% of the signal will be reduced significantly by this lowpass filter.
+% Otherwise the Nyquist sampling criterion will be unnecessarily
+% over-satisfied, resulting in inefficient processing due to redundant
+% information.
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

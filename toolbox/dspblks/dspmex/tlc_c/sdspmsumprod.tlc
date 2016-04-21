@@ -1,0 +1,742 @@
+%% $RCSfile: sdspmsumprod.tlc,v $
+%% $Revision: 1.19.4.3 $
+%% $Date: 2004/04/12 23:09:09 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix Sum or Matrix Product
+
+%implements sdspmsumprod "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+  %%
+  %% Row or columns parameter
+  %assign dim_rows  = 1
+  %assign dim_cols  = 2
+  %assign Dimension = SFcnParamSettings.DimensionParam
+  %%
+  %% Sum or product parameter
+  %assign opParam   = SFcnParamSettings.OpParam
+  %assign ADD       = 1
+  %assign MULT      = 2
+  %assign float_op  = (opParam == ADD) ? "+=" : "*="
+  %assign oplcstr   = (opParam == ADD) ? "sum" : "product"
+  %assign opucstr   = (opParam == ADD) ? "Sum" : "Product"
+  %%
+  %assign INPORT    = 0
+  %assign OUTPORT   = 0
+  %assign need_copy = (LibBlockInputSignalBufferDstPort(INPORT) != OUTPORT)
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT)
+  %assign dtype     = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign width     = LibBlockInputSignalWidth(INPORT)
+  %assign numInDims = LibBlockInputSignalNumDimensions(INPORT)
+  %assign inputDims = LibBlockInputSignalDimensions(INPORT)
+  %assign rows      = inputDims[0]
+  %assign cols      = (numInDims == 2) ? inputDims[1] : 1  %% Treat unoriented input as col vector
+  %%
+  %% I/O port data types
+  %assign inDT      = FixPt_GetInputDataType(0)
+  %assign outDT     = FixPt_GetOutputDataType(0)
+  %%
+  %% FIX ROW OR COLUMN DIMENSION TO BE COLUMN FOR UNORIENTED INPUTS -> SCALAR OUTPUT FOR THIS CASE
+  %assign dim = (numInDims == 2) ? CAST("Number",Dimension) : dim_cols
+  %%
+  %assign block = block + dim_rows  + dim_cols + opParam + ADD   + MULT + float_op \
+                        + oplcstr   + opucstr  + INPORT  + OUTPORT          \
+                        + need_copy + cplx     + dtype   + width            \
+                        + rows      + cols     + inDT    + outDT + dim
+%%
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix %<opucstr> (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if FixPt_DataTypeIsFloat(inDT)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION             %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FltPtInlineCode(block)>
+  %else
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION                %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<FixPtInlineCode(block)>
+  %endif
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtInlineCode
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtInlineCode(block) Output
+  %if need_copy
+    %if width==1
+      %%
+      %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<LibBlockInputSignal(INPORT, "","",0)>;
+      %%
+    %elseif cols ==1 ||  rows ==1
+      %%
+      %% Vector input
+      %%
+      %if (rows == 1 && dim == dim_rows) || (cols == 1 && dim == dim_cols)
+        %%
+        %% Preset accumulators
+        %%
+        %<LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")> = \
+               %<LibBlockInputSignal(INPORT, "", "","%<tRealPart>0")>;
+        %if cplx
+          %<LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")> = \
+                 %<LibBlockInputSignal(INPORT, "", "","%<tImagPart>0")>;
+        %endif
+        {
+          int i;
+          for (i=1; i<%<width>; i++) {
+            %if (opParam == ADD)
+              %% Add real parts (common for real and complex cases)
+              %<LibBlockOutputSignal(OUTPORT, "i","","%<tRealPart>0")> %<float_op> \
+              %<LibBlockInputSignal( INPORT,  "i","","%<tRealPart>0")>;
+              %if cplx
+                %<LibBlockOutputSignal(OUTPORT,"i","","%<tImagPart>0")> %<float_op> \
+                %<LibBlockInputSignal( INPORT, "i","","%<tImagPart>0")>;
+              %endif
+            %else %% MULT
+              %if cplx
+                %<dtype> y_tmp = %<LibBlockOutputSignal(OUTPORT, "i","",0)>;
+                %<LibBlockOutputSignal(OUTPORT, "i","","%<tRealPart>0")> = \ 
+                CMULT_RE(y_tmp,%<LibBlockInputSignal(INPORT, "i","",0)>);
+                %<LibBlockOutputSignal(OUTPORT, "i","","%<tImagPart>0")> = \ 
+                CMULT_IM(y_tmp,%<LibBlockInputSignal(INPORT, "i","",0)>);
+              %else
+                %% Real
+                %<LibBlockOutputSignal(OUTPORT, "i","","%<tRealPart>0")> %<float_op> \
+                %<LibBlockInputSignal( INPORT,  "i", "", "%<tRealPart>0")>;                
+              %endif
+            %endif
+          }
+        }
+      %else
+        %%
+        /* Output == Input */
+        %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+      %endif
+      %%      
+    %else
+      %%
+      %% Matrix input
+      %%
+      %if dim == dim_rows
+      %%%%%%%%%%%%%%%%%%%%%
+      /* Along row */
+      %%%%%%%%%%%%%%%%%%%%%
+      {
+        const %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+        int_T j;
+        for (j=0; j++<%<rows>; ) {
+          %<dtype> s = *u;
+          int_T i;      
+          for (i=1; i<%<cols>; i++) {
+        %if !cplx
+          s %<float_op> u[%<rows>*i];
+        %else
+          %if (opParam == ADD)
+            s.re %<float_op> u[%<rows>*i].re;
+            s.im %<float_op> u[%<rows>*i].im;
+          %else
+            %% MULT
+            %<dtype> s_old = s; 
+            s.re = CMULT_RE(u[%<rows>*i], s_old);
+            s.im = CMULT_IM(u[%<rows>*i], s_old);            
+          %endif
+        %endif
+          }
+          *y++ = s;
+          u++;
+        }
+      }
+      %else
+      %%%%%%%%%%%%%%%%%%%%%%%
+      /* Along column */
+      %%%%%%%%%%%%%%%%%%%%%%%
+      {
+        const %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+        int_T j = %<cols>;
+        while(j-- > 0) {
+          %<dtype> s = *u++;
+          int_T i  = %<rows-1>;
+          while(i-- > 0) {
+        %if !cplx
+          s %<float_op> *u++;
+        %else
+          %if (opParam == ADD)
+            s.re %<float_op> u->re;
+            s.im %<float_op> (u++)->im;
+          %else
+            %% MULT
+            %<dtype> u_val = *u++;
+            %<dtype> s_old = s;
+            s.re = CMULT_RE(s_old, u_val);
+            s.im = CMULT_IM(s_old, u_val);
+          %endif
+        %endif
+          }
+          *y++ = s;
+        }
+      }
+    %endif %% dim
+  %endif %% matrix
+%else
+  /* Output is identical to input.  No code needed. */
+%endif  %% need_copy
+%%
+
+%endfunction %%FltPtInlineCode
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED-POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%%
+%% The following variable indicating whether casting
+%% necessary is used for the "copy only" optimization code.
+%% "RequiredBits" is "Word Length" specified by block
+%% "ActualBits" is the code generation target data type word length
+%% ("ActualBits" == "Bucket Size")
+%%
+%assign needFixptCastOnCopy = (inDT.FixedExp != outDT.FixedExp)        \
+                           || (outDT.RequiredBits < inDT.RequiredBits) \
+                           || (outDT.ActualBits != inDT.ActualBits)
+%%
+%% Common setup for fixed-point arithmetic macros
+%%
+%createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                       overflowMode FixPtSaturationMode}
+%%
+%createrecord Inp_i { label     LibBlockInputSignal(INPORT,"i","","0"); ...
+                      dTypeRec  inDT; ...
+                      isComplex cplx }
+%%
+%createrecord Out_i { label     LibBlockOutputSignal(OUTPORT,"i","","0"); ...
+                      dTypeRec  outDT; ...
+                      isComplex cplx }
+%%
+%if need_copy %% NOT IN-PLACE
+  %createrecord Inp_0 { label     LibBlockInputSignal(INPORT,"","",0); ...
+                        dTypeRec  inDT; ...
+                        isComplex cplx }
+  %%
+  %createrecord Out_0 { label     LibBlockOutputSignal(OUTPORT,"","",0); ...
+                        dTypeRec  outDT; ...
+                        isComplex cplx }
+  %if width==1 %% Scalar input
+    %%
+    %<DSPFixptLibEquals(Out_0, Inp_0, RndSat)>
+    %%
+  %else  %% NON-SCALAR input
+    %%
+    %createrecord Inp_j { label     LibBlockInputSignal(INPORT,"j","","0"); ...
+                          dTypeRec  inDT; ...
+                          isComplex cplx }
+    %%
+    %createrecord Out_j { label     LibBlockOutputSignal(OUTPORT,"j","",0); ...
+                          dTypeRec  outDT; ...
+                          isComplex cplx }
+    %%
+    %assign accDT    = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+    %assign accLabel = "acc"
+    %%
+    %if (opParam == ADD)
+      %%
+      %assign accUsed  = (accDT != outDT)
+      %if accUsed
+        %createrecord Acc { label    accLabel; ...
+                            dTypeRec accDT; ...
+                            isComplex cplx }
+      %endif
+      %%
+    %else %% (opParam == MULT)
+      %%
+      %createrecord Inp_1 { label     LibBlockInputSignal(INPORT,"","","1"); ...
+                            dTypeRec  inDT; ...
+                            isComplex cplx }
+      %%
+      %% PRODUCT OUTPUTS
+      %assign prodOutLabel = "prodOut"
+      %assign prodOutDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+      %createrecord PrdOut { label     prodOutLabel; ...
+                             dTypeRec  prodOutDT; ...
+                             isComplex 0 }
+      %%
+      %% TEMP VARIABLES FOR FULLY COMPLEX PRODUCT OUTPUTS
+      %if cplx
+        %createrecord Acc  { label    accLabel; ...
+                             dTypeRec accDT; ...
+                            isComplex cplx }
+      %endif
+      %%
+      %% PRODUCT INPUTS
+      %assign prodInLabel  = "prodIn"
+      %assign interProdDT  = FixPt_GetParameterDataType(INTER_PROD_DATA_TYPE, 0, 0)
+      %createrecord PrdInp { label    prodInLabel; ...
+                             dTypeRec interProdDT; ...
+                             isComplex cplx }
+      %%
+    %endif %% opParam
+    %%
+    %if (cols == 1) ||  (rows == 1)
+      %%
+      %% Vector input
+      %%
+      %if (rows == 1 && dim == dim_rows) || (cols == 1 && dim == dim_cols)
+        {
+        %if (opParam == ADD)
+          int i;
+          %if accUsed
+            %if cplx
+              %<accDT.ComplexName> %<accLabel>;
+            %else
+              %<accDT.Name> %<accLabel>;
+            %endif
+          %else
+            %assign Acc = Out_0
+          %endif
+
+          /* Load accumulator with initial value */
+          %<DSPFixptLibEquals(Acc, Inp_0, RndSat)>
+
+          /* Accumulate the rest of the vector */
+          for (i=1; i<%<width>; i++) {
+            %<DSPFixptLibPlusEquals(Acc, Inp_i, RndSat)>
+          }
+          %if accUsed
+
+            /* Store accumulated sum in output */
+            %<DSPFixptLibEquals(Out_0, Acc, RndSat)>
+          %endif
+      %else %% MULT
+        %if width > 2
+          %if cplx
+            %<accDT.ComplexName> %<accLabel>;
+            %<interProdDT.ComplexName> %<prodInLabel>;
+            %<prodOutDT.Name> %<prodOutLabel>;
+
+            /* Multiply first two inputs and store in complex accumulator */
+            %<DSPFixptLibCplxTimes(Acc, Inp_0, Inp_1, PrdOut, RndSat)>
+
+            /* Cast back to product input */
+            %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+
+            %if width > 3
+              /* Multiply by all but last input element, casting each intermediate product back to product input type */
+              {
+                int i;
+                for (i=2; i<%<width-1>; i++) {
+                  %<DSPFixptLibCplxTimes(Acc, PrdInp, Inp_i, PrdOut, RndSat)>
+                  %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+                }
+              }
+
+            %endif
+            /* Multiply by last input element */
+            %createrecord InpFinal { label     LibBlockInputSignal(INPORT, "%<width-1>","","0"); ...
+                                     dTypeRec  inDT; ...
+                                     isComplex cplx }
+            %<DSPFixptLibCplxTimes(Acc, PrdInp, InpFinal, PrdOut, RndSat)>
+
+            /* Cast final product to output type */
+            %<DSPFixptLibEquals(Out_0, Acc, RndSat)>
+            %%
+          %else
+            %% Real I/O
+            %<prodOutDT.Name> %<prodOutLabel>;
+            %<interProdDT.Name> %<prodInLabel>;
+
+            /* Multiply first two inputs and store into product output */
+            %<DSPFixptLibTimes(PrdOut, Inp_0, Inp_1, RndSat)>
+
+            /* Cast from product output back to product input */
+            %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+
+            %if width > 3
+              /* Multiply by all but last input element, casting each intermediate product back to product input type */
+              {
+                int i;
+                for (i=2; i<%<width-1>; i++) {
+                  %<DSPFixptLibTimes(PrdOut, PrdInp, Inp_i, RndSat)>
+                  %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+                }
+              }
+
+            %endif
+            /* Multiply by last input element */
+            %createrecord InpFinal { label     LibBlockInputSignal(INPORT, "%<width-1>","","0"); ...
+                                     dTypeRec  inDT; ...
+                                     isComplex cplx }
+            %<DSPFixptLibTimes(PrdOut, PrdInp, InpFinal, RndSat)>
+
+            /* Cast final product to output type */
+            %<DSPFixptLibEquals(Out_0, PrdOut, RndSat)>
+            %%
+          %endif %% cplx
+        %else 
+          /* Multiply only two values, bypass intermediate product input type */
+          %if cplx
+            %<accDT.ComplexName> %<accLabel>;
+            %<prodOutDT.Name> %<prodOutLabel>;
+
+            %<DSPFixptLibCplxTimes(Acc, Inp_0, Inp_1, PrdOut, RndSat)>
+            %<DSPFixptLibEquals(Out_0, Acc, RndSat)>
+            %%
+          %else
+            %% Real I/O
+            %<prodOutDT.Name> %<prodOutLabel>;
+
+            %<DSPFixptLibTimes(PrdOut, Inp_0, Inp_1, RndSat)>
+            %<DSPFixptLibEquals(Out_0, PrdOut, RndSat)>
+            %%
+          %endif %% cplx
+        %endif %% width > 2
+      %endif %% opParam
+      }
+    %else
+      %%
+      %if !needFixptCastOnCopy %% identical input and output data type
+        /* copy inputs to outputs */
+        %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+      %else %% must cast input to output data type while copying
+        /* copy inputs to outputs (with possible cast) */
+        {
+          int_T i;
+          for (i=0; i<%<width>; i++) {
+            %<DSPFixptLibEquals(Out_i, Inp_i, RndSat)>
+          }
+        }
+      %endif
+    %endif
+    %%      
+  %else
+    %%
+    %% Matrix input
+    %%
+    %if dim == dim_rows
+      %%%%%%%%%%%%%%%%%%%%%
+      /* Along row. */
+      %%%%%%%%%%%%%%%%%%%%%
+      %createrecord Inp_j_plus_iXrows { label     LibBlockInputSignal(INPORT,"j+i*%<rows>","","0"); ...
+                                        dTypeRec  inDT; ...
+                                        isComplex cplx }
+      {
+        int_T j;
+        for (j=0; j<%<rows>; j++) {
+          %if (opParam == ADD)
+            int i;
+            %if accUsed
+              %if cplx
+                %<accDT.ComplexName> %<accLabel>;
+              %else
+                %<accDT.Name> %<accLabel>;
+              %endif
+            %else
+              %assign Acc = Out_j
+            %endif
+
+            /* Load accumulator with initial value */
+            %<DSPFixptLibEquals(Acc, Inp_j, RndSat)>
+                
+            /* Accumulate the rest of the vector */
+            for(i=1; i<%<cols>; i++) {
+              %<DSPFixptLibPlusEquals(Acc, Inp_j_plus_iXrows, RndSat)>
+            }
+            %if accUsed
+                
+              /* Store accumulated sum in output */
+              %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+            %endif
+            %%
+          %else %% PRODUCT
+            %createrecord Inp_jPlusRows { label     LibBlockInputSignal(INPORT, "j+%<rows>","","0"); ...
+                                          dTypeRec  inDT; ...
+                                          isComplex cplx }
+            %if cols > 2
+              %if cplx
+                %<interProdDT.ComplexName> %<prodInLabel>;
+                %<prodOutDT.Name> %<prodOutLabel>;
+                %<accDT.ComplexName> %<accLabel>;
+
+                /* Multiply first two inputs and store in complex accumulator */
+                %<DSPFixptLibCplxTimes(Acc, Inp_j, Inp_jPlusRows, PrdOut, RndSat)>
+
+                /* Cast back to product input */
+                %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+
+                %if cols > 3
+                  /* Multiply by all but last input element, casting each intermediate product back to product input type */
+                  {
+                    int_T i;
+                    for (i=2; i<%<cols-1>; i++) {
+                      %<DSPFixptLibCplxTimes(Acc, PrdInp, Inp_j_plus_iXrows, PrdOut, RndSat)>
+                      %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+                    }
+                  }
+
+                %endif
+                /* Multiply by last input element */
+                %createrecord Inp_jPlusRowsX_ColsMin1 { label     LibBlockInputSignal(INPORT, "j+%<rows*(cols-1)>","","0"); ...
+                                                        dTypeRec  inDT; ...
+                                                        isComplex cplx }
+                %<DSPFixptLibCplxTimes(Acc, PrdInp, Inp_jPlusRowsX_ColsMin1, PrdOut, RndSat)>
+                  
+                /* Cast final product to output type */
+                %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+                %%
+              %else
+                %% Real I/O
+                %<prodOutDT.Name> %<prodOutLabel>;
+                %<interProdDT.Name> %<prodInLabel>;
+
+                /* Multiply first two inputs and store into product output */
+                %<DSPFixptLibTimes(PrdOut, Inp_j, Inp_jPlusRows, RndSat)>
+
+                /* Cast from product output back to product input */
+                %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+
+                %if cols > 3
+                  /* Multiply by all but last input element, casting each intermediate product back to product input type */
+                  {
+                    int_T i;
+                    for (i=2; i<%<cols-1>; i++) {
+                      %<DSPFixptLibTimes(PrdOut, PrdInp, Inp_j_plus_iXrows, RndSat)>
+                      %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+                    }
+                  }
+
+                %endif
+                /* Multiply by last input element */
+                %createrecord Inp_jPlusRowsX_ColsMin1 { label     LibBlockInputSignal(INPORT, "j+%<rows*(cols-1)>","","0"); ...
+                                                        dTypeRec  inDT; ...
+                                                        isComplex cplx }
+                %<DSPFixptLibTimes(PrdOut, PrdInp, Inp_jPlusRowsX_ColsMin1, RndSat)>
+                  
+                /* Cast final product to output type */
+                %<DSPFixptLibEquals(Out_j, PrdOut, RndSat)>
+                %%
+              %endif %% cplx
+            %else
+              %%
+              %% Num cols == 2
+              %%
+              %if cplx
+                %<accDT.ComplexName> %<accLabel>;
+                %<prodOutDT.Name> %<prodOutLabel>;
+
+                /* Multiply first two inputs and store in complex accumulator */
+                %<DSPFixptLibCplxTimes(Acc, Inp_j, Inp_jPlusRows, PrdOut, RndSat)>
+
+                /* Cast complex product to output type */
+                %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+                %%
+              %else
+                %% Real I/O
+                %<prodOutDT.Name> %<prodOutLabel>;
+
+                /* Multiply first two inputs and store into product output */
+                %<DSPFixptLibTimes(PrdOut, Inp_j, Inp_jPlusRows, RndSat)>
+
+                /* Cast product to output type */
+                %<DSPFixptLibEquals(Out_j, PrdOut, RndSat)>
+                %%
+              %endif %% cplx
+            %endif
+          %endif
+        }
+      }
+    %else
+      %%%%%%%%%%%%%%%%%%%%%%%
+      /* Along column */
+      %%%%%%%%%%%%%%%%%%%%%%%
+      %createrecord Inp_offset { label     LibBlockInputSignal(INPORT,"offset","","0"); ...
+                                 dTypeRec  inDT; ...
+                                 isComplex cplx }
+      %createrecord Inp_offsetPlus1 { label     LibBlockInputSignal(INPORT,"offset+1","","0"); ...
+                                      dTypeRec  inDT; ...
+                                      isComplex cplx }
+      %createrecord Inp_i_plus_offset { label     LibBlockInputSignal(INPORT,"i+offset","","0"); ...
+                                        dTypeRec  inDT; ...
+                                        isComplex cplx }
+      { 
+        int_T j;  
+        int offset=0;
+        for (j=0; j<%<cols>; j++) {
+          %if (opParam == ADD)
+            int i;
+            %if accUsed
+              %if cplx
+                %<accDT.ComplexName> %<accLabel>;
+              %else
+                %<accDT.Name> %<accLabel>;
+              %endif
+            %else
+              %assign Acc = Out_j
+            %endif
+
+            /* Load accumulator with initial value */
+            %<DSPFixptLibEquals(Acc, Inp_offset, RndSat)>
+
+            /* Accumulate the rest of the vector */
+            for(i=1; i<%<rows>; i++) {
+              %<DSPFixptLibPlusEquals(Acc, Inp_i_plus_offset, RndSat)>
+            }
+            offset += %<rows>;
+            %if accUsed
+
+              /* Store accumulated sum in output */
+              %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+            %endif
+            %%
+          %else %%PRODUCT
+            %if rows > 2
+              %if cplx
+                %<interProdDT.ComplexName> %<prodInLabel>;
+                %<accDT.ComplexName> %<accLabel>;
+                %<prodOutDT.Name> %<prodOutLabel>;
+
+                /* Multiply first two inputs and store in complex accumulator */
+                %<DSPFixptLibCplxTimes(Acc, Inp_offset, Inp_offsetPlus1, PrdOut, RndSat)>
+
+                /* Cast back to product input */
+                %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+
+                %if rows > 3
+                  /* Multiply by all but last input element, casting each intermediate product back to product input type */
+                  {
+                    int i;
+                    for (i=2; i<%<rows-1>; i++) {
+                      %<DSPFixptLibCplxTimes(Acc, PrdInp, Inp_i_plus_offset, PrdOut, RndSat)>
+                      %<DSPFixptLibEquals(PrdInp, Acc, RndSat)>
+                    }
+                  }
+
+                %endif
+                /* Multiply by last element */
+                %createrecord Inp_offsetLast { label     LibBlockInputSignal(INPORT, "offset+%<rows-1>","","0"); ...
+                                               dTypeRec  inDT; ...
+                                               isComplex cplx }
+                %<DSPFixptLibCplxTimes(Acc, PrdInp, Inp_offsetLast, PrdOut, RndSat)>
+
+                /* Cast final product to output type */
+                %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+                %%
+              %else
+                %% Real I/O
+                %<interProdDT.Name> %<prodInLabel>;
+                %<prodOutDT.Name> %<prodOutLabel>;
+
+                /* Multiply first two inputs and store into product output */
+                %<DSPFixptLibTimes(PrdOut, Inp_offset, Inp_offsetPlus1, RndSat)>
+                %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+
+                %if rows > 3
+                  /* Multiply by all but last input element, casting each intermediate product back to product input type */
+                  {
+                    int i;
+                    for (i=2; i<%<rows-1>; i++) {
+                      %<DSPFixptLibTimes(PrdOut, PrdInp, Inp_i_plus_offset, RndSat)>
+                      %<DSPFixptLibEquals(PrdInp, PrdOut, RndSat)>
+                    }
+                  }
+
+                %endif
+                /* Multiply by last element */
+                %createrecord Inp_offsetLast { label     LibBlockInputSignal(INPORT, "offset+%<rows-1>","","0"); ...
+                                               dTypeRec  inDT; ...
+                                               isComplex cplx }
+                %<DSPFixptLibTimes(PrdOut, PrdInp, Inp_offsetLast, RndSat)>
+                  
+                /* Cast product to output type */
+                %<DSPFixptLibEquals(Out_j, PrdOut, RndSat)>
+                %%
+              %endif %% cplx
+            %else
+              /* Multiply only two values, bypass intermediate product input type */
+              %if (PrdOut.dTypeRec != Out_j.dTypeRec)
+                %if cplx
+                  %<accDT.ComplexName> %<accLabel>;
+                  %<prodOutDT.Name> %<prodOutLabel>;
+
+                  /* Multiply two inputs and store in complex accumulator */
+                  %<DSPFixptLibCplxTimes(Acc, Inp_offset, Inp_offsetPlus1, PrdOut, RndSat)>
+                  
+                  /* Cast product to output type */
+                  %<DSPFixptLibEquals(Out_j, Acc, RndSat)>
+                  %%
+                %else
+                  %% Real I/O
+                  %<prodOutDT.Name> %<prodOutLabel>;
+
+                  /* Multiply two inputs and store into product output */
+                  %<DSPFixptLibTimes(PrdOut, Inp_offset, Inp_offsetPlus1, RndSat)>
+                  
+                  /* Cast product to output type */
+                  %<DSPFixptLibEquals(Out_j, PrdOut, RndSat)>
+                  %%
+                %endif %% cplx
+              %else
+                %% Block output type is same as product output type,
+                %% so store multiply result directly into block output
+                %if cplx
+                  %<prodOutDT.Name> %<prodOutLabel>;
+
+                  %<DSPFixptLibCplxTimes(Out_j, Inp_offset, Inp_offsetPlus1, PrdOut, RndSat)>
+                %else
+                  %% Real I/O
+                  %<DSPFixptLibTimes(Out_j, Inp_offset, Inp_offsetPlus1, RndSat)>
+                %endif
+              %endif
+            %endif
+            offset += %<rows>;
+          %endif
+        }
+      }
+      %endif %% row vs cols matrix dimension
+    %endif %% vector vs matrix
+  %endif %% scalar vs nonscalar
+  %%
+%else %% In-place operation
+  %if !needFixptCastOnCopy
+    /* Output is identical to input. No code needed. */
+  %else
+    {
+      /* Copy inputs to outputs (with possible cast) */
+      int_T i;
+      for (i=0; i<%<width>; i++) {
+        %<DSPFixptLibEquals(Out_i, Inp_i, RndSat)>
+      }
+    }
+  %endif
+%endif  %% need_copy
+%%
+
+%endfunction %%FixPtInlineCode
+
+
+%% [EOF] sdspmsumprod.tlc

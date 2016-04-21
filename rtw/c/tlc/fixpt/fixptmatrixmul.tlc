@@ -1,0 +1,730 @@
+%% $RCSfile: fixptmatrixmul.tlc,v $
+%% $Revision: 1.2.4.4 $
+%% $Date: 2004/04/14 23:47:20 $
+%%
+%% This file contains tlc code for generation of fixed point multiplication
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: FixPt_MatrixMultiply ==========================================
+%%
+%% Abstract:
+%%  For matrix B(m x n), the elements are stored in 
+%%  as a vector, column major wise. Therefore, B[i][j]
+%%  is Vector[j*m+i]
+%%  Note the Stored Integers are denoted by A, B, and C
+%%
+%%  The records C, A, and B must contain
+%%  all the fixed point data type and scaling fields.
+%%  They must also contain a field called "Label"
+%%  In C_Language terms cLabel must be an l-value.
+%%  aLabel and bLabel are treated as read only and
+%%  they must provide the values (stored integers) for
+%%  A and B.  Please note none of the Labels can be addresses.
+%%
+%% Synopsis:
+%%      FixPt_MatrixMultiply(C,A,B,roundMode,satMode)
+%%
+%%      C = record describing output
+%%      A = record describing input 1
+%%      B = record describing input 2
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%
+%% In the calling tlc file access the addrresses by using 
+%% LibBlockInputSignalAddr and pass these pointers  to the following
+%% functions
+%%
+%function FixPt_MatrixMultiply(cLabelAdr,cDT,aLabelAdr,aDT,bLabelAdr,bDT,roundMode,satMode,yM,yN,uM) Output
+  %<LibPushEmptyStackSharedUtils()>\
+  %%
+  %% Create a string to represent the utility
+  %%
+  %assign utilityName = "MatrixMultiply"
+  %%
+  %% identify current INPUT storage type
+  %%
+  %if FixPt_DataTypeIsFloat(cDT)
+    %assign utilityName = utilityName + "_" + cDT.NativeType
+  %else
+    %if cDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(cDT.RequiredBits)
+  %endif
+  %%
+  %% identify first input DATA storage type
+  %%
+  %if FixPt_DataTypeIsFloat(aDT)
+    %assign utilityName = utilityName + "_" + aDT.NativeType
+  %else
+    %if aDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(aDT.RequiredBits)
+  %endif
+  %%
+  %% identify second input DATA storage type
+  %%
+  %if FixPt_DataTypeIsFloat(bDT)
+    %assign utilityName = utilityName + "_" + bDT.NativeType
+  %else
+    %if bDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+  %endif
+  %%
+  %% identify amount of left shifting or right shifting
+  %% if any
+  %%
+  %assign ExPrec = aDT.FixedExp + bDT.FixedExp - cDT.FixedExp
+  %if ExPrec < 0
+    %assign utilityName = utilityName + "_SR"
+    %assign utilityName = utilityName + STRING(-ExPrec)
+  %elseif ExPrec > 0
+    %assign utilityName = utilityName + "_SL"
+    %assign utilityName = utilityName + STRING(ExPrec)
+  %endif
+  %%
+  %% Should optimize cases that don't need saturation
+  %% For example a DSP with accumulator gaurd bits
+  %%
+  %if satMode == "Saturate"
+    %assign utilityName = utilityName + "_SAT"
+  %else
+    %%%assign utilityName = utilityName + "_WRAP"
+  %endif
+  %%
+  %%
+  %% identify how rounding will be handled
+  %%   If the mode leads to a "do nothing" then
+  %%   the mode will be left off the utility name.
+  %%   For any combination of signed (2's complement!!!)
+  %%   or unsigned inputs, round to FLOOR is a do nothing
+  %%   mode.  If both inputs are unsigned then round to ZERO
+  %%   is identical to round to FLOOR, ie "do nothing"
+  %%        Note, there is an unresolved caveat to this.  When the
+  %%   product is formed by summing the product of smaller pieces
+  %%   there can be a difference between applying the rounding mode
+  %%   to the combined sum verses applying the rounding mode to each
+  %%   piece seperately.  FLOOR applied to each piece is "do nothing",
+  %%   but FLOOR applied to the whole is NOT "do nothing."  Current
+  %%   implementation applies FLOOR to each piece for code generation.
+  %%
+  %%   Note: rounding is relavent only if there is a shift right
+  %%
+  %assign includeRoundingCode = 0
+  %%
+  %if ExPrec < 0
+    %if roundMode == "Zero"
+      %if aDT.IsSigned || bDT.IsSigned
+        %assign utilityName = utilityName + "_ZERO"
+        %%
+        %assign includeRoundingCode = 1
+        %%
+        %%else
+        %% both Unsigned so ZERO like FLOOR
+      %endif
+    %elseif roundMode == "Nearest"
+      %assign utilityName = utilityName + "_NEAR"
+      %%
+      %assign includeRoundingCode = 1
+      %%
+    %elseif roundMode == "Ceiling"
+      %assign utilityName = utilityName + "_CEILING"
+      %%
+      %assign includeRoundingCode = 1
+      %%
+    %elseif roundMode == "Floor"
+      %%%assign utilityName = utilityName + "_FLOOR"
+    %else
+      %%START_ASSERT
+      %assign utilityName = utilityName + "_ROUNDERROR"
+      %%END_ASSERT
+    %endif
+  %else
+    %% no shifts right so NEVER round
+  %endif
+  %%
+  %%
+  %% END: Create a string to represent the search utility
+  %%
+  %%
+  %% case of C macro "call"
+  %%
+  %<utilityName>(%<cLabelAdr>,%<aLabelAdr>,%<bLabelAdr>,%<yM>,%<yN>,%<uM>);
+  %%
+  %% determine if the required utility has already been defined
+  %%   If it has not, then create the definition.
+  %%
+  %if !(ISFIELD(FixPtUtils,utilityName))
+    %%
+    %% register that utility is being defined
+    %%
+    %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+    %%
+    %% open a buffer to hold the utility header comments
+    %%
+    %openfile utilityHeaderComment
+    %%
+    %%  Produce header comment for utility
+    %%
+
+    /*********************************************************************
+    * Fixed-Point Matrix Multiply Utility %<utilityName>
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% open a buffer to hold the utility definition
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %openfile utilityDef
+    %%
+    %% create first line of utility macro or function
+    %%
+    %% case of C language macro
+    %% force use of function
+    %openfile funcProto
+    void %<utilityName>(%<cDT.NativeType> *pY, const %<aDT.NativeType> *pIn1, const %<bDT.NativeType> *pIn2, int yM, int yN, int uM);
+    %closefile funcProto
+    %selectfile utilityDef
+    void %<utilityName>(%<cDT.NativeType> *pY, const %<aDT.NativeType> *pIn1, const %<bDT.NativeType> *pIn2, int yM, int yN, int uM)
+    %assign tempOutLabel = "tempOut"
+    {
+      int locindex = 0;
+      int i, j , k;
+      int iIn1, iIn2;
+      %<cDT.NativeType> %<tempOutLabel>;
+      for(j =0; j < (yN); j++)
+      {
+        for (i = 0; i < (yM); i++)
+        {
+          iIn1 = i;
+          iIn2 = j * (uM);
+          for(k = 0; k < (uM); k++)
+          {
+            %assign In1Label = "pIn1[iIn1]"
+            %assign In2Label = "pIn2[iIn2]"
+            %assign OutLabelCur = "pY[locindex]"
+            %<FixPt_Multiply(tempOutLabel, cDT, In1Label, aDT, In2Label, bDT, roundMode, satMode)>\
+            if(k == 0)
+            {
+              %<OutLabelCur> = %<tempOutLabel>;
+            }
+            else
+            {
+              %<FixPt_Accumulate(OutLabelCur,cDT,tempOutLabel,cDT,satMode,1)>\
+            }
+            iIn1 += (yM);
+            iIn2++;
+          }
+          locindex++;
+        }
+      }
+    }
+    %closefile utilityDef
+    %%
+    %% finish header comment
+    %%
+    %selectfile utilityHeaderComment
+    */
+    %closefile utilityHeaderComment
+    %%
+    %% create utility trailer comment
+    %%
+    %openfile utilityTrailerComment
+    
+    /* end %<FixPtUtilType> %<utilityName>
+    *********************************************************************/
+    %closefile utilityTrailerComment
+    %%
+    %% cause utility define to be included in generated code
+    %%
+    %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+    %%
+    %% force use of function
+    %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+    %<LibCacheFunctionPrototype(funcProto)>\
+    %%
+  %endif
+  %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction
+
+%function FixPt_MatrixMultiplyHetrogenous(cLabelAdr,cDT,aLabelAdr,aDT,bLabelAdr,bDT,roundMode,satMode,yM,yN,uM,Multiplication,FixPtGainID) Output
+    %%
+    %%
+    %assign tempOutLabel = "tempOut"
+    {
+      %assign index = 0
+      %if uM > 1
+        %<cDT.NativeType> %<tempOutLabel>;
+      %endif
+      %foreach jj = yN
+        %foreach ii = yM
+          %foreach kk = uM
+            %assign In1Label = "(%<aLabelAdr>)[%<kk * yM + ii>]"
+            %assign In2Label = "(%<bLabelAdr>)[%<jj * uM + kk>]"
+            %assign OutLabelCur = "(%<cLabelAdr>)[%<jj * yM + ii>]"
+            %% In1 matrix has hertro ids
+            %if Multiplication == "K*u"
+              %assign aDT = FixPt_GetParameterDataType(FixPtGainID, ii, kk)
+            %else
+              %assign bDT = FixPt_GetParameterDataType(FixPtGainID, kk, jj)
+            %endif
+            %if kk == 0
+              %<FixPt_Multiply(OutLabelCur, cDT, In1Label, aDT, In2Label, bDT, roundMode, satMode)>\
+            %else
+              %<FixPt_Multiply(tempOutLabel, cDT, In1Label, aDT, In2Label, bDT, roundMode, satMode)>\
+              %<FixPt_Accumulate(OutLabelCur,cDT,tempOutLabel,cDT,satMode,1)>\
+            %endif
+          %endforeach
+        %endforeach
+      %endforeach
+    }
+%endfunction
+
+%function FixPt_ComplexMatrixMultiplyHetrogenous(cLabelAdr,cDT,aLabelAdr,aDT,bLabelAdr,bDT,roundMode,satMode,yM,yN,uM,In1IsComplex,In2IsComplex,Multiplication,FixPtGainID) Output
+    %%
+    %%
+    %assign tempOutLabel = "tempOut"
+    %assign cPrefix = "c"
+    %assign cDTLabel = "%<cPrefix>%<cDT.NativeType>"
+    %assign tempOutLabelRe = "tempOut.re"
+    %assign tempOutLabelIm = "tempOut.im"
+    %assign tempOutLabel   = "tempOut"
+    %assign tmp1Label = "yTemp1"
+    {
+      %assign index = 0
+      %<cDTLabel> %<tempOutLabel>;
+      %if In1IsComplex && In2IsComplex
+        %<cDT.NativeType> %<tmp1Label>;
+      %endif
+      %foreach jj = yN
+        %foreach ii = yM
+          %foreach kk = uM
+            %assign In1LabelRe = "(%<aLabelAdr>)[%<kk * yM + ii>].re"
+            %assign In1LabelIm = "(%<aLabelAdr>)[%<kk * yM + ii>].im"
+            %assign In2LabelRe = "(%<bLabelAdr>)[%<jj * uM + kk>].re"
+            %assign In2LabelIm = "(%<bLabelAdr>)[%<jj * uM + kk>].im"
+            %assign OutLabelCurRe = "(%<cLabelAdr>)[%<jj * yM + ii>].re"
+            %assign OutLabelCurIm = "(%<cLabelAdr>)[%<jj * yM + ii>].im"
+            %if Multiplication == "K*u"
+              %% Then In1 matrix has hertro ids
+              %assign aDT = FixPt_GetParameterDataType(FixPtGainID, ii, kk)
+            %else
+              %% In2 matrix has hetrogenous ids
+              %assign bDT = FixPt_GetParameterDataType(FixPtGainID, kk, jj)
+            %endif
+            %if In1IsComplex && In2IsComplex
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(tmp1Label,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumNeg(tempOutLabelRe,cDT,...
+                tmp1Label,cDT,...
+                FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(tmp1Label,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumPos(tempOutLabelIm,cDT,...
+                tmp1Label,cDT,...
+                FixPtSaturationMode)>\
+            %elseif !In1IsComplex && In2IsComplex
+              %assign In1LabelRe = "(%<aLabelAdr>)[%<kk * yM + ii>]"
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %elseif In1IsComplex && !In2IsComplex
+              %assign In2LabelRe = "(%<bLabelAdr>)[%<jj * uM + kk>]"
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %elseif !In1IsComplex && !In2IsComplex
+            %%START_ASSERT
+	      %assign In1LabelRe = "(%<aLabelAdr>)[%<kk * yM + ii>]"
+              %assign In2LabelRe = "(%<bLabelAdr>)[%<jj * uM + kk>]"
+              tempOut.im = 0;
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %%END_ASSERT
+	    %endif
+            %if kk == 0
+              %<OutLabelCurRe> = %<tempOutLabelRe>;
+              %<OutLabelCurIm> = %<tempOutLabelIm>;
+            %else
+              %<FixPt_Accumulate(OutLabelCurRe,cDT,tempOutLabelRe,cDT,satMode,1)>\
+              %<FixPt_Accumulate(OutLabelCurIm,cDT,tempOutLabelIm,cDT,satMode,1)>\
+            %endif
+          %endforeach
+        %endforeach
+      %endforeach
+    }
+%endfunction
+
+
+%% Function: FixPt_ComplexMatrixMultiply ==========================================
+%%
+%% Abstract:
+%%  For matrix B(m x n), the elements are stored in 
+%%  as a vector, column major wise. Therefore, B[i][j]
+%%  is Vector[j*m+i]
+%%  Note the Stored Integers are denoted by A, B, and C
+%%
+%%  The records C, A, and B must contain
+%%  all the fixed point data type and scaling fields.
+%%  They must also contain a field called "Label"
+%%  In C_Language terms cLabel must be an l-value.
+%%  aLabel and bLabel are treated as read only and
+%%  they must provide the values (stored integers) for
+%%  A and B.  Please note none of the Labels can be addresses.
+%%
+%% Synopsis:
+%%      FixPt_MatrixMultiply(C,A,B,roundMode,satMode)
+%%
+%%      C = record describing output
+%%      A = record describing input 1
+%%      B = record describing input 2
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%
+%% In the calling tlc file access the addrresses by using 
+%% LibBlockInputSignalAddr and pass these pointers  to the following
+%% functions
+%%
+%function FixPt_ComplexMatrixMultiply(cLabelAdr,cDT,aLabelAdr,aDT,bLabelAdr,bDT,roundMode,satMode,yM,yN,uM,In1IsComplex,In2IsComplex) Output
+  %<LibPushEmptyStackSharedUtils()>\
+  %%
+  %% Create a string to represent the utility
+  %%
+  %assign utilityName = "MatrixMultiply_Complex"
+  %if !In1IsComplex && !In2IsComplex
+      %assign utilityName = utilityName + "RealReal"
+  %elseif In1IsComplex && !In2IsComplex
+    %assign utilityName = utilityName + "ComplexReal"
+  %elseif !In1IsComplex && In2IsComplex
+    %assign utilityName = utilityName + "RealComplex"
+  %endif
+  %%
+  %% identify current INPUT storage type
+  %%
+  %if FixPt_DataTypeIsFloat(cDT)
+    %assign utilityName = utilityName + "_" + cDT.NativeType
+  %else
+    %if cDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(cDT.RequiredBits)
+  %endif
+  %%
+  %% identify first input DATA storage type
+  %%
+  %if FixPt_DataTypeIsFloat(aDT)
+    %assign utilityName = utilityName + "_" + aDT.NativeType
+  %else
+    %if aDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(aDT.RequiredBits)
+  %endif
+  %%
+  %% identify second input DATA storage type
+  %%
+  %if FixPt_DataTypeIsFloat(bDT)
+    %assign utilityName = utilityName + "_" + bDT.NativeType
+  %else
+    %if bDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+  %endif
+  %%
+  %% identify amount of left shifting or right shifting
+  %% if any
+  %%
+  %assign ExPrec = aDT.FixedExp + bDT.FixedExp - cDT.FixedExp
+  %if ExPrec < 0
+    %assign utilityName = utilityName + "_SR"
+    %assign utilityName = utilityName + STRING(-ExPrec)
+  %elseif ExPrec > 0
+    %assign utilityName = utilityName + "_SL"
+    %assign utilityName = utilityName + STRING(ExPrec)
+  %endif
+  %%
+  %% Should optimize cases that don't need saturation
+  %% For example a DSP with accumulator gaurd bits
+  %%
+  %if satMode == "Saturate"
+    %assign utilityName = utilityName + "_SAT"
+  %else
+    %%%assign utilityName = utilityName + "_WRAP"
+  %endif
+  %%
+  %%
+  %% identify how rounding will be handled
+  %%   If the mode leads to a "do nothing" then
+  %%   the mode will be left off the utility name.
+  %%   For any combination of signed (2's complement!!!)
+  %%   or unsigned inputs, round to FLOOR is a do nothing
+  %%   mode.  If both inputs are unsigned then round to ZERO
+  %%   is identical to round to FLOOR, ie "do nothing"
+  %%        Note, there is an unresolved caveat to this.  When the
+  %%   product is formed by summing the product of smaller pieces
+  %%   there can be a difference between applying the rounding mode
+  %%   to the combined sum verses applying the rounding mode to each
+  %%   piece seperately.  FLOOR applied to each piece is "do nothing",
+  %%   but FLOOR applied to the whole is NOT "do nothing."  Current
+  %%   implementation applies FLOOR to each piece for code generation.
+  %%
+  %%   Note: rounding is relavent only if there is a shift right
+  %%
+  %assign includeRoundingCode = 0
+  %%
+  %if ExPrec < 0
+    %if roundMode == "Zero"
+      %if aDT.IsSigned || bDT.IsSigned
+        %assign utilityName = utilityName + "_ZERO"
+        %%
+        %assign includeRoundingCode = 1
+        %%
+        %%else
+        %% both Unsigned so ZERO like FLOOR
+      %endif
+    %elseif roundMode == "Nearest"
+      %assign utilityName = utilityName + "_NEAR"
+      %%
+      %assign includeRoundingCode = 1
+      %%
+    %elseif roundMode == "Ceiling"
+      %assign utilityName = utilityName + "_CEILING"
+      %%
+      %assign includeRoundingCode = 1
+      %%
+    %elseif roundMode == "Floor"
+      %%%assign utilityName = utilityName + "_FLOOR"
+    %else
+      %%START_ASSERT
+      %assign utilityName = utilityName + "_ROUNDERROR"
+      %%END_ASSERT
+    %endif
+  %else
+    %% no shifts right so NEVER round
+  %endif
+  %%
+  %%
+  %% END: Create a string to represent the search utility
+  %%
+  %%
+  %% case of C macro "call"
+  %%
+  %<utilityName>(%<cLabelAdr>,%<aLabelAdr>,%<bLabelAdr>,%<yM>,%<yN>,%<uM>);
+  %%
+  %% determine if the required utility has already been defined
+  %%   If it has not, then create the definition.
+  %%
+  %if !(ISFIELD(FixPtUtils,utilityName))
+    %%
+    %% register that utility is being defined
+    %%
+    %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+    %%
+    %% open a buffer to hold the utility header comments
+    %%
+    %openfile utilityHeaderComment
+    %%
+    %%  Produce header comment for utility
+    %%
+
+    /*********************************************************************
+    * Fixed-Point Complex Matrix Multiply Utility %<utilityName>
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% open a buffer to hold the utility definition
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %openfile utilityDef
+    %%
+    %% create first line of utility macro or function
+    %%
+    %% case of C language macro
+    %% force use of function
+    %assign cPrefix = "c"
+    %if In1IsComplex
+      %assign aDTLabel = "%<cPrefix>%<aDT.NativeType>"
+    %else
+        %assign aDTLabel = "%<aDT.NativeType>"
+    %endif
+    %if In2IsComplex
+      %assign bDTLabel = "%<cPrefix>%<bDT.NativeType>"
+    %else
+      %assign bDTLabel = "%<bDT.NativeType>"
+    %endif
+    %assign cDTLabel = "%<cPrefix>%<cDT.NativeType>"
+    %openfile funcProto
+    void %<utilityName>(%<cDTLabel> *pY, const %<aDTLabel> *pIn1, const %<bDTLabel> *pIn2, int yM, int yN, int uM);
+    %closefile funcProto
+    %selectfile utilityDef
+    void %<utilityName>(%<cDTLabel> *pY, const %<aDTLabel> *pIn1, const %<bDTLabel> *pIn2, int yM, int yN, int uM)
+    %assign tempOutLabelRe = "tempOut.re"
+    %assign tempOutLabelIm = "tempOut.im"
+    %assign tempOutLabel   = "tempOut"
+    %assign tmp1Label = "yTemp1"
+    {
+      int locindex = 0;
+      int i, j , k;
+      int iIn1, iIn2;
+      %<cDTLabel> %<tempOutLabel>;
+      %if In1IsComplex && In2IsComplex
+        %<cDT.NativeType> %<tmp1Label>;
+      %endif
+      for(j =0; j < (yN); j++)
+      {
+        for (i = 0; i < (yM); i++)
+        {
+          iIn1 = i;
+          iIn2 = j * (uM);
+          for(k = 0; k < (uM); k++)
+          {
+            %assign OutLabelCurRe = "pY[locindex].re"
+            %assign OutLabelCurIm = "pY[locindex].im"
+            %if In1IsComplex && In2IsComplex
+              %assign In1LabelRe = "pIn1[iIn1].re"
+              %assign In1LabelIm = "pIn1[iIn1].im"
+              %assign In2LabelRe = "pIn2[iIn2].re"
+              %assign In2LabelIm = "pIn2[iIn2].im"
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(tmp1Label,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumNeg(tempOutLabelRe,cDT,...
+                tmp1Label,cDT,...
+                FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_Multiply(tmp1Label,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %<FixPt_AccumPos(tempOutLabelIm,cDT,...
+                tmp1Label,cDT,...
+                FixPtSaturationMode)>\
+            %elseif !In1IsComplex && In2IsComplex
+              %assign In1LabelRe = "pIn1[iIn1]"
+              %assign In2LabelRe = "pIn2[iIn2].re"
+              %assign In2LabelIm = "pIn2[iIn2].im"
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelIm,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %elseif In1IsComplex && !In2IsComplex
+              %assign In1LabelRe = "pIn1[iIn1].re"
+              %assign In1LabelIm = "pIn1[iIn1].im"
+              %assign In2LabelRe = "pIn2[iIn2]"
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+              %%
+              %<FixPt_Multiply(tempOutLabelIm,cDT,...
+                In1LabelIm,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %elseif !In1IsComplex && !In2IsComplex
+            %%START_ASSERT  
+	      %assign In1LabelRe = "pIn1[iIn1]"
+              %assign In2LabelRe = "pIn2[iIn2]"
+              tempOut.im = 0;
+              %<FixPt_Multiply(tempOutLabelRe,cDT,...
+                In1LabelRe,aDT,...
+                In2LabelRe,bDT,...
+                FixPtRoundingMode,FixPtSaturationMode)>\
+            %%END_ASSERT
+	    %endif
+            if(k == 0)
+            {
+              %<OutLabelCurRe> = %<tempOutLabelRe>;
+              %<OutLabelCurIm> = %<tempOutLabelIm>;
+            }
+            else
+            {
+              %<FixPt_Accumulate(OutLabelCurRe,cDT,tempOutLabelRe,cDT,satMode,1)>\
+              %<FixPt_Accumulate(OutLabelCurIm,cDT,tempOutLabelIm,cDT,satMode,1)>\
+            }
+            iIn1 += (yM);
+            iIn2++;
+          }
+          locindex++;
+        }
+      }
+    }
+    %closefile utilityDef
+    %%
+    %% finish header comment
+    %%
+    %selectfile utilityHeaderComment
+    */
+    %closefile utilityHeaderComment
+    %%
+    %% create utility trailer comment
+    %%
+    %openfile utilityTrailerComment
+    
+    /* end %<FixPtUtilType> %<utilityName>
+    *********************************************************************/
+    %closefile utilityTrailerComment
+    %%
+    %% cause utility define to be included in generated code
+    %%
+    %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+    %%
+    %% force use of function
+    %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+    %<LibCacheFunctionPrototype(funcProto)>\
+    %%
+  %endif
+  %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction

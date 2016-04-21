@@ -1,0 +1,125 @@
+%% $RCSfile: sdspunwrap.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:10:01 $
+%%
+%% J. Faneuff
+%% April 17, 1998
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Unwrap a vector of radian phase angles.
+
+%implements sdspunwrap "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract: Rename the S-Function parameter.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Cutoff")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Unwrap (%<ParamSettings.FunctionName>) - %<Name> */
+	%%
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %assign c0      = LibBlockOutputSignalIsComplex(OUTPORT)
+    %assign inplace = (LibBlockInputSignalBufferDstPort(INPORT) == OUTPORT)
+    %assign inwidth = LibDataInputPortWidth(INPORT)
+    %assign cutoff  = FEVAL("abs",LibBlockParameterValue(Cutoff, 0))
+    %%
+    %if c0
+        %error Cannot generate code for complex inputs for block %<Name> (%<ParamSettings.FunctionName>).
+    %endif
+    %%
+    %if(inplace || (inwidth==1) )
+      {
+        real_T   *y = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        real_T   umin;
+        int_T   w;
+
+        /* Find the minimum */
+        umin = *y++;
+        for(w=%<inwidth>; --w > 0; ) {
+            real_T val = *y++;
+            if (val < umin) {
+                umin = val;
+            }
+        }
+        {
+	    const real_T two_pi  = 6.283185307179586476925286766559005768394;  /* from fft.c */
+            real_T       f       = 0.0;   /* clear cumsum       */
+            real_T       a       = 0.0;   /* 1st previous value */
+
+            y -= %<inwidth>;          /* reset input pointer */
+            for(w=%<inwidth>; w-- > 0; ) { 
+                /* Implement this, without the aprev variable:
+                 *   a     = (new value);
+                 *   b     = a - aprev;
+                 *   aprev = a;
+                 */
+                real_T b = -a;                      /* use old a value */
+                a = fmod(*y - umin, two_pi) + umin; /* get new a value */
+                b += a;                             /* finish with b   */
+                if (b > %<cutoff>) {
+                    f -= two_pi;
+                } else if (b < %<-cutoff>) {
+                    f += two_pi;
+                }
+                *y++ = a + f;
+            }  
+	}
+      }
+    %else
+      {
+        real_T   *y   = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+	    real_T   umin = %<LibBlockInputSignal(INPORT,"","",0)>;
+
+        /* Find the minimum */
+            %assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	    %% Loop roll over input port elements:
+	    %%
+	    %assign rollVars = ["U"]
+	    %roll sigIdx = rollRegions1, lcv = RollThreshold, \
+                            block, "Roller", rollVars
+                %assign val = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+                if (%<val> < umin) {
+                    umin = %<val>;
+                }
+	    %endroll
+        {
+	    const real_T two_pi  = 6.283185307179586476925286766559005768394;  /* from fft.c */
+            real_T       f       = 0.0;   /* clear cumsum       */
+            real_T       a       = 0.0;   /* 1st previous value */
+	    real_T       b;
+            
+	    %% Loop roll over input port elements:
+	    %%
+	    %assign rollVars = ["U"]
+	    %roll sigIdx = RollRegions, lcv = RollThreshold, \
+                            block, "Roller", rollVars
+	        %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	        %%
+	        b = -a;
+           a = fmod(%<u> - umin, two_pi) + umin;
+	        b += a;
+           if (b > %<cutoff>) {
+               f -= two_pi;
+           } else if (b < %<-cutoff>) {
+               f += two_pi;
+           }
+	        *y++ = a + f;
+
+       %endroll
+        }
+      }
+    %endif
+
+%endfunction
+
+%% [EOF] sdspunwrap.tlc
+

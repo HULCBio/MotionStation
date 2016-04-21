@@ -1,0 +1,1611 @@
+%% Abstract: Register C6200 TLC replacement functions ====================
+%%
+%% Copyright 2002-2004 The MathWorks, Inc.
+%% $RCSfile: c62_common.tlc,v $
+%% $Revision: 1.11.4.1 $ $Date: 2004/01/22 18:26:04 $
+%%
+%% Abstract: Optimized implementation of the multiplication routines for
+%%           TI C6000 DSP. All 16, and 32 bit mode (except unsigned mode)
+%%           is supported. 32 bit modes supports both Even and odd array
+%%           sizes.
+%%
+%%  
+%%----------------------------------------------------------------------
+%% functions in this file:
+%% C62_MulWriteFunction      - Entry point to this file.
+%% C62_MulCreateNameFunction - Creates unique C function name.
+%% MUL_Ixx_I16xI16_Even      - 16 bit integer multiplication
+%% Mul_Ixx_IxxxI32_Even      - 32 bit ingeger multiplication
+%% Mul_Cxx_C16xC16_Even      - 16 bit Complex multiplication
+%% Mul_Cxx_CxxxC32_Even      - 32 bit Complex multiplication
+%% Mul_Cxx_C16xI16_Even      - 16 bit scalar multiplication
+%% Mul_Cxx_CxxxIxx_Even      - 32 bit scalar multiplication
+%%----------------------------------------------------------------------
+
+%% Function: C62_MulWriteFunction ======================================
+%% Generates the optimized code for gain and multiply operation.
+%% The parameter GAIN_BLOCK indicates which operation needs to be 
+%% processed.
+%%
+%function C62_MulWriteFunction(GAIN_BLOCK) Output
+  %%
+  %assign FNHEADER = "MW_c62xx_clib"
+  %%
+  %% Process according to the parameter passed.
+  %%
+  %if GAIN_BLOCK
+    %assign FixPtGainID = ParamSettings.FixPtGainID
+    %assign gainIsComplex = LibBlockParameterIsComplex(Gain)
+    %assign kDT = FixPt_GetParameterDataType(FixPtGainID,0,0)
+    %assign REAL = LibBlockParameterValue(Gain, "re0")
+    %%
+    %% only if imaginary part
+    %%
+    %if gainIsComplex
+      %assign IMAG = LibBlockParameterValue(Gain, "im0")
+    %endif
+  %endif
+  %%
+  %% Build a function name based on the input/output
+  %% data TYPE, scaling factor, rounding mode, bits,
+  %% multiplication TYPE (vector/scalar)
+  %%
+  %if LibBlockOutputSignalIsComplex(0)
+    %assign TYPEOUT = FixPt_GetOutputDataType(0).ComplexName 
+    %assign TOUT = "C"
+  %else
+    %assign TYPEOUT = FixPt_GetOutputDataType(0).NativeType
+    %assign TOUT = "I"
+  %endif
+  %%
+  %if LibBlockInputSignalIsComplex(0)
+    %assign TYPEIN1 = FixPt_GetInputDataType(0).ComplexName
+    %assign TIN1 = "C"
+  %else
+    %assign TYPEIN1 = FixPt_GetInputDataType(0).NativeType
+    %assign TIN1 = "I"
+  %endif
+  %%
+  %% Gain block has only one input, and the gain parameter
+  %% is processed differently.
+  %%
+  %if GAIN_BLOCK
+    %if gainIsComplex
+      %assign TYPEIN2 = kDT.ComplexName
+      %assign TIN2 = "C"
+    %else
+      %assign TYPEIN2 = kDT.NativeType
+      %assign TIN2 = "I"
+    %endif
+  %else
+    %if LibBlockInputSignalIsComplex(1)
+      %assign TYPEIN2 = FixPt_GetInputDataType(1).ComplexName
+      %assign TIN2 = "C"
+    %else
+      %assign TYPEIN2 = FixPt_GetInputDataType(1).NativeType
+      %assign TIN2 = "I"
+    %endif
+  %endif
+  %%
+  %assign BITSIN1  = FixPt_GetInputDataType(0).ActualBits
+  %assign BITSOUT  = FixPt_GetOutputDataType(0).ActualBits
+  %assign SI1      = FixPt_GetInputDataType(0).FixedExp
+  %if !GAIN_BLOCK
+    %assign BITSIN2  = FixPt_GetInputDataType(1).ActualBits
+    %assign SI2      = FixPt_GetInputDataType(1).FixedExp
+  %else
+    %assign BITSIN2  = kDT.ActualBits
+    %assign SI2      = kDT.FixedExp
+  %endif
+  %assign SO       = FixPt_GetOutputDataType(0).FixedExp
+  %assign ROUND    = 0
+  %assign SCALAR   = 0
+  %assign EVEN     = 0
+  %assign EvenStr  = "Odd"
+  %assign SWAP     = 0
+  %assign SHIFT    = SO - (SI1+SI2)
+  %assign SAT      = 0
+  %assign NEWENTRY = 1
+  %%
+  %% Presently dont support mixed data TYPE.
+  %%
+  %%
+  %if FixPtSaturationMode == "Saturate"
+    %assign SAT   = 1
+    %assign SHIFT = SHIFT + 1
+  %endif
+  %%
+  %%
+  %% Get input bits and scaling factor of input 2
+  %%
+  %if GAIN_BLOCK
+    %assign BITSIN2 = kDT.ActualBits
+    %assign SI2 = kDT.FixedExp
+  %endif
+  %%
+  %% Rounding mode
+  %%
+  %if FixPtRoundingMode == "Nearest"
+    %assign ROUND = 1
+  %elseif FixPtRoundingMode == "Ceiling"
+    %assign ROUND = 2
+  %endif
+  %%
+  %% Get the maximum array SIZE. The block may be multiplying
+  %% scalar with a Vector. In such a case, indicate which 
+  %% input is a scalar.
+  %%
+  %if GAIN_BLOCK
+    %assign NSIZE = %<DataInputPort[0].Width>
+    %assign SCALAR = 2
+  %else
+    %assign NSIZE1 = %<DataInputPort[0].Width>
+    %assign NSIZE2 = %<DataInputPort[1].Width>
+    %assign NSIZE = NSIZE1
+    %%indicator of scalar multiplication, 1 for first parameter, 2 for second
+    %if NSIZE1 == 1
+      %assign NSIZE = NSIZE2
+      %assign SCALAR = 1        %% first parameter is scalar
+    %elseif NSIZE2 == 1
+      %assign NSIZE = NSIZE1
+      %assign SCALAR = 2        %% second parameter is scalar
+    %endif
+  %endif
+  %%
+  %% Determine if the Vector length is even or odd
+  %%
+  %if NSIZE/2 == (NSIZE+1)/2
+    %assign EVEN = 1
+    %assign EvenStr = "Even"
+  %else
+  	%%
+  	%% do not process odd inputs, not supported at the present time
+  	%%
+  	%return 0
+  %endif
+  %%
+  %% prepare a name
+  %%
+  %assign fname = "Mul_" + TOUT + STRING(BITSOUT) + "_" 
+  %if (TIN1=="I" && TIN2=="C") || ...
+      (TIN1=="I" && TIN2=="I" && BITSIN1==32 && BITSIN2==16) || ...
+      (TIN1=="C" && TIN2=="C" && BITSIN1==32 && BITSIN2==16)
+    %assign fname = fname + ...
+      TIN2 + STRING(BITSIN2) + "x" + TIN1 + STRING(BITSIN1) + "_" + EvenStr
+    %if SCALAR == 1
+      %assign SCALAR = 2
+    %elseif SCALAR == 2
+      %assign SCALAR = 1
+    %endif
+    %assign SWAP = 1
+  %else
+    %assign fname = fname + ...
+      TIN1 + STRING(BITSIN1) + "x" + TIN2 + STRING(BITSIN2) + "_" + EvenStr
+  %endif
+  %%
+  %% in saturation mode, additional or 1 less shift is necesary
+  %%
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %%
+  %if ISFIELD(FixPtUtils,fnameS)
+    %assign NEWENTRY = 0
+  %endif
+  %%  
+  %% is it a new entry into the C file? if it is, then do not generate any code again.
+  %%
+  %if NEWENTRY
+    %if JustCreatedCompiledModelRecord("_MW_c62xx_clib_")
+      %%
+      %% Create new file, because this is the first time we are writing into 
+      %% this file for this model.
+      %%
+      %openfile cfile = FNHEADER + ".c"
+      %openfile hfile = FNHEADER + ".h"
+
+      %selectfile cfile
+      #include "rtwtypes.h"
+      #ifndef RESTRICT
+      #define RESTRICT restrict
+      #endif
+      %selectfile hfile
+      #define RESTRICT restrict
+
+    %else
+      %%
+      %% open file in append mode, because this is not the first time
+      %% we are writing into this file for this model.
+      %%
+      %openfile cfile = FNHEADER + ".c", "a"
+      %openfile hfile = FNHEADER + ".h", "a"
+    %endif %% JustCreatedCompiledModelRecord
+    %%
+    %% process the C file
+    %%
+    %selectfile cfile
+    %%
+    %if fname == "Mul_I16_I16xI16_Even" || ...
+        fname == "Mul_I32_I16xI16_Even"
+      %%
+      %assign fnameS = MUL_Ixx_I16xI16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %%
+    %elseif fname == "Mul_C16_C16xI16_Even" || ...
+            fname == "Mul_C32_C16xI16_Even"
+      %%
+      %assign fnameS = Mul_Cxx_C16xI16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %%
+    %elseif fname == "Mul_C16_C16xC16_Even" || ...
+            fname == "Mul_C32_C16xC16_Even"
+      %%
+      %assign fnameS = Mul_Cxx_C16xC16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %%
+    %elseif fname == "Mul_I32_I32xI32_Even" || ...
+            fname == "Mul_I16_I32xI32_Even" || ...
+            fname == "Mul_I16_I16xI32_Even" || ...
+            fname == "Mul_I32_I16xI32_Even"
+      %%
+      %if SAT
+        %assign SHIFT = SHIFT - 1
+        %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+        %%
+      %endif
+      %if !ISFIELD(FixPtUtils,fnameS)
+      %%
+        %assign fnameS = Mul_Ixx_IxxxI32_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %endif
+      %%
+    %elseif fname == "Mul_C16_C16xC32_Even" || ...
+            fname == "Mul_C32_C16xC32_Even" || ...
+            fname == "Mul_C16_C32xC32_Even" || ...
+            fname == "Mul_C32_C32xC32_Even"
+      %%
+      %if SAT
+        %assign SHIFT = SHIFT - 1
+        %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+        %%
+      %endif
+      %if !ISFIELD(FixPtUtils,fnameS)
+      %%
+        %assign fnameS = Mul_Cxx_CxxxC32_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %endif
+      %% 
+    %elseif fname == "Mul_C16_C32xI32_Even" || ...
+            fname == "Mul_C32_C32xI32_Even" || ...
+            fname == "Mul_C16_C16xI32_Even" || ...
+            fname == "Mul_C32_C16xI32_Even" || ...
+            fname == "Mul_C16_C32xI16_Even" || ...
+            fname == "Mul_C32_C32xI16_Even"
+      %%
+      %if SAT
+        %assign SHIFT = SHIFT - 1
+        %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+        %%
+      %endif
+      %%
+      %if !ISFIELD(FixPtUtils,fnameS)
+      %%
+        %assign fnameS = Mul_Cxx_CxxxIxx_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+      %endif                                 
+      %%
+    %else
+      %%
+      %% close all files if the input pattern does not match.
+      %% pass the control to the old unoptimized code generator.
+      %%
+      %closefile cfile
+      %closefile hfile
+      %return 0
+    %endif
+    %%
+    %% process the header file
+    %% 
+    %selectfile hfile
+    %%
+    extern %<fnameS>
+    (
+      const %<TYPEIN1> * RESTRICT in1, 
+      const %<TYPEIN2> * RESTRICT in2,
+      %<TYPEOUT>       * RESTRICT out,
+      const int N,
+      const int shift,
+      const int sat_mode,
+      const int round  // 0=floor, 1=nearest, 2=ceiling
+    );
+    %% Record this entry
+    %assign tmp = SETFIELD(FixPtUtils,fnameS,1)
+    %%
+    %% close all the opened files, the next step is to 
+    %% inline the call to these generated functions.
+    %% Unsuccessful in optimization.
+    %%
+    %closefile cfile
+    %closefile hfile
+    %%
+  %endif %% NEWENTRY
+  %%
+  %% These entries are inlined
+  %%
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                               EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %if GAIN_BLOCK
+    %%
+    %% gain block needs to be called differently
+    %%
+    %if gainIsComplex
+      %if SWAP
+        %<TYPEIN1> val[] = {%<REAL>,%<IMAG>};
+      %else
+        %<TYPEIN2> val[] = {%<REAL>,%<IMAG>};
+      %endif
+    %else
+      %if SWAP
+        %<TYPEIN1> val = %<REAL>;
+      %else
+        %<TYPEIN2> val = %<REAL>;
+      %endif
+    %endif
+    %<fnameS>(
+      %if !(SWAP)
+        %<LibBlockInputSignalAddr(0,"0","",0)>, /* Input 1 */
+        &val, /* Input 2 */
+      %else 
+        &val, /* Input 1 */
+        %<LibBlockInputSignalAddr(0,"0","",0)>, /* Input 2 */
+      %endif
+      %<LibBlockOutputSignalAddr(0,"0","",0)>, /* Output */
+      %<NSIZE>, /* Array Size */
+      %<SHIFT>, /* Output Scale */
+      %<SAT>, /* Saturation */
+      %<ROUND>); /* Rounding */
+  %else
+    {
+    	%%
+    	%% inlined code
+    	%%
+      %<fnameS>(
+      %if !SWAP
+        %<LibBlockInputSignalAddr(0,"0","",0)>, /* Input 1 */
+        %<LibBlockInputSignalAddr(1,"0","",0)>, /* Input 2 */
+      %else %% TIN1=="I" && TIN2=="C"
+        %<LibBlockInputSignalAddr(1,"0","",0)>, /* Input 1 */
+        %<LibBlockInputSignalAddr(0,"0","",0)>, /* Input 2 */
+      %endif
+      %<LibBlockOutputSignalAddr(0,"0","",0)>, /* Output */
+      %<NSIZE>, /* Array Size */
+      %<SHIFT>, /* Shifts */
+      %<SAT>, /* Saturation */
+      %<ROUND>); /* Rounding */
+    }
+  %endif
+  %%
+  %% success optimizing
+  %%
+  %return 1
+%endfunction
+
+
+
+
+%% Function: C62_MulCreateNameFunction ==================================
+%% Abstract:
+%%   Creates a unique function name based on the input arguments. 
+%%
+%function C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %%
+  %%
+  %assign fname = "Mul_" + TOUT + STRING(BITSOUT)
+  %%
+  %% Create the C function names based on the input bits. Since
+  %% multiplication is commutative, swap the inputs to use a single
+  %% TLC function.
+  %%
+  %if !SWAP
+    %assign fname = fname+"_"+TIN1+STRING(BITSIN1)+"x"+TIN2+STRING(BITSIN2)
+  %else
+    %assign fname = fname+"_"+TIN2+STRING(BITSIN2)+"x"+TIN1+STRING(BITSIN1)
+  %endif
+  %%
+  %% indicate input SIZE
+  %%
+  %if EVEN
+    %assign fname = fname+"_Even"
+  %endif
+  %%
+  %% indicate the TYPE of multiply
+  %%
+  %if SCALAR
+    %assign fname = fname + "_Scalar" + STRING(SCALAR)
+  %endif
+  %%
+  %% indicate shift amount
+  %%
+  %if SHIFT>0
+    %assign fname = fname + "_SR%<SHIFT>"
+  %elseif SHIFT<0
+    %assign fname = fname + "_SL%<-SHIFT>"
+  %endif
+  %%
+  %% indicate saturation mode
+  %%
+  %if SAT
+    %assign fname = fname + "_Sat"
+  %endif
+  %%
+  %% indicate rounding mode
+  %%
+  %if ROUND==1
+    %assign fname = fname + "_Near"
+  %elseif ROUND==2
+    %assign fname = fname + "_Ceil"
+  %endif
+  %%
+  %% return the generated function name
+  %%
+  %return fname
+%endfunction %% C62_MulCreateNameFunction
+
+
+
+%% Function: MUL_Ixx_I16xI16_Even =============================================
+%% Abstract:
+%%   Generate code for 16 bit integer Vector multiplication.
+%%
+%function MUL_Ixx_I16xI16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+	%assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+
+	void %<fnameS>
+	(
+  	const int16_T * RESTRICT in1, 
+  	const int16_T * RESTRICT in2,
+  	%<FixPt_GetOutputDataType(0).NativeType> * RESTRICT out,
+  	const int N,
+  	const int shift,
+  	const int sat_mode,
+  	const int round  // 0=floor, 1=nearest, 2=ceiling
+	)
+	{
+  	int i=0;
+  	register int xx1, yy1;
+  	register int zz1, zz2;
+	%if ROUND && SHIFT>0
+  	register unsigned int delta;
+	%endif
+	%if SHIFT
+  	register int shcount=_abs(shift);
+	%endif
+
+  %if SCALAR==1
+    const int16_T * RESTRICT p1 = in1;
+  %else
+    const int * RESTRICT p1 = (const int*) in1;
+  %endif
+  %%
+  %if SCALAR==2
+    const int16_T * RESTRICT p2 = in2;
+  %else
+    const int * RESTRICT p2 = (const int*) in2;
+  %endif
+  %%
+  const int N_by_2 = (N>>1);
+
+	%if ROUND==1 && SHIFT>0
+  	delta = 1<<(shift-1);
+	%elseif ROUND==2 && SHIFT>0
+  	delta = (1<<shift)-1;
+	%endif
+	%if SCALAR==1
+    xx1 = p1[i];
+	%endif
+	%if SCALAR==2
+    yy1 = p2[i];
+	%endif
+	#pragma MUST_ITERATE(%<NSIZE>>>1)
+  for (i=0;i<N_by_2;i++)
+  {
+	%if SCALAR!=1
+    xx1 = p1[i];
+	%endif
+	%if SCALAR!=2
+    yy1 = p2[i];
+	%endif
+	%if SAT
+  	%assign MPY   = "_smpy"
+  	%assign MPYLH = "_smpylh"
+  	%assign MPYHL = "_smpyhl"
+  	%assign MPYH  = "_smpyh"
+	%else
+	  %assign MPY   = "_mpy"
+	  %assign MPYLH = "_mpylh"
+	  %assign MPYHL = "_mpyhl"
+	  %assign MPYH  = "_mpyh"
+	%endif
+    zz1 = %<MPY>(xx1,yy1);
+	%if SCALAR==1
+    zz2 = %<MPYLH>(xx1,yy1);
+	%elseif SCALAR==2
+    zz2 = %<MPYHL>(xx1,yy1);
+	%else
+    zz2 = %<MPYH>(xx1,yy1);
+	%endif
+	%if ROUND && SHIFT>0
+    /* rounding */
+    zz1 = _sadd(zz1,delta);
+    zz2 = _sadd(zz2,delta);
+	%endif
+	%if SHIFT>0
+    /* scaling */
+    zz1 >>= shcount;
+    zz2 >>= shcount;
+	%endif
+	%if SHIFT<0 && SAT==0
+    /* scaling */
+    zz1 <<= shcount;
+    zz2 <<= shcount;
+	%elseif SHIFT<0 && SAT==1
+    /* scaling */
+    zz1 = _sshl(zz1,shcount);
+    zz2 = _sshl(zz2,shcount);
+	%endif
+	%if SAT && BITSOUT==16
+    /* 16 bit saturation */
+    zz1 = _sshl(zz1,16)>>16;
+    zz2 = _sshl(zz2,16)>>16;
+	%endif
+    /* store result */
+    *out++ = zz1;
+    *out++ = zz2;
+  }
+}
+	%return fnameS
+%endfunction
+
+
+
+
+%% Function: Mul_Cxx_C16xC16_Even =============================================
+%% Abstract:
+%%   Generate code for 16 bit Complex Vector multiplication.
+%%
+%function Mul_Cxx_C16xC16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %assign BITSOUT = FixPt_GetOutputDataType(0).ActualBits
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  void %<fnameS>
+  (
+    const cint16_T * RESTRICT in1, 
+    const cint16_T * RESTRICT in2,
+    %<FixPt_GetOutputDataType(0).ComplexName> * RESTRICT out,
+    const int N,
+    const int shift,
+    const int sat_mode,
+    const int round  // 0=floor, 1=nearest, 2=ceiling
+  )
+  {
+    int i=0;
+    register int xx1, yy1;
+    register int real, imag;
+    register int rere, imim, imre, reim;
+  %if ROUND && SHIFT>0
+    register unsigned int delta;
+  %endif
+  %if SHIFT
+    register int shcount=_abs(shift);
+  %endif
+  %%
+  const int * RESTRICT p1 = (const int*) in1;
+  const int * RESTRICT p2 = (const int*) in2;
+
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shift-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shift)-1;
+  %endif
+  %if SCALAR==1
+      xx1 = p1[i];
+  %endif
+  %if SCALAR==2
+      yy1 = p2[i];
+  %endif
+  #pragma MUST_ITERATE(%<NSIZE>)
+    for (i=0;i<N;i++)
+    {
+  %if SCALAR!=1
+      xx1 = p1[i];
+  %endif
+  %if SCALAR!=2
+      yy1 = p2[i];
+  %endif
+  %if SAT
+      rere = _smpy(xx1,yy1);
+      imim = _smpyh(xx1,yy1);
+      imre = _smpyhl(xx1,yy1);
+      reim = _smpylh(xx1,yy1);
+      real = _ssub(rere,imim);
+      imag = _sadd(imre,reim);
+  %else
+      rere = _mpy(xx1,yy1);
+      imim = _mpyh(xx1,yy1);
+      imre = _mpyhl(xx1,yy1);
+      reim = _mpylh(xx1,yy1);
+      real = (rere-imim);
+      imag = (imre+reim);
+  %endif
+  %if ROUND && SHIFT>0
+      /* rounding */
+      real = _sadd(real,delta);
+      imag = _sadd(imag,delta);
+  %endif
+  %if SHIFT>0
+      /* scaling */
+      real >>= shcount;
+      imag >>= shcount;
+  %endif
+  %if SHIFT<0 && SAT==0
+      real <<= shcount;
+      imag <<= shcount;
+  %elseif SHIFT<0 && SAT==1
+      real = _sshl(real,shcount);
+      imag = _sshl(imag,shcount);
+  %endif
+  %if SAT && BITSOUT == 16
+      /* 16 bit saturation */
+      real = _sshl(real,16)>>16;
+      imag = _sshl(imag,16)>>16;
+  %endif
+      out[i].re = real;
+      out[i].im = imag;
+    }
+  }
+  %return fnameS
+%endfunction
+
+
+
+
+
+%%
+%% Function: Mul_Cxx_C16xI16_Even =============================================
+%% Abstract:
+%%   Generate code for 16 bit Complex Vector integer scalar multiplication.
+%%
+%function Mul_Cxx_C16xI16_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %assign BITSOUT = FixPt_GetOutputDataType(0).ActualBits
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                   EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %%
+  
+  void %<fnameS>
+  (
+    const cint16_T * RESTRICT in1, 
+    const int16_T * RESTRICT in2,
+    %<FixPt_GetOutputDataType(0).ComplexName> * RESTRICT out,
+    const int N,
+    const int shift,
+    const int sat_mode,
+    const int round  // 0=floor, 1=nearest, 2=ceiling
+  )
+  {
+    int i=0;
+    register int xx1, yy1;
+    register int real, imag;
+  %if SHIFT
+    register int shcount=_abs(shift);
+  %endif
+  %if ROUND && SHIFT>0
+    register unsigned int delta;
+  %endif
+  
+    const int * RESTRICT p1 = (const int*) in1;
+    const int16_T * RESTRICT p2 = (const int16_T*) in2;
+  
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shift-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shift)-1;
+  %endif
+  %%
+  %if SCALAR==1
+      xx1 = p1[i];
+  %endif
+  %%
+  %if SCALAR==2
+      yy1 = p2[i];
+  %endif
+  
+  #pragma MUST_ITERATE(%<NSIZE>)
+    for (i=0;i<N;i++)
+    {
+  %if SCALAR!=1
+      xx1 = p1[i];
+  %endif
+  %%
+  %if SCALAR!=2
+      yy1 = p2[i];
+  %endif
+  %%
+  %if SAT
+      real = _smpy(xx1,yy1);
+      imag = _smpyhl(xx1,yy1);
+  %else
+      real = _mpy(xx1,yy1);
+      imag = _mpyhl(xx1,yy1);
+  %endif
+  %%
+  %if ROUND && SHIFT>0
+      /* rounding */
+      real = _sadd(real,delta);
+      imag = _sadd(imag,delta);
+  %endif
+  %%
+  %if SHIFT>0
+      /* scaling */
+      real >>= shcount;
+      imag >>= shcount;
+  %endif
+  %%
+  %if SHIFT<0 && SAT==0
+      real <<= shcount;
+      imag <<= shcount;
+  %elseif SHIFT<0 && SAT==1
+      real = _sshl(real,shcount);
+      imag = _sshl(imag,shcount);
+  %endif
+  %%
+  %if SAT && BITSOUT == 16
+      /* 16 bit saturation */
+      real = _sshl(real,16)>>16;
+      imag = _sshl(imag,16)>>16;
+  %endif
+      out[i].re = real;
+      out[i].im = imag;
+    }
+  }
+  %return fnameS
+%endfunction
+
+
+
+
+
+%% Function: Mul_Ixx_IxxxI32_Even =============================================
+%% Abstract:
+%%   Generate code for 32 bit integer Vector multiplication.
+%%
+%function Mul_Ixx_IxxxI32_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+	%assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+	%assign TYPE1 = "int%<BITSIN1>_T"
+	%assign TYPE2 = "int32_T"
+
+	void %<fnameS>
+	(
+	  const %<TYPE1> * RESTRICT in1, 
+  	const %<TYPE2> * RESTRICT in2,
+  	%<FixPt_GetOutputDataType(0).NativeType>       * RESTRICT out,
+  	const int N,
+  	const int shift,
+  	const int sat_mode,
+  	const int round  // 0=floor, 1=nearest, 2=ceiling
+	)
+	{
+  	int i=0;
+  	register int xx1, yy1;
+  	%if SCALAR==1
+  	  register int xx1a;
+  	%elseif SCALAR==2
+  	  register int yy1a;
+  	%endif
+	%if ROUND && SHIFT>0
+  	register unsigned int delta;
+	%endif
+	%if SHIFT
+  	register int shcount=_abs(shift);
+	%endif
+
+  const %<TYPE1> * RESTRICT p1 = (const %<TYPE1>*) in1;
+  const %<TYPE2> * RESTRICT p2 = (const %<TYPE2>*) in2;
+
+  %if SHIFT>32
+    shcount -= 32;
+  %endif
+  %% 
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shift-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shift)-1;
+  %endif
+  %%
+	%if SCALAR==1
+    xx1 = xx1a = p1[i];
+	%endif
+	%%
+	%if SCALAR==2
+    yy1 = yy1a = p2[i];
+	%endif
+	%%
+	#pragma MUST_ITERATE(%<NSIZE>)
+	#pragma UNROLL(2)
+	%%
+  for (i=0;i<N;i++)
+  {
+    register long int CD;
+  %if SHIFT>0
+    register int sgn_xx1yy1;
+    register long int HH, HL, LL, AB;
+  %endif
+
+	%if SCALAR!=1
+    xx1 = p1[i];
+	%endif
+	%%
+	%if SCALAR!=2
+    yy1 = p2[i];
+	%endif
+	
+
+	%if SHIFT>0
+	  %if SCALAR==1
+  	  sgn_xx1yy1 = (_extu(xx1a,0,31) ^ _extu(yy1,0,31)) ? -1 : 1;
+
+	    xx1 = _abs(xx1a);
+	    yy1 = _abs(yy1);
+	  %elseif SCALAR==2
+  	  sgn_xx1yy1 = (_extu(xx1,0,31) ^ _extu(yy1a,0,31)) ? -1 : 1;
+
+	    xx1 = _abs(xx1);
+	    yy1 = _abs(yy1a);
+	  %else
+  	  sgn_xx1yy1 = (_extu(xx1,0,31) ^ _extu(yy1,0,31)) ? -1 : 1;
+
+	    xx1 = _abs(xx1);
+	    yy1 = _abs(yy1);
+	  %endif
+
+    HH = _mpyh(xx1,yy1);
+    HL = _mpyluhs(xx1,yy1)+_mpyhslu(xx1,yy1);
+    %% HL = _mpylhu(xx1,yy1)+_mpyhlu(xx1,yy1);
+    
+    %%
+    %if SHIFT<=32
+      LL = _mpyu(xx1,yy1);
+      CD = LL+(HL<<16);    
+      CD = _extu(CD,0,0);
+    %endif
+    %%
+    AB = HH+(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      AB += delta; /* round upper */
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB>>shcount; 
+    %else
+      AB <<= (32-shcount); 
+      CD = (CD>>shcount) + AB;
+    %endif
+    %%
+    %%
+    %if SAT && BITSOUT==32
+      CD = _sat(CD);
+    %endif
+    %%
+  %if SHIFT>0
+    CD *= sgn_xx1yy1;
+    %if ROUND==2 && SHIFT>0 && SHIFT<32
+      if (sgn_xx1yy1) CD++;
+    %endif
+  %endif
+  %%
+	%else
+    %%
+    CD = xx1*yy1;
+    %%
+    %if SHIFT != 0 && SAT==1
+      CD = _sshl(CD,shcount);
+    %elseif SHIFT!=0 && SAT==0
+      CD = CD<<shcount;
+    %endif
+    %%
+  %endif
+  %%
+  %%
+  %if SAT && BITSOUT==16
+    CD = _sshl(CD,16)>>16;
+  %endif
+  %%
+    out[i] = CD;
+  }
+}
+  %return fnameS
+%endfunction
+
+
+
+
+%% Function: Mul_Cxx_CxxxC32_Even =============================================
+%% Abstract:
+%%   Generate code for 32 bit Complex Vector multiplication.
+%%
+%function Mul_Cxx_CxxxC32_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %assign BITSOUT = FixPt_GetOutputDataType(0).ActualBits
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %assign TYPEO = FixPt_GetOutputDataType(0).ComplexName
+  %if SWAP
+    %assign TYPE1 = "cint%<BITSIN2>_T"
+  %else
+    %assign TYPE1 = "cint%<BITSIN1>_T"
+  %endif
+  %assign TYPE2 = "cint32_T"
+
+  void %<fnameS>
+  (
+    const %<TYPE1> * RESTRICT in1, 
+    const %<TYPE2> * RESTRICT in2,
+    %<TYPEO> * RESTRICT out,
+    const int N,
+    const int shift,
+    const int sat_mode,
+    const int round  // 0=floor, 1=nearest, 2=ceiling
+  )
+  {
+    int i=0;
+    register int re1, im1;
+    %if SCALAR==1
+      register int re1a, im1a;
+    %endif
+    register int re2, im2;
+    %if SCALAR==2
+      register int re2a, im2a;
+    %endif
+    register int re1re2, re1im2, im1re2, im1im2;
+    register int real, imag;
+  %if ROUND && SHIFT>0
+    register unsigned int delta;
+  %endif
+  %if SHIFT
+    register int shcount=_abs(shift);
+  %endif
+
+    const %<TYPE1> * RESTRICT p1 = (const %<TYPE1>*) in1;
+    const %<TYPE2> * RESTRICT p2 = (const %<TYPE2>*) in2;
+
+  %if SHIFT>32
+    shcount -= 32;
+  %endif
+  %% 
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shcount-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shcount)-1;
+  %endif
+  %%
+  %if SCALAR==1
+      /* real, imag of complex number 1 */
+      re1 = re1a = p1[i].re;
+      im1 = im1a = p1[i].im;
+  %endif
+  %if SCALAR==2
+      /* real, imag of complex number 2 */
+      re2 = re2a = p2[i].re;
+      im2 = im2a = p2[i].im;
+  %endif
+
+  #pragma MUST_ITERATE(%<NSIZE>)
+  for (i=0;i<N;i++)
+  {
+    register long int CD;
+  %if SHIFT>0
+    register unsigned int HH, HL, LL;
+    register long int AB;
+    register int sgn_re1re2, sgn_im1im2, sgn_re1im2, sgn_im1re2;
+    %if ROUND==2 && SHIFT>32
+      register int s;
+    %endif
+  %endif    
+
+  %if SCALAR!=1
+    /* real, imag of complex number 1 */
+    re1 = p1[i].re;
+    im1 = p1[i].im;
+  %endif
+  %if SCALAR!=2
+    /* real, imag of complex number 2 */
+    re2 = p2[i].re;
+    im2 = p2[i].im;
+  %endif
+  
+  %if SHIFT>0
+    %if SCALAR==1
+ 		  /* get the sign of the two products */
+ 		  sgn_re1re2 = (_extu(re1a,0,31) ^ _extu(re2,0,31));// ? -1 : 1;
+ 		  sgn_im1re2 = (_extu(im1a,0,31) ^ _extu(re2,0,31));// ? -1 : 1;
+ 		  sgn_re1im2 = (_extu(re1a,0,31) ^ _extu(im2,0,31));// ? -1 : 1;
+ 		  sgn_im1im2 = (_extu(im1a,0,31) ^ _extu(im2,0,31));// ? -1 : 1;
+ 		
+ 		  re1 = _abs(re1a);
+ 		  im1 = _abs(im1a);
+ 		  re2 = _abs(re2);
+ 		  im2 = _abs(im2);
+ 		%elseif SCALAR==2
+ 		  /* get the sign of the two products */
+ 		  sgn_re1re2 = (_extu(re1,0,31) ^ _extu(re2a,0,31));
+ 		  sgn_im1re2 = (_extu(im1,0,31) ^ _extu(re2a,0,31));
+ 		  sgn_re1im2 = (_extu(re1,0,31) ^ _extu(im2a,0,31));
+ 		  sgn_im1im2 = (_extu(im1,0,31) ^ _extu(im2a,0,31));
+ 		
+ 		  re1 = _abs(re1);
+ 		  im1 = _abs(im1);
+ 		  re2 = _abs(re2a);
+ 		  im2 = _abs(im2a);
+ 		%else
+ 		  /* get the sign of the two products */
+ 		  sgn_re1re2 = (_extu(re1,0,31) ^ _extu(re2,0,31));
+ 		  sgn_im1re2 = (_extu(im1,0,31) ^ _extu(re2,0,31));
+ 		  sgn_re1im2 = (_extu(re1,0,31) ^ _extu(im2,0,31));
+ 		  sgn_im1im2 = (_extu(im1,0,31) ^ _extu(im2,0,31));
+ 		
+ 		  re1 = _abs(re1);
+ 		  im1 = _abs(im1);
+ 		  re2 = _abs(re2);
+ 		  im2 = _abs(im2);
+ 		%endif
+ 			
+    /* deal with RE1*RE2 */
+    HH = _mpyh(re1,re2);
+    HL = _mpyluhs(re1,re2)+_mpyhslu(re1,re2);
+    LL = _mpyu(re1,re2);
+    CD = (long)LL+(long)_extu(HL,16,0);    
+    %%
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      %if ROUND==1
+        AB += (long)delta; /* round upper */
+      %elseif ROUND==2
+        s = (AB & delta) || _extu(CD,0,0);
+      %endif
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB >>shcount; 
+      %if ROUND==2
+        CD += s;
+      %endif
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount);
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      %if SAT
+        CD = _lsadd(CD,AB);
+      %else
+        CD += AB;
+      %endif
+    %endif
+    %%
+    %if SHIFT>0
+      %if ROUND==2 && SHIFT>0
+        if (sgn_re1re2) CD=-CD+1;
+      %else
+        if (sgn_re1re2) CD = -CD;
+      %endif
+    %endif
+    %%
+    %if SAT
+      CD = _sat(CD);
+    %endif
+    %%
+  %else
+    CD = re1*re2;
+    %if SHIFT != 0 && SAT==1
+      CD = _sshl(CD,shcount);
+    %elseif SHIFT!=0 && SAT==0
+      CD = CD<<shcount;
+    %endif
+  %endif
+  %%
+  %if SAT && BITSOUT==16
+    %% CD = _sshl(CD,16)>>16;
+  %endif
+    re1re2 = CD;
+
+    /* deal with IM1*IM2 */
+  %if SHIFT>0
+    HH = _mpyh(im1,im2);
+    HL = _mpyluhs(im1,im2)+_mpyhslu(im1,im2);
+%%    %if SHIFT<=32
+    LL = _mpyu(im1,im2);
+    CD = (long)LL+(long)_extu(HL,16,0);    
+%%    %endif
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      %if ROUND==1
+        AB += (long)delta; /* round upper */
+      %elseif ROUND==2
+        s = (AB & delta) || _extu(CD,0,0);
+      %endif
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB>>shcount; 
+      %if ROUND==2
+        CD += s;
+      %endif
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount);
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      %if SAT
+        CD = _lsadd(CD,AB);
+      %else
+        CD += AB;
+      %endif
+    %endif
+    %%
+  %else
+      CD = im1*im2;
+      %if SHIFT != 0 && SAT==1
+        CD = _sshl(CD,shcount);
+      %elseif SHIFT!=0 && SAT==0
+        CD = CD<<shcount;
+      %endif
+  %endif
+    %%
+  %if SHIFT>0
+    %if ROUND==2 && SHIFT>0
+      if (sgn_im1im2) CD=-CD+1;
+    %else
+      if (sgn_im1im2) CD = -CD;
+    %endif
+  %endif
+  %%
+  %if SAT
+    CD = _sat(CD);
+  %endif
+  %%
+  %if SAT && BITSOUT==16
+    %% CD = _sshl(CD,16)>>16;
+  %endif
+  im1im2 = CD;
+
+    /* deal with RE1*IM2 */
+  %if SHIFT>0
+    HH = _mpyh(re1,im2);
+    HL = _mpyluhs(re1,im2)+_mpyhslu(re1,im2);
+%%    %if SHIFT<=32
+    LL = _mpyu(re1,im2);
+    CD = (long)LL+(long)_extu(HL,16,0);    
+%%    %endif
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      %if ROUND==1
+        AB += (long)delta; /* round upper */
+      %elseif ROUND==2
+        s = (AB & delta) || _extu(CD,0,0);
+      %endif
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB>>shcount; 
+      %if ROUND==2
+        CD += s;
+      %endif
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount);
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      %if SAT
+        CD = _lsadd(CD,AB);
+      %else
+        CD += AB;
+      %endif
+    %endif
+    %%
+  %else
+      CD = re1*im2;
+      %if SHIFT != 0 && SAT==1
+        CD = _sshl(CD,shcount);
+      %elseif SHIFT!=0 && SAT==0
+        CD = CD<<shcount;
+      %endif
+  %endif
+    %%
+  %if SHIFT>0
+    %if ROUND==2 && SHIFT>0
+      if (sgn_re1im2) CD=-CD+1;
+    %else
+      if (sgn_re1im2) CD=-CD;
+    %endif
+    %% CD *= sgn_re1im2;
+  %endif
+    %%
+    %if SAT
+      CD = _sat(CD);
+    %endif
+    %%
+    %if SAT && BITSOUT==16
+      %% CD = _sshl(CD,16)>>16;
+    %endif
+    re1im2 = CD;
+
+    /* deal with IM1*RE2 */
+  %if SHIFT>0
+    HH = _mpyh(im1,re2);
+    HL = _mpyluhs(im1,re2)+_mpyhslu(im1,re2);
+%%    %if SHIFT<=32
+    LL = _mpyu(im1,re2);
+    CD = (long)LL+(long)_extu(HL,16,0);    
+      %% CD = _extu(CD,0,0);
+%%    %endif
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      %if ROUND==1
+        AB += (long)delta; /* round upper */
+      %elseif ROUND==2
+        s = (AB & delta) || _extu(CD,0,0);
+      %endif
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB >> shcount; 
+      %if ROUND==2
+        CD += s;
+      %endif
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount); 
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      %if SAT
+        CD = _lsadd(CD,AB);
+      %else
+        CD += AB;
+      %endif
+    %endif
+    %%
+  %else
+      CD = im1*re2;
+      %if SHIFT != 0 && SAT==1
+        CD = _sshl(CD,shcount);
+      %elseif SHIFT!=0 && SAT==0
+        CD = CD<<shcount;
+      %endif
+  %endif
+    %%
+  %if SHIFT>0
+    %if ROUND==2 && SHIFT>0
+      if (sgn_im1re2) CD=-CD+1;
+    %else
+      if (sgn_im1re2) CD=-CD;
+    %endif
+    %% CD *= sgn_im1re2;
+  %endif
+    %%
+    %if SAT
+      CD = _sat(CD);
+    %endif
+    %%
+    %if SAT && BITSOUT==16
+      %% CD = _sshl(CD,16)>>16;
+    %endif
+    im1re2 = CD;
+
+    %if SAT
+      real = _ssub(re1re2,im1im2);
+      imag = _sadd(im1re2,re1im2);
+    %else
+      real = (re1re2-im1im2);
+      imag = (im1re2+re1im2);
+    %endif
+
+    %if SAT && BITSOUT == 16
+      %% real = _sat(real);
+      %% imag = _sat(imag);
+      /* 16 bit saturation */
+      real = _sshl(real,16)>>16;
+      imag = _sshl(imag,16)>>16;
+    %endif
+    /* at last the result */
+    out[i].re = real;
+    out[i].im = imag;
+  }
+}
+  %return fnameS
+%endfunction
+
+
+
+
+%% Function: Mul_Cxx_CxxxIxx_Even =============================================
+%% Abstract:
+%%   Generate code for 32 bit Complex Vector 32 bit integer 
+%%   scalar multiplication.
+%%
+%function Mul_Cxx_CxxxIxx_Even(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                 EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE) Output
+  %assign fnameS = C62_MulCreateNameFunction(TOUT,BITSOUT,TIN1,BITSIN1,TIN2,BITSIN2,...
+                                   EVEN,SCALAR,SHIFT,SAT,ROUND,SWAP,NSIZE)
+  %if SWAP                                   
+    %assign TYPE1 = "cint%<BITSIN2>_T"
+  %else
+    %assign TYPE1 = "cint%<BITSIN1>_T"
+  %endif
+  %%
+  %if SWAP
+     %assign BITS2 = BITSIN1
+  %else 
+     %assign BITS2 = BITSIN2
+  %endif
+  %%
+  %if BITS2 == 32
+    %assign TYPE2 = "int32_T"
+  %else
+    %assign TYPE2 = "int16_T"
+  %endif
+  %assign TYPEO = FixPt_GetOutputDataType(0).ComplexName
+  %% 
+  void %<fnameS>
+  (
+    const %<TYPE1> * RESTRICT in1, 
+    const %<TYPE2> * RESTRICT in2,
+    %<TYPEO> * RESTRICT out,
+    const int N,
+    const int shift,
+    const int sat_mode,
+    const int round  // 0=floor, 1=nearest, 2=ceiling
+  )
+  {
+    int i=0;
+    register int re1, im1;
+    %if SCALAR==1
+      register int re1a, im1a;
+    %endif
+    register int re2;
+    %if SCALAR==2
+      register int re2a;
+    %endif
+    register int real, imag;
+  %if ROUND && SHIFT>0
+    register unsigned int delta;
+  %endif
+  %if SHIFT
+    register int shcount=_abs(shift);
+  %endif
+  
+    const %<TYPE1> * RESTRICT p1 = (const %<TYPE1>*) in1;
+    const %<TYPE2> * RESTRICT p2 = (const %<TYPE2>*) in2;
+
+  %if SHIFT>32
+    shcount -= 32;
+  %endif
+  %% 
+  %if ROUND==1 && SHIFT>0
+    delta = 1<<(shcount-1);
+  %elseif ROUND==2 && SHIFT>0
+    delta = (1<<shcount)-1;
+  %endif
+  %%
+  %if SCALAR==1
+    /* real, imag of complex number 1 */
+    re1 = re1a = p1[i].re;
+    im1 = im1a = p1[i].im;
+  %endif
+  %if SCALAR==2
+    re2 = re2a = p2[i];
+  %endif
+  
+  #pragma MUST_ITERATE(%<NSIZE>)
+  for (i=0;i<N;i++)
+  {
+    register long int CD;
+    %%
+    %if SHIFT>0
+      register unsigned int HH, HL, LL;
+      register long int AB;
+      register int sgn_re1re2, sgn_im1re2;
+    %endif
+  
+  %if SCALAR!=1
+    /* real, imag of complex number 1 */
+    re1 = p1[i].re;
+    im1 = p1[i].im;
+  %endif
+  %%
+  %if SCALAR!=2
+    re2 = p2[i];
+  %endif
+
+  %if SHIFT>0
+    %if SCALAR==1
+		/* get the sign of the two products */
+		sgn_re1re2 = (_extu(re1a,0,31) ^ _extu(re2,0,31));
+		sgn_im1re2 = (_extu(im1a,0,31) ^ _extu(re2,0,31));
+
+		re1 = _abs(re1a);
+		im1 = _abs(im1a);
+		re2 = _abs(re2);
+		%elseif SCALAR==2
+		/* get the sign of the two products */
+		sgn_re1re2 = (_extu(re1,0,31) ^ _extu(re2a,0,31));
+		sgn_im1re2 = (_extu(im1,0,31) ^ _extu(re2a,0,31));
+
+		re1 = _abs(re1);
+		im1 = _abs(im1);
+		re2 = _abs(re2a);
+		%else
+		/* get the sign of the two products */
+		sgn_re1re2 = (_extu(re1,0,31) ^ _extu(re2,0,31));
+		sgn_im1re2 = (_extu(im1,0,31) ^ _extu(re2,0,31));
+
+		re1 = _abs(re1);
+		im1 = _abs(im1);
+		re2 = _abs(re2);
+		%endif
+ 			
+    /* deal with RE1*RE2 */
+    HH = _mpyh(re1,re2);
+    HL = _mpyluhs(re1,re2)+_mpyhslu(re1,re2);
+    %% HL = _mpylhu(re1,re2)+_mpyhlu(re1,re2);
+    %if SHIFT<=32
+      LL = _mpyu(re1,re2);
+      CD = (long)LL+(long)_extu(HL,16,0);    
+      %% CD = _extu(CD,0,0);
+    %endif
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      %if SAT
+        AB = _sadd(CD,delta);
+      %else
+        AB += (long)delta; /* round upper */
+      %endif
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB>>shcount; 
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount); 
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      CD += AB;
+    %endif
+    %%
+    %if SHIFT>0
+      %if ROUND==2 && SHIFT>0 && SHIFT<32
+        if (sgn_re1re2) CD = -CD+1;
+      %else
+        if (sgn_re1re2) CD = -CD;
+      %endif
+    %endif
+    %%
+    %if SAT
+      CD = _sat(CD);
+    %endif
+    %%
+  %else
+    CD = re1*re2;
+    %if SHIFT != 0 && SAT==1
+      CD = _sshl(CD,shcount);
+    %elseif SHIFT!=0 && SAT==0
+      CD = CD<<shcount;
+    %endif
+  %endif
+  %%
+  %%
+  %if SAT && BITSOUT==16
+    CD = _sshl(CD,16)>>16;
+  %endif
+    real = CD;
+  
+    /* deal with IM1*RE2 */
+  %if SHIFT>0
+    HH = _mpyhu(im1,re2);
+    HL = _mpylhu(im1,re2)+_mpyhlu(im1,re2);
+    %if SHIFT<=32
+      LL = _mpyu(im1,re2);
+      CD = (long)LL+(long)_extu(HL,16,0);    
+      %% CD = _extu(CD,0,0);
+    %endif
+    AB = (long)HH+(long)(HL>>16);   
+    %%
+    %if ROUND && SHIFT<=32 && SHIFT>0
+      CD += (long)delta; /* round lower */
+    %elseif ROUND && SHIFT>0
+      AB += (longdelta; /* round upper */
+    %endif
+    %%
+    %if SHIFT>32
+      CD = AB>>shcount; 
+    %else
+      %if SAT
+        AB = _sshl(AB,32-shcount); 
+      %else
+        AB <<= (32-shcount); 
+      %endif
+      CD >>= shcount;
+      CD += AB;
+    %endif
+    %%
+    %if SHIFT>0
+      %% CD *= sgn_im1re2;;
+      %if ROUND==2 && SHIFT>0 && SHIFT<32
+        if (sgn_im1re2) CD = -CD+1;
+      %else
+        if (sgn_im1re2) CD = -CD;
+      %endif
+    %endif
+    %if SAT
+       CD = _sat(CD);
+    %endif
+    %%
+  %else
+    CD = im1*re2;
+    %if SHIFT != 0 && SAT==1
+      CD = _sshl(CD,shcount);
+    %elseif SHIFT!=0 && SAT==0
+      CD = CD<<shcount;
+    %endif
+  %endif
+  %%
+  %%
+  %if SAT && BITSOUT==16
+    CD = _sshl(CD,16)>>16;
+  %% %elseif SAT
+  %%  CD = _sat(CD);
+  %endif
+  imag = CD;
+  
+      /* at last the result */
+      out[i].re = real;
+      out[i].im = imag;
+    }
+  }
+  %return fnameS
+%endfunction
+

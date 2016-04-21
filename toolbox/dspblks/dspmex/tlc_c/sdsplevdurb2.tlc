@@ -1,0 +1,406 @@
+%% sdsplevdurb2.tlc
+%% Abstract: TLC for Signal Processing Blockset Levinson-Durbon Solver (sdsplevdurb2)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.4.4.2 $Date: 
+
+%implements sdsplevdurb2 "C"
+
+%% Function: BlockTypeSetup ====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsplevdurb_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block, system) void
+%% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %assign INPORT = 0
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(INPORT)
+    %assign isFixPt = !FixPt_DataTypeIsFloat(inDT)
+    %%
+    %% Get the non-tunable function type parameter
+    %assign ftype    = SFcnParamSettings.FType
+    %assign zeroinp  = SFcnParamSettings.ZeroInp
+    %%
+    %%Get the order of input
+    %assign N = LibBlockInputSignalWidth(INPORT)
+    %%
+    %% Get the Output port(s) profile
+    %assign fcnAandK     = 1
+    %assign fcnA         = 2
+    %assign fcnK         = 3
+    %assign fcnAandKandP = 4
+    %assign fcnAandP     = 5
+    %assign fcnKandP     = 6
+    %%
+    %if isFixPt
+        %assign hasAPort  = !( (ftype == fcnK) || (ftype == fcnKandP) )
+        %assign hasKPort  = !( (ftype == fcnA) || (ftype == fcnAandP) )
+        %assign hasPPort  = ((ftype == fcnAandP) || (ftype == fcnKandP) || (ftype == fcnAandKandP) )
+        %assign NMinusOne = N - 1
+        %assign A_DT   = FixPt_GetParameterDataType(A_DATA_TYPE, 0, 0)
+        %assign K_DT   = FixPt_GetParameterDataType(K_DATA_TYPE, 0, 0)
+        %assign P_DT   = FixPt_GetParameterDataType(P_DATA_TYPE, 0, 0)
+        %assign accDT  = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+        %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+        %assign block  = block + inDT + hasAPort + hasKPort + hasPPort + ...
+                         NMinusOne + A_DT + K_DT + P_DT + accDT + prodDT
+    %endif
+    %%Get data type and complexity profiles
+    %assign DTYPE_ID    = LibBlockInputSignalDataTypeId(INPORT)
+    %assign INP_COMPLEX = LibBlockInputSignalIsComplex(INPORT)
+    %%
+    %% Propagate all these assignments to the block
+    %assign block = block + ftype + zeroinp + N + INPORT + isFixPt
+    %assign block = block + fcnAandK + fcnA + fcnK 
+    %assign block = block + fcnAandKandP + fcnAandP + fcnKandP 
+    %assign block = block + DTYPE_ID + INP_COMPLEX
+%endfunction %% BlockInstanceSetup
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Levinson-Durbin Solver(%<ParamSettings.FunctionName>) - '%<Name>' */
+    %if isFixPt
+        %<GenerateFixptOutput(block)>\
+    %else
+        %<CallFltptRuntimeFcn(block)>\
+    %endif
+
+%endfunction  %% Outputs
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% FIXED-POINT LEVDURB ALGORITHM
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function FixptLevDurb(block) Output
+%%
+%createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+%createrecord inRec { label     LibBlockInputSignal(INPORT, "i", "","0"); ...
+                      dTypeRec  inDT; ...
+                      isComplex 0 }
+%if hasAPort
+    %assign ALabelI       = LibBlockOutputSignal(0, "i",   "", 0)
+    %assign ALabelJ       = LibBlockOutputSignal(0, "j",   "", 0)
+    %assign ALabelIMinusJ = LibBlockOutputSignal(0, "i-j", "", 0)
+    %assign ALabelIdx     = LibBlockOutputSignal(0, "idx", "", 0)
+%else
+    %assign ALabelI       = LibBlockDWork(ACOEF_DWORK_IDX, "i",   "", 0)
+    %assign ALabelJ       = LibBlockDWork(ACOEF_DWORK_IDX, "j",   "", 0)
+    %assign ALabelIMinusJ = LibBlockDWork(ACOEF_DWORK_IDX, "i-j", "", 0)
+    %assign ALabelIdx     = LibBlockDWork(ACOEF_DWORK_IDX, "idx", "", 0)
+%endif
+%createrecord ARecI       { label ALabelI;       dTypeRec  A_DT; isComplex 0 }
+%createrecord ARecJ       { label ALabelJ;       dTypeRec  A_DT; isComplex 0 }
+%createrecord ARecIMinusJ { label ALabelIMinusJ; dTypeRec  A_DT; isComplex 0 }
+%createrecord ARecIdx     { label ALabelIdx;     dTypeRec  A_DT; isComplex 0 }
+%%
+%createrecord KRec { label "cffK";  dTypeRec  K_DT;  isComplex 0 }
+%createrecord PRec { label "E";     dTypeRec  P_DT;  isComplex 0 }
+%createrecord accRec  { label     "acc"; ...
+                        dTypeRec  FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0); ...
+                        isComplex 0 }
+%createrecord prodRec { label     "prod"; ...
+                        dTypeRec  FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0); ...
+                        isComplex 0 }
+%if ((ftype == fcnK) || (ftype == fcnKandP)) 
+    %assign KPortLabel = LibBlockOutputSignal(0,  "i-1", "", 0)
+%elseif ((ftype == fcnAandK) || (ftype == fcnAandKandP))
+    %assign KPortLabel = LibBlockOutputSignal( 1,  "i-1", "", 0)
+%endif
+%if ((ftype == fcnAandP) || (ftype == fcnKandP)) 
+    %assign PPortLabel = LibBlockOutputSignal( 1,  "", "", 0)
+%elseif (ftype == fcnAandKandP)
+    %assign PPortLabel = LibBlockOutputSignal( 2,  "", "", 0)
+%endif
+%%
+int_T i=0, j, polyIdxCount;
+boolean_T evenInputIdx = false;
+%<K_DT.Name> %<KRec.label>;
+%<P_DT.Name> E;
+%<prodDT.Name> %<prodRec.label>;
+%<accDT.Name> %<accRec.label>;
+%<DSPFixptLibEquals(PRec, inRec, rndSatRec)>\
+for(i=1; i<%<N>; i++)  
+{ 
+    /* Update reflection coefficient */
+    %<DSPFixptLibEquals(accRec, inRec, rndSatRec)>
+    for (j=1; j<i; j++) {
+        %assign inRec.label = LibBlockInputSignal(INPORT, "i-j", "","0")
+        %<FixptMAC(accRec, "+=", prodRec, ARecJ, inRec, rndSatRec)>\
+    }
+    {
+        %copyrecord accNegRec accRec
+        %assign accNegRec.label = "acc1"
+        %<accDT.Name> %<accNegRec.label>;
+        %<DSPFixptNegate(accNegRec, accRec, rndSatRec)>\
+        %<DSPFixptLibDivide(KRec, accNegRec, PRec, rndSatRec)>\
+    }
+
+    /* Update prediction error energy */ 
+    %<DSPFixptLibTimes(prodRec, KRec, KRec, rndSatRec)>\
+    %<DSPFixptLibEquals(accRec, PRec, rndSatRec)>\
+    %<FixptMAC(accRec, "-=", prodRec, PRec, prodRec, rndSatRec)>\
+    %<DSPFixptLibEquals(PRec, accRec, rndSatRec)>\
+     
+    /* Update polynomial */ 
+    polyIdxCount = RSL(i-1,1);
+    for (j=1; j<=polyIdxCount; j++)  
+    { 
+        %copyrecord tmpARec ARecJ
+        %assign tmpARec.label = "tmpA"
+        %<A_DT.Name> %<tmpARec.label>;
+        %<DSPFixptLibEquals(tmpARec, ARecJ, rndSatRec)>\
+        %<DSPFixptLibEquals(accRec, ARecJ, rndSatRec)>\
+        %<FixptMAC(accRec, "+=", prodRec, KRec, ARecIMinusJ, rndSatRec)>\
+
+        %<DSPFixptLibEquals(ARecJ, accRec, rndSatRec)>\
+        %<DSPFixptLibEquals(accRec, ARecIMinusJ, rndSatRec)>\
+        %<FixptMAC(accRec, "+=", prodRec, KRec, tmpARec, rndSatRec)>\
+        %<DSPFixptLibEquals(ARecIMinusJ, accRec, rndSatRec)>\
+    } 
+    if (evenInputIdx) {
+        int_T idx = RSL(i,1);
+        %<DSPFixptLibEquals(accRec, ARecIdx, rndSatRec)>\
+        %<FixptMAC(accRec, "+=", prodRec, KRec, ARecIdx, rndSatRec)>\
+        %<DSPFixptLibEquals(ARecIdx, accRec, rndSatRec)>\
+    }
+
+    /* Record coefficients */ 
+    %<DSPFixptLibEquals(ARecI, KRec, rndSatRec)>\
+    %if (hasKPort)
+        %<FixPt_Fix2FixAlwaysOutput(KPortLabel, KRec.dTypeRec, KRec.label, KRec.dTypeRec, FixPtRoundingMode, FixPtSaturationMode)>\
+    %endif
+
+    evenInputIdx = !evenInputIdx;
+}
+
+%if (hasAPort)
+    %<LibBlockOutputSignal(0,  "", "", 0)> = %<LibBlockParameter(AZero, "", "", "0")>;
+%endif
+%if (hasPPort)
+    %<FixPt_Fix2FixAlwaysOutput(PPortLabel, PRec.dTypeRec, PRec.label, PRec.dTypeRec, FixPtRoundingMode, FixPtSaturationMode)>\
+%endif
+
+%endfunction  %% FixptLevDurb
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% FIXED-POINT OUTPUT FUNCTION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function GenerateFixptOutput(block) Output
+%%
+{
+    %if (zeroinp)
+        if (%<LibBlockInputSignal(INPORT, "0", "","0")> == 0) {
+            /* Special-case handling of zero-input */
+            %if (hasAPort)
+                memset((byte_T*)%<LibBlockOutputSignalAddr(0,  "", "", 0)>, ...
+                        0, %<N>*sizeof(%<A_DT.Name>) );
+                %<LibBlockOutputSignal(0,  "", "", 0)> = %<LibBlockParameter(AZero, "", "", "0")>;
+            %endif
+            %if (hasKPort)
+                %if ((ftype == fcnK) || (ftype == fcnKandP))
+                    memset((byte_T*)%<LibBlockOutputSignalAddr(0,  "", "", 0)>, ...
+                            0, %<NMinusOne>*sizeof(%<K_DT.Name>) );
+                %else
+                    memset((byte_T*)%<LibBlockOutputSignalAddr(1,  "", "", 0)>, ...
+                            0, %<NMinusOne>*sizeof(%<K_DT.Name>) );
+                %endif
+            %endif
+            %if (hasPPort)
+                %if ((ftype == fcnAandP) || (ftype == fcnKandP))
+                    memset((byte_T*)%<LibBlockOutputSignalAddr(1,  "", "", 0)>, ...
+                            0, sizeof(%<P_DT.Name>) );
+                %else
+                    memset((byte_T*)%<LibBlockOutputSignalAddr(2,  "", "", 0)>, ...
+                            0, sizeof(%<P_DT.Name>) );
+                %endif
+            %endif
+
+        } else {
+            /* Fixed-point Levinson Durbin algorithm */
+            %<FixptLevDurb(block)>\
+        }
+    %else
+        %<FixptLevDurb(block)>\
+    %endif
+}
+%endfunction  %% GenerateFixptOutput
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% FLOATING-POINT OUTPUT FUNCTION
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%function CallFltptRuntimeFcn(block) Output
+{
+    %%Call run-time function based on data type and ftype
+    %assign dcast  = ["real32_T *", "creal32_T *", "real_T *", "creal_T *"]
+    %assign dnam   = ["R", "C", "D", "Z"]                  %% Data type
+    %assign dtypes = (DTYPE_ID == tSS_SINGLE) ? 0 : 2    %% Double or single
+    %assign dtypec = INP_COMPLEX                         %% Complex or real
+    %assign dLB    = dnam[dtypes+dtypec]            %% Find the right character
+    %assign dCT    = dcast[dtypes+dtypec]	    %% Find the right character
+    %assign dCTp   = dcast[dtypes]                  %% Find the right character
+    %%Create string segments and declarations  based on above identified types
+    %%
+    %assign u_inp  = LibBlockInputSignalAddr(INPORT, "", "", 0)  %% input pointer
+    %assign NN     = %<N>-1                         %% Input Order - 1 
+    %if ftype == fcnAandK
+      %assign y_A   = LibBlockOutputSignalAddr(0,  "", "", 0)
+      %assign y_K   = LibBlockOutputSignalAddr(1,  "", "", 0)
+    %elseif ftype == fcnK
+      %assign y_A   = LibBlockDWorkAddr(ACOEF_DWORK_IDX, "", "", 0)
+      %assign y_K   = LibBlockOutputSignalAddr(0,  "", "", 0)
+    %elseif ftype == fcnA
+      %assign y_A   = LibBlockOutputSignalAddr(0,  "", "", 0)
+    %elseif ftype == fcnAandKandP
+      %assign y_A   = LibBlockOutputSignalAddr(0,  "", "", 0)
+      %assign y_K   = LibBlockOutputSignalAddr(1,  "", "", 0)
+      %assign y_P   = LibBlockOutputSignalAddr(2,  "", "", 0)
+    %elseif ftype == fcnKandP
+      %assign y_A   = LibBlockDWorkAddr(ACOEF_DWORK_IDX, "", "", 0)
+      %assign y_K   = LibBlockOutputSignalAddr(0,  "", "", 0)
+      %assign y_P   = LibBlockOutputSignalAddr(1,  "", "", 0)        
+    %elseif ftype == fcnAandP 
+      %assign y_A   = LibBlockOutputSignalAddr(0,  "", "", 0)
+      %assign y_P   = LibBlockOutputSignalAddr(1,  "", "", 0)
+    %endif
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Let's state datatype specific things 
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %if dLB == "D"
+      const real_T *u   =  %<u_inp>;        /* Input pointer */
+            real_T *y_A =  %<y_A>;          /* A pointer */
+      %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            real_T *y_K =  %<y_K>;          /* K pointer */
+      %endif
+      %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+           real_T *y_P  =  %<y_P>;          /* P pointer */
+      %endif
+      %if zeroinp
+      if (u[0] == 0.0) {
+        int_T    i;
+        *y_A++ = 1.0;
+        %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        for (i=0; i<%<NN>; i++) *y_A++ = *y_K++ = 0.0;
+        %else
+        for (i=0; i<%<NN>; i++) *y_A++ = 0.0;
+        %endif
+        %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        *y_P = 0.0;          /* P output pointer */
+        %endif      
+      }
+      else
+      %endif
+    %elseif dLB == "R"
+      const real32_T *u   =  %<u_inp>;    /* Input pointer */
+            real32_T *y_A =  %<y_A>;      /* A pointer */
+      %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            real32_T *y_K =  %<y_K>;      /* K pointer */
+      %endif
+      %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            real32_T *y_P =  %<y_P>;      /* P pointer  */
+      %endif
+      %if zeroinp
+      if (u[0] == 0.0F) {      
+        int_T   i;
+        *y_A++ = 1.0F;
+        %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        for (i=0; i<%<NN>; i++) *y_A++ = *y_K++ = 0.0F;
+        %else
+        for (i=0; i<%<NN>; i++) *y_A++ = 0.0F;
+        %endif
+        %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        *y_P = 0.0F;
+        %endif
+      }
+      else
+      %endif 
+    %elseif dLB == "C"
+      const creal32_T *u   =  %<u_inp>;    /* Input pointer */
+            creal32_T *y_A =  %<y_A>;      /* A pointer */
+      %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            creal32_T *y_K =  %<y_K>;      /* K pointer */
+      %endif
+      %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            real32_T *y_P  =  %<y_P>;      /* P pointer  */
+      %endif
+      %if zeroinp
+      if ( (u[0].re == 0.0F) && (u[0].im == 0.0F) ) {
+        int_T   i;
+        y_A->re   = 1.0F;       
+        y_A++->im = 0.0F;       
+        for (i=0; i<%<NN>; i++) {
+          y_A->re   = 0.0F;
+          y_A++->im = 0.0F;
+          %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+          y_K->re   = 0.0F;
+          y_K++->im = 0.0F;
+          %endif
+        } 
+      %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        *y_P = 0.0F;
+      %endif
+      }
+      else
+      %endif 
+    %elseif dLB == "Z"
+      const creal_T *u   =  %<u_inp>;    /* Input pointer */
+            creal_T *y_A =  %<y_A>;      /* A pointer */
+      %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            creal_T *y_K =  %<y_K>;      /* K pointer */
+      %endif
+      %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+            real_T *y_P  =  %<y_P>;      /* P pointer  */
+      %endif
+      %if zeroinp
+      if ( (u[0].re == 0.0) && (u[0].im == 0.0) ) {        
+        int_T   i; 
+        y_A->re   = 1.0;       
+        y_A++->im = 0.0;       
+        for (i=0; i<%<NN>; i++) {
+          y_A->re   = 0.0;
+          y_A++->im = 0.0;
+          %if (ftype == fcnAandK) || (ftype == fcnK) || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+          y_K->re   = 0.0;
+          y_K++->im = 0.0;
+          %endif
+        }
+        %if (ftype == fcnAandP)  || (ftype == fcnAandKandP) || (ftype == fcnKandP)
+        *y_P = 0.0;
+        %endif
+      }
+      else
+     %endif 
+   %endif
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %% Let's call the unchecked function  
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %if ftype == fcnAandK
+     MWDSP_LevDurb_AK_%<dLB>(u, y_A, y_K, %<N>);
+   %elseif ftype == fcnK
+     MWDSP_LevDurb_AK_%<dLB>(u, y_A, y_K, %<N>);
+   %elseif ftype == fcnA
+      MWDSP_LevDurb_A_%<dLB>(u, y_A, %<N>);
+   %elseif ftype == fcnAandKandP
+     MWDSP_LevDurb_AKP_%<dLB>(u, y_A, y_K, y_P, %<N>);
+   %elseif ftype == fcnKandP
+     MWDSP_LevDurb_AKP_%<dLB>(u, y_A, y_K, y_P, %<N>);
+   %elseif ftype == fcnAandP 
+     MWDSP_LevDurb_AP_%<dLB>(u, y_A, y_P, %<N>);
+    %endif
+  }
+%endfunction  %% CallFltptRuntimeFcn
+
+
+
+
+ 

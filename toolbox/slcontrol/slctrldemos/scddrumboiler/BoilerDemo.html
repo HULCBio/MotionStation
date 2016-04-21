@@ -1,0 +1,309 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>BoilerDemo</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-03-31">
+      <meta name="m-file" content="BoilerDemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Boiler Demo<a name="2"></a></h1>
+      <p>This demonstration shows the use of the operating point search function, model linearization, and subsequent state observer
+         and LQR design.
+      </p>
+      <p>In this drum-boiler model the control problem is to regulate the boiler pressure in the face of random heat fluctuations from
+         the furnace by adjusting the feedwater flow rate and the nominal heat applied. For this example 95% of the random heat fluctuations are
+         less than 50% of the nominal heating value. This is not unusual for a furnace fired boiler.
+      </p>
+      <h2>Step1: Initialize and open the model<a name="3"></a></h2>
+      <p>To begin, open the Simulink model.</p><pre class="codeinput">Boiler_Demo</pre>
+      <p>The model's pre-load function initializes the controller sizes. This is necessary because to compute the operating point and
+         linear model, the Simulink model must be executable. Note that u0, y0 are set after the operating point computation and are
+         thus initially set to zero. The observer and regulator are computed during the controller design step and are initially also
+         set to zero.
+      </p>
+      <img vspace="5" hspace="5" src="BoilerMDL.png">
+      <h2>Step2: Find a nominal operating point and linearize the model<a name="5"></a></h2>
+      <p>The model initial state values are defined in the Simulink model. Using these state values find the steady state operating
+         point using the <a href="matlab:helpview([docroot,'/toolbox/slcontrol/findop.html'],'functions');">findop</a> command.
+      </p>
+      <p>First create an operating point specification where the state values are known.</p><pre class="codeinput">opspec = operspec(<span class="string">'Boiler_Demo'</span>);
+<span class="keyword">for</span> loop = 1:size(opspec.States,1)
+    opspec.States(loop).Known = 1;
+<span class="keyword">end</span></pre>
+<p>Now adjust the operating point specification to indicate that the inputs must be computed and that they are lower bounded.</p><pre class="codeinput">opspec.Inputs(1).Known = [0;0];     <span class="comment">%Inputs unknown</span>
+opspec.Inputs(1).Min = [0;0];   <span class="comment">%Input minimum value</span>
+</pre><p>Finally add an output specification to the operating point specification; this is necessary to ensure that the output operating
+         point is computed during the solution process.
+      </p><pre class="codeinput">opspec = addoutputspec(opspec,<span class="string">'Boiler_Demo/Boiler'</span>,1);
+opspec.Outputs(1).Known = 0;    <span class="comment">%Outputs unknown</span>
+opspec.Outputs(1).Min = 0;      <span class="comment">%Output minimum value</span>
+</pre>
+<p>Compute the operating point and generate a report.</p><pre class="codeinput">[opSS,opReport] = findop(<span class="string">'Boiler_Demo'</span>,opspec);
+</pre>
+<pre class="codeoutput">
+
+ Operating Point Search Report:
+---------------------------------
+
+ Operating Point Search Report for the Model Boiler_Demo.
+ (Time-Varying Components Evaluated at time t=0)
+
+Operating point specifications were successully met.
+
+States: 
+----------
+(1.) Boiler_Demo/Boiler/Steam volume
+      x:           5.6      dx:     7.77e-014 (0)
+(2.) Boiler_Demo/Boiler/Temperature
+      x:           180      dx:     1.69e-013 (0)
+(3.) Boiler_Demo/Observer/Internal
+      x:             0      dx:             0 (0)
+      x:     2.33e-021      dx:     2.33e-021 (0)
+ 
+Inputs: 
+-----------
+(1.) Boiler_Demo/Input
+      u:     2.41e+005    [0 Inf]
+      u:           100    [0 Inf]
+ 
+Outputs: 
+-----------
+(1.) Boiler_Demo/Boiler
+      y:        1e+003    [0 Inf]
+ 
+</pre>
+<p>Before linearizing the model around this point, specify the input and output signals for the linear model.</p>
+      <p>First specify the input points for linearization.</p><pre class="codeinput">Boiler_io(1)=linio(<span class="string">'Boiler_Demo/Sum'</span>,1,<span class="string">'in'</span>);
+Boiler_io(2)=linio(<span class="string">'Boiler_Demo/Demux'</span>,2,<span class="string">'in'</span>);
+</pre><p>Now specify the open loop output points for linearization.</p><pre class="codeinput">Boiler_io(3)=linio(<span class="string">'Boiler_Demo/Boiler'</span>,1,<span class="string">'out'</span>,<span class="string">'on'</span>);
+setlinio(<span class="string">'Boiler_Demo'</span>,Boiler_io);
+</pre><p>Find a linear model around the chosen operating point.</p><pre class="codeinput">Lin_Boiler = linearize(<span class="string">'Boiler_Demo'</span>,opSS,Boiler_io);
+</pre>
+<p>Finally, using the <a href="matlab:helpview([docroot,'/toolbox/control/ref/minreal.html'],'functions');">
+minreal</a> command, make sure that the model is a minimum realization, e.g., there are no pole zero cancelations</p><pre class="codeinput">Lin_Boiler = minreal(Lin_Boiler);
+</pre><pre class="codeoutput">1 state removed.
+</pre>
+<h2>Step 3: Designing a regulator and state observer.<a name="13"></a></h2>
+      <p>Using this linear model, design an LQR regulator and Kalman filter state observer. First find the controller offsets to make
+         sure that the controller is operating around the chosen linearization point by retrieving the computed operating point.
+      </p><pre class="codeinput">u0 = opReport.Inputs.u;
+y0 = opReport.Outputs.y;
+</pre><p>Now design the regulator using the 
+<a href="matlab:helpview([docroot,'/toolbox/control/ref/lqry.html'],'functions');">lqry</a> command. Note that tight regulation of the output is required while input variation
+         should be limited.
+      </p><pre class="codeinput">Q = diag(1e8);                  <span class="comment">%Output regulation</span>
+R = diag([1e2,1e6]);            <span class="comment">%Input limitation</span>
+[K,S,E] = lqry(Lin_Boiler,Q,R);
+</pre><p>Design the Kalman state observer using the 
+<a href="matlab:helpview([docroot,'/toolbox/control/ref/kalman.html'],'functions');">kalman</a> command. Note that for this example the main noise source is process noise
+         and it enters the system only through one input, hence the form of G and H.
+      </p><pre class="codeinput">[A,B,C,D] = ssdata(Lin_Boiler);
+G = [B(:,1)];
+H = [0];
+QN = 1e4;
+RN = 1e-1;
+NN = 0;
+[Kobsv,L,P] = Kalman(ss(A,[B G],C,[D H]),QN,RN);
+</pre><h2>Step 4: Simulate and test.<a name="16"></a></h2>
+      <p>For the designed controller the process inputs and outputs are shown below.</p>
+      <p>The feedwater actuation signal in kg/s:</p>
+      <img vspace="5" hspace="5" src="FeedWaterPlot.png">
+      <p>The heat actuation signal in kJ:</p>
+      <img vspace="5" hspace="5" src="HeatPlot.png">
+      <p>The next figure shows the heat disturbance in kJ. Note that the disturbance varies by as much as 50% of the nominal heat value.</p>
+      <img vspace="5" hspace="5" src="HeatDistPlot.png">
+      <p>The figure below shows the corresponding drum pressure in kPa. Notice how the pressure varies by about 1% of the nominal value
+         even though the disturbance is relatively large.</p>
+      <img vspace="5" hspace="5" src="PressurePlot.png">
+      <p class="footer">Copyright 1986-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+% Drum Boiler Codepad Demo 
+
+% Author(s): Alec Stothert
+% Copyright 1986-2004 The MathWorks, Inc. 
+% $Revision: 1.1.4.1 $ $Date: 2004/04/19 01:32:13 $
+
+%% Boiler Demo
+% This demonstration shows the use of the operating point search function, 
+% model linearization, and subsequent state observer and LQR design.
+%
+% In this drum-boiler model the control problem is to regulate the boiler 
+% pressure in the face of random heat fluctuations from the furnace by 
+% adjusting the feedwater flow rate and the nominal heat applied. For this 
+% example 95% of the random heat are less than 50% of the nominal heating
+% value. This is not unusual for a furnace fired boiler. 
+
+%% Step1: Initialize and open the model
+% To begin, open the Simulink model. 
+Boiler_Demo
+%%
+% The model's pre-load function initializes the controller sizes. This is 
+% necessary because to compute the operating point and linear model, the 
+% Simulink model must be executable. Note that u0, y0 are set after the 
+% operating point computation and are thus initially set to zero. The 
+% observer and regulator are computed during the controller design step and 
+% are initially also set to zero.
+
+%% Step2: Find a nominal operating point and linearize the model
+% The model initial state values are defined in the Simulink model. Using
+% these state values find the steady state operating point using the findop
+% command.
+%
+% First create an operating point specification where the state values are
+% known. 
+opspec = operspec('Boiler_Demo');
+for loop = 1:size(opspec.States,1)
+    opspec.States(loop).Known = 1;
+end
+
+%%
+% Now adjust the operating point specification to indicate that the inputs
+% must be computed and that they are lower bounded.
+opspec.Inputs(1).Known = 0;     %Inputs unknown
+opspec.Inputs(1).Min = [0;0];   %Input minimum value
+
+%%
+% Finally add an output specification to the operating point specification;
+% this is necessary to ensure that the output operating point is computed 
+% during the solution process.
+opspec = addoutputspec(opspec,'Boiler_Demo/Boiler',1);
+opspec.Outputs(1).Known = 0;    %Outputs unknown
+opspec.Outputs(1).Min = 0;      %Output minimum value
+
+%%
+% Compute the operating point and generate a report.
+[opSS,opReport] = findop('Boiler_Demo',opspec);
+
+%%
+% Before linearizing the model around this point, specify the input and 
+% output signals for the linear model.
+%
+% First specify the input points for linearization.
+Boiler_io(1)=linio('Boiler_Demo/Sum',1,'in');
+Boiler_io(2)=linio('Boiler_Demo/Demux',2,'in');
+
+%%
+% Now specify the open loop output points for linearization.
+Boiler_io(3)=linio('Boiler_Demo/Boiler',1,'out','on');
+setlinio('Boiler_Demo',Boiler_io);
+
+%%
+% Find a linear model around the chosen operating point.
+Lin_Boiler = linearize('Boiler_Demo',opSS,Boiler_io);
+
+%%
+% Finally make sure that the model is a minimum realization, e.g., there are
+% no pole zero cancelations
+Lin_Boiler = minreal(Lin_Boiler);
+
+%% Step 3: Designing a regulator and state observer.
+% Using this linear model, design an LQR regulator and Kalman filter state
+% observer. First find the controller offsets to make sure that the 
+% controller is operating around the chosen linearization point by 
+% retrieving the computed operating point.
+u0 = opReport.Inputs.u;
+y0 = opReport.Outputs.y;
+
+%%
+% Now design the regulator using the lqry command. Note that tight
+% regulation of the output is required while input variation should be limited.
+Q = diag(1e8);                  %Output regulation
+R = diag([1e2,1e6]);            %Input limitation
+[K,S,E] = lqry(Lin_Boiler,Q,R);
+
+%%
+% Design the Kalman state observer using the kalman command. Note that for
+% this example the main noise source is process noise and it enters the 
+% system only through one input, hence the form of G and H.
+[A,B,C,D] = ssdata(Lin_Boiler);
+G = [B(:,1)];
+H = [0];
+QN = 1e4;
+RN = 1e-1;
+NN = 0;
+[Kobsv,L,P] = Kalman(ss(A,[B G],C,[D H]),QN,RN);
+
+%% Step 4: Simulate and test.
+% For the designed controller the process inputs and outputs are shown below.
+%
+% The feedwater actuation signal in kg/s: 
+%
+% The heat actuation signal in J:
+%
+% The next figure shows the heat disturbance in J. Note that the disturbance
+% varies by as much as 50% of the nominal heat value.
+%
+% The figure below shows the corresponding drum pressure in kPa. Notice how
+% the pressure varies by about 1% of the nominal value even though the 
+% disturbance is relatively large.
+
+
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

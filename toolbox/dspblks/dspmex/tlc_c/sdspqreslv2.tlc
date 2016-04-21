@@ -1,0 +1,178 @@
+%% sdspqre2.tlc
+%% Abstract: TLC for Signal Processing Blockset QR Solver block. (sdspqreslv2)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.2.4.2 $ $Date: 2004/04/12 23:09:27 $
+
+
+%implements "sdspqreslv2" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT_A  = 0
+  %assign INPORT_B  = 1
+  %assign OUTPORT_X = 0
+
+  %assign dtypeA      = LibBlockInputSignalDataTypeName(INPORT_A,"")
+  %assign dtypeRealA  = LibBlockInputSignalDataTypeName(INPORT_A,"%<tRealPart>")
+  %assign inSingleA = ((dtypeA == "real32_T") || (dtypeA == "creal32_T"))? 1 : 0
+  %assign dtypeB    = LibBlockInputSignalDataTypeName(INPORT_B,"")
+
+  %assign cA     = LibBlockInputSignalIsComplex(INPORT_A)
+  %assign cB     = LibBlockInputSignalIsComplex(INPORT_B)
+  %assign cX     = cA | cB
+
+  %assign M       = %<SFcnParamSettings.orderM>
+  %assign N       = %<SFcnParamSettings.orderN>
+  %assign P       = %<SFcnParamSettings.orderP>
+  %assign MN      = %<SFcnParamSettings.prodMN>
+  %assign NminusM = %<SFcnParamSettings.diffNM>
+  %assign needCpy = %<SFcnParamSettings.NeedCopy>
+  %assign eps     = %<SFcnParamSettings.EpsVal>
+
+  %<LibDefineIWork(block, "Jpvt", N)>  
+
+  %assign block = block + INPORT_A + INPORT_B + OUTPORT_X + dtypeA + inSingleA + cA + cB + cX...
+                        + M + N + P + MN + NminusM + needCpy + eps + dtypeRealA + dtypeB
+
+%endfunction %% BlockInstanceSetup
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspqrdc_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+%function getRunTimeFcnName1(block) void
+    %%
+	%if cA
+		%if inSingleA
+            %assign suffix = "C"
+		%else
+            %assign suffix = "Z"
+		%endif
+	%else
+		%if inSingleA
+            %assign suffix = "R"
+		%else
+            %assign suffix = "D"
+		%endif
+	%endif
+    %%
+%return "MWDSP_qrdc" + suffix
+%endfunction %% getRunTimeFcnName1
+
+%function getRunTimeFcnName2(block) void
+    %%
+	%if cA
+		%if inSingleA
+            %assign suffix = "C"
+		%else
+            %assign suffix = "Z"
+		%endif
+	%else
+      %if cB
+		%if inSingleA
+            %assign suffix = "MixdC"
+		%else
+            %assign suffix = "MixdZ"
+		%endif
+      %else
+		%if inSingleA
+            %assign suffix = "R"
+		%else
+            %assign suffix = "D"
+		%endif
+	  %endif
+    %endif
+    %%
+%return "MWDSP_qreslv" + suffix
+%endfunction %% getRunTimeFcnName2
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset QR Factorization (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %assign str = cX ? "c" : ""
+    {
+        const %<dtypeA> *pA = %<LibBlockInputSignalAddr(INPORT_A,"","",0)>;
+        %<dtypeA> *pQR      = %<LibBlockDWorkAddr(QR, "", "", "")>;
+        int_T mn = %<MN>;
+    %if needCpy  
+      %if P > 1
+	    int_T j = %<P>;
+        int_T i;
+      %else
+        int_T i = %<M>;
+      %endif
+      %if M > N
+        %<str>%<dtypeRealA> *pBX = %<LibBlockDWorkAddr(BX, "", "", "")>;
+      %else
+        %<str>%<dtypeRealA> *pBX =  %<LibBlockOutputSignalAddr(OUTPORT_X,"","",0)>;
+      %endif
+        const %<dtypeB> *pB = %<LibBlockInputSignalAddr(INPORT_B,"","",0)>;
+    %endif        
+        while(mn-- > 0) {
+            *pQR++ = *pA++;
+        }
+        %%
+    %if needCpy  
+      %if P > 1
+        while (j-- > 0) {
+      %endif
+          %if M > 1
+           %if P > 1
+            i = %<M>;
+           %endif
+            while(i-- > 0) {
+          %endif
+             %if cX   
+                %if cB
+                  *pBX++ = *pB++;
+                %else
+			       pBX->re = *pB++;
+			       pBX->im = 0.0;
+			       pBX++;
+                %endif
+             %else
+                  *pBX++ = *pB++;
+             %endif
+          %if M > 1
+            }
+          %endif
+           %if NminusM > 0 && P > 1
+			pBX += %<NminusM>; 
+           %endif
+      %if P > 1
+        }
+      %endif
+    %endif
+        memset(&%<LibBlockIWork(Jpvt,"", "", 0)>, 0, %<N> * sizeof(int_T));
+    {
+        %if M > N
+          %<str>%<dtypeRealA> *pX  =  %<LibBlockOutputSignalAddr(OUTPORT_X,"","",0)>;
+          %<str>%<dtypeRealA> *pBX = %<LibBlockDWorkAddr(BX, "", "", "")>;
+        %else
+          %<str>%<dtypeRealA> *pX  =  (void *)0;
+          %<str>%<dtypeRealA> *pBX =  %<LibBlockOutputSignalAddr(OUTPORT_X,"","",0)>;
+         %endif
+        %<getRunTimeFcnName1(block)>(%<M>, %<N>, (%<dtypeA> *)%<LibBlockDWorkAddr(QR, "", "", "")>,
+                                    (%<dtypeA> *)%<LibBlockDWorkAddr(QRaux, "", "", "")>,
+                                    &%<LibBlockIWork(Jpvt,"", "", 0)>,
+                                    (%<dtypeA> *)%<LibBlockDWorkAddr(Work,"", "", "")>);
+
+        %<getRunTimeFcnName2(block)>(%<M>, %<N>,%<P>, (%<dtypeA> *)%<LibBlockDWorkAddr(QR, "", "", "")>,
+                                   pBX,  (%<dtypeA> *)%<LibBlockDWorkAddr(QRaux, "", "", "")>,
+                                   &%<LibBlockIWork(Jpvt,"", "", 0)>, pX, %<eps>);
+    }
+   }
+%endfunction %% Outputs
+
+%% EOF: sdspqre2.tlc

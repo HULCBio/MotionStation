@@ -1,0 +1,373 @@
+%% $RCSfile: c6711dsk_dac.tlc,v $
+%% $Revision: 1.1.6.2 $ $Date: 2004/04/08 21:01:05 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% part of the Target for C6711 DSK
+
+%implements c6711dsk_dac "C"
+
+%% Include external c6711dsk functions ============================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+%include "c6000_satmpy.tlc"
+
+
+%% Function: isNormalized ===============================================
+%% Abstract:
+%%     Determine if normalization is to be applied.
+%%     NOTE: This is more complicated than simply returning the status
+%%           of the scaling flag, since we must "ignore" the scaling
+%%           flag in certain modes.
+%%      
+%function isNormalized(block) void
+    %%
+    %if (inputIsInteger)
+        %return 0  %% Ignore the scaling flag; no normalization needed
+    %else
+        %return (Scaling == "NORMALIZE")
+    %endif
+    %%
+%endfunction %% isNormalized
+
+
+%% Function: DeclareScalingFactor ==============================================
+%%
+%% Abstract:
+%%  Outputs declarations of scaling constants when necessary.
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockInputSignalDataTypeName(0,"")
+        %%
+        const %<castType> DACScaleFactor = 32768.0;
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+%% Function: DeclarePtrToInpBuffer ==============================================
+%%
+%% Abstract:
+%%  Declares the pointer to the input buffer (for ADC block)
+%%
+%function DeclarePtrToInpBuffer(block) Output
+    %%
+    %assign castType = LibBlockInputSignalDataTypeName(0,"")
+    %%
+    const %<castType> *restrict i_ptr = %<LibBlockInputSignalAddr(0,"","",0)>;        
+    %%
+%endfunction %% DeclarePtrToInpBuffer
+   
+
+%% Function: IsIntegerType ======================================================
+%%
+%% Abstract:
+%%     Return 1 if the data type ID is an integer
+%%     Return 0 otherwise
+%%
+%function IsIntegerType(dType) void
+    %%
+    %switch(dType)
+        %case tSS_INT8
+        %case tSS_INT16
+        %case tSS_INT32
+        %case tSS_UINT8
+        %case tSS_UINT16
+        %case tSS_UINT32
+            %assign isInt = 1
+            %break
+        %default
+            %assign isInt = 0
+            %break
+    %endswitch
+    %return isInt
+    %%
+%endfunction %% IsIntegerType
+
+
+%% Function: DeclareSaturateParameters =========================================
+%%
+%%  Outputs declaration of saturation parameters when necessary.  The following
+%%  chart describeds the rules applied when saturation is selected.
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%           Overflow Rules and limits when applying saturation               %%
+%%----------------------------------------------------------------------------%%
+%%                       %%                  Block Input Data Type            %%
+%%                       %%---------------------------------------------------%%
+%%                       %% single     %% 16 bit signed     %% 8 bit signed   %%
+%%     Data Type         %% double     %% (int16)           %% (uint8)        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  16 bit linear        %%            %%                   %%                %%
+%%    - Normalized       %% +/- 1.0    %% n/a               %% n/a            %%
+%%    - Integer Value    %% +/- 32768  %% ignore            %% error in cmex  %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function DeclareSaturateParameters(block) Output
+    %%
+    %if (OverflowMode == "WRAP") || (DataTypeID == tSS_INT16)
+        %%
+        %% Output Nothing
+        %%
+    %else
+        %% Saturation case
+        %%
+        %% Determine the Upper and Lower Saturation Limits of the
+        %% block input signal.  For efficiency, the limits should be
+        %% of the same type and normalization as the input signal.
+        %%
+        %% Note: In the case of unsigned integers, only the upper limits
+        %% need to be checked for saturation (since lower limits = 0).
+        %%
+        %% %assign inputIsInteger = IsIntegerType(LibBlockInputSignalDataTypeId(0))
+        %%
+        %% Generate saturation limits as const variables:
+        %%
+        %if isNormalized(block)
+            %assign SaturateUpperLimit = "1.0"
+            %assign SaturateLowerLimit = "-1.0"
+        %else
+            %if (inputIsInteger)
+                %assign SaturateUpperLimit = "32767"
+                %assign SaturateLowerLimit = "-32768"
+            %else
+                %assign SaturateUpperLimit = "32767.0"
+                %assign SaturateLowerLimit = "-32768.0"
+            %endif %%inputIsInteger
+        %endif %% isNormalized
+        %%
+        %% Determine the upper and lower saturated output constants
+        %% This is determined by the selected data format.
+        %%
+        %assign SaturateUpperOutputLeft  = "0x7FFF"           
+        %assign SaturateLowerOutputLeft  = "0x8000"   
+        %assign SaturateUpperBound = "0x7FFE"
+        %assign block = block + SaturateUpperBound       
+        %assign SaturateLowerBound = "0x8000"
+        %assign block = block + SaturateLowerBound             
+        %%
+        %assign castType = LibBlockInputSignalDataTypeName(0,"")
+        %%                    
+        %%
+        %% Declare the upper (and lower) saturation limits and constants
+        %%
+        const %<castType> SaturateUpperLimit = %<SaturateUpperLimit>;
+        %if (!inputIsInteger)
+            const %<castType> SaturateLowerLimit = %<SaturateLowerLimit>;
+        %endif
+        %%
+        %%const short SaturateUpperOutputLeft = %<SaturateUpperOutputLeft>;           
+        %%if (!inputIsInteger) 
+            %%const short SaturateLowerOutputLeft = %<SaturateLowerOutputLeft>;            
+        %%endif
+        %%
+    %%
+    %endif %% OverflowMode
+    %%
+%endfunction %% DeclareSaturateParameters
+
+
+%% Function: GetNextInput ======================================================
+%%
+%% Abstract:
+%%     Extracts the next input from LibBlockInputSignal and increments
+%%     according to FrameSize.
+%%      
+%function GetNextInput(block) void
+    %%
+    %if FrameSize > 1
+        %assign InputExpression =  "%<LibBlockInputSignal(0,"i","",0)>"
+    %else
+        %assign InputExpression =  "%<LibBlockInputSignal(0,"","",0)>"
+    %endif %% FrameSize
+
+    %return InputExpression
+    %%
+%endfunction %% GetNextInput
+
+
+%% Function: ApplyScaling ======================================================
+%%
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%
+%%     The scaling to be done can be described as:
+%%
+%%         "(%<UnscaledExpression> * DACScaleFactor)"
+%%             The associated scale factor variable is:
+%%                          const real_T DACScaleFactor = 32768.0;
+%%
+%%     where UnscaledExpression represents an unscaled block input signal.
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block,UnscaledExpression) void
+    %%
+    %if isNormalized(block)
+        %assign ScaledString = "(int16_T)(%<UnscaledExpression> * DACScaleFactor)"
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaledString = "(int16_T)%<UnscaledExpression>"
+    %endif
+
+    %return ScaledString
+    %%
+%endfunction %% ApplyScaling
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block,system) void
+    %%
+    %<AddParamsToBlock(block)>
+
+    %openfile buffer
+    %%
+    %if (OverflowMode != "WRAP") && (DataTypeID != tSS_INT16)   
+        #include "sat_mpy.h"
+    %endif
+    %%
+    %closefile buffer
+    %<LibCacheIncludes(buffer)>
+    
+    %if !JustCreatedCompiledModelRecord("c6711dsk_dac_instance")
+        %error "Only one C6711DSK codec DAC block is allowed in a model."
+    %endif
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%%
+%%  Create automatic D/A (initialize ping pong buffers)
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%  
+    %<Create_config_codec_output(block)>\
+    config_codec_output();
+    %%
+%endfunction %% Start
+
+
+%% Function: Outputs ===========================================================
+%%
+%%  Read input buffer (when ready), convert to output format and send out.
+%%
+%function Outputs(block,system) Output
+    %%
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>\
+    %<DeclareSaturateParameters(block)>\
+    %<DeclarePtrToInpBuffer(block)>\
+    short *restrict o_ptr = (short*) dacBuffPtr; /* drop volatile */   
+    int_T i=0;
+    
+    %if FrameSize > 1
+    
+        #pragma UNROLL(2)
+        #pragma MUST_ITERATE(%<FrameSize>,%<FrameSize>,%<FrameSize>)
+        for (i=0; i<%<FrameSize>; i++) {
+    %endif
+    %%
+    %assign UnscaledOutputExpression  = "%<GetNextInput(block)>"
+    %%
+    %if (OverflowMode == "WRAP") || (DataTypeID == tSS_INT16)
+        %%
+        %% Build Output Expression without checking for Saturation on Overflow. 
+        %% (Note:  In the case where saturation on overflow is selected, AND an
+        %% Integer data type is selected where the data type matches the 
+        %% corresponding codec data format, saturation checking is ignored, 
+        %% because it is meaningless).
+        %%
+        %assign OutputExpression  = "%<ApplyScaling(block, "i_ptr[i]" )>"
+        %% 
+        o_ptr[i] = %<OutputExpression> & 0xFFFE;       /* AD535 codec requires LSB to be 0 for data transfer */        
+        
+    %else
+        %%
+        %% Build Output Expression
+        %%
+        %assign OutputExpression  = "%<ApplyScaling(block, "sample")>"
+        %%
+        %assign declType = LibBlockInputSignalDataTypeName(0,"")
+        %%
+        %% Saturation check - If unsigned, there is no need to check on lower limit
+        %%
+        %if isNormalized(block)
+            %<create_sat_mpyDSK(block, SaturateUpperBound, SaturateLowerBound)>\                
+            o_ptr[i] = sat_mpy(i_ptr[i], DACScaleFactor, SaturateUpperLimit, SaturateLowerLimit);
+        %else
+            %<create_sat_mpyDSKInt(block, SaturateUpperBound, SaturateLowerBound)>\         
+            o_ptr[i] = sat_mpy(i_ptr[i], SaturateUpperLimit, SaturateLowerLimit);
+        %endif
+
+    %endif %% OverflowMode
+    %%
+    %if FrameSize > 1
+        }
+    %endif %% FrameSize
+    
+    %if (LinkerCommandFile == "Full_memory_map")
+ 	    %openfile tmpBuf
+ 	    if (%<LibIsSampleHit(TID)>) { 	    
+            flush_dac_L2Cache();
+        }
+	    %closefile tmpBuf
+	    %<LibSystemOutputCustomCode(system, tmpBuf, "trailer")>     
+    %endif    
+}
+    %%
+%endfunction %% Outputs
+
+
+%% Function: AddParamsToBlock ==================================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+    %%
+    %assign numDims        = LibBlockInputSignalNumDimensions(0)
+    %assign dims           = LibBlockInputSignalDimensions(0)
+    %assign cols           = (numDims == 2) ? dims[1] : 1
+    %assign rows           = dims[0]
+    %assign FrameSize      = rows
+    %assign DacAtten       = SFcnParamSettings.DacAtten
+    %assign DataFormat     = SFcnParamSettings.DataFormat
+    %assign Scaling        = SFcnParamSettings.Scaling
+    %assign SampleRate     = SFcnParamSettings.SampleRate
+    %assign OverflowMode   = SFcnParamSettings.OverflowMode
+    %assign DataTypeID     = LibBlockInputSignalDataTypeId(0)
+    %assign inputIsInteger = IsIntegerType(DataTypeID)
+    %%
+    %assign block = block + DacAtten + DataFormat + SampleRate \
+                  + FrameSize + Scaling + OverflowMode + DataTypeID \
+                  + inputIsInteger
+    %%
+    %% Make selected parameters available globally to other functions:
+    %%   
+    %assign c6000_codec_dac_atten = DacAtten     
+    %assign ::CompiledModel = ::CompiledModel + c6000_codec_dac_atten
+    %%
+    %assign c6000_dac_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_dac_data_format
+    %%
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] c6711dsk_dac.tlc

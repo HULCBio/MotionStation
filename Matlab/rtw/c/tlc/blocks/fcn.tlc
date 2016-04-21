@@ -1,0 +1,346 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Simulink Fcn block
+
+%implements Fcn "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: FcnPrec ===========================================================
+%% Abstract:
+%%      Return the precedence of operator, x
+%%
+%function FcnPrec( x )
+
+  %switch x
+    %case "OR"
+      %return 1
+    %case "AND"
+      %return 3
+    %case "EQ"
+    %case "NEQ"
+      %return 5
+    %case "LT"
+    %case "GT"
+    %case "LEQ"
+    %case "GEQ"
+      %return 7
+    %case "+"
+    %case "-"
+      %return 10
+    %case "*"
+    %case "/"
+      %return 11
+    %default
+      %return 20
+  %endswitch
+
+%endfunction  %% FcnPrec
+
+
+
+%% Function: FcnOpMap ==========================================================
+%% Abstract:
+%%      Map an the .rtw operator to the corresponding C statement
+%%
+%function FcnOpMap( x )
+
+  %switch x
+    %case "GT"
+      %return "> "
+    %case "LT"
+      %return "< "
+    %case "EQ"
+      %return "== "
+    %case "NEQ"
+      %return "!="
+    %case "GEQ"
+      %return ">= "
+    %case "LEQ"
+      %return "<= "
+    %case "AND"
+      %return "&& "
+    %case "OR"
+      %return "|| "
+    %case "NOT"
+      %return "! "
+    %case "UNARYM"
+      %return "-"
+    %case "ATAN2"
+      %% have mdlhdr.tlc include rtlibsrc.h
+      %assign ::CompiledModel.IncludeLibsrc = 1
+      %return "rt_atan2( "
+    %case "POW"
+      %return "pow( "
+    %case "HYPOT"
+      %% have mdlhdr.tlc include rtlibsrc.h
+      %assign ::CompiledModel.IncludeLibsrc = 1
+      %return "rt_hypot( "
+    %case "REM"
+      %return "fmod( "
+    %case "SIN"
+      %return "sin( "
+    %case "COS"
+      %return "cos( "
+    %case "TAN"
+      %return "tan( "
+    %case "ASIN"
+      %return "asin( "
+    %case "ACOS"
+      %return "acos( "
+    %case "ATAN"
+      %return "atan( "
+    %case "SINH"
+      %return "sinh( "
+    %case "COSH"
+      %return "cosh( "
+    %case "TANH"
+      %return "tanh( "
+    %case "LN"
+      %return "log( "
+    %case "LOG10"
+      %return "log10( "
+    %case "SQRT"
+      %return "sqrt( "
+    %case "FLOOR"
+      %return "floor( "
+    %case "CEIL"
+      %return "ceil( "
+    %case "FABS"
+      %return "fabs( "
+    %case "SIGNUM"
+      %% have mdlhdr.tlc include rtlibsrc.h
+      %assign ::CompiledModel.IncludeLibsrc = 1
+      %return "rt_SGN( "
+    %case "EXP"
+      %return "exp( "
+    %default
+      %return x + " "
+  %endswitch
+
+%endfunction %% FcnOpMap
+
+
+%% Function: FcnAppendGenExprWithStr ===========================================
+%% Abstract:
+%%      Update the Fcn block general expression global character count
+%%      variable and add new line to cExpression if needed, then append str.
+%%
+%function FcnAppendGenExprWithStr(block, str, addNewlineIfNeeded) void
+
+  %if addNewlineIfNeeded == 0
+    %assign ::GblFcnDisableNewline = 1
+  %endif
+
+  %if ::GblFcnDisableNewline == 0 && ::GblFcnCharCount + SIZE(str,1) >= 74
+    %assign ::GblFcnCharCount = 4 %% assume indentation of four spaces
+    %assign block.cExpression = block.cExpression + "\n"
+  %endif
+
+  %assign ::GblFcnCharCount = ::GblFcnCharCount + SIZE(str,1)
+
+  %assign block.cExpression  = block.cExpression + str
+
+  %if addNewlineIfNeeded == 1
+    %assign ::GblFcnDisableNewline = 0
+  %endif
+
+%endfunction  %% FcnAppendGenExprWithStr
+
+
+
+%% Function: GenExpr ===========================================================
+%% Abstract:
+%%      Load update Block.Expr with a general fcn expression (see the
+%%      Simulink Fcn block.
+%%
+%function GenExpr( block, node, ilev ) void
+
+  %assign olev   = FcnPrec( node.Op )
+  %assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  
+  %% Add parens when needed according to C precedence rules and for
+  %%   u(1) < 2.0 && u(2) < 1.0 || u(1) > 5
+  %% where in C (but not Ada), this is valid, however most people
+  %% have trouble remembering this, so we add the parens to produce
+  %%   (u(1) < 2.0 && u(2) < 1.0) || u(1) > 5
+  
+  %assign paren  = olev < ilev || (olev == 3 && ilev == 1)
+  
+
+  %if EXISTS("node.RHS")
+    %assign ilev = FcnPrec( node.RHS.Op )
+  %else
+    %assign ilev = 0
+  %endif
+
+  %if olev && ilev == olev
+    %assign olev = olev + 1
+  %endif
+
+  %if paren
+    %<FcnAppendGenExprWithStr(block,"( ",0)>
+  %endif
+
+ %switch  node.Op
+  %case "U"
+
+    %%
+    %% Special case: If the index into U is a single parameter and we
+    %% are inlining parameters, then cast the resulting parameter to an INT
+    %% before printing it.  It makes the output look a little nicer
+    %%
+    %if node.LHS.Op == "NUM"
+      %assign sigIdx = CAST("Number",node.LHS.Value-1)
+      %assign str    = "%<LibBlockInputSignal(0, "", "", sigIdx)>" + " "
+      %<FcnAppendGenExprWithStr(block,str,1)>
+    %else
+      %%START_ASSERT
+      %<LibBlockReportError(block, "Index to u must be an integer")>
+      %%END_ASSERT
+    %endif
+    %break
+  %case "ATAN2"
+  %case "POW"
+  %case "HYPOT"
+  %case "REM"
+  %case "SIN"
+  %case "COS"
+  %case "TAN"
+  %case "ASIN"
+  %case "ACOS"
+  %case "ATAN"
+  %case "SINH"
+  %case "COSH"
+  %case "TANH"
+  %case "LN"
+  %case "LOG10"
+  %case "SQRT"
+  %case "FLOOR"
+  %case "CEIL"
+  %case "FABS"
+  %case "SIGNUM"
+  %case "EXP"
+
+    %% cExpression = cExpression + FcnOpMap(node.Op) + args + ") "
+    %if outDType  == tSS_SINGLE
+      %assign tempVar = "(real32_T)" +  FcnOpMap(node.Op)
+      %<FcnAppendGenExprWithStr(block,tempVar,1)>
+    %else
+      %% The input is double
+      %<FcnAppendGenExprWithStr(block,FcnOpMap(node.Op),1)>
+    %endif
+   
+    %if EXISTS( "node.LHS" )
+      %<GenExpr( block, node.LHS, 0 )>
+    %endif
+
+    %if EXISTS( "node.RHS" )
+      %% Know there is both a left and right-hand size
+      %<FcnAppendGenExprWithStr(block,", ",1)>
+      %<GenExpr( block, node.RHS, 0 )>
+    %endif
+
+    %<FcnAppendGenExprWithStr(block,") ",0)>
+    %break 
+  %case  "NUM"
+    %<LibCheckValue(0, node.Value)>
+    %% enclose negative numbers in quotes
+    %if node.Value < 0
+      %assign str = "(%<node.Value>) "
+    %else
+      %assign str = "%<node.Value>"
+    %endif
+    %<FcnAppendGenExprWithStr(block,str,1)>
+    %break 
+  %default
+
+    %if EXISTS( "node.RHS" )
+      %% Binary operator
+      %<GenExpr( block, node.LHS, olev )>
+      %<FcnAppendGenExprWithStr(block," ",0)>
+      %<FcnAppendGenExprWithStr(block,FcnOpMap(node.Op),1)>
+      %<GenExpr(block, node.RHS, olev)>
+    %else
+      %% Unary operator
+      %<FcnAppendGenExprWithStr(block,"( ",0)>
+      %<FcnAppendGenExprWithStr(block,FcnOpMap(node.Op),0)>
+      %<GenExpr( block, node.LHS, olev )>
+      %<FcnAppendGenExprWithStr(block,") ",0)>
+    %endif
+    %break 
+ %endswitch %% end of switch  node.Op
+
+  %if paren
+    %<FcnAppendGenExprWithStr(block,") ",0)>
+  %endif
+
+%endfunction  %% GenExpr
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y = <expression>, where expression was entered in a Fcn block.
+%%      Evaluate the fcn expression and add it to block.  Calling GenExpr will
+%%      have the side-effect of having mdlhdr.tlc include rtlibsrc.h if the
+%%      fcn block contains either the SGN or HYPOT operator
+%%
+%function Outputs(block, system) Output
+  %assign y = LibBlockOutputSignal(0,"","",0)
+  %<y> = %<BlockOutputSignal(block, system, 0, "", "", 0, "Signal")>;
+%endfunction  %% Outputs
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+
+      %assign outputIsExpr = LibBlockOutputSignalIsExpr(portIdx) ? 1 : 0
+      %openfile commentBuf
+      *   Expression: %<ParamSettings.Expr>
+      %closefile commentBuf
+      %<LibCacheBlockComment(block,commentBuf)>
+
+      %%
+      %% GblFcnCharCount is used to break the fcn block at 74 columns. Here
+      %% we assume indentation of four spaces add the space for the output
+      %% variable, then add 3 for the ' = '
+      %%
+      %assign y = LibBlockOutputSignal(0,"","",0)
+      %assign ::GblFcnCharCount = 4 + SIZE(y,1) + 3
+      %assign ::GblFcnDisableNewline = 0
+
+      %if ISFIELD(block,"cExpression")
+	%assign block.cExpression = ""
+      %else
+	%addtorecord block cExpression ""
+      %endif
+      %<GenExpr( block, FcnASTNode, 0 )>\
+      %%
+      %assign outputExprBuf = "%<block.cExpression>"
+      %return (outputIsExpr ? "(%<outputExprBuf>)"  : outputExprBuf)
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction  
+
+
+%% [EOF] fcn.tlc

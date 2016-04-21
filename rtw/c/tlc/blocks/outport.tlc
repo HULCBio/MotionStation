@@ -1,0 +1,245 @@
+%% 
+%% $Revision: 1.1.6.4 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Outport block template file
+
+%implements Outport "C"
+
+
+%% Function: FcnHasUninitializedInputSignal ====================================
+%% Abstract:
+%%   Return true if the source block has no possibility of initializing the
+%%   same signal as the outport.  Otherwise return 0.
+%%
+%function FcnHasUninitializedInputSignal(idx) void
+  %assign retArg = LibBlockSrcSignalBlock(0,idx)
+  %if TYPE(retArg) == "Vector"
+    %assign srcBlk = System[retArg[0]].Block[retArg[1]]
+    %if srcBlk.Type == "S-Function"
+      %if srcBlk.ParamSettings.Inlined == "yes"
+	%assign sfName = srcBlk.ParamSettings.FunctionName
+	%return !(GENERATE_TYPE_FUNCTION_EXISTS(srcBlk,"Start",sfName) || ...
+	  GENERATE_TYPE_FUNCTION_EXISTS(srcBlk,"InitializeConditions",sfName))
+      %else
+	%return 0
+      %endif
+    %elseif srcBlk.Type == "Opaque"
+      %assign fName = srcBlk.TLCFileName
+      %return !(GENERATE_TYPE_FUNCTION_EXISTS(srcBlk,"Start",fName) || ...
+        GENERATE_TYPE_FUNCTION_EXISTS(srcBlk,"InitializeConditions",fName))
+    %else
+      %return !(GENERATE_FUNCTION_EXISTS(srcBlk, "Start") || ...
+	GENERATE_FUNCTION_EXISTS(srcBlk, "InitializeConditions"))
+    %endif
+  %else
+    %return 1
+  %endif
+
+%endfunction
+
+
+%% Function: FcnOutportInitialize =============================================
+%% Abstract:
+%%   Set the driving block's output to the IC (unless it's source is ground).
+%%
+%function FcnOutportInitialize(block,system,virtDisableCode) Output
+  %openfile tmpBuf
+  %assign nullOutput = 1
+  %assign inputDataType = LibBlockInputSignalDataTypeId(0)
+  %assign rollVars = ["U", "P"]
+  %<SLibRollInputIsWritable(1)>
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %if LibBlockSrcSignalIsGlobalAndModifiable(0,sigIdx) && ...
+      (virtDisableCode || ...
+      SLibParamInitRequired(InitialOutput,"", lcv, sigIdx) || ...
+      !FcnHasUninitializedInputSignal(sigIdx))
+      %assign initOut = LibBlockParameter(InitialOutput, "", lcv, sigIdx)
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %% If the input signal is real, then Simulink will ensure that the
+      %% initial condition is real also.  If the signal is complex, then check
+      %% to see if the parameter is complex.  If the parameter is also
+      %% complex, then do a structure assignment.
+      %if (!LibBlockInputSignalIsComplex(0) || ...
+	LibBlockParameterIsComplex(InitialOutput))
+	%<u> = %<initOut>;
+      %else
+	%% Else (i.e. complex signal and real initial condition), split up
+	%% the assignment into two statements, assigning zero
+	%% to the imaginary part of the initial condition.
+	%assign ure = LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+	%assign uim = LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+	%assign zero = SLibGetFormattedValueFromId(inputDataType, 0)
+	%<ure> = %<initOut>;
+	%<uim> = %<zero>;
+      %endif
+      %assign nullOutput = 0
+    %endif
+  %endroll
+  %<SLibRollInputIsWritable(0)>
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf) && !nullOutput
+    /* (Virtual) %<Type> Block: %<Name> */
+    %<tmpBuf>\
+    
+  %endif
+%endfunction
+
+%% Function: VirtualInitializeConditions ======================================
+%% Abstract:
+%%   For virtual outport blocks, we need to set the initial output
+%%   on the driving block at startup if the outport's IC is not the empty
+%%   matrix (i.e., []).  This is done by writing to the "input" signal of the
+%%   virtual outport block.
+%%
+%function VirtualInitializeConditions(block, system) Output
+  %if ParamSettings.SpecifyIC == "yes"
+    %<FcnOutportInitialize(block,system,0)>\
+  %endif
+%endfunction %% end VirtualInitializeConditions
+
+
+
+%% Function: VirtualDisable ===================================================
+%% Abstract:
+%%   For virtual outport blocks within enable or enable w/trigger
+%%   subsystems, we need to reset the outport to its initial condition if
+%%   the outport was configured to reset when the subsystem is disabled.
+%%
+%function VirtualDisable(block, system) Output
+  %if ParamSettings.OutputWhenDisabled == "reset" && ...
+    ParamSettings.SpecifyIC == "yes"
+    %<FcnOutportInitialize(block,system,1)>\
+  %endif
+%endfunction %% end VirtualDisable
+
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%   Eventually this will be handled by Simulink but for now,  we eliminate
+%%   unnecessary delays in the S-Function target here.  Root outports fed by a
+%%   function-call subsystem may cause a 1 time step delay for the S-Function
+%%   target since the outport does not execute in the context of the
+%%   function-call subsystem.
+%%
+%%   NOTE: SL detects/forces function-call output/update function since output
+%%   function is too late to implement a hook when the function-call system 
+%%   inlines. This forcing is done in Simulink since SL needs to know when
+%%   f-c subsystems are forced.
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %<LibBlockSetIsExpressionCompliant(block)>
+  
+  %assign DoAllOutputsInRoot = 1
+  %assign block = block + DoAllOutputsInRoot
+  
+  %assign isRTWSFcn = (CodeFormat == "S-Function" && !Accelerator)
+  
+  %if isRTWSFcn  && system.Type == "root"
+    %assign SourceIsFunctionCall = []
+    %foreach uIdx = DataInputPort.Width
+      %assign SourceIsFunctionCall = SourceIsFunctionCall + 0
+      %assign src = LibBlockSrcSignalBlock(0, uIdx)
+      %if TYPE(src) == "Vector"
+	%assign srcSystemIdx = src[0]
+	%assign srcBlockIdx = src[1]
+	%assign srcSystem = System[srcSystemIdx]
+	%if srcSystem.Type == "function-call"
+	  %assign SourceIsFunctionCall[uIdx] = 1
+	  %assign block.DoAllOutputsInRoot = 0
+	%endif
+      %endif
+    %endforeach
+    %assign block = block + SourceIsFunctionCall
+  %endif
+  
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y[i] = U[i]
+%%
+%%   See BlockInstanceSetup function for more details on the DoAllOutputsInRoot
+%%   flag.
+%%
+%function Outputs(block, system) Output
+  %if %<SLibExternalOutputIsVirtual(block)>
+    %return
+  %endif
+  %%
+  %% Root output ports are virtual when generating model reference target
+  %assert(!IsModelReferenceTarget())
+  %%
+  %if DoAllOutputsInRoot == 0
+    
+    /* 
+    * Some or all of the root outport is executed with the
+    * driving (function-call) system to avoid possible delays.
+    */
+    %foreach uIdx = DataInputPort.Width
+      %if block.SourceIsFunctionCall[uIdx]
+	%%
+	%% cache output at bottom of function-call subsystem
+	%%
+	%assign src = LibBlockSrcSignalBlock(0, uIdx)
+	%assign srcSystem = System[src[0]]
+	%openfile tmpBuf
+	/* execute root outport %<Name> to avoid possible delay */
+	{
+	  %<tBlockIOType> *%<tBlockIO> = (%<tBlockIOType> *) ...
+            %<RTMGet("LocalBlockIO")>;
+	  
+	  %<LibBlockDstSignalLocation("outportblk", "", "", uIdx)> = \
+	  %<LibBlockInputSignal(0, "", "", uIdx)>;
+	}
+	%closefile tmpBuf
+	%<LibSystemOutputCustomCode(srcSystem, tmpBuf, "trailer")>
+	%continue
+      %endif
+      %<LibBlockDstSignalLocation("outportblk", "", "", uIdx)> = \
+      %<LibBlockInputSignal(0, "", "", uIdx)>;
+    %endforeach
+  %else
+    %%
+    %% Normal case
+    %%
+    %if !Accelerator
+      %assign rollVars = ["outportblk", "U"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockDstSignalLocation("outportblk", "", lcv, sigIdx)> ...
+	  = %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+      %endroll
+    %else
+      /* Call into Simulink for root Outports */
+      %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+    %endif
+  %endif
+  
+%endfunction
+
+%% Function: OutputsForRTWSFunction============================================
+%% Abstract:
+%%      Y[i] = U[i]
+%%      Run root outports so any ICs (from a subsystem) that are connected to 
+%%      root outports propagate to the output.  This is to ensure the IC is put
+%%      at the output of the RTW s-function, since mdlOutputs doesn't run at
+%%      time 0 if the s-function is in a disabled enable_subsystm.
+%%
+%function OutputsForRTWSFunction(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %% Only do global inputs the block since local ones cannot source to a
+  %% a subsystem.
+  %foreach sigIdx = LibBlockInputSignalWidth(0)
+    %if LibBlockSrcSignalIsGlobalAndModifiable(0, sigIdx)
+      %<LibBlockDstSignalLocation("outportblk", "", "", sigIdx)> ...
+	= %<LibBlockInputSignal(0, "", "", sigIdx)>;
+    %endif
+  %endforeach
+  
+%endfunction
+
+%% [EOF] outport.tlc

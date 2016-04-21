@@ -1,0 +1,311 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: 1D-Lookup block target file
+
+%implements Lookup "C"
+
+%% Function: BlockTypeSetup ====================================================
+%% Abstract:
+%%      Have mdlhdr.tlc include rtlibsrc.h
+%%
+%function BlockTypeSetup(block, system) void
+ %assign ::CompiledModel.IncludeLibsrc = 1
+%endfunction
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+  %if GenerateInterfaceAPI
+    %% Create a parameter group for ASAP2 data definition
+    %assign group  = SLibCreateParameterGroup(block,"Lookup1D")
+    %assign tmpVar = SLibAddMember(block,group,InputValues)
+    %assign tmpVar = SLibAddMember(block,group,OutputValues)
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y = lookup(U);
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %%
+    %% if input (and Output) are complex then two cases to handle
+    %% otherwise only one
+    %%
+    %assign casesToHandle = 1 + y0IsComplex
+    %%
+    %% Get input data type
+    %%
+    %assign u0DT  = FixPt_GetInputDataType(0)
+    %%
+    %% Get output data type
+    %%
+    %assign y0DT  = FixPt_GetOutputDataType(0)
+    %%
+    %% create header comment
+    %%
+    /* %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% comment on modes
+    %%
+     * Lookup Method: %<FixPtLookUpMethodStr>
+     *
+    %%
+    %% determine if the XData is inlined and evenly spaced
+    %%
+    %if FixPt_ParameterCouldBeInlined(InputValues, "", "", 0)
+        %assign xDataEvenSpaceInfo = FixPt_GetBreakPointInfo(InputValues.Value)
+    %else
+        %assign xDataEvenSpaceInfo = FixPt_BreakPointInfoDefault()
+    %endif
+    %%
+    %% optimize trivial interpolation case
+    %%
+    %assign lookUpMethodStr = FixPtLookUpMethodStr
+    %%
+    %if lookUpMethodStr == "Linear_Endpoint"
+        %%
+        %if !FixPt_DataTypeIsFloat(u0DT) && ISEQUAL(xDataEvenSpaceInfo.spacingValue,1)
+            %assign lookUpMethodStr = "Below"
+            %%
+             * X table is inlined, evenly space, and the spacing of the stored
+             * integers is the trivial case of plus one.  Therefore, interpolation
+             * can be replaced by a simple indexing operation.
+             *
+        %endif
+        %%
+    %endif
+    %%
+    %% add comments about fixed-point parameters
+    %%
+    %if xDataEvenSpaceInfo.evenlySpaced
+        * XData is inlined and evenly spaced, so the algorithm only needs
+        * the value of the first element, the last element, and the spacing.
+        * For efficiency, XData is excluded from the generated code.
+    %else
+     * XData parameter uses the same data type and scaling as Input0
+    %endif
+    %%
+     * YData parameter uses the same data type and scaling as Output0
+    %%
+    %% END: header comment
+    %%
+     */
+    %%
+    %% declare local variables as needed
+    %%
+    %if     lookUpMethodStr == "Linear_Endpoint"
+        %%
+      %assign searchMethod = "Below"
+      %assign iLeftLabel = ""
+            %assign iRghtLabel = ""
+      %%
+    %elseif lookUpMethodStr == "Below"
+      %%
+      %assign searchMethod = "Below"
+      %assign iLeftLabel = "iLeft"
+        %assign iRghtLabel = ""
+      %assign iToUseForOutput = iLeftLabel
+      %%
+    %elseif lookUpMethodStr == "Above"
+      %%
+        %assign searchMethod = "Above"
+        %assign iLeftLabel = ""
+      %assign iRghtLabel = "iRght"
+        %assign iToUseForOutput = iRghtLabel
+      %%
+    %elseif lookUpMethodStr == "Nearest"
+      %%
+        %assign searchMethod = "Near"
+      %assign iLeftLabel = "iLeft"
+        %assign iRghtLabel = ""
+      %assign iToUseForOutput = iLeftLabel
+      %%
+    %else
+      %openfile errTxt
+
+        The lookup method: %<lookUpMethodStr> is not supported
+        for code generation.
+
+        Block: '%<SLibBlkName(block)>'
+	
+      %closefile errTxt
+      %exit %<errTxt>
+      %%
+    %endif
+    %%
+    %if iLeftLabel != "" || iRghtLabel != ""
+      {
+    %endif
+    %%
+    %if iLeftLabel != ""
+        %%
+        unsigned int %<iLeftLabel>;
+
+    %endif
+    %%
+    %if iRghtLabel != ""
+        %%
+        unsigned int %<iRghtLabel>;
+
+    %endif
+    %%
+    %% Roll around signal width
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %%
+        %% Get input
+        %%
+        %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %%
+        %% lookup method Linear_Endpoint
+        %%
+        %if lookUpMethodStr == "Linear_Endpoint"
+            %%
+            %% Get output (if complex, get the whole structure)
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+            %%
+            %<FixPt_SearchAndInterpolate(...
+                             y0Label,y0DT,...
+                             u0Label,u0DT,...
+                             OutputValues,  y0DT,-1,...
+              InputValues,  u0DT, -1, xDataEvenSpaceInfo,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+        %% lookup method BELOW
+        %% lookup method ABOVE
+        %% lookup method NEAREST
+        %%
+        %else
+            %%
+            %% find indices
+            %%
+            %% NOTE, there is NO scalar expansion so having the search
+            %% inside the roll-loop is NOT inefficient.
+            %%
+            %<FixPt_IndexSearch(iLeftLabel,iRghtLabel,...
+                                u0Label,u0DT,...
+                                InputValues,  u0DT,...
+                                xDataEvenSpaceInfo,-1,...
+                                searchMethod)>\
+    
+            %foreach iCase = casesToHandle
+                %%
+                %if iCase == 0
+                    %%
+                    %assign riSigIdx  = tRealPart + STRING(sigIdx)
+                    %assign riParmIdx = "re0"
+                %else
+                    %assign riSigIdx  = tImagPart + STRING(sigIdx)
+                    %assign riParmIdx = "im0"
+                %endif
+                %%
+                %assign y0Label = LibBlockOutputSignal(0, "", lcv, riSigIdx)
+                %%
+                %<y0Label> = %<LibBlockParameter(OutputValues, iToUseForOutput, "", riParmIdx)>;
+                %%
+            %endforeach
+        %endif
+    %endroll
+    %%
+    %if iLeftLabel != "" || iRghtLabel != ""
+      }
+    %endif
+    %%
+  %else
+    %%
+    %% Classic (non-fixpt) lookup
+    %%
+    %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+    %assign addrInputValues = LibBlockParameterBaseAddr(InputValues)
+    %assign addrOutputValues = LibBlockParameterBaseAddr(OutputValues)
+    %assign numInputValues = SIZE(InputValues.Value, 1)
+    %%
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %%
+      %if (ParamSettings.ZeroTechnique == "AverageValue" || ...
+	ParamSettings.ZeroTechnique == "Middle_Value")
+	%%
+	%% Code to deal with zero input. The value of output
+	%% when input is zero is precalculated and saved in
+	%% s->output_at_zero
+	%%
+	if (%<u> == 0.0) {
+	%<y> = %<LibBlockParameter(OutputAtZero, "", "", 0)>;
+	} else {
+      %endif
+      %% Output the following independent of whether NormalInterp or
+      %% one of the other ZeroTechniques
+      %assign opt32 = (outputDataType == tSS_SINGLE) ? "32" : ""
+        %<y> = ...
+	  rt_Lookup%<opt32>(%<addrInputValues>, %<numInputValues>, %<u>, %<addrOutputValues>);
+      %if (ParamSettings.ZeroTechnique == "AverageValue" || ...
+	ParamSettings.ZeroTechnique == "Middle_Value")
+	}
+      %endif
+    %endroll
+  %endif
+
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %if !block.InFixptMode
+    %switch retType
+      %case "Signal"
+	%assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	%assign addrInputValues = LibBlockParameterBaseAddr(InputValues)
+	%assign addrOutputValues = LibBlockParameterBaseAddr(OutputValues)
+	%assign numInputValues = SIZE(InputValues.Value, 1)
+	%assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+	%if (ParamSettings.ZeroTechnique == "AverageValue" || ...
+	  ParamSettings.ZeroTechnique == "Middle_Value")
+	  %%START_ASSERT
+	  %assign errTxt = "Expression output is not valid."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	  %%END_ASSERT
+	%endif
+	%assign opt32 = (outputDataType == tSS_SINGLE) ? "32" : ""
+	%return ...
+	  "rt_Lookup%<opt32>(%<addrInputValues>, %<numInputValues>, %<u>, %<addrOutputValues>)"
+	%%START_ASSERT
+      %default
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+	%%END_ASSERT
+    %endswitch
+  %endif
+%endfunction  
+
+%% [EOF] look_up.tlc

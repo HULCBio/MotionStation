@@ -1,0 +1,566 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Fitting a Generalized Pareto distribution to tail data</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-17">
+      <meta name="m-file" content="gparetodemo"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Fitting a Generalized Pareto distribution to tail data</h1>
+      <introduction>
+         <p>Fitting a parametric distribution to data sometimes results in a model that agrees well with the data in high density regions,
+            but poorly in areas of low density.  For unimodal distributions, such as the normal or Student's t, these regions are known
+            as the "tails" of the distribution. One reason why a model might fit poorly in the tails is that by definition, there are
+            fewer data in the tails on which to base a choice of model, and so models are often chosen based on their ability to fit data
+            near the mode.  Another reason might be that the distribution of real data is often more complicated than the usual parametric
+            models.
+         </p>
+         <p>However, in many applications, fitting the data in the tail is the main concern.  The Generalized Pareto Distribution (GPD)
+            was developed as a distribution that can model tails of a wide variety of distributions, based on theoretical arguments. 
+            One approach to distribution fitting that involves the GPD is to use a non-parametric fit (the empirical cumulative distribution
+            function, for example) in regions where there are many observations, and to fit the GPD to the tail(s) of the data.
+         </p>
+         <p>In this example, we'll demonstrate how to fit the GPD to tail data, using functions in the Statistics Toolbox for fitting
+            custom distributions by maximum likelihood.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Simulating exceedance data</a></li>
+            <li><a href="#2">Fitting the distribution using maximum likelihood</a></li>
+            <li><a href="#6">Checking the fit visually</a></li>
+            <li><a href="#8">Computing standard errors for the parameter estimates</a></li>
+            <li><a href="#10">Checking the asymptotic normality assumption</a></li>
+            <li><a href="#12">Using a parameter transformation</a></li>
+         </ul>
+      </div>
+      <h2>Simulating exceedance data<a name="1"></a></h2>
+      <p>Real world applications for the GPD include modelling extremes of stock market returns, and modelling extreme floods.  For
+         this example, we'll use simulated data, generated from a Student's t distribution with 5 degrees of freedom.  We'll take the
+         upper 5% tail of 2000 observations from the t distribution, and then subtract off the 95% quantile.  That subtraction transforms
+         the tail data into what are known as exceedances.
+      </p><pre class="codeinput">randn(<span class="string">'state'</span>,0); rand(<span class="string">'state'</span>,0);
+x = trnd(5,2000,1);
+q = quantile(x,.95);
+y = x(x&gt;q) - q;
+n = numel(y)
+</pre><pre class="codeoutput">
+n =
+
+   100
+
+</pre><h2>Fitting the distribution using maximum likelihood<a name="2"></a></h2>
+      <p>The GPD is parameterized with a scale parameter sigma, and a shape parameter, k.  k is also known as the "tail index" parameter,
+         and determines the rate at which the distribution falls off.
+      </p>
+      <p>The GPD is defined for 0 &lt; sigma, -Inf &lt; k &lt; Inf, however, maximum likelihood estimation is problematic when k &lt; -1/2.  Fortunately,
+         those cases correspond to fitting tails from distributions like the uniform or triangular, and so will not present a problem
+         here.  To ensure that the parameter estimates remain in the appropriate region during the iterative estimation algorithm,
+         we will define lower bounds of -0.5 for k, and 0 for sigma.  Upper bounds will default to infinity.  Interval bounds such
+         as these are known as "box constraints".
+      </p><pre class="codeinput">lowerBound = [-0.5 0.0];
+</pre><p>Next, we will define a function to compute the GPD log-likelihood.  The GPD is more than a single line, so we've created the
+         function as a separate M file, <a href="matlab:edit('gpnegloglike.m')"><tt>gpnegloglike.m</tt></a>.  The function takes as inputs a vector of values of the parameters k and sigma, and a data vector, and returns the negative
+         of the log-likelihood. <tt>MLE</tt> _minimizes_ that negative log-likelihood.
+      </p><pre class="codeinput">type <span class="string">gpnegloglike.m</span>
+</pre><pre class="codeoutput">
+function nll = gpnegloglike(params, data, cens, freq)
+%GPNEGLOGLIKE Negative log-likelihood for the Generalized Pareto Distribution.
+% The input PARAMS is a vector containing the values of k and sigma at
+% which to evaluate the log-likelihood.  The input DATA contains the data
+% which we are fitting.   The inputs CENS and FREQ are not used in this
+% example.
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/03/22 23:55:06 $
+k     = params(1);   % Tail index parameter
+sigma = params(2);   % Scale parameter
+
+n = numel(data);
+
+if abs(k) &gt; eps
+    if k &gt; 0 || max(data) &lt; -sigma./k
+        % The log-likelihood is the log of the GPD probability density
+        % function.  GPDnegloglike returns the negative of that.
+        nll = n*log(sigma) + ((k+1)./k) * sum(log1p((k./sigma)*data));
+    else
+        % We need to enforce non-box constraints on the parameters:  the
+        % support of the GPD when k&lt;0 is 0 &lt; y &lt; abs(sigma/k).  Return a
+        % large value for the negative log-likelihood.
+        nll = realmax;
+    end
+else
+    % The limit of the GPD as k-&gt;0 is an exponential.  We have to handle
+    % that case explicity, otherwise the above calculation would try to
+    % compute (1/0) * log(1) == Inf*0, which results in a NaN value.
+    nll = n*log(sigma) + sum(data)./sigma;
+end
+
+</pre><p>We'll also need to provide an initial guess for the parameters. A value of k=0.3 corresponds to a tail that is roughly like
+         a Student's t distribution with a fairly low number of degrees of freedom.  The value sigma=1 is simply convenient.  These
+         values will turn out to be sufficient for this example; in more difficult problems, more sophisticated methods might be needed
+         to choose good starting points.
+      </p><pre class="codeinput">startingGuess = [0.3 1.0];
+</pre><p>Now all we have to do is call the function <tt>MLE</tt>, giving it the data, a handle to the log-likelihood function, the vector of starting values, and the lower bounds.  <tt>MLE</tt> finds parameter values that minimize the negative log-likelihood, and returns those maximum likelihood estimates as a vector.
+      </p><pre class="codeinput">paramEsts = mle(y,<span class="string">'nloglf'</span>,@gpnegloglike,<span class="string">'start'</span>,startingGuess,<span class="string">'lower'</span>,lowerBound);
+kHat      = paramEsts(1)   <span class="comment">% Tail index parameter</span>
+sigmaHat  = paramEsts(2)   <span class="comment">% Scale parameter</span>
+</pre><pre class="codeoutput">
+kHat =
+
+    0.1722
+
+
+sigmaHat =
+
+    0.7359
+
+</pre><h2>Checking the fit visually<a name="6"></a></h2>
+      <p>To visually assess how good the fit is, we'll plot a scaled histogram of the tail data, overlayed with the density function
+         of the GPD that we've estimated.  The histogram is scaled so that the bar heights times their width sum to 1.
+      </p><pre class="codeinput">bins = 0:.25:7;
+h = bar(bins,histc(y,bins)/(length(y)*.25),<span class="string">'histc'</span>);
+set(h,<span class="string">'FaceColor'</span>,[.9 .9 .9]);
+<span class="comment">% When k &lt; 0, the GPD is defined only for 0 &lt; y &lt; abs(sigma/k), so we'd</span>
+<span class="comment">% have to use min(1.1*max(y),abs(sigmaHat/kHat)) as the upper limit here if</span>
+<span class="comment">% the estimate of k were negative.</span>
+ygrid = linspace(0,1.1*max(y),100);
+fgrid = (1./sigmaHat).*(1 + ygrid.*kHat./sigmaHat).^(-(kHat+1)./kHat);
+hold <span class="string">on</span>; plot(ygrid,fgrid,<span class="string">'-'</span>); hold <span class="string">off</span>
+xlim([0,6]); xlabel(<span class="string">'Exceedance'</span>); ylabel(<span class="string">'Probability Density'</span>);
+</pre><img vspace="5" hspace="5" src="gparetodemo_01.png"> <p>We've used a fairly small bin width, so there is a good deal of noise in the histogram.  Even so, the fitted density follows
+         the shape of the data, and so the GPD model seems to be a good choice.
+      </p>
+      <p>We can also compare the empirical CDF to the fitted CDF.</p><pre class="codeinput">[F,yi] = ecdf(y);
+gpcdf = @(y,k,sigma) 1 - (1 + y.*k./sigma).^(-1/k);
+plot(yi,gpcdf(yi,kHat,sigmaHat),<span class="string">'-'</span>);
+hold <span class="string">on</span>; stairs(yi,F,<span class="string">'r'</span>); hold <span class="string">off</span>;
+legend(<span class="string">'Fitted Generalized Pareto CDF'</span>,<span class="string">'Empirical CDF'</span>,<span class="string">'location'</span>,<span class="string">'southeast'</span>);
+</pre><img vspace="5" hspace="5" src="gparetodemo_02.png"> <h2>Computing standard errors for the parameter estimates<a name="8"></a></h2>
+      <p>To quantify the precision of the estimates, we'll use standard errors computed from the asymptotic covariance matrix of the
+         maximum likelihood estimators.  The function <tt>MLECOV</tt> computes a numerical approximation to that covariance matrix.  Alternatively, we could have called <tt>MLE</tt> with two output arguments, and it would have returned confidence intervals for the parameters.
+      </p><pre class="codeinput">acov = mlecov(paramEsts, y, <span class="string">'nloglf'</span>,@gpnegloglike);
+stdErr = sqrt(diag(acov))
+</pre><pre class="codeoutput">
+stdErr =
+
+    0.1231
+    0.1160
+
+</pre><p>These standard errors indicate that the relative precision of the estimate for k is quite a bit lower that that for sigma
+         -- its standard error is on the order of the estimate itself.  Shape parameters are often difficult to estimate.  It's important
+         to keep in mind that the computations of these standard errors assumed that the GPD model is correct, and that we have enough
+         data for the asymptotic approximation to the covariance matrix to hold.
+      </p>
+      <h2>Checking the asymptotic normality assumption<a name="10"></a></h2>
+      <p>Interpretation of these standard errors usually involves assuming that, if the same fit could repeated many times on data
+         that came from the same source, the maximum likelihood estimates of the parameters would approximately follow a normal distribution.
+          For example, the confidence intervals that the function <tt>MLE</tt> computes are based on these standard errors and a normality assumption.
+      </p>
+      <p>However, that normal approximation may or may not be a good one.  To assess how good it is, we can use a bootstrap simulation.
+          We generate 1000 replicate datasets by resampling from the data, fit a GPD to each one, and save all the replicate estimates.
+          We'll use the actual parameter estimates as a starting guess, in the hope that this choice will be close to most of the bootstrap
+         replicate estimates, and will speed up convergence of the estimation algorithm.
+      </p><pre class="codeinput">replEsts = zeros(1000,2);
+<span class="keyword">for</span> repl = 1:size(replEsts,1)
+    replData = randsample(y,n,true); <span class="comment">% resample from y, with replacement</span>
+    replEsts(repl,:) = mle(replData,<span class="string">'nloglf'</span>,@gpnegloglike, <span class="keyword">...</span>
+                                    <span class="string">'start'</span>,paramEsts,<span class="string">'lower'</span>,lowerBound);
+<span class="keyword">end</span>
+</pre><p>As a rough check on the sampling distribution of the parameter estimators, we can look at histograms of the bootstrap replicates.</p><pre class="codeinput">subplot(2,1,1), hist(replEsts(:,1)); title(<span class="string">'Bootstrap distribution for k'</span>);
+subplot(2,1,2), hist(replEsts(:,2)); title(<span class="string">'Bootstrap distribution for sigma'</span>);
+</pre><img vspace="5" hspace="5" src="gparetodemo_03.png"> <h2>Using a parameter transformation<a name="12"></a></h2>
+      <p>The histogram of the replicate estimates for k appears to be only a little asymmetric, while that for the estimates of sigma
+         definitely appears skewed to the right.  A common remedy for that skewness is to estimate the parameter and its standard error
+         on the log scale, where a normal approximation is better.  A Q-Q plot is a better way to assess normality than a histogram,
+         because non-normality shows up as points that do not approximately follow a straint line.  Let's check that to see if the
+         log transform for sigma is appropriate.
+      </p><pre class="codeinput">subplot(1,2,1), qqplot(replEsts(:,1)); title(<span class="string">'Bootstrap distribution for k'</span>);
+subplot(1,2,2), qqplot(log(replEsts(:,2))); title(<span class="string">'Bootstrap distribution for log(sigma)'</span>);
+</pre><img vspace="5" hspace="5" src="gparetodemo_04.png"> <p>On the log scale, the bootstrap replicate estimates for sigma appear acceptably close to a normal distribution.  It's easy
+         to modify <tt>gpnegloglike.m</tt> to use that transformation -- only the line that reads the current value of sigma from the parameter vector need be changed.
+          This second version is in the M file <a href="matlab:edit('gpnegloglike2.m')"><tt>gpnegloglike2.m</tt></a>.
+      </p><pre class="codeinput">type <span class="string">gpnegloglike2.m</span>
+</pre><pre class="codeoutput">
+function nll = gpnegloglike2(params, data, cens, freq)
+%GPNEGLOGLIKE2 Negative log-likelihood for the GPD (log(sigma) parameterization).
+% The input PARAMS is a vector containing the values of k and log(sigma) at
+% which to evaluate the log-likelihood.  The input DATA contains the data
+% which we are fitting.   The inputs CENS and FREQ are not used in this
+% example.
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/03/22 23:55:07 $
+k     = params(1);        % Tail index parameter
+sigma = exp(params(2));   % Scale parameter - transform from log scale
+
+n = numel(data);
+
+if abs(k) &gt; eps
+    if k &gt; 0 || max(data) &lt; -sigma./k
+        % The log-likelihood is the log of the GPD probability density
+        % function.  GPDnegloglike returns the negative of that.
+        nll = n*log(sigma) + ((k+1)./k) * sum(log1p((k./sigma)*data));
+    else
+        % We need to enforce non-box constraints on the parameters:  the
+        % support of the GPD when k&lt;0 is 0 &lt; y &lt; abs(sigma/k).  Return a
+        % large value for the negative log-likelihood.
+        nll = realmax;
+    end
+else
+    % The limit of the GPD as k-&gt;0 is an exponential.  We have to handle
+    % that case explicity, otherwise the above calculation would try to
+    % compute (1/0) * log(1) == Inf*0, which results in a NaN value.
+    nll = n*log(sigma) + sum(data)./sigma;
+end
+
+</pre><p>Let's compare the results from fits using the two different parameterizations.  First, repeat the fit of the model with sigma
+         on the untransformed scale.  This time, we'll get back confidence intervals as the second output.
+      </p><pre class="codeinput">[paramEsts,paramCI] = mle(y,<span class="string">'nloglf'</span>,@gpnegloglike,<span class="string">'start'</span>,startingGuess,<span class="string">'lower'</span>,lowerBound);
+kHat = paramEsts(1)   <span class="comment">% Tail index parameter</span>
+sigmaHat = paramEsts(2)   <span class="comment">% Scale parameter</span>
+</pre><pre class="codeoutput">
+kHat =
+
+    0.1722
+
+
+sigmaHat =
+
+    0.7359
+
+</pre><pre class="codeinput">kCI  = paramCI(:,1)
+sigmaCI  = paramCI(:,2)
+</pre><pre class="codeoutput">
+kCI =
+
+   -0.0690
+    0.4135
+
+
+sigmaCI =
+
+    0.5085
+    0.9633
+
+</pre><p>Next, make the fit with sigma on the log scale.</p><pre class="codeinput">lowerBound2 = [-0.5,-Inf];
+startingGuess2 = [startingGuess(1) log(startingGuess(2))];
+[paramEsts2,paramCI2] = mle(y,<span class="string">'nloglf'</span>,@gpnegloglike2,<span class="string">'start'</span>,startingGuess2,<span class="string">'lower'</span>,lowerBound2);
+kHat2 = paramEsts2(1)        <span class="comment">% Tail index parameter</span>
+sigmaHat2 = exp(paramEsts2(2))   <span class="comment">% Scale parameter, transform from log scale</span>
+</pre><pre class="codeoutput">
+kHat2 =
+
+    0.1722
+
+
+sigmaHat2 =
+
+    0.7359
+
+</pre><pre class="codeinput">kCI2  = paramCI2(:,1)
+sigmaCI2  = exp(paramCI2(:,2))   <span class="comment">% Transform the CI as well</span>
+</pre><pre class="codeoutput">
+kCI2 =
+
+   -0.0690
+    0.4135
+
+
+sigmaCI2 =
+
+    0.5403
+    1.0023
+
+</pre><p>Notice that we've transformed both the estimate and the confidence interval for log(sigma) back to the original scale for
+         sigma.   The two sets of parameter estimates are the same, because maximum likelihood estimates are invariant with respect
+         to monotonic transformations.  The confidence intervals for sigma, however, are different, although not dramatically so. 
+         The confidence interval from the second parameterization is more tenable, because we found that the normal approximation appeared
+         to be better on the log scale.
+      </p>
+      <p class="footer">Copyright 1984-2004 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Fitting a Generalized Pareto distribution to tail data
+% Fitting a parametric distribution to data sometimes results in a model
+% that agrees well with the data in high density regions, but poorly in
+% areas of low density.  For unimodal distributions, such as the normal or
+% Student's t, these regions are known as the "tails" of the distribution.
+% One reason why a model might fit poorly in the tails is that by
+% definition, there are fewer data in the tails on which to base a choice
+% of model, and so models are often chosen based on their ability to fit
+% data near the mode.  Another reason might be that the distribution of
+% real data is often more complicated than the usual parametric models.
+%
+% However, in many applications, fitting the data in the tail is the main
+% concern.  The Generalized Pareto Distribution (GPD) was developed as a
+% distribution that can model tails of a wide variety of distributions,
+% based on theoretical arguments.  One approach to distribution fitting
+% that involves the GPD is to use a non-parametric fit (the empirical
+% cumulative distribution function, for example) in regions where there are
+% many observations, and to fit the GPD to the tail(s) of the data.
+%
+% In this example, we'll demonstrate how to fit the GPD to tail data, using
+% functions in the Statistics Toolbox for fitting custom distributions by
+% maximum likelihood.
+%
+%   Copyright 1984-2004 The MathWorks, Inc.
+%   $Revision: 1.1.4.1 $  $Date: 2004/03/22 23:55:05 $
+
+%% Simulating exceedance data
+% Real world applications for the GPD include modelling extremes of stock
+% market returns, and modelling extreme floods.  For this example, we'll
+% use simulated data, generated from a Student's t distribution with 5
+% degrees of freedom.  We'll take the upper 5% tail of 2000 observations
+% from the t distribution, and then subtract off the 95% quantile.  That
+% subtraction transforms the tail data into what are known as exceedances.
+randn('state',0); rand('state',0);
+x = trnd(5,2000,1);
+q = quantile(x,.95);
+y = x(x>q) - q;
+n = numel(y)
+
+
+%% Fitting the distribution using maximum likelihood
+% The GPD is parameterized with a scale parameter sigma, and a shape
+% parameter, k.  k is also known as the "tail index" parameter, and
+% determines the rate at which the distribution falls off.
+%
+% The GPD is defined for 0 < sigma, -Inf < k < Inf, however, maximum
+% likelihood estimation is problematic when k < -1/2.  Fortunately, those
+% cases correspond to fitting tails from distributions like the uniform or
+% triangular, and so will not present a problem here.  To ensure that the
+% parameter estimates remain in the appropriate region during the
+% iterative estimation algorithm, we will define lower bounds of -0.5 for k,
+% and 0 for sigma.  Upper bounds will default to infinity.  Interval bounds
+% such as these are known as "box constraints".
+lowerBound = [-0.5 0.0];
+
+%%
+% Next, we will define a function to compute the GPD log-likelihood.  The
+% GPD is more than a single line, so we've created the function as a
+% separate M file, <matlab:edit('gpnegloglike.m') |gpnegloglike.m|>.  The
+% function takes as inputs a vector of values of the parameters k and
+% sigma, and a data vector, and returns the negative of the log-likelihood.
+% |MLE| _minimizes_ that negative log-likelihood.
+type gpnegloglike.m
+
+%%
+% We'll also need to provide an initial guess for the parameters. A value
+% of k=0.3 corresponds to a tail that is roughly like a Student's t
+% distribution with a fairly low number of degrees of freedom.  The value
+% sigma=1 is simply convenient.  These values will turn out to be
+% sufficient for this example; in more difficult problems, more
+% sophisticated methods might be needed to choose good starting points.
+startingGuess = [0.3 1.0];
+
+%%
+% Now all we have to do is call the function |MLE|, giving it the data, a
+% handle to the log-likelihood function, the vector of starting values, and
+% the lower bounds.  |MLE| finds parameter values that minimize the negative
+% log-likelihood, and returns those maximum likelihood estimates as a vector.
+paramEsts = mle(y,'nloglf',@gpnegloglike,'start',startingGuess,'lower',lowerBound);
+kHat      = paramEsts(1)   % Tail index parameter
+sigmaHat  = paramEsts(2)   % Scale parameter
+
+
+%% Checking the fit visually
+% To visually assess how good the fit is, we'll plot a scaled histogram of
+% the tail data, overlayed with the density function of the GPD that we've
+% estimated.  The histogram is scaled so that the bar heights times their
+% width sum to 1.
+bins = 0:.25:7;
+h = bar(bins,histc(y,bins)/(length(y)*.25),'histc');
+set(h,'FaceColor',[.9 .9 .9]);
+% When k < 0, the GPD is defined only for 0 < y < abs(sigma/k), so we'd
+% have to use min(1.1*max(y),abs(sigmaHat/kHat)) as the upper limit here if
+% the estimate of k were negative.
+ygrid = linspace(0,1.1*max(y),100);
+fgrid = (1./sigmaHat).*(1 + ygrid.*kHat./sigmaHat).^(-(kHat+1)./kHat);
+hold on; plot(ygrid,fgrid,'-'); hold off
+xlim([0,6]); xlabel('Exceedance'); ylabel('Probability Density');
+
+%%
+% We've used a fairly small bin width, so there is a good deal of noise in
+% the histogram.  Even so, the fitted density follows the shape of the
+% data, and so the GPD model seems to be a good choice.
+%
+% We can also compare the empirical CDF to the fitted CDF.
+[F,yi] = ecdf(y);
+gpcdf = @(y,k,sigma) 1 - (1 + y.*k./sigma).^(-1/k);
+plot(yi,gpcdf(yi,kHat,sigmaHat),'-');
+hold on; stairs(yi,F,'r'); hold off;
+legend('Fitted Generalized Pareto CDF','Empirical CDF','location','southeast');
+
+
+%% Computing standard errors for the parameter estimates
+% To quantify the precision of the estimates, we'll use standard errors
+% computed from the asymptotic covariance matrix of the maximum likelihood
+% estimators.  The function |MLECOV| computes a numerical approximation to
+% that covariance matrix.  Alternatively, we could have called |MLE| with two
+% output arguments, and it would have returned confidence intervals for the
+% parameters.
+acov = mlecov(paramEsts, y, 'nloglf',@gpnegloglike);
+stdErr = sqrt(diag(acov))
+
+%%
+% These standard errors indicate that the relative precision of the
+% estimate for k is quite a bit lower that that for sigma REPLACE_WITH_DASH_DASH its standard
+% error is on the order of the estimate itself.  Shape parameters are often
+% difficult to estimate.  It's important to keep in mind that the
+% computations of these standard errors assumed that the GPD model is
+% correct, and that we have enough data for the asymptotic approximation to
+% the covariance matrix to hold.
+
+
+%% Checking the asymptotic normality assumption
+% Interpretation of these standard errors usually involves assuming that,
+% if the same fit could repeated many times on data that came from the same
+% source, the maximum likelihood estimates of the parameters would
+% approximately follow a normal distribution.  For example, the confidence
+% intervals that the function |MLE| computes are based on these standard
+% errors and a normality assumption.
+%
+% However, that normal approximation may or may not be a good one.  To
+% assess how good it is, we can use a bootstrap simulation.  We generate
+% 1000 replicate datasets by resampling from the data, fit a GPD to each
+% one, and save all the replicate estimates.  We'll use the actual
+% parameter estimates as a starting guess, in the hope that this choice
+% will be close to most of the bootstrap replicate estimates, and will
+% speed up convergence of the estimation algorithm.
+replEsts = zeros(1000,2);
+for repl = 1:size(replEsts,1)
+    replData = randsample(y,n,true); % resample from y, with replacement
+    replEsts(repl,:) = mle(replData,'nloglf',@gpnegloglike, ...
+                                    'start',paramEsts,'lower',lowerBound);
+end
+
+%%
+% As a rough check on the sampling distribution of the parameter
+% estimators, we can look at histograms of the bootstrap replicates.
+subplot(2,1,1), hist(replEsts(:,1)); title('Bootstrap distribution for k');
+subplot(2,1,2), hist(replEsts(:,2)); title('Bootstrap distribution for sigma');
+
+
+%% Using a parameter transformation
+% The histogram of the replicate estimates for k appears to be only a
+% little asymmetric, while that for the estimates of sigma definitely
+% appears skewed to the right.  A common remedy for that skewness is to
+% estimate the parameter and its standard error on the log scale, where a
+% normal approximation is better.  A Q-Q plot is a better way to assess
+% normality than a histogram, because non-normality shows up as points that
+% do not approximately follow a straint line.  Let's check that to see if
+% the log transform for sigma is appropriate.
+subplot(1,2,1), qqplot(replEsts(:,1)); title('Bootstrap distribution for k');
+subplot(1,2,2), qqplot(log(replEsts(:,2))); title('Bootstrap distribution for log(sigma)');
+
+%%
+% On the log scale, the bootstrap replicate estimates for sigma appear
+% acceptably close to a normal distribution.  It's easy to modify
+% |gpnegloglike.m| to use that transformation REPLACE_WITH_DASH_DASH only the line that reads the
+% current value of sigma from the parameter vector need be changed.  This
+% second version is in the M file <matlab:edit('gpnegloglike2.m')
+% |gpnegloglike2.m|>.
+type gpnegloglike2.m
+
+%%
+% Let's compare the results from fits using the two different
+% parameterizations.  First, repeat the fit of the model with sigma on the
+% untransformed scale.  This time, we'll get back confidence intervals
+% as the second output.
+[paramEsts,paramCI] = mle(y,'nloglf',@gpnegloglike,'start',startingGuess,'lower',lowerBound);
+kHat = paramEsts(1)   % Tail index parameter
+sigmaHat = paramEsts(2)   % Scale parameter
+%%
+kCI  = paramCI(:,1)
+sigmaCI  = paramCI(:,2)
+
+%%
+% Next, make the fit with sigma on the log scale.
+lowerBound2 = [-0.5,-Inf];
+startingGuess2 = [startingGuess(1) log(startingGuess(2))];
+[paramEsts2,paramCI2] = mle(y,'nloglf',@gpnegloglike2,'start',startingGuess2,'lower',lowerBound2);
+kHat2 = paramEsts2(1)        % Tail index parameter
+sigmaHat2 = exp(paramEsts2(2))   % Scale parameter, transform from log scale
+%%
+kCI2  = paramCI2(:,1)
+sigmaCI2  = exp(paramCI2(:,2))   % Transform the CI as well
+
+%%
+% Notice that we've transformed both the estimate and the confidence
+% interval for log(sigma) back to the original scale for sigma.   The two
+% sets of parameter estimates are the same, because maximum likelihood
+% estimates are invariant with respect to monotonic transformations.  The
+% confidence intervals for sigma, however, are different, although not
+% dramatically so.  The confidence interval from the second
+% parameterization is more tenable, because we found that the normal
+% approximation appeared to be better on the log scale.
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

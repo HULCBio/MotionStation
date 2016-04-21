@@ -1,0 +1,591 @@
+%% $RCSfile: asap2lib.tlc,v $
+%% $Revision: 1.19.4.4 $ 
+%% $Date: 2004/04/14 23:47:37 $
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Library of functions for generating ASAP2 data definition file.
+%%
+%selectfile NULL_FILE
+
+
+%% Function: SLibASAP2WriteDynamicContents =====================================
+%% Abstract:
+%%      Main function for output of model-dependent portion of ASAP2 file.
+%%      Sections:
+%%      - RECORD_LAYOUTS
+%%      - CHARACTERISTICS (Loop through ParameterGroups & ModelParameters)
+%%      - MEASUREMENTS    (Loop through ExternalInputs & BlockOutputs)
+%%      - COMPU_METHODS
+%%
+%function SLibASAP2WriteDynamicContents() Output
+%with CompiledModel
+  %<FcnOutputRecordLayouts()> \
+  %if InvariantConstants == "yes"
+    %<FcnLoopThruParamGroups()> \
+    %<FcnLoopThruModelParameters()> \
+  %else
+    %assign warnTxt="Inline Parameters must be ON to output CHARACTERISTICS"
+    %<LibReportWarning(warnTxt)>\
+   /* WARNING: %<warnTxt>  */
+  %endif
+  %<FcnLoopThruExternalInputs()> \
+  %<FcnLoopThruBlockOutputs()> \
+  %<FcnOutputCompuMethods()> \
+%endwith
+%endfunction
+
+
+%% Function: FcnOutputRecordLayouts ============================================
+%% Abstract:
+%%      Outputs record layouts for all registered "Templates"
+%%      Templates are registered by users using LibASAP2RegisterTemplate()
+%%
+%%      Expects user-defined function with name:
+%%        "ASAP2UserFcnWriteRecordLayout_%<Template.Name>"
+%%
+%function FcnOutputRecordLayouts() Output
+  %with CompiledModel.Templates
+    %foreach idx = NumTemplates
+      %assign tmpVar = ASAP2UserFcnWriteRecordLayout_%<Template[idx].Name>()
+    %endforeach
+  %endwith
+%endfunction
+
+
+%% Function: FcnLoopThruParamGroups ============================================
+%% Abstract:
+%%      Outputs CHARACTERISTICS for blocks with ParameterGroups defined
+%%      Loops through Systems->Blocks->ParameterGroups
+%%
+%%      Expects user-defined function:
+%%        "ASAP2UserFcnWriteCharacteristic_%<ParameterGroup.Name>(paramGroup)"
+%%
+%function FcnLoopThruParamGroups() Output
+%with CompiledModel
+  %foreach systemIdx = NumSystems
+    %with System[systemIdx]
+      %foreach blockIdx = NumBlocks
+        %assign thisBlock = Block[blockIdx]
+        %with thisBlock
+          %if NumParameterGroups != 0
+            %foreach paramGroupIdx = NumParameterGroups
+              %assign paramGroup = ParameterGroup[paramGroupIdx]
+              %% Check validity of all members of paramGroup before calling UserFcn
+              %if %<FcnCheckValidityOfParamGroup(paramGroup, paramGroup.Name)>
+                %assign tmpVar = ASAP2UserFcnWriteCharacteristic_%<paramGroup.Name>(paramGroup)
+              %endif
+            %endforeach
+          %endif
+        %endwith
+      %endforeach
+    %endwith
+  %endforeach
+%endwith
+%endfunction
+
+
+%% Function: FcnLoopThruModelParameters ========================================
+%% Abstract:
+%%      Outputs CHARACTERISTICS for ModelParameters
+%%      Loops through ModelParameters->Instances
+%%      Excludes ModelParameters which are part of ParameterGroups
+%%
+%%      Assumes existence of function:
+%%        "ASAP2UserFcnWriteCharacteristic_Scalar(record)"
+%%
+%function FcnLoopThruModelParameters() Output
+%with CompiledModel.GlobalMemoryMap.ModelParameters
+  %foreach modelParamIdx = NumModelParameters
+    %with ModelParameter[modelParamIdx]
+      %if NumInstances > 1
+        %assign paramName = Name
+        %assign warnTxt="%<paramName> is defined in both Simulink & Stateflow."
+        %<LibReportWarning(warnTxt)>\
+        /*  WARNING: %<warnTxt> */
+      %endif
+      %foreach instanceIdx = NumInstances
+        %assign record = Instance[instanceIdx]
+        %% Check validity of record before calling UserFcn
+        %assign data   = FcnGetGlobalMemoryMapData(record)
+	%if ((TYPE(data) == "Scope") && (data.HasObject) && ...
+	     (!EXISTS("data.UsedInParameterGroup")))
+	  %<ASAP2UserFcnWriteCharacteristic_Scalar(record)>
+	%endif
+      %endforeach
+    %endwith
+  %endforeach
+%endwith
+%endfunction
+
+
+%% Function: FcnLoopThruExternalInputs =========================================
+%% Abstract:
+%%      Outputs MEASUREMENTS for ExternalInputs
+%%
+%%      Assumes existence of function:
+%%        "ASAP2UserFcnWriteMeasurement(record)"
+%%
+%function FcnLoopThruExternalInputs() Output
+%with CompiledModel.ExternalInputs
+  %foreach idx = NumExternalInputs
+    %assign record = ExternalInput[idx]
+    %% Check validity of record before calling UserFcn
+    %assign data   = FcnGetGlobalMemoryMapData(record)
+    %if ((TYPE(data) == "Scope") && (data.HasObject))
+      %<ASAP2UserFcnWriteMeasurement(record)>
+    %endif
+  %endforeach
+%endwith
+%endfunction
+
+
+%% Function: FcnLoopThruBlockOutputs ===========================================
+%% Abstract:
+%%      Outputs MEASUREMENTS for BlockOutputs
+%%
+%%      Assumes existence of function:
+%%        "ASAP2UserFcnWriteMeasurement(record)"
+%%
+%function FcnLoopThruBlockOutputs() Output
+%with CompiledModel.BlockOutputs
+  %foreach idx = NumGlobalBlockOutputs
+    %assign record = GlobalBlockOutput[idx]
+    %% Check validity of record before calling UserFcn
+    %assign data   = FcnGetGlobalMemoryMapData(record)
+    %if ((TYPE(data) == "Scope") && (data.HasObject))
+      %<ASAP2UserFcnWriteMeasurement(record)>
+    %endif
+  %endforeach
+  %foreach idx = NumExternalBlockOutputs
+    %assign record = ExternalBlockOutput[idx]
+    %% Check validity of record before calling UserFcn
+    %assign data   = FcnGetGlobalMemoryMapData(record)
+    %if ((TYPE(data) == "Scope") && (data.HasObject))
+      %<ASAP2UserFcnWriteMeasurement(record)>
+    %endif
+  %endforeach
+  %foreach idx = NumConstBlockOutputs
+    %assign record = ConstBlockOutput[idx]
+    %% Check validity of record before calling UserFcn
+    %assign data   = FcnGetGlobalMemoryMapData(record)
+    %if ((TYPE(data) == "Scope") && (data.HasObject))
+      %<ASAP2UserFcnWriteMeasurement(record)>
+    %endif
+  %endforeach
+%endwith
+%endfunction
+
+
+%% Function: FcnOutputCompuMethods =============================================
+%% Abstract:
+%%      Outputs COMPU_METHODS based on cache generated from 
+%%      CHARACTERISTICS and MEASUREMENTS produced from parameters & signals
+%%      CompuMethods are registered by LibASAP2GetCompuMethod(record)
+%%
+%%      Assumes existence of function:
+%%        "ASAP2UserFcnWriteCompuMethods(idx)"
+%%
+%function FcnOutputCompuMethods() Output
+%with CompiledModel.CompuMethods
+  %foreach idx = NumCompuMethods
+    %<ASAP2UserFcnWriteCompuMethods(idx)>
+  %endforeach
+%endwith
+%endfunction
+
+
+%% Function: FcnCheckValidityOfParamGroup ======================================
+%% Abstract:
+%%      Checks that all members of paramGroup refer to valid data records
+%%      - all members must contain reference to data record in GlobalMemoryMap
+%%        - data record must have Object
+%%        - data record must not be used in any other ParameterGroup
+%%      - if member contains submembers, these must be valid too.
+%%      Add "UsedInParameterGroup" to data record for valid data records
+%%
+%function FcnCheckValidityOfParamGroup(paramGroup, parentRefString)
+  %assign returnValue = 1
+  %with paramGroup
+    %foreach idx = NumMembers
+      %assign thisMember = Member[idx]
+      %assign refString  = parentRefString + ".Member[%<idx>]"
+      %assign data = FcnGetGlobalMemoryMapData(thisMember.Reference)
+      %if ((TYPE(data) == "Scope") && (data.HasObject))
+        %if EXISTS("data.UsedInParameterGroup")
+          %if (data.UsedInParameterGroup != refString)
+            %assign errTxt = "Conflicting ParameterGroup references to " ...
+                             "%<data.Name>.\nIt is used in both " ...
+                             "%<data.UsedInParameterGroup> and %<refString>."
+            %<LibReportError(errTxt)>
+          %endif
+        %else
+          %<LibAddIdentifier(data, "UsedInParameterGroup", refString)>
+        %endif
+        %if !(%<FcnCheckValidityOfParamGroup(thisMember, refString)>)
+          %assign returnValue = 0
+        %endif
+      %else
+        %assign returnValue = 0
+      %endif
+    %endforeach
+    %return returnValue
+  %endwith
+%endfunction
+
+
+%% Function: FcnGetObjectProperties ============================================
+%% Abstract:
+%%      Returns pointer to ObjectProperties record referred to by record
+%%      (record = Record containing MemoryMapIdx)
+%%
+%function FcnGetObjectProperties(record)
+  %assign data = FcnGetGlobalMemoryMapData(record)
+  %assert ((TYPE(data)=="Scope") && (data.HasObject))
+  %return data.Object.ObjectProperties
+%endfunction
+
+
+%% Function: LibASAP2RegisterTemplate ==========================================
+%% Abstract:
+%%      Registers user-defined template (related to parameter groups)
+%%
+%%      Expects user-defined functions:
+%%        "ASAP2UserFcnWriteRecordLayout_%<Template.Name>"
+%%        "ASAP2UserFcnWriteCharacteristic_%<Template.Name>"
+%%
+%function LibASAP2RegisterTemplate(templateName) void
+  %assign tmpVar = Template { Name templateName }
+  %assign templates = CompiledModel.Templates
+  %assign templates = templates + Template
+  %assign templates.NumTemplates = templates.NumTemplates + 1
+%endfunction
+
+
+%% Function: ASAP2_WarnForObsoleteProperties
+%% Abstract:
+%%   Produce a one-time warning to inform users that the old _ASAP2 properties
+%%   are now obsolete and have been replaced by built-in properties.
+%function ASAP2_WarnForObsoleteProperties(record) void
+  %assign data = FcnGetGlobalMemoryMapData(record)
+  %assert ((TYPE(data)=="Scope") && (data.HasObject))
+  %assign packageName = data.Object.Package
+  %assign className   = data.Object.Class
+  %assign warningID   = "::AlreadyWarnedForObsoletePropertiesIn%<package>_%<class>"
+  %if (!EXISTS(%<warningID>))
+    %assign %<warningID> = 1
+    %assign warnTxt = ...
+      "\n" + ...
+      "This class '%<package>.%<class>' contains ASAP2-related properties\n" + ...
+      "that have been obsoleted and replaced by properties in the built-in\n" + ...
+      "Simulink data object classes, as follows:\n" + ...
+      "\n" + ...
+      "  LongID_ASAP2      --> Description\n" + ...
+      "  PhysicalMin_ASAP2 --> Min\n" + ...
+      "  PhysicalMax_ASAP2 --> Max\n" + ...
+      "  Units_ASAP2       --> DocUnits\n" + ...
+      "\n" + ...
+      "Support for the obsoleted properties may be removed in future releases\n" + ...
+      "so please remove these properties from your data object classes and\n" + ...
+      "update your M/TLC code to use the built-in properties.\n"
+  %endif
+%endfunction
+
+
+%% Function: LibASAP2GetSymbol =================================================
+%% Abstract:
+%%      Returns the data symbol (variable name) for specified record.
+%%
+%function LibASAP2GetSymbol(record) void
+  %assign data = FcnGetGlobalMemoryMapData(record)
+  %return data.Name
+%endfunction
+
+
+%% Function: LibASAP2GetLongID =================================================
+%% Abstract:
+%%      Returns the Long Identifier (description) for specified record.
+%%
+%function LibASAP2GetLongID(record) void
+  %assign objectProperties = FcnGetObjectProperties(record)
+  %if (EXISTS("objectProperties.LongID_ASAP2"))
+    %<ASAP2_WarnForObsoleteProperties(record)>
+    %return objectProperties.LongID_ASAP2
+  %else
+    %return objectProperties.Description
+  %endif
+%endfunction
+
+
+%% Function: LibASAP2GetAddress ================================================
+%% Abstract:
+%%      Returns the Memory Address (if defined) for specified record.
+%%
+%function LibASAP2GetAddress(record) void
+  %assign objectProperties = FcnGetObjectProperties(record)
+  %with objectProperties
+    %if ((EXISTS("objectProperties.MemoryAddress_ASAP2")) && ...
+         (SIZE(MemoryAddress_ASAP2, 1) != 0))
+      %return MemoryAddress_ASAP2
+    %else
+      %return "@MemoryAddress@%<LibASAP2GetSymbol(record)>@"
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethod ============================================
+%% Abstract:
+%%      Returns the CompuMethod for specified record.
+%%      - Compiles CompuMethod information
+%%      - If identical CompuMethod exists - use it
+%%      - Otherwise, register a new CompuMethod
+%%
+%function LibASAP2GetCompuMethod(record) void
+  %assign CM_ConvType = "RAT_FUNC"
+  %assign CM_Format   = ASAP2NumberFormat
+  %assign NoFormat    = "%<CM_Format>"
+  %assign data = FcnGetGlobalMemoryMapData(record)
+  %with data
+    %if (EXISTS("objectProperties.Units_ASAP2"))
+      %<ASAP2_WarnForObsoleteProperties(record)>
+      %assign CM_Units = Object.ObjectProperties.Units_ASAP2
+    %else
+      %assign CM_Units = Object.ObjectProperties.DocUnits
+    %endif
+    %if IsFixedPoint
+      %with FixedPointInfo
+        %assign fixExp    = FixedExp
+        %assign fracSlope = CAST("Real",FracSlope)
+        %assign bias      = CAST("Real",Bias)
+      %endwith
+      
+      %% Summary of conversion:
+      %% ======================
+      %%     c1(V^2)+c2(V)+c3   (V-bias)
+      %% Q = ---------------- = --------
+      %%     c4(V^2)+c5(V)+c6    slope
+      %%
+      %% where: slope = fracSlope*(2^fixExp)
+      
+      %% Calculate slope:
+      %if fixExp > 0
+        %assign slope = fracSlope*(1 << (fixExp))
+      %else
+        %assign slope = fracSlope/(1 << (-fixExp))
+      %endif\
+
+      %% Derive coefficients:
+      %if bias == 0.0
+        %assign c3 = 0
+        %assign CM_LongId = "Q = V"
+      %else
+        %assign c3 = -bias
+        %if bias > 0.0
+          %assign CM_LongId = FEVAL("sprintf", "Q = (V-%<NoFormat>)", bias)
+        %else
+          %assign CM_LongId = FEVAL("sprintf", "Q = (V+%<NoFormat>)", -bias)
+        %endif
+      %endif\
+        
+      %if slope < 1
+        %% coeffs = [0 1/slope (-bias)/slope 0 0 1]
+        %assign c2 = 1/slope
+        %assign c3 = c3/slope
+        %assign c6 = 1
+        %assign CM_LongId = FEVAL("sprintf", "%<CM_LongId>*%<NoFormat>", 1/slope)
+      %else
+        %% coeffs = [0 1 (-bias) 0 0 slope]
+        %assign c2 = 1
+        %assign c6 = slope
+        %assign CM_LongId = FEVAL("sprintf", "%<CM_LongId>/%<NoFormat>", slope)
+      %endif
+      %assign CM_Coeffs = FEVAL("sprintf", "0 %<NoFormat> %<NoFormat> 0 0 %<NoFormat>", c2, c3, c6)
+    %else
+      %assign CM_LongId = "Q = V"
+      %assign CM_Coeffs = "0 1 0 0 0 1"
+    %endif
+  %endwith
+    
+  %% Add this CompuMethod if not already included.
+  %with CompiledModel.CompuMethods
+    %assign numCompuMethods = NumCompuMethods
+    %foreach compuMethodIdx = numCompuMethods
+      %assign compuMethod = CompuMethod[compuMethodIdx]
+      %if (CM_LongId  ==compuMethod.LongId) && \
+          (CM_ConvType==compuMethod.ConvType) &&  \
+          (CM_Format  ==compuMethod.Format) &&  \
+          (CM_Units   ==compuMethod.Units) &&  \
+          (CM_Coeffs  ==compuMethod.Coeffs)
+        %return compuMethod.Name
+      %endif
+    %endforeach
+    
+    %% Add CompuMethod to CompiledModel (could not be found above)
+    %assign CM_Name = "COMPU_METHOD_%<numCompuMethods+1>"
+    %assign tmpVar = CompuMethod\
+    {\
+      Name     CM_Name;\
+      LongId   CM_LongId;\
+      ConvType CM_ConvType;\
+      Format   CM_Format;\
+      Units    CM_Units;\
+      Coeffs   CM_Coeffs\
+    }
+    %assign compuMethods = CompiledModel.CompuMethods
+    %assign compuMethods = compuMethods + CompuMethod
+    %assign compuMethods.NumCompuMethods = numCompuMethods + 1
+    %return CM_Name
+  %endwith
+%endfunction
+
+
+%% Function: LibASAP2GetPhysicalMin ============================================
+%% Abstract:
+%%      Returns the Physical Minimum for specified record.
+%%
+%function LibASAP2GetPhysicalMin(record) void
+  %assign objectProperties = FcnGetObjectProperties(record)
+  %if (EXISTS("objectProperties.PhysicalMin_ASAP2"))
+    %<ASAP2_WarnForObsoleteProperties(record)>
+    %if (SIZE(PhysicalMin_ASAP2, 1) != 0)
+      %return PhysicalMin_ASAP2
+    %else
+      %return ""
+    %endif
+  %else    
+    %return objectProperties.Min
+  %endif
+%endfunction
+
+
+%% Function: LibASAP2GetPhysicalMax ============================================
+%% Abstract:
+%%      Returns the Physical Maximum for specified record.
+%%
+%function LibASAP2GetPhysicalMax(record) void
+  %assign objectProperties = FcnGetObjectProperties(record)
+  %if (EXISTS("objectProperties.PhysicalMax_ASAP2"))
+    %<ASAP2_WarnForObsoleteProperties(record)>
+    %if (SIZE(PhysicalMax_ASAP2, 1) != 0)
+      %return PhysicalMax_ASAP2
+    %else
+      %return ""
+    %endif
+  %else    
+    %return objectProperties.Max
+  %endif
+%endfunction
+
+%% Function: LibASAP2GetNumAxisPts =================================================
+%% Abstract:
+%%      Returns the Number of Axis Points for specified record.
+%%
+%function LibASAP2GetNumAxisPts(record) void
+  %assign objectProperties = FcnGetObjectProperties(record)
+  %return SIZE(objectProperties.Value, 1)
+%endfunction
+
+%% Function: LibASAP2GetDataTypeId =============================================
+%% Abstract:
+%%      Returns DataTypeIdx for record
+%%
+%function LibASAP2GetDataTypeId(record) void
+   %assign foundCustom = 0
+   %if EXISTS(record.StorageClass)
+      %if record.StorageClass == "Custom"
+         %% found a custom storage class
+         %assign foundCustom = 1
+         %assign data = FcnGetGlobalMemoryMapData(record)
+         %assign dtId = SLibGetRecordDataTypeId(data)
+      %endif
+   %endif
+
+   %if foundCustom == 0
+      %assign section = FcnGetGlobalMemoryMapSection(record)
+      %if TYPE(section) == "Scope"
+         %assign dtId = SLibGetRecordDataTypeId(section)
+      %else
+         %assign data = FcnGetGlobalMemoryMapData(record)
+         %assign dtId = SLibGetRecordDataTypeId(data)
+      %endif
+   %endif
+
+  %assign aliasDtId = LibGetDataTypeStorageIdFromId(dtId)
+  %if aliasDtId == tSS_INVALID_DATA_TYPE_ID
+    %return dtId
+  %else
+    %return aliasDtId
+  %endif
+%endfunction
+  
+
+%% Function: LibASAP2GetCompuMethodName ========================================
+%% Abstract:
+%%      Returns the CompuMethod Name referenced by the index
+%%
+%function LibASAP2GetCompuMethodName(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].Name
+%endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethodLongID ======================================
+%% Abstract:
+%%      Returns the CompuMethod LongID referenced by the index
+%%
+%function LibASAP2GetCompuMethodLongID(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].LongId
+%endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethodConvType ====================================
+%% Abstract:
+%%      Returns the CompuMethod ConversionType referenced by the index
+%%
+%function LibASAP2GetCompuMethodConvType(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].ConvType
+%endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethodFormat ======================================
+%% Abstract:
+%%      Returns the CompuMethod Format referenced by the index
+%%
+%function LibASAP2GetCompuMethodFormat(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].Format
+%endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethodUnits =======================================
+%% Abstract:
+%%      Returns the CompuMethod Units referenced by the index
+%%
+%function LibASAP2GetCompuMethodUnits(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].Units
+%endwith
+%endfunction
+
+
+%% Function: LibASAP2GetCompuMethodCoeffs ======================================
+%% Abstract:
+%%      Returns the CompuMethod Coefficients referenced by the index
+%%
+%function LibASAP2GetCompuMethodCoeffs(idx)
+%with CompiledModel.CompuMethods
+  %return CompuMethod[idx].Coeffs
+%endwith
+%endfunction
+
+%% [EOF] asap2lib.tlc
+
+
+

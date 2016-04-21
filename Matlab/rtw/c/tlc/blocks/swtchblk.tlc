@@ -1,0 +1,649 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: Switch block target file that takes into account boolean
+%% control port signals as well as data type of propagated signals.
+
+%implements Switch "C"
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode   
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%    
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+    %<LibBlockInputSignalAllowScalarExpandedExpr(block,1)>
+  %endif
+%endfunction
+
+%% Function: FixptOutputs =====================================================
+%% Abstract:
+%function FixptOutputs(block, system) void
+  %%
+  %% Get input and output data types
+  %%
+  %assign u0DT  = FixPt_GetInputDataType(0)
+  %%
+  %assign u1DT  = FixPt_GetInputDataType(1)
+  %%
+  %assign u2DT  = FixPt_GetInputDataType(2)
+  %%
+  %assign y0DT  = FixPt_GetOutputDataType(0)
+  %%
+  %if relopStr == ">"
+    %%
+    %assign reverseRelopStr = "<="
+    %%
+  %elseif relopStr == ">="
+    %%
+    %assign reverseRelopStr = "<"
+  %endif
+  %%
+  %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+  %%
+  %% create header comment
+  %%
+  %openfile commentBuffer
+  * %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+  %%
+  %% add general comments
+  %%
+  %<FixPt_GeneralComments()>\
+  *
+  %%
+  %if alwaysTop
+    %if needIfCode
+      * This switch is not active, the output is always equal to the
+      * first input, so no code to check the criteria is required.
+      *
+    %else
+      * This switch is not active, the output is always equal to the
+      * first input.  Furthermore, the first input and the output
+      * share the same buffer so the block requires no code whatsoever.
+      *
+    %endif
+    %%
+  %elseif alwaysBottom
+    %if needElseCode
+      * This switch is not active, the output is always equal to the
+      * third input, so no code to check the criteria is required.
+      *
+    %else
+      * This switch is not active, the output is always equal to the
+      * third input.  Furthermore, the third input and the output
+      * share the same buffer so the block requires no code whatsoever.
+      *
+    %endif
+    %%
+  %else
+    %if !needIfCode
+      * The first input and the output share the same buffer so no code is
+      * needed to pass the first input.
+      *
+    %elseif !needElseCode
+      * The third input and the output share the same buffer so no code is
+      * needed to pass the first input.
+      *
+    %endif
+    %if relopStr != "~=0"
+      %if needRelop
+	* Threshold parameter uses the same data type and scaling as Input1
+	*
+      %else
+	* The threshold test 
+	*   if ( Input1 %<relopStr> Threshold ), was 
+	* equivalent
+	*   if ( Input1 )
+	* so the later was used, and the Threshold parameter was discarded.
+	*
+      %endif
+    %endif
+  %endif
+  %%
+  %%
+  %% END: header comment
+  %%
+  %closefile commentBuffer
+  %<LibCacheBlockComment(block,commentBuffer)>\
+  %%
+  %openfile outBuffer
+  %%
+  %if needMultipleTests
+    %%
+    %% handle cases where the if condition must be checked multiple times
+    %%
+    {
+      %%
+      %% Roll around signal width
+      %%
+      %if needRelop
+	%%
+	%if needIfCode && needElseCode 
+	  %%
+	  %assign rollVars = ["U", "Y", "P"]
+	  %%
+	%elseif needIfCode
+	  %%
+	  %assign rollVars = ["u0", "u1", "Y", "P"]
+	  %%
+	%else
+	  %%
+	  %assign rollVars = ["u1", "u2", "Y", "P"]
+	  %%
+	%endif            
+      %else
+	%%
+	%if needIfCode && needElseCode 
+	  %%
+	  %assign rollVars = ["U", "Y"]
+	  %%
+	%elseif needIfCode
+	  %%
+	  %assign rollVars = ["u0", "u1", "Y"]
+	  %%
+	%else
+	  %%
+	  %assign rollVars = ["u1", "u2", "Y"]
+	  %%
+	%endif            
+      %endif
+      %%
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%assign reSigIdx = tRealPart + STRING(sigIdx)
+	%assign imSigIdx = tImagPart + STRING(sigIdx)
+	%%
+	%assign u1ReLabel = LibBlockInputSignal(1, "", lcv, sigIdx)
+	%%
+	%assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+	%%
+	%if y0IsComplex
+	  %%
+	  %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	%endif
+	%%
+	%% Implement switch code
+	%%
+	%if needRelop
+	  %%
+	  %assign thresholdLabel = LibBlockParameter(Threshold, "", lcv, sigIdx)
+	  %%
+	  %if needIfCode 
+	    if ( %<u1ReLabel> %<relopStr> %<thresholdLabel> )
+	  %else
+	    if ( %<u1ReLabel> %<reverseRelopStr> %<thresholdLabel> )
+	  %endif
+	%else
+	  %if needIfCode 
+	    if ( %<u1ReLabel> )
+	  %else
+	    if ( !(%<u1ReLabel>) )
+	  %endif
+	%endif
+	%%
+	%if needIfCode 
+	  %%
+	  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	  %%
+	  %if y0IsComplex
+	    %%
+	    %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  {
+	    %<SLibFcnComputeInput(block, 0)>\
+	    %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+	      u0ReLabel,u0DT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	    %if y0IsComplex
+	      %%
+	      %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+		u0ImLabel,u0DT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	    %endif
+	  }
+	%endif
+	%%
+	%if needIfCode && needElseCode
+	  else
+	%endif
+	%%
+	%if needElseCode
+	  %%
+	  %assign u2ReLabel = LibBlockInputSignal(2, "", lcv, reSigIdx)
+	  %%
+	  %if y0IsComplex
+	    %%
+	    %assign u2ImLabel = LibBlockInputSignal(2, "", lcv, imSigIdx)
+	  %endif
+	  {
+	    %<SLibFcnComputeInput(block,2)>\
+	    %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+	      u2ReLabel,u2DT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	    %if y0IsComplex
+	      %%
+	      %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+		u2ImLabel,u2DT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	    %endif
+	  }
+	%endif
+      %endroll
+    }
+  %else
+    %%
+    %% handle case where only one (or none) threshold test is required
+    %%
+    %if needConditionTest
+      %%
+      %assign u1ReLabel = LibBlockInputSignal(1, "", "", 0)
+      %%
+      %if needRelop
+	%%
+	%assign thresholdLabel = LibBlockParameter(Threshold, "", "", 0)
+	%%
+	%if needIfCode 
+	  if ( %<u1ReLabel> %<relopStr> %<thresholdLabel> )
+	%else
+	  if ( %<u1ReLabel> %<reverseRelopStr> %<thresholdLabel> )
+	%endif
+      %else
+	%if needIfCode 
+	  if ( %<u1ReLabel> )
+	%else
+	  if ( !(%<u1ReLabel>) )
+	%endif
+      %endif
+      {
+      %endif
+      %%
+      %if needIfCode 
+	%<SLibFcnComputeInput(block, 0)>\
+	%%
+	%% Roll around signal width
+	%%
+	%assign rollVars = ["u0", "Y"]
+	%%
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %%
+	  %assign reSigIdx = tRealPart + STRING(sigIdx)
+	  %assign imSigIdx = tImagPart + STRING(sigIdx)
+	  %%
+	  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	  %%
+	  %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+	  %%
+	  %if y0IsComplex
+	    %%
+	    %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	    %%
+	    %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+	    u0ReLabel,u0DT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %if y0IsComplex
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+	      u0ImLabel,u0DT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	%endroll
+      %endif
+      %%
+      %if needConditionTest && needIfCode && needElseCode
+      }
+      else
+      {
+      %endif
+      %%
+      %if needElseCode 
+	%<SLibFcnComputeInput(block, 2)>\
+	%%
+	%% Roll around signal width
+	%%
+	%assign rollVars = ["u2", "Y"]
+	%%
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %%
+	  %assign reSigIdx = tRealPart + STRING(sigIdx)
+	  %assign imSigIdx = tImagPart + STRING(sigIdx)
+	  %%
+	  %assign u2ReLabel = LibBlockInputSignal(2, "", lcv, reSigIdx)
+	  %%
+	  %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+	  %%
+	  %if y0IsComplex
+	    %%
+	    %assign u2ImLabel = LibBlockInputSignal(2, "", lcv, imSigIdx)
+	    %%
+	    %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0DT,...
+	    u2ReLabel,u2DT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %if y0IsComplex
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0DT,...
+	      u2ImLabel,u2DT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	%endroll
+      %endif
+      %%   
+      %if needConditionTest
+      }
+    %endif
+  %endif
+  %%
+  %% blank line for formating
+  %closefile outBuffer
+  %return outBuffer
+%endfunction
+
+%% Function: ClassicOutputs ====================================================
+%% Abstract:
+%%      Y[i] = port0 value if input (port1 value) is greater
+%%             than or equal to threshold
+%%           = port2 value if input (port1 value) is less than threshold
+%%
+%function ClassicOutputs(block, system) void
+  %% Determine if the control signal is boolean or double
+  %assign inputIsBoolean = (LibBlockInputSignalAliasedThruDataTypeId(1) == tSS_BOOLEAN)
+  %assign noThreshold = (inputIsBoolean == 1) || (relopStr == "~=0")
+  
+  %openfile tmpBuf
+  %if NumNonsampledZCs > 0
+    if (%<RTMIs("MajorTimeStep")>) {
+      %if EXISTS("DataInputPort[1].RollRegions")
+	%if DataInputPort[1].Width == LibBlockOutputSignalWidth(0)
+	  %assign rollRegions = DataInputPort[1].RollRegions
+	%else
+	  %assign rollRegions = [0:%<NumNonsampledZCs-1>]
+	%endif
+      %else
+	%assign rollRegions = RollRegions
+      %endif
+      %if noThreshold
+        %assign rollVars = ["u1", "Mode"]
+      %else
+        %assign rollVars = ["u1", "Mode", "P"]
+      %endif
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign m = LibBlockMode("", lcv, sigIdx)
+	%assign u1 = LibBlockInputSignal(1, "", lcv, sigIdx)
+        %if noThreshold
+          %<m> = (%<u1> != 0);
+        %else
+          %assign threshold = LibBlockParameter(Threshold, "", lcv, sigIdx)
+          %<m> = (%<u1> %<relopStr> %<threshold>);
+        %endif
+      %endroll
+    }
+    /* Output value */
+    %assign rollVars = ["Mode", "Y", "u0", "u2"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign m = LibBlockMode("", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %assign u0 = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign u2 = LibBlockInputSignal(2, "", lcv, sigIdx)      
+      if(%<m> == 1){
+	%<SLibFcnComputeInput(block, 0)>\
+	%if (%<LibBlockInputSignalBufferDstPort(0)> == 0)
+	  %if (ShowEliminatedStatements)
+	    #if 0
+	    /* Buffer Reuse Active; Following statement(s) unnecessary */
+	    %<y> = %<u0>;
+	    #endif
+	  %endif
+	%else
+	  %<y> = %<u0>;
+	%endif
+      }else{
+	%<SLibFcnComputeInput(block, 2)>\
+	%if (%<LibBlockInputSignalBufferDstPort(2)> == 0)
+	  %if (ShowEliminatedStatements)
+	    #if 0
+	    /* Buffer Reuse Active; Following statement(s) unnecessary */
+	    %<y> = %<u2>;
+	    #endif
+	  %endif
+	%else
+	  %<y> = %<u2>;
+	%endif
+      }
+    %endroll
+  %else
+    %% Get the widths of all the signals
+    %if !noThreshold
+      %assign rowsAndCols = LibBlockParameterSize(Threshold)
+      %assign parameterVectorWidth = rowsAndCols[1]
+    %else
+      %assign parameterVectorWidth = 1
+    %endif
+    %%
+    %assign inputSignal1Width = LibBlockInputSignalWidth(0)
+    %assign controlSignalWidth = LibBlockInputSignalWidth(1)
+    %assign inputSignal2Width = LibBlockInputSignalWidth(2)
+    %% Generate code for special cases separately
+    %%
+    %if (controlSignalWidth == 1) && (parameterVectorWidth == 1)
+      %if noThreshold
+	%assign threshold_str = ""
+      %else
+	%% input is double and relop being either > or >=
+	%assign threshold = LibBlockParameter(Threshold, "", "", 0)
+	%if relopStr == ">"
+	  %assign threshold_str = " > %<threshold>"
+	%else
+	  %assign threshold_str = " >= %<threshold>"
+	%endif
+      %endif
+      %assign u1 = LibBlockInputSignal(1, "", "", 0)
+      %%
+      if (%<u1>%<threshold_str>) { 
+      %<SLibFcnComputeInput(block, 0)> \
+      %if (inputSignal1Width == 1)
+	%% Executing single first input signal case
+	%assign rollVars = ["Y","u0"]
+	%assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u0 = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	  %<y> = %<u0>;
+	%endroll
+      %else
+	%% Executing wide first input signal case
+	%assign rollVars = ["Y", "u0"]
+	%assign rollRegions = RollRegions
+	%if EXISTS("DataInputPort[0].RollRegions")
+	  %assign rollRegions = DataInputPort[0].RollRegions
+	%endif
+	%if LibBlockInputSignalIsExpr(0)
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign u0 = LibBlockInputSignal(0, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	    %<y> = %<u0>;
+	  %endroll
+	%else
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, "FlatRoller", rollVars
+	    %assign u0 = LibBlockInputSignal(0, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	    %%
+	    %if lcv == ""
+	      %<y> = %<u0>;
+	    %else
+	      %assign u0 = LibBlockInputSignalAddr(0, "", "", CurrentRollRegionOffset)
+	      %assign y = LibBlockOutputSignalAddr(0, "", "", CurrentRollRegionOffset)
+  	      %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+	      %if (%<LibBlockInputSignalBufferDstPort(0)> == 0)
+		%if (ShowEliminatedStatements)
+  	          #if 0
+  	          /* Buffer Reuse Active; Following statement(s) unnecessary */
+  	          (void) memcpy (%<y>, %<u0>, %<ROLL_ITERATIONS()> * sizeof (%<inputDataType>));
+  	          #endif
+		%endif
+	      %else
+		(void) memcpy (%<y>, %<u0>, %<ROLL_ITERATIONS()> * sizeof (%<inputDataType>));
+	      %endif
+	    %endif
+	  %endroll
+	%endif
+      %endif
+      } else {
+      %<SLibFcnComputeInput(block, 2)> \
+      %if (inputSignal2Width == 1)
+	%% Executing single second input signal case -- Scalar expansion
+	%assign rollVars = ["Y","u2"]
+	%assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u2 = LibBlockInputSignal(2, "", lcv, sigIdx)
+	  %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	  %<y> = %<u2>;
+	%endroll
+      %else
+	%% Executing wide second signal case
+	%assign rollVars = ["Y", "u2"]
+	%assign rollRegions = RollRegions
+	%if EXISTS("DataInputPort[2].RollRegions")
+	  %assign rollRegions = DataInputPort[2].RollRegions
+	%endif
+	%if LibBlockInputSignalIsExpr(2)
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign u0 = LibBlockInputSignal(2, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	    %<y> = %<u0>;
+	  %endroll
+	%else
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, "FlatRoller", rollVars
+	    %assign u2 = LibBlockInputSignal(2, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+	    %%
+	    %if lcv == ""
+	      %<y> = %<u2>;
+	    %else
+	      %assign u2 = LibBlockInputSignalAddr(2, "", "", CurrentRollRegionOffset)
+	      %assign y = LibBlockOutputSignalAddr(0, "", "", CurrentRollRegionOffset)
+	      %assign inputDataType = LibBlockInputSignalDataTypeName(2, "")
+	      %if (%<LibBlockInputSignalBufferDstPort(2)> == 0)
+		%if (ShowEliminatedStatements)
+		  #if 0
+		  /* Buffer Reuse Active; Following statement(s) unnecessary */
+		  (void) memcpy (%<y>, %<u2>, %<ROLL_ITERATIONS()> * sizeof (%<inputDataType>));
+		  #endif
+		%endif
+	      %else
+		(void) memcpy (%<y>, %<u2>, %<ROLL_ITERATIONS()> * sizeof (%<inputDataType>));
+	      %endif
+	    %endif
+	  %endroll
+	%endif
+      %endif
+      }
+    %else
+      %% Do normal case: Have to compare every control input
+      %% to (every) threshold
+      %% Do not do optimization
+      %assign rollVars = noThreshold ? ["U", "Y"] : ["U", "Y", "P"]
+      %%
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%if noThreshold
+	  %assign threshold_str = ""
+	%else
+	  %% input is double and relop being either > or >=
+          %assign threshold = LibBlockParameter(Threshold, "", lcv, sigIdx)
+	  %if relopStr == ">"
+	    %assign threshold_str = " > %<threshold>"
+	  %else
+	    %assign threshold_str = " >= %<threshold>"
+	  %endif
+	%endif
+        %assign u0 = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %assign u1 = LibBlockInputSignal(1, "", lcv, sigIdx)
+        %assign u2 = LibBlockInputSignal(2, "", lcv, sigIdx)      
+        %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+        if (%<u1>%<threshold_str>) {
+          %<y> = %<u0>;
+        } else {
+          %<y> = %<u2>;
+        }
+      %endroll
+    %endif
+  %endif
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+%% Functions: Outputs ==========================================================
+%%
+%function Outputs(block, system) void
+  %if block.InFixptMode
+    %return FixptOutputs(block, system)
+  %else
+    %return ClassicOutputs(block, system)
+  %endif
+%endfunction
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      NSZC[i] = control[i] - threshold[i];
+%%
+%function ZeroCrossings(block, system) Output
+  %if !block.InFixptMode
+   /* %<Type> Block: %<Name> */
+    %if ParamSettings.ControlInputContiguous == "yes"
+      %% Input is contiguous, do run-time loop
+      %% ZC indices are always contiguous for this case
+      %if EXISTS("DataInputPort[1].RollRegions")
+	%if DataInputPort[1].Width == LibBlockOutputSignalWidth(0)
+	  %assign rollRegions = DataInputPort[1].RollRegions
+	%else
+	  %assign rollRegions = [0:%<NumNonsampledZCs-1>]
+	%endif
+      %else
+	%assign rollRegions = RollRegions
+      %endif
+      %if relopStr != "~=0"
+        %assign rollVars = ["u1", "NSZC", "P"]
+      %else
+        %assign rollVars = ["u1", "NSZC"]
+      %endif
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+        %if relopStr != "~=0"
+          %<LibBlockInputSignal(1, "", lcv, sigIdx)> - \
+          %<LibBlockParameter(Threshold, "", lcv, sigIdx)>;
+        %else
+          %<LibBlockInputSignal(1, "", lcv, sigIdx)>;
+        %endif
+      %endroll
+    %else
+      %% Input is not contiguous, do each element separately
+      %foreach idx = NumNonsampledZCs
+	%<LibBlockNonSampledZC("","",idx)> = \
+        %if relopStr != "~=0"
+          %<LibBlockInputSignal(1, "", "", NonsampledZC[idx].MapIdx)> - \
+          %<LibBlockParameter(Threshold, "", "", NonsampledZC[idx].MapIdx)>;
+        %else
+          %<LibBlockInputSignal(1, "", "", NonsampledZC[idx].MapIdx)>;
+        %endif
+      %endforeach
+    %endif
+  %endif
+%endfunction
+ 
+%% [EOF] swtchblk.tlc

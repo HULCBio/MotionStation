@@ -1,0 +1,445 @@
+%% $RCSfile: sdspmax.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:08:57 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Find the max value of a vector
+
+%implements sdspmax "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Fcn")>
+  %<LibRenameParameter(block, P2, "Framebased")>
+  %<LibRenameParameter(block, P3, "Nchans")>
+  %<LibRenameParameter(block, P4, "ResetPort")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  %% Function menu choices
+  %assign fcnValandIdx = 1
+  %assign fcnVal       = 2
+  %assign fcnIdx       = 3
+  %assign fcnRunning   = 4
+  %%
+  %assign fcn       = LibBlockParameterValue(Fcn,0)
+  %%
+  %if(fcn == fcnRunning)
+    /* Signal Processing Blockset Maximum (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %<LibBlockDWork(Reset,"", "", 0)> = 1;
+    %%
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Maximum (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign fcn        = LibBlockParameterValue(Fcn,0)
+  %% Function menu choices
+  %assign fcnValandIdx = 1
+  %assign fcnVal       = 2
+  %assign fcnIdx       = 3
+  %assign fcnRunning   = 4
+  %%
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT_MAX  = 0
+  %assign OUTPORT_IDX  = (fcn != fcnIdx) ? 1 : 0
+  %%
+  %assign resetport  = LibBlockParameterValue(ResetPort,0) != 0
+  %assign nchans     = CAST("Number",LibBlockParameterValue(Nchans,0))
+  %assign width      = LibDataInputPortWidth(INPORT_DATA)
+  %assign framebased = (LibBlockParameterValue(Framebased,0) != 0) && (width/nchans != 1)
+  %assign nsamps     = (framebased) ? width/nchans : 1  
+  %assign cplx       = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+  %assign contig     = IsInputPortContiguous(block, INPORT_DATA)
+  %%  
+  %switch fcn
+     %case  fcnRunning
+       %%
+       /* Output running maxmum value */
+       %if (framebased && !contig)
+	 %<LibDiscontiguousInputError(block)>
+       %endif
+       %%
+       %if !cplx
+	  %%
+	  %% Real Running
+	  %%
+	  {
+	     %if framebased
+	       real_T *u     = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	     %endif
+	     real_T    *y     = %<LibBlockOutputSignalAddr(OUTPORT_MAX,"", "", 0)>;
+	     real_T    *cache = %<LibBlockDWorkAddr(Cache, "", "", 0)>;
+	     boolean_T *reset = %<LibBlockDWorkAddr(Reset, "", "", 0)>;
+
+	     %if resetport
+	        if(%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) {
+	          *reset = 1;
+	        }
+	     %endif
+	  %%
+	  if(*reset) {
+	    %%
+	    %% Real Running Reset
+	    %%
+	    /* Reset mode where the current input is the maximum */
+	    %if framebased
+	      %if nchans!=1
+		  int_T i = %<nchans>;
+		  while(i-- > 0) {
+	       %endif
+	       %%
+	          int_T  j    = %<nsamps - 1>;  
+		  real_T tmax = *u++;
+
+		  while(j-- > 0) {
+		     const real_T val = *u++;
+		     if (val > tmax) {
+		       tmax = val;
+		     }
+		  }
+               %%
+	       %if nchans!=1
+	          *y++ = *cache++ = tmax;
+	          }
+	       %else
+	          *y = *cache = tmax;
+	       %endif
+	       %%
+	    %else
+	      %%
+	      %% Not framebased
+	      %%
+	      %if width==1
+		%% This case removes the post increment from 'y' and 'cache'
+		*y = *cache= %<LibBlockInputSignal(INPORT_DATA, "", "", 0)>;
+	      %else
+		%% Non-framebased
+		/* Find the maximum */
+		%assign rollVars = ["U"]
+		%roll sigIdx = RollRegions, lcv = RollThreshold, \
+		  block, "Roller", rollVars
+		  *y++ = *cache++ = %<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>;
+		%endroll
+	      %endif
+	    %endif
+	    %%
+	    *reset = 0;  /* No longer in reset mode */
+	    %%
+	  } else {
+	    %%
+	    %% Real Running, not reset
+	    %%
+	    /* Compare latest inputs to stored maximum values: */
+	    %if framebased
+	      %%
+	      %if nchans!=1
+		 int_T i = %<nchans>;
+		 while (i-- > 0) {
+	      %endif
+	      %%
+		   int_T  j    = %<nsamps>;
+		   real_T tmax = *cache;
+
+		   while(j-- > 0) {
+		      const real_T val = *u++;
+		      if (val > tmax) {
+		         tmax = val;
+		      }
+		   }
+	      %if nchans != 1
+		 *y++ = *cache++ = tmax;
+		 }
+	      %else
+		 *y = *cache = tmax;
+	      %endif
+	    %%
+	    %else
+	    %%
+	      %% Non-framebased
+	      %if width==1
+		%% This case removes the post increment from 'y' and 'cache'
+		if(%<LibBlockInputSignal(INPORT_DATA, "", "", 0)> > *cache) {
+		  *cache = %<LibBlockInputSignal(INPORT_DATA, "", "", 0)>;
+		}
+		*y = *cache;
+	      %else
+		%assign rollVars = ["U"]
+		%roll sigIdx = RollRegions, lcv = RollThreshold, \
+		                    block, "Roller", rollVars
+		  %assign val = LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)
+		  if (%<val> > *cache) {
+		    *cache = %<val>;
+		  }
+		  *y++ = *cache++;
+		%endroll
+	      %endif
+	    %endif
+	  }
+	}
+      %else
+	%%
+	%% COMPLEX Running
+	%%
+	{
+	  typedef struct {
+	    real_T  magsq; 
+	    creal_T cmplx;
+	  } minmax_cache;
+	  
+	  %if framebased
+	    creal_T *u     = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	  %endif
+	  creal_T    *y     = %<LibBlockOutputSignalAddr(OUTPORT_MAX,"", "", 0)>;
+	  minmax_cache  *cache = (minmax_cache *)%<LibBlockDWorkAddr(Cache, "", "", 0)>;
+	  boolean_T *reset = %<LibBlockDWorkAddr(Reset, "", "", 0)>;
+
+	  %if resetport
+	    if(%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) {
+	      *reset = 1;
+	    }
+	  %endif
+	  %%	  
+	  
+	  if(*reset) {
+	    %%
+	    %% Complex Running Reset
+	    %%
+	    /* Reset mode where the current input is the maximum */
+	    %if(framebased)
+	      %if nchans!=1
+		int_T i = %<nchans>;
+		while(i-- > 0) {
+	      %endif
+		  int_T  j    = %<nsamps - 1>;  
+		  real_T  maxmag = CMAGSQ(*u);
+		  creal_T maxval = *u++;
+
+		  while(j-- > 0) {
+		    const creal_T newval = *u++;
+		    const real_T newmag = CMAGSQ(newval);
+		  
+		    if (newmag > maxmag) {
+		      maxval = newval;
+		      maxmag = newmag;
+		    }
+		  }
+		
+	      %if nchans!=1
+		*y++ = cache->cmplx = maxval;
+		(cache++)->magsq = maxmag;
+	      }
+	      %else
+		*y = cache->cmplx = maxval;
+		cache->magsq = maxmag;
+	      %endif
+	    %%
+	    %else
+	      %% Non-framebased
+	      %if width == 1
+		%% This case removes the post increment from 'y' and 'cache'
+		*y = cache->cmplx = %<LibBlockInputSignal(INPORT_DATA, "", "", 0)>;
+		cache->magsq = CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", "", 0)>);
+	      %else
+		%assign rollVars = ["U"]
+		%roll sigIdx = RollRegions, lcv = RollThreshold, \
+		                     block, "Roller", rollVars
+		  %assign newval = LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)
+		  *y++ = cache->cmplx = %<newval>;
+		  (cache++)->magsq = CMAGSQ(%<newval>);
+	      %endroll
+	      %endif
+	    %endif
+	    %%
+	    *reset = 0;  /* No longer in reset mode */
+	    %%  
+	    %%
+	  } else {
+	    %%
+	    %% Complex Running, not reset
+	    %%
+	    /* Compare latest inputs to stored maximum values: */
+	    %if(framebased)
+	      %if nchans!=1
+		int_T i = %<nchans>;
+		while (i-- > 0) {
+	      %endif
+		  int_T  j    = %<nsamps>;
+		  real_T  maxmag = cache->magsq;
+		  creal_T maxval = cache->cmplx;
+
+		  while(j-- > 0) {
+		     const creal_T newval = *u++;
+		     const real_T   newmag = CMAGSQ(newval);
+		  
+		     if (newmag > maxmag) {
+		        maxval = newval;
+		        maxmag = newmag;
+		     }
+		  }
+	      %%
+	      %if nchans != 1
+		*y++ = cache->cmplx     = maxval;
+		(cache++)->magsq = maxmag;
+	      }
+	      %else
+		*y = cache->cmplx = maxval;
+		 cache->magsq = maxmag;
+	      %endif
+	    %%
+	    %else
+	    %%
+	      %% Non-framebased
+	      %if width==1
+		%% This case removes the post increment from 'y' and 'cache'
+		{
+		   real_T newmag = CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", "", 0)>);
+		   if(newmag > cache->magsq) {
+		     cache->cmplx = %<LibBlockInputSignal(INPORT_DATA, "", "", 0)>;
+		     cache->magsq = newmag;
+		   }
+		   *y = cache->cmplx;
+		}
+	      %else
+		%assign rollVars = ["U"]
+		%roll sigIdx = RollRegions, lcv = RollThreshold, \
+		  block, "Roller", rollVars
+		  %assign newval = LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)
+		  { 
+		    real_T newmag = CMAGSQ(%<newval>);
+		    if (newmag > cache->magsq) {
+		      cache->cmplx = %<newval>;
+		      cache->magsq = newmag;
+		    }
+		    *y++ = (cache++)->cmplx;
+		  }
+		%endroll
+	      %endif
+	    %endif
+	  }
+	}  %% end complex running
+	%endif  %% end complex running
+	%break
+	%%
+        %%
+    %case fcnVal
+	/* Output maximun value. */
+    %case fcnIdx
+        /* Output index of maximum value. */      
+    %case fcnValandIdx
+        /* Output the maximum value and it's index. */
+      %if width==1
+	%%
+	%% When width is 1, the max output equals the input
+	%% and the index can only be 1.
+	%%
+	%if fcn != fcnIdx
+	  %<LibBlockOutputSignal(OUTPORT_MAX, "","", 0)> = %<LibBlockInputSignal(0,"","",0)>;
+	%endif
+	%if fcn != fcnVal
+	  %<LibBlockOutputSignal(OUTPORT_IDX, "","", 0)> = 1.0;
+	%endif
+      %else	
+	%%
+	%if !cplx
+	  %% REAL
+	  {	 
+	  %if fcn != fcnVal
+	    int_T m_idx = 0;
+	  %endif
+	  real_T m_val = %<LibBlockInputSignal(0,"","",0)>;
+	  %assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	  %% Loop roll over input port elements:
+	  %%
+	  %assign rollVars = ["U"]
+	  %roll sigIdx = rollRegions1, lcv = RollThreshold, block, "Roller", rollVars
+	    if (%<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)> > m_val) {
+	      m_val  = %<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>;
+	      %if fcn != fcnVal
+		m_idx = i1+1;
+	      %endif	      
+	    }
+	  %endroll
+	  %if fcn != fcnIdx
+	    %<LibBlockOutputSignal(OUTPORT_MAX, "","", 0)> = m_val;
+	  %endif
+	  %if fcn != fcnVal
+	    %<LibBlockOutputSignal(OUTPORT_IDX, "","", 0)> = (real_T)(m_idx+1);  /* Convert to 1-based indexing: */
+	  %endif
+	}
+      %else
+	%% COMPLEX
+	{
+	  int_T m_idx = 0;
+	  %if contig
+	    real_T m_val = CMAGSQ(%<LibBlockInputSignal(0,"","",0)>);
+	  %else
+	    %%
+	    %% We cannot use the m_idx to index into the input for
+	    %% retrieving the complex maximum value if the input is
+	    %% discontigous.  This forces us to keep around the complex
+	    %% maximum value in an extra variable called "cm_val".
+	    %%
+	    creal_T cm_val = %<LibBlockInputSignal(0,"","",0)>;
+	    real_T  m_val = CMAGSQ(cm_val);
+	  %endif
+	  %%
+	  %assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	  %% Loop roll over input port elements:
+	  %%
+	  %assign rollVars = ["U"]
+	  %roll sigIdx = rollRegions1, lcv = RollThreshold, block, "Roller", rollVars
+	    {
+	      %if contig
+		const real_T val = CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>);
+	      %else
+		const creal_T cval = %<LibBlockInputSignal(INPORT_DATA, "", lcv, sigIdx)>;
+		const real_T val = CMAGSQ(cval);
+	      %endif
+	      %%
+	      if (val > m_val) {
+		%if !contig
+		  cm_val = cval;  %% Extra variable needed for discontiguous
+		%endif
+		m_val  = val;
+		m_idx  = i1+1;    %% We need to use m_idx below, so don't convert to 1-based indices yet...
+	      }
+	    }
+	  %endroll
+	  %if fcn != fcnIdx
+	    %if contig
+	      %% We can use the m_idx to get the complex max value if the input is contiguous
+	      %<LibBlockOutputSignal(OUTPORT_MAX, "","", 0)> = \
+	      %<LibBlockInputSignal(0,"m_idx","",0)>;
+	    %else
+	      %<LibBlockOutputSignal(OUTPORT_MAX, "","", 0)> = cm_val;		  		  		    
+	    %endif
+	  %endif
+	  %%
+	  %if fcn != fcnVal
+	    %<LibBlockOutputSignal(OUTPORT_IDX, "","", 0)> = (real_T)(m_idx+1);  /* Convert to 1-based indexing: */
+	  %endif
+	}      	
+      %endif
+    %endif %% if width==1
+    %break
+%endswitch 
+
+%endfunction
+
+%% [EOF] sdspmax.tlc
+

@@ -1,0 +1,969 @@
+%% $RCSfile: fixptlook_support.tlc,v $
+%% $Revision: 1.1.6.3 $
+%% $Date: 2004/04/12 22:51:50 $
+%%
+%% This file contains tlc code for generation of fixed point
+%% lookup tables
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+
+%% These fixed point lookup utilities are designed to handle
+%% the lookup data coming from multiple "categories"
+%% The data can come from a Run-Time-Parameter, an Input-Port,
+%% or from a local variable.  The local variable can come
+%% in several formats.
+%%
+%% In order for the utility functions to determine the
+%% category, the data is usually passed in as a triplet,
+%% such as
+%%        YData, yDataDT, yDataCategory,...
+%% The third argument always ends "DataCategory" and
+%% indicates the category.  If yDataCategory is a string
+%% then the string indicates the type of local variable
+%% being passed in (usually a pointer).  In these cases,
+%% YData will be a string that gives the root part of
+%% the variable name.  The utility will usually do
+%% something like dereference the pointer variable
+%% or append an index like [5] to the root string.
+%%   If DataCategory is not a string, then it must be
+%% numeric.  A negative value indicates the data comes
+%% from a runtime parameter.  Using the first argument
+%% from the triplet (YData), the elements
+%% can be accessed in the normal runtime parameter "ways"
+%% such as
+%%   %assign yLeftLabel = LibBlockParameter(YData, "", "", index)
+%%
+%% A negative value indicates that the data comes from an
+%% input port.  Using the first argument from the triplet (YData), 
+%% the elements of the input port can be accessed in the normal "ways"
+%% such as
+%%   %assign yLeftLabel = LibBlockInputSignal(yDataCategory, "", "", index)
+%%
+
+
+
+%function FixPt_BreakPointInfoDefault() void
+    %%
+    %createrecord BreakPointInfo { ...
+      invariant       0; ...
+      knownLength     0; ...
+      evenlySpaced    0; ...
+      spacingValue   -1; ...
+      zeroAdjustStr  ""; ...
+      spacingIsPow2   0; ...
+      spacingPow2Exp  0; ...
+      valueLo         0; ...
+      valueHi         1; ...
+      indexHi        ""  } 
+    %%
+    %return BreakPointInfo
+    %%                                     
+%endfunction
+
+
+
+%function utilUnsignedTypeFromDT(xDT) void
+  %%
+  %% determine the appropriate size for an unsigned type
+  %%
+  %if FixPt_DataTypeIsFloat(xDT)
+    %%
+    %assign unsignType = "unsigned long"
+    %%
+  %elseif xDT.RequiredBits <= IntegerSizes.IntNumBits
+    %%
+    %assign unsignType  = "unsigned int"
+    %%
+  %else
+    %%
+    %assign unsignType  = "unsigned long"
+    %%
+  %endif
+  %%
+  %return unsignType
+  %%
+%endfunction  
+
+
+
+%function utilUnsignedTypeFrom2xDT(xDT,yDT) void
+  %%
+  %% determine the appropriate size for an unsigned type
+  %%
+  %if FixPt_DataTypeIsFloat(xDT) || FixPt_DataTypeIsFloat(yDT)
+    %%
+    %assign unsignType = "unsigned long"
+    %%
+  %elseif xDT.RequiredBits <= IntegerSizes.IntNumBits && ...
+          yDT.RequiredBits <= IntegerSizes.IntNumBits
+    %%
+    %assign unsignType  = "unsigned int"
+    %%
+  %else
+    %%
+    %assign unsignType  = "unsigned long"
+    %%
+  %endif
+  %%
+  %return unsignType
+  %%
+%endfunction  
+
+
+
+%function utilFloatOrUnsignedTypeFromDT(xDT) void
+  %%
+  %% determine the appropriate size for an unsigned type
+  %%
+  %if FixPt_DataTypeIsFloat(xDT)
+    %%
+    %assign unsignType = xDT.NativeType
+    %%
+  %elseif xDT.RequiredBits <= IntegerSizes.IntNumBits
+    %%
+    %assign unsignType  = "unsigned int"
+    %%
+  %else
+    %%
+    %assign unsignType  = "unsigned long"
+    %%
+  %endif
+  %%
+  %return unsignType
+  %%
+%endfunction  
+
+
+
+%function utilDownCastTempExpression(xDT,expressStr) void
+  %%
+  %% determine the appropriate size for an unsigned type
+  %%
+  %if FixPt_DataTypeIsFloat(xDT)
+    %%
+    %assign retStr = expressStr
+    %%
+  %elseif xDT.RequiredBits < IntegerSizes.IntNumBits
+    %%
+    %assign retStr = "((%<xDT.NativeType>)(%<expressStr>))"
+    %%
+  %else
+    %%
+    %assign retStr = expressStr
+    %%
+  %endif
+  %%
+  %return retStr
+  %%
+%endfunction  
+
+
+
+%% Function: FixPt_GetBreakPointInfo ========================================
+%%
+%function FixPt_GetBreakPointInfo(u0DataValue) void
+    %%
+    %assign BreakPointInfo = FixPt_BreakPointInfoDefault()
+    %%
+    %assign nCols = SIZE(u0DataValue, 1)
+    %%
+    %assign BreakPointInfo.indexHi = nCols - 1
+    %%
+    %% determine if evenly spaced
+    %%
+    %assign BreakPointInfo.evenlySpaced = 1
+    %%
+    %assign BreakPointInfo.valueLo = u0DataValue[0]
+    %assign BreakPointInfo.valueHi = u0DataValue[nCols-1]
+    %%
+    %if BreakPointInfo.valueLo != 0
+        %assign BreakPointInfo.zeroAdjustStr = " - (%<BreakPointInfo.valueLo>)"
+    %endif
+    %%
+    %assign xjm1 = BreakPointInfo.valueLo
+    %assign xj = u0DataValue[1]
+    %%
+    %assign BreakPointInfo.spacingValue = xj - xjm1
+    %%
+    %assign jMax = nCols - 2
+    %%
+    %foreach j = jMax
+        %%
+        %assign xjm1 = xj
+        %assign xj = u0DataValue[j+2]
+        %%
+        %if BreakPointInfo.spacingValue != (xj - xjm1)
+            %%
+            %assign BreakPointInfo.evenlySpaced = 0
+            %assign BreakPointInfo.spacingValue = -1
+            %assign BreakPointInfo.zeroAdjustStr = ""
+            %%
+            %break
+        %endif
+    %endforeach
+    %%
+    %if BreakPointInfo.evenlySpaced && FixPtLookup_opt_pow2
+        %%
+        %if TYPE(u0DataValue[0]) != "Real" && TYPE(u0DataValue[0]) != "Real32" 
+            %%
+            %assign spacingIsPow2Vec = LibIsPow2(BreakPointInfo.spacingValue)
+            %assign BreakPointInfo.spacingIsPow2  = spacingIsPow2Vec[0]
+            %assign BreakPointInfo.spacingPow2Exp = spacingIsPow2Vec[1]
+        %endif
+    %endif
+    %%
+    %return BreakPointInfo
+    %%
+%endfunction  %% FixPt_GetBreakPointInfo
+
+
+
+%% Function: FixPt_BreakPointInfoCast ========================================
+%%
+%% Abstract: Change the BreakPointInfo structure so that it is based on
+%%    a different data type.
+%%    This is mainly of use in Lookup tables where the input signal
+%%    has a difference data type then that used for the breakpoints.
+%%    The Fixed Point Dynamic Look1 is an example where this can happen.
+%%
+%% Returns outBreakPointInfo
+%%
+%function FixPt_BreakPointInfoCast(u0DataBreakPointInfo,u0DataDT,u0DT) void
+    %%
+    %<FixPt_CheckInputBreakpointDataTypes(u0DT,u0DataDT)>\
+    %%
+    %copyrecord u0BreakPointInfo u0DataBreakPointInfo
+    %%
+    %if u0DT.FixedExp != u0DataDT.FixedExp
+        %%
+        %if TYPE(u0DataBreakPointInfo.valueLo)        == "String" || ...
+            TYPE(u0DataBreakPointInfo.valueHi)        == "String" || ...
+            TYPE(u0DataBreakPointInfo.spacingValue)   == "String" || ...
+            TYPE(u0DataBreakPointInfo.spacingPow2Exp) == "String"
+          %%
+          %%START_ASSERT
+          %<LibReportFatalError("FixPt_BreakPointInfoCast used improperly.  Key fields were not numeric types as required.")>
+          %%END_ASSERT
+          %%
+        %endif
+        %%
+        %%  if scaling is not identical, then the spacing and
+        %%  zero adjust value need to be changed
+        %%  Example   input       is  U16 2^-12
+        %%            breakpoints are U8  2^-8
+        %%            u0DataBreakPointInfo.valueLo = 0x80 = 128
+        %%                => Real World   128*2^-8 = 0.5
+        %%  Adjust u0DataBreakPointInfo.valueLo = 0x80 * 2^(-8-(-12))
+        %%             = 0x0800 = 2048
+        %%             => Real World 2048*2^-12 = 0.5
+        %%
+        %assign adjExponent = u0DataDT.FixedExp-u0DT.FixedExp
+        %%
+        %assign adjValue = FixPt_Pow2(adjExponent)
+        %%
+        %if FixPt_DataTypeIsFloat(u0DT)
+            %assign castType = "Real"
+        %else
+            %if u0DataDT.IsSigned
+              %assign castType = "Number"
+              %assign adjValue = CAST( "Number", adjValue )
+            %else
+              %assign castType = "Unsigned"
+              %assign adjValue = CAST( "Unsigned", adjValue )
+            %endif
+        %endif
+        %%
+        %assign u0BreakPointInfo.valueLo = CAST(castType,u0DataBreakPointInfo.valueLo * adjValue)
+        %assign u0BreakPointInfo.valueHi = CAST(castType,u0DataBreakPointInfo.valueHi * adjValue)
+        %%
+        %if u0BreakPointInfo.valueLo != 0
+          %assign u0BreakPointInfo.zeroAdjustStr = " - (%<u0BreakPointInfo.valueLo>)"
+        %endif
+        %%
+        %if u0DataBreakPointInfo.evenlySpaced
+          %%
+          %assign u0BreakPointInfo.spacingValue = CAST(castType,u0DataBreakPointInfo.spacingValue * adjValue)
+          %%
+          %if u0DataBreakPointInfo.spacingIsPow2
+            %assign u0BreakPointInfo.spacingPow2Exp = u0DataBreakPointInfo.spacingPow2Exp + adjExponent
+          %endif
+        %endif
+    %endif
+    %%
+    %return u0BreakPointInfo
+    %%
+%endfunction  %% FixPt_BreakPointInfoCast
+
+
+
+%% Function: FixPt_CheckInputBreakpointDataTypes ===============================
+%%
+%% For lookup tables, the input and its corresponding breakpoints
+%% are not required to use the exact same data type and scaling
+%% however, there are some restrictions which are checked here.
+%%
+%function FixPt_CheckInputBreakpointDataTypes(u0DT,u0DataDT) void
+    %%
+    %assign errStr = ""
+    %%
+    %if !FixPt_BiasSame(u0DT.Bias,u0DataDT.Bias)
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input and breakpoints have different biases."
+      %%END_ASSERT
+      %%
+    %endif
+    %%
+    %if !FixPt_FracSlopesSame( u0DT.FracSlope, u0DataDT.FracSlope )
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input and breakpoints have different fractional slopes."
+      %%END_ASSERT
+      %%
+    %endif
+    %%
+    %if ( u0DT.IsSigned  && !u0DataDT.IsSigned  )
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input is signed, but breakpoints are unsigned."
+      %%END_ASSERT
+      %%
+    %elseif ( !u0DT.IsSigned  && u0DataDT.IsSigned  )
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input is unsigned, but breakpoints are signed."
+      %%END_ASSERT
+      %%
+    %endif
+    %%
+    %if ( u0DT.FixedExp  >  u0DataDT.FixedExp  )
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input has less precision than breakpoints."
+      %%END_ASSERT
+      %%
+    %endif
+    %%
+    %if ( u0DT.FixedExp+u0DT.RequiredBits < u0DataDT.FixedExp+u0DataDT.RequiredBits )
+      %%
+      %%START_ASSERT
+      %assign errStr = errStr + " Input has less range than breakpoints."
+      %%END_ASSERT
+      %%
+    %endif
+    %%
+    %if errStr != ""
+        %%
+        %%START_ASSERT
+        %assign errStr = "Input and its breakpoints have incompatible data types and/or scaling." + errStr
+        %%
+        %<LibReportFatalError(errStr)>
+        %%END_ASSERT
+        %%
+    %endif
+%endfunction  %% FixPt_CheckInputBreakpointDataTypes
+
+
+
+%% Function: FixPt_IndexSearchProperUseCheck ==================================
+%%
+%function FixPt_IndexSearchProperUseCheck(iLeftLabel,iRghtLabel,u0DT,u0DataDT,searchType) void
+    %%
+    %assign improperUse = 0
+    %%
+    %if ( searchType == "Below" ) || ( searchType == "Near" )
+        %%
+        %% left index must be declared outside this scope in order for this
+        %% search to be useful
+        %%
+        %if ( iLeftLabel == "" )
+            %%
+            %%START_ASSERT
+            %assign improperUse = 1
+            %%END_ASSERT
+        %endif
+        %%
+    %elseif searchType == "Above"
+        %%
+        %% rght index must be declared outside this scope in order for this
+        %% search to be useful
+        %%
+        %if ( iRghtLabel == "" )
+            %%
+            %%START_ASSERT
+            %assign improperUse = 2
+            %%END_ASSERT
+        %endif
+        %%
+    %else
+        %%
+        %% unsupported search type
+        %%
+        %%START_ASSERT
+        %assign improperUse = 3
+        %%END_ASSERT
+    %endif
+    %%
+    %<FixPt_CheckInputBreakpointDataTypes(u0DT,u0DataDT)>\
+    %%
+    %if improperUse != 0
+        %%
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_IndexSearch used improperly.")>
+        %%END_ASSERT
+        %%
+    %endif
+%endfunction  %% FixPt_IndexSearchProperUseCheck
+
+
+
+%% Function: FixPt_GreaterThanPossible ==========================================
+%%
+%% Determine if a signal of type u0DT could ever be strictly greater than
+%% the test value.  This information allows meaningless inequalities to be 
+%% removed from the generated code.
+%%
+%% For floating point cases, it is assumed that the inequality would
+%% always be meaningful.
+%%
+%function FixPt_GreaterThanPossible(u0DT,testValue) void
+    %%
+    %if u0DT.RequiredBits <= 32 && !FixPt_DataTypeIsFloat(u0DT)
+        %if u0DT.IsSigned
+            %assign storedIntMax = FixPt_Pow2(u0DT.RequiredBits-1)-1.0
+        %else
+            %assign storedIntMax = FixPt_Pow2(u0DT.RequiredBits  )-1.0
+        %endif
+        %%
+        %assign hiCheckNeeded = ( storedIntMax > testValue )
+    %else
+        %assign hiCheckNeeded = 1
+    %endif
+    %%
+    %return hiCheckNeeded
+    %%
+%endfunction  %% FixPt_GreaterThanPossible
+
+
+
+%% Function: FixPt_LessThanPossible ==========================================
+%%
+%% Determine if a signal of type u0DT could ever be strictly less than
+%% the test value.  This information allows meaningless inequalities to be 
+%% removed from the generated code.
+%%
+%% For floating point cases, it is assumed that the inequality would
+%% always be meaningful.
+%%
+%function FixPt_LessThanPossible(u0DT,testValue) void
+    %%
+    %if FixPt_DataTypeIsFloat(u0DT)
+        %assign loCheckNeeded = 1
+    %elseif !u0DT.IsSigned
+        %assign storedIntMin = 0
+        %assign loCheckNeeded = ( storedIntMin < testValue )
+    %elseif u0DT.RequiredBits <= 32
+        %assign storedIntMin = -1.0*FixPt_Pow2(u0DT.RequiredBits-1)
+        %assign loCheckNeeded = ( storedIntMin < testValue )
+    %else
+        %assign loCheckNeeded = 1
+    %endif
+    %%
+    %return loCheckNeeded
+    %%
+%endfunction  %% FixPt_LessThanPossible
+
+
+
+%% Function: FixPt_HelperVarHiIndex ======================
+%%
+%function FixPt_HelperVarHiIndex(varSource, varCategory) void
+    %%
+    %% data comes from some type of C variable feed in by user
+    %%
+    %if TYPE(varCategory) == "String"
+      %%
+      %%START_ASSERT
+      %<LibReportFatalError("FixPt_HelperVarHiIndex used in unsupported way.")>
+      %%END_ASSERT
+      %%
+    %elseif varCategory >= 0
+      %%
+      %% data comes from a blocks input port
+      %%
+      %assign varSize = LibBlockInputSignalWidth(varCategory)
+      %if TYPE(varSize) == "Vector"
+	%%START_ASSERT
+	%return varSize[1] - 1
+	%%END_ASSERT
+      %else
+	%return varSize- 1
+      %endif
+      %%
+    %else
+      %%
+      %% data comes from a blocks parameter
+      %%
+      %assign varSize = LibBlockParameterSize(varSource)
+      %return varSize[1] - 1
+      %%
+    %endif
+    %%
+    %%
+%endfunction  %% FixPt_HelperVarHiIndex
+
+
+
+%% Function: FixPt_HelperVarIsComplex ======================
+%%
+%function FixPt_HelperVarIsComplex(varSource, varCategory) void
+    %%
+    %% data comes from some type of C variable feed in by user
+    %%
+    %%
+    %if TYPE(varCategory) == "String"
+      %%
+      %% data comes from some type of C variable feed in by user
+      %%
+      %if varCategory == "real pointer to complex"
+        %%
+        %assign varIsComplex = 1
+        %%
+      %else
+        %%
+        %assign varIsComplex = 0
+        %%
+      %endif
+      %%
+    %elseif varCategory >= 0
+      %%
+      %% data comes from a blocks input port
+      %%
+      %assign varIsComplex = LibBlockInputSignalIsComplex(varCategory)
+      %%
+    %else
+      %%
+      %% data comes from a blocks parameter
+      %%
+      %assign varIsComplex = LibBlockParameterIsComplex(varSource)
+      %%
+    %endif
+    %%
+    %return varIsComplex
+    %%
+%endfunction  %% FixPt_HelperVarIsComplex
+
+
+
+%% Function: FixPt_HelperGetVarValue ======================
+%%
+%function FixPt_HelperGetVarValue(ucv,lcv,idx,part,...
+                                  varSource, varCategory) void
+    %%
+    %% data comes from some type of C variable feed in by user
+    %%
+    %assign widthAnyNonScalarWillDo = 2
+    %%
+    %assign vecIndex = FixPt_IndexStruct( widthAnyNonScalarWillDo, ucv, lcv, idx)
+    %%
+    %if varCategory == "pointer"
+      %%
+      %if FixPt_IndexTrivial(ucv, lcv, idx)
+        %%
+        %assign ValueLabel = "(*%<varSource>)"
+        %%
+      %else
+        %%
+        %assign ValueLabel = varSource + "[" + vecIndex + "]"
+        %%
+      %endif
+      %%
+    %elseif varCategory == "variable"
+      %%
+      %if !FixPt_IndexTrivial(ucv, lcv, idx)
+        %%
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_HelperGetVarValue used in unsupported way.")>
+        %%END_ASSERT
+        %%
+      %endif
+      %%
+      %if part == "real"
+        %%
+        %assign ValueLabel = "%<varSource>.re"
+        %%
+      %elseif part == "imag"
+        %%
+        %assign ValueLabel = "%<varSource>.im"
+        %%
+      %else
+        %%
+        %assign ValueLabel = varSource
+        %%
+      %endif
+      %%
+    %else %%if yDataCategory == "real pointer to complex"
+      %%
+      %if part == "real"
+        %%
+        %if FixPt_IndexTrivial(ucv, lcv, idx)
+          %%
+          %assign ValueLabel = "%<varSource>[0]"
+          %%
+        %else
+          %%
+          %assign ValueLabel = "%<varSource>[2*(%<vecIndex>)]"
+          %%
+        %endif
+        %%
+      %elseif part == "imag"
+        %%
+        %if FixPt_IndexTrivial(ucv, lcv, idx)
+          %%        
+          %assign ValueLabel = "%<varSource>[1]"
+          %%
+        %else
+          %%        
+          %assign ValueLabel = "%<varSource>[2*(%<vecIndex>)+1]"
+          %%
+        %endif    
+        %%
+      %else
+        %%
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_HelperGetVarValue used in unsupported way.")>
+        %%END_ASSERT
+        %%
+      %endif
+      %%
+    %endif
+    %%
+    %return ValueLabel
+    %%
+%endfunction  %% FixPt_HelperGetVarValue
+
+
+
+%% Function: FixPt_HelperGetVarPtr ======================
+%%
+%function FixPt_HelperGetVarPtr(ucv,lcv,idx,part,...
+                                  varSource, varCategory) void
+    %%
+    %% data comes from some type of C variable feed in by user
+    %%
+    %assign widthAnyNonScalarWillDo = 2
+    %%
+    %assign vecIndex = FixPt_IndexStruct( widthAnyNonScalarWillDo, ucv, lcv, idx)
+    %%
+    %if varCategory == "pointer"
+      %%
+      %if FixPt_IndexTrivial( ucv, lcv, idx)
+        %%
+        %assign ValueLabel = varSource
+        %%
+      %else
+        %%
+        %assign ValueLabel = "(" + varSource + "+(" + vecIndex + "))"
+        %%
+      %endif
+      %%
+    %elseif varCategory == "variable"
+      %%
+      %if !FixPt_IndexTrivial( ucv, lcv, idx)
+        %%
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_HelperGetVarPtr used in unsupported way.")>
+        %%END_ASSERT
+        %%
+      %endif
+      %%
+      %if part == "real"
+        %%
+        %assign ValueLabel = "(&(%<varSource>.re))"
+        %%
+      %elseif part == "imag"
+        %%
+        %assign ValueLabel = "(&(%<varSource>.im))"
+        %%
+      %else
+        %%
+        %assign ValueLabel = "(&(%<varSource>))"
+        %%
+      %endif
+      %%
+    %else %%if yDataCategory == "real pointer to complex"
+      %%
+      %if part == "real"
+        %%
+        %if FixPt_IndexTrivial( ucv, lcv, idx)
+          %%
+          %assign ValueLabel = varSource
+          %%
+        %else
+          %%
+          %assign ValueLabel = "(%<varSource>+2*(%<vecIndex>))"
+          %%
+        %endif
+        %%
+      %elseif part == "imag"
+        %%
+        %if FixPt_IndexTrivial( ucv, lcv, idx)
+          %%
+          %assign ValueLabel = "(%<varSource>+1)"
+          %%
+        %else
+          %%
+          %assign ValueLabel = "(%<varSource>+2*(%<vecIndex>)+1)"
+          %%
+        %endif
+        %%
+      %else
+        %%
+        %if FixPt_IndexTrivial( ucv, lcv, idx)
+          %%
+          %assign ValueLabel = varSource
+          %%
+        %else
+          %%
+          %%START_ASSERT
+          %<LibReportFatalError("FixPt_HelperGetVarPtr used in unsupported way.")>
+          %%END_ASSERT
+        %endif
+        %%
+      %endif
+      %%
+    %endif
+    %%
+    %return ValueLabel
+    %%
+%endfunction  %% FixPt_HelperGetVarPtr
+
+
+      
+%% Function: FixPt_HelperGetRValue ======================
+%%
+%function FixPt_HelperGetRValue(ucv,lcv,idx,part,...
+                                varSource, varCategory) void
+    %%
+    %if TYPE(varCategory) == "String"
+      %%
+      %% data comes from some type of C variable feed in by user
+      %%
+      %assign ValueLabel = FixPt_HelperGetVarValue(ucv,lcv,idx,part,varSource,varCategory)
+      %%
+    %else
+      %%
+      %if TYPE(ucv) == "String"        
+        %assign localUcv = ucv
+      %else
+        %if ISEQUAL(ucv,idx) && ISEQUAL(lcv,"")
+          %assign localUcv = ""
+        %else
+          %assign localUcv = "%<ucv>"
+        %endif
+      %endif
+      %%
+      %if part == "real"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,0)
+        %%
+      %elseif part == "imag"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,1)
+        %%
+      %else
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,-1)
+        %%
+      %endif
+      %%
+      %if varCategory >= 0
+        %%
+        %% data comes from a blocks input port
+        %%
+        %assign ValueLabel = LibBlockInputSignal(varCategory, localUcv, lcv, idxReIm )
+        %%
+      %else
+        %%
+        %% data comes from a blocks parameter
+        %%
+        %assign ValueLabel = LibBlockParameter(varSource, localUcv, lcv, idxReIm)
+        %%
+      %endif
+    %endif
+    %%
+    %return ValueLabel
+    %%
+%endfunction  %% FixPt_HelperGetRValue
+
+
+
+%% Function: FixPt_HelperGetRValuePtr ======================
+%%
+%function FixPt_HelperGetRValuePtr(ucv,lcv,idx,part,...
+                                varSource, varCategory) void
+    %%
+    %if TYPE(varCategory) == "String"
+      %%
+      %% data comes from some type of C variable feed in by user
+      %%
+      %assign ValueLabel = FixPt_HelperGetVarPtr(ucv,lcv,idx,part,varSource,varCategory)
+      %%
+    %else
+      %%
+      %if TYPE(ucv) == "String"        
+        %assign localUcv = ucv
+      %else
+        %if ISEQUAL(ucv,idx) && ISEQUAL(lcv,"")
+          %assign localUcv = ""
+        %else
+          %assign localUcv = "%<ucv>"
+        %endif
+      %endif
+      %%
+      %if part == "real"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,0)
+        %%
+      %elseif part == "imag"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,1)
+        %%
+      %else
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,-1)
+        %%
+      %endif
+      %%
+      %if varCategory >= 0
+        %%
+        %% data comes from a blocks input port
+        %%
+        %assign ValueLabel = LibBlockInputSignalAddr(varCategory, localUcv, lcv, idxReIm )
+        %%
+      %else
+        %%
+        %% data comes from a blocks parameter
+        %%
+        %assign nRows = SIZE(varSource.Value, 0)
+        %%
+        %if SIZE(varSource.Value, 0) > 1
+          %if FixPt_IndexTrivial(localUcv, lcv, idx)
+            %assign ValueLabel = LibBlockMatrixParameterBaseAddr(varSource)
+          %else
+            %%
+            %%START_ASSERT
+            %<LibReportFatalError("For matrix parameters, only support getting the base address.")>
+            %%END_ASSERT
+            %%
+          %endif
+        %else
+          %if FixPt_IndexTrivial(localUcv, lcv, idx)
+            %assign ValueLabel = LibBlockParameterBaseAddr(varSource)
+          %else
+            %assign ValueLabel = LibBlockParameterAddr(varSource, localUcv, lcv, idxReIm)
+          %endif
+        %endif
+        %%
+      %endif
+    %endif
+    %%
+    %return ValueLabel
+    %%
+%endfunction  %% FixPt_HelperGetRValuePtr
+
+
+
+%% Function: FixPt_HelperGetLValue ======================
+%%
+%function FixPt_HelperGetLValue(ucv,lcv,idx,part,...
+                                varSource, varCategory) void
+    %%
+    %if TYPE(varCategory) == "String"
+      %%
+      %% data comes from some type of C variable feed in by user
+      %%
+      %assign ValueLabel = FixPt_HelperGetVarValue(ucv,lcv,idx,part,varSource,varCategory)
+      %%
+    %else
+      %%
+      %if TYPE(ucv) == "String"        
+        %assign localUcv = ucv
+      %else
+        %if ISEQUAL(ucv,idx) && ISEQUAL(lcv,"")
+          %assign localUcv = ""
+        %else
+          %assign localUcv = "%<ucv>"
+        %endif
+      %endif
+      %%
+      %if part == "real"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,0)
+        %%
+      %elseif part == "imag"
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,1)
+        %%
+      %else
+        %%
+        %assign idxReIm = FLib_ReImIdx(idx,-1)
+        %%
+      %endif
+      %%
+      %if varCategory >= 0
+        %%
+        %% data comes from a blocks input port
+        %%
+        %assign ValueLabel = LibBlockOutputSignal(varCategory, localUcv, lcv, idxReIm )
+        %%
+      %else
+        %%
+        %% data comes from a blocks parameter
+        %%
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_HelperGetLValue used in unsupported way.  Parameters can not be written to.")>
+        %%END_ASSERT
+        %%
+      %endif
+    %endif
+    %%
+    %return ValueLabel
+    %%
+%endfunction  %% FixPt_HelperGetLValue
+
+
+
+%% Function: FixPt_HelperInterpolateOutputEqualsDataPoint ======================
+%%
+%function FixPt_HelperInterpolateOutputEqualsDataPoint(index,...
+                             yLabel,yDT,yCategory,...                             
+                             YData, yDataDT, yDataCategory,...
+                             roundMode,satMode) Output                    
+  %%
+  %% set output equal to value in table
+  %%
+  %assign yDataIsComplex = FixPt_HelperVarIsComplex(YData, yDataCategory)
+  %%
+  %if yDataIsComplex
+    %%
+    %assign outLabel = FixPt_HelperGetLValue("",   "",0, "real", yLabel, yCategory    )
+    %assign inLabel  = FixPt_HelperGetRValue(index,"",0, "real", YData,  yDataCategory)
+    %%
+    %<FixPt_Fix2FixAlwaysOutput(outLabel,yDT,inLabel,yDataDT,roundMode,satMode)>\
+    %%
+    %assign outLabel = FixPt_HelperGetLValue("",   "",0, "imag", yLabel, yCategory    )
+    %assign inLabel  = FixPt_HelperGetRValue(index,"",0, "imag", YData,  yDataCategory)
+    %%
+    %<FixPt_Fix2FixAlwaysOutput(outLabel,yDT,inLabel,yDataDT,roundMode,satMode)>\
+    %%
+  %else
+    %%
+    %assign outLabel = FixPt_HelperGetLValue("",   "",0, "", yLabel, yCategory    )
+    %assign inLabel  = FixPt_HelperGetRValue(index,"",0, "", YData,  yDataCategory)
+    %%
+    %<FixPt_Fix2FixAlwaysOutput(outLabel,yDT,inLabel,yDataDT,roundMode,satMode)>\
+    %%
+  %endif
+%endfunction  %% FixPt_HelperInterpolateOutputEqualsDataPoint

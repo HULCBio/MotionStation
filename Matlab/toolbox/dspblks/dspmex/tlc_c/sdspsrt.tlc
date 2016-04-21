@@ -1,0 +1,155 @@
+%% $RCSfile: sdspsrt.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:09:45 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Sort the input vector
+
+%implements sdspsrt "C"
+
+%%============================================================================
+%openfile buffer
+/* Signal Processing Blockset Median Block dependencies: */
+extern void MWDSP_SrtQkRecD(const real_T *qid_array, uint32_T *qid_index, int_T i, int_T j);
+
+%closefile buffer
+%<LibCacheFunctionPrototype(buffer)> 
+%%============================================================================
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign INPORT = 0
+  %assign width  = LibDataInputPortWidth(INPORT)
+  
+  %<LibRenameParameter(block, P1, "Direction")>
+  %<LibRenameParameter(block, P2, "Output_Type")>
+
+  %<LibDefineIWork(block, "Index", width)>  
+  
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Sort (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT = 0
+  %assign width  = LibDataInputPortWidth(INPORT)
+  %%
+  {
+    int_T i;
+    for (i=0; i < %<width>; i++) {
+      %<LibBlockIWork(Index, "i", "", 0)> = i;
+    }
+  }
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Sort (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign direction = LibBlockParameterValue(Direction,0)
+  %assign out_type  = LibBlockParameterValue(Output_Type,0)  
+  %%
+  %assign Ascend  = 1
+  %assign Descend = 2
+  %%
+  %assign outVal_and_Idx = 1
+  %assign outVal         = 2
+  %assign outIdx         = 3
+  %%
+  %assign INPORT       = 0
+  %assign OUTPORT_VAL  = 0
+  %assign OUTPORT_IDX  = (out_type == outIdx) ? 0 : 1
+  %%
+  %assign cplx   = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign contig = IsInputPortContiguous(block, INPORT)
+  %assign N      =  LibDataInputPortWidth(INPORT)
+  %assign dtype  =  cplx ? "creal_T" : "real_T"
+  %%
+  %assign index = LibBlockIWork(Index, "", "", 0)
+  %%
+  %if !contig
+    %<LibDiscontiguousInputError(block)>    
+  %else
+    %if N != 1
+      %if !cplx
+	%%
+	%% REAL
+	%% 
+	/* Sort input vector: */
+	MWDSP_SrtQkRecD(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>, &%<index>, 0, %<N-1>);
+      %else
+	%%
+	%% COMPLEX
+	%%
+	{
+	  /* Copy magnitude of complex input values into temp scratch area: */
+	  real_T *sort_in = (real_T *)%<LibBlockOutputSignalAddr(OUTPORT_VAL, "", "", 0)>;
+	  %assign rollVars = ["U"]
+	  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    *sort_in++ = CMAGSQ(%<LibBlockInputSignal(0, "", lcv, sigIdx)>);
+	  %endroll
+	  
+	  /* Sort input vector: */
+	  MWDSP_SrtQkRecD(sort_in - %<N>,  &%<index>, 0, %<N-1>);
+	}      
+      %endif
+    %endif
+  %endif 
+  %%
+  %% The only difference between outputting in ascending order and
+  %% outputting in descending order is the for loop construct.
+  %%
+  %if direction==Ascend
+    %%
+    %assign LoopStart = "i = 0" 
+    %assign LoopTest  = "i < %<N>"
+    %assign LoopEnd   = "i++"
+  %else
+    %% Descend
+    %%
+    %assign LoopStart = "i = %<N-1>" 
+    %assign LoopTest  = "i >= 0"
+    %assign LoopEnd   = "i--"
+  %endif
+  %%
+  {
+    uint32_T *index = &%<index>;
+    %if out_type != outIdx
+      {
+	/* Output the sorted values: */
+	%<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT_VAL, "","", 0)>;
+	%<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "","", 0)>;
+	int i; 
+	
+	for(%<LoopStart>; %<LoopTest>; %<LoopEnd>) {
+	  *y++ = u[index[i]];
+	}
+      }
+    %endif
+    %%
+    %if out_type != outVal
+      {
+	/* Output the sorted indices:*/
+	real_T *y = %<LibBlockOutputSignalAddr(OUTPORT_IDX, "","", 0)>;
+	int i;
+	
+	for (%<LoopStart>; %<LoopTest>; %<LoopEnd>) {
+	  *y++ = (real_T)(index[i]+1); /* Convert to MATLAB 1-based indexing */
+	}
+      }
+    %endif
+  }
+
+%endfunction
+
+%% [EOF] sdspsrt.tlc
+

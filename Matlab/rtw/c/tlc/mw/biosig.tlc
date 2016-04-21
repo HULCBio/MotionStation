@@ -1,0 +1,240 @@
+%% ============================================================================
+%% $RCSfile: biosig.tlc,v $
+%% $Revision: 1.31.4.2 $ 
+%% $Date: 2003/01/22 06:46:42 $
+%%
+%% Abstract:
+%%      This system file creates model_bio.c which is to monitor the block io
+%%      vector.
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%% 
+
+%if EXISTS("_BIOSIG_") == 0
+%assign _BIOSIG_ = 1
+
+%realformat "CONCISE"
+
+%with CompiledModel
+
+%% Generate Interface API for data not of custom storage class
+%<SLibMapData()>
+
+%selectfile STDOUT
+%if RTWVerbose
+### Creating block IO file %<Name>_bio.c
+%endif
+%selectfile NULL_FILE
+
+%assign skipMsg = "Skipping signals in C-API\n\n" ...
+  "Skipping certain block signals in C-API.  Therefore, not all signals\n" ...
+  "are available for monitoring.  Relevant signal configurations: \n" ...
+  "   o Signal storage reuse (Advanced simulation parameter dialog)\n" ...
+  "   o Signal storage class (Signal attribute dialog or Simulink data " ...
+                             "object configuration)\n" ...
+  "   o Inlining Parameters  (Advanced simulation parameter dialog)\n" ...
+  "   o Local block outputs  (RTW options page -- General code generation option)\n"
+
+%with GlobalMemoryMap
+
+%openfile ModelDotBio = "%<Name>_bio.c"
+/*
+ * %<Name>_bio.c
+ *
+%<SLibCommonHeaderInfo()>\
+ */
+
+#ifndef BLOCK_IO_SIGNALS
+#define BLOCK_IO_SIGNALS
+
+#include "bio_sig.h"
+
+%% ============================================================================
+%% instantiation
+%%
+/* Block output signal information */
+static %<tBlockIOSignalsType> %<tBlockIOSignals>[] = {
+
+  /* blockName,
+  * signalName, portNumber, signalWidth, signalAddr, dtName, dtSize
+  */
+
+  %if NumBlockSignals > 0
+    %assign numBlockSignals = 0
+    %assign warned = 0
+    %foreach sysIdx = NumSystems
+      %with System[sysIdx]
+	%foreach blkIdx = NumBlocks
+	  %with Block[blkIdx]
+	    %foreach portIdx = NumDataOutputPorts
+	      %assign sigRec = SLibGetSourceRecord(DataOutputPort[portIdx],0)
+	      %if !ISEMPTY(sigRec)   %% Skip function-call outputs
+		%if sigRec.MemoryMapIdx[2] == -1
+		  %continue
+		%elseif sigRec.MemoryMapIdx[1] == -1
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign data        = UnstructuredData.Data[dataIdx]
+		  %assign isComplex   = data.IsComplex
+		  %assign dataTypeIdx = data.DataTypeIdx
+		%elseif sigRec.MemoryMapIdx[0] == -1
+		  %assign classIdx    = sigRec.MemoryMapIdx[1]
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign data        = CustomData[classIdx].Data[dataIdx]
+		  %assign isComplex   = data.IsComplex
+		  %assign dataTypeIdx = data.DataTypeIdx
+		%else
+		  %assign structIdx   = sigRec.MemoryMapIdx[0]
+		  %assign secIdx      = sigRec.MemoryMapIdx[1]
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign section     = StructuredData[structIdx].Section[secIdx]
+		  %assign data        = section.Data[dataIdx]
+		  %assign dataTypeIdx = section.DataTypeIdx
+		  %assign isComplex   = section.IsComplex
+		%endif
+		%%
+		%% Skip certain signals
+		%%
+		%assign okDims = 0   /% assume %/
+		%switch data.Class
+		  %case "scalar"
+		  %case "vector"
+		    %assign okDims = 1
+		    %break
+		  %case "col-mat"
+		    %if data.NumRows == 1 || data.NumCols == 1
+		      %assign okDims = 1
+		    %endif
+		    %break
+		  %default
+		    %break
+		%endswitch
+		%if isComplex || data.IsFixedPoint || !okDims
+		  %if !warned
+		    %<LibReportWarning(skipMsg)>
+		    %assign warned = 1
+		  %endif
+		  %continue
+		%endif
+		%assign blkName = LibGetFormattedBlockPath(Block[blkIdx])
+		%if sigRec.SigLabel != ""
+		  %assign sigName = STRING(sigRec.SigLabel)
+		%else
+		  %assign sigName = "NULL"
+		%endif
+		%assign sigWidth = data.NumRows * data.NumCols
+		%assign dtType = SLibGetRecordDataTypeName(sigRec, tRealPart)
+		%assign dtSize = "sizeof(%<dtType>)"
+		%% Map the RTW data type to the ANSI C data type. 
+		%assign dtName = SLibGetANSICDataTypeFromId(dataTypeIdx)
+		{
+		  "%<blkName>",
+		  "%<sigName>", %<portIdx>, %<sigWidth>, NULL, "%<dtName>", %<dtSize>
+		},
+	        %assign numBlockSignals = numBlockSignals + 1
+	      %endif
+	    %endforeach
+	  %endwith
+	%endforeach
+      %endwith
+    %endforeach
+  %endif
+  {
+    NULL, NULL, 0, 0, 0, NULL, 0
+  }
+};
+
+#endif  /* BLOCK_IO_SIGNALS */
+
+%if NumBlockSignals > 0
+  %assign signalIdx = 0
+  %if PrefixModelToStructs
+    %assign prefix = "%<CompiledModel.Name>_"
+  %else
+    %assign prefix = ""
+  %endif
+  %assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+  %if !reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+    %assign bArg = "%<tBlockIOType> *%<tBlockIO>"
+  %else
+    %assign bArg = "void"
+  %endif
+  void %<prefix>InitializeBlockIOMap(%<bArg>) {
+    %foreach sysIdx = NumSystems
+      %with System[sysIdx]
+	%foreach blkIdx = NumBlocks
+	  %with Block[blkIdx]
+	    %foreach portIdx = NumDataOutputPorts
+	      %assign sigRec = SLibGetSourceRecord(DataOutputPort[portIdx],0)
+	      %if !ISEMPTY(sigRec)   %% Skip function-call outputs
+		%if sigRec.MemoryMapIdx[2] == -1
+		  %continue
+		%elseif sigRec.MemoryMapIdx[1] == -1
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign data        = UnstructuredData.Data[dataIdx]
+		  %assign isComplex   = data.IsComplex
+		  %assign dataTypeIdx = data.DataTypeIdx
+		%elseif sigRec.MemoryMapIdx[0] == -1
+		  %assign classIdx    = sigRec.MemoryMapIdx[1]
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign data        = CustomData[classIdx].Data[dataIdx]
+		  %assign isComplex   = data.IsComplex
+		  %assign dataTypeIdx = data.DataTypeIdx
+		%else
+		  %assign structIdx   = sigRec.MemoryMapIdx[0]
+		  %assign secIdx      = sigRec.MemoryMapIdx[1]
+		  %assign dataIdx     = sigRec.MemoryMapIdx[2]
+		  %assign section     = StructuredData[structIdx].Section[secIdx]
+		  %assign data        = section.Data[dataIdx]
+		  %assign dataTypeIdx = section.DataTypeIdx
+		  %assign isComplex   = section.IsComplex
+		%endif
+		%%
+		%% Skip certain signals
+		%%
+		%assign okDims = 0   /% assume %/
+		%switch data.Class
+		  %case "scalar"
+		  %case "vector"
+		    %assign okDims = 1
+		    %break
+		  %case "col-mat"
+		    %if data.NumRows == 1 || data.NumCols == 1
+		      %assign okDims = 1
+		    %endif
+		    %break
+		  %default
+		    %break
+		%endswitch
+		%if isComplex || data.IsFixedPoint || !okDims
+		  %continue
+		%endif
+		%assign sigAddress = data.BaseAddr
+		%<tBlockIOSignals>[%<signalIdx>].signalAddr = %<sigAddress>;
+	        %assign signalIdx = signalIdx + 1
+	      %endif
+	    %endforeach
+	  %endwith
+	%endforeach
+      %endwith
+    %endforeach
+  }
+
+  %if !reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+    %assign bArg = "%<tBlockIO>"
+  %else
+    %assign bArg = ""
+  %endif
+  %<LibMdlStartCustomCode("%<prefix>InitializeBlockIOMap(%<bArg>);\n","header")>
+
+%endif
+%closefile ModelDotBio
+
+%assert numBlockSignals == signalIdx
+%assign NumBlockIOSignalsInMap = numBlockSignals
+
+%endwith %% GlobalMemoryMap
+%endwith %% CompiledModel
+
+%endif %% _BIOSIG_
+
+%% [EOF] biosig.tlc

@@ -1,0 +1,3575 @@
+%% $Revision: 1.1.6.17 $
+%% 
+%%
+%% Copyright 1991-2004 The MathWorks, Inc.
+%%
+%% Description:
+%%
+%%    This system TLC library file contains functions that genrate the
+%%    unconditional code (condition open/close bracked) of conditional 
+%%    executed systems (enables, triggered and interator systems).
+%%
+%% Note: 
+%%
+%%
+
+%if EXISTS("_SUBSYSTEMLIB_") == 0
+%assign _SUBSYSTEMLIB_ = 1
+
+%% Function: FcnReportSubsystemError ===========================================
+%% Abstract:
+%%
+%%    Common function (gateway) to report an error inside this library file.
+%%
+%function FcnReportSubsystemError(ssBlock, errType, addString) void
+  
+  %switch errType
+    %case "enable"
+    %case "trigger"
+      %assign errTxt = ...
+	"Error using function %<addString> to test the %<errType> signal."
+      %break
+    %default
+      %assign errTxt = "Unknown error type '%<errType>'."
+  %endswitch
+  %<LibBlockReportFatalError(ssBlock, errTxt)>
+%endfunction
+
+%% Function: FcnGetSubsystemTID=========================================
+%% Abstract:
+%%
+%%    tid >=0  : subsystem has unique tid
+%%    tid = -1 : subsystem has multi callSites 
+%%               and it corresponding ssBlock
+%%               has differnt tid
+%%               SubsystemTID is not unique.
+%%
+%function FcnGetSubsystemTID(system) void
+  %assign tid = -1 %% assume 
+  %if system.Type == "root"
+    %% If subsystem in root has subsystemTID = "triggered",
+    %% the subsystem must be triggered by an aynchronous block. 
+    %% Assign the fastest discrete task TID as the subsystem TID
+    %% if discrete TID exists.
+    %%
+    %assign tid = 0
+    %foreach tidIdx = NumSampleTimes
+      %if SampleTime[tidIdx].PeriodAndOffset[0] > 0
+	%assign tid = tidIdx
+	%break
+      %endif
+    %endforeach
+    %return tid
+  %endif
+  
+  %assign callSites = system.CallSites
+  %assign numCs     = SIZE(callSites,0)
+  %assert (numCs > 0)
+  
+  %foreach idx = numCs
+    %assign graphParentSys = CompiledModel.System[callSites[idx][2]]
+    %assign ssBlock        = graphParentSys.Block[callSites[idx][3]]
+    %assign subsystemTID    = ssBlock.SubsystemTID
+   
+    %if ISEQUAL(subsystemTID, "triggered")
+      %if ISFIELD(ssBlock, "TriggerTID")
+	%assign tmpTid = ssBlock.TriggerTID
+      %else
+	%assign tmpTid = FcnGetSubsystemTID(graphParentSys)
+	%addtorecord ssBlock TriggerTID tmpTid
+      %endif
+    %elseif ISEQUAL(subsystemTID, "constant") 
+      %assign tmpTid = 0
+    %else
+      %assign tmpTid = subsystemTID
+    %endif    
+    %if ISEQUAL(tid, -1)
+      %% tid is not assigned values yet. 
+      %assign tid = tmpTid
+    %elseif !ISEQUAL(tid, tmpTid)
+      %% tmpTid of different callSites are different.
+      %% this means that tid of this subsystem is 
+      %% not unique. Assign -1 to tid
+      %assign tid = -1
+      %break
+    %endif
+  %endforeach
+  
+  %return tid
+%endfunction
+
+%% Function: FcnSubsystemIsAsycnTopSS ============
+%%  Return true if ss is TopSS of an async tid
+%%
+%function FcnSubsystemIsAsycnTopSS(ss)
+  %assign ssTid = FcnGetSubsystemTID(ss)
+  
+  %if LibAsynchronousTriggeredTID(ssTid)
+    %assign callSites = ss.CallSites
+    %assign numCs     = SIZE(callSites,0)
+    
+    %assert (SIZE(callSites,0) == 1)
+    
+    %assign graphParentSys = CompiledModel.System[callSites[0][2]]
+    %assign ssBlock        = graphParentSys.Block[callSites[0][3]]
+    %assign ts             = SampleTime[ssTid]
+    
+    %if System[ts.TopSSIdx[0]].Block[ts.TopSSIdx[2]] == ssBlock
+      %return TLC_TRUE
+    %else
+      %return TLC_FALSE
+    %endif
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+%% Function: FcnBlkIsAsycnInlinedTopSSBlk ============
+%%  Return true if ss is TopSS of an async tid
+%%
+%function FcnBlkIsAsycnInlinedTopSSBlk(ssBlock)
+  %assign retVal = TLC_FALSE
+  %with ssBlock
+    %if ISEQUAL(TID,"Subsystem") && ...
+      LibAsynchronousTriggeredTID(SubsystemTID)  
+      %assign ts     = SampleTime[SubsystemTID]
+      %assign sysIdx = ssBlock.ParamSettings.SystemIdx
+      %if System[ts.TopSSIdx[0]].Block[ts.TopSSIdx[2]] == ssBlock && ...
+	!System[sysIdx].ForceNonInline
+	%assign retVal = TLC_TRUE
+      %endif
+    %endif
+  %endwith
+
+  %return retVal
+%endfunction %% FcnBlkIsAsycnInlinedTopSSBlk
+
+%% Function: FcnSubsystemZeroCrossing ===========================================
+%% Abstract:
+%%      ZeroCrossings only pertain to variable-step solvers.
+%%
+%function FcnSubsystemZeroCrossing(ss, ssType,ssBlock) void
+  %assign  openCode = ""
+  %assign closeCode = ""
+  
+  %if NumNonsampledZCs > 0  || (ISFIELD(ss, "ZeroCrossingFcn") && ...
+    !LibSystemFcnIsEmpty(ss,"ZeroCrossing"))
+    %openfile openCode
+    /* %<Type> Block: %<Name> */
+    %% run zero-crossing code for this subsystems control inputs
+    %if NumNonsampledZCs > 0
+      %% Input may not be contiguous, do each element separately
+      %if ssType == "enable_with_trigger"
+        %assign trigPort = ControlInputPort[1]
+        %assign trigWidth = trigPort.Width
+      %elseif ssType == "trigger"
+        %assign trigPort = ControlInputPort[0]
+        %assign trigWidth = trigPort.Width
+      %else
+        %assign trigWidth = 0
+      %endif
+      %foreach idx = NumNonsampledZCs
+        %assign zcIndex = NonsampledZC[idx].MapIdx
+        %<LibBlockNonSampledZC("","",idx)> = \
+        %if zcIndex < trigWidth
+          %<LibBlockInputSignal("trigger", "", "", zcIndex)>;
+        %else
+          %<LibBlockInputSignal("enable", "", "", zcIndex - trigWidth)>;
+        %endif
+      %endforeach
+    %endif
+    %%If enabled or atomic, run the internal blocks that have zero crossing code
+    %if ISFIELD(ss,"ZeroCrossingFcn")
+      %if ssType == "enable"         %% enable_with_trigger cannot occur
+	%if !LibSystemFcnIsEmpty(ss,"ZeroCrossing")
+	  %assign condition = "%<LibBlockMode("", "", 0)> == SUBSYS_ENABLED"
+	  if ( %<condition> ) {
+	    %closefile openCode
+	    %% SYSTEM CODE ZEROCROSSING
+	    %openfile closeCode
+	  } else {
+	    /* zero zero crossings to prevent detection while disabled */
+	    %<SLibZeroOutZeroCrossingsForSystem(ssBlock, ss)> 
+	  }
+	  %closefile closeCode
+	%else
+	  %closefile openCode
+	%endif
+      %else
+	%closefile openCode
+      %endif
+    %else
+      %closefile openCode
+    %endif
+  %endif
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+
+%% Function: FcnFunctionCallStart ===============================================
+%% Abstract:
+%%      Function-call subsystems initialize their modes to disabled.
+%%
+%function FcnFunctionCallStart(ssType) void
+  %assign tmpBuffer = ""
+  %if CodeFormat == "Embedded-C" 
+    %return tmpBuffer
+  %endif
+  %%
+  %% Subsystem block may not have a mode
+  %%
+  %assign numModes = ModeVector[0]
+  %if numModes > 0
+    %openfile tmpBuffer
+    /* %<ssType> %<Type> Block: %<Name> */
+    %foreach idx = numModes
+      %assign blockMode = LibBlockMode("", "", idx)
+      %%
+      %% Initialize enable mode
+      %%
+      %<blockMode> = (int_T) SUBSYS_DISABLED;
+    %endforeach
+    %closefile tmpBuffer
+  %endif
+  %return tmpBuffer
+%endfunction
+
+%% Function: FcnEnableStart ====================================================
+%% Abstract:
+%%      Enabled and enable with trigger subsystems initialize their mode to
+%%      disabled.
+%%
+%function FcnEnableStart(ssType) void
+  %assign tmpBuffer = ""
+  %if CodeFormat == "Embedded-C" 
+    %return tmpBuffer
+  %endif
+  %%
+  %% Subsystem block may not have a mode
+  %%
+  %if ModeVector[0] != 0
+    %assign blockMode = LibBlockMode("", "", 0)
+    %%
+    %% Initialize enable mode
+    %%
+    %openfile tmpBuffer
+    /* %<ssType> %<Type> Block: %<Name> */
+    %<blockMode> = (int_T) SUBSYS_DISABLED;
+    %closefile tmpBuffer
+  %endif
+  %return tmpBuffer
+%endfunction
+
+%%
+%% Update Utility functions
+%%
+
+%% Function: FcnUpdateTidGuard =================================================
+%% Abstract:
+%%   Generates TID guard code for enabled subsystem update function
+%%   Call Trace: Update -> FcnUpdateTidGuard
+%%
+%function FcnUpdateTidGuard(ssBlock, parentSystem) void
+  %% The system being passed in is the parent system of the ssBlock.
+  %% It is being with'd below so that FcnInferredSystemAndAccessRTMArgDef(),
+  %% which is ultimately called by LibIsSampleHit, returns the correct
+  %% system.  If SubsystemTID is moved from the block to the system,
+  %% we will need to pass a third argument to this function, the system
+  %% corresponding to ssBlock, and obtain the SubsystemTID from that system.
+  %assert ISFIELD(ssBlock, "SubsystemTID")
+  %assert !ISFIELD(parentSystem, "SubsystemTID")
+  %with parentSystem
+    %assign tidGuard = ""
+    %if ssBlock.ParamSettings.EnableOutputScope != "no"
+      %assign orOperator = ""
+      %foreach tidIdx = SIZE(ssBlock.SubsystemTID, 1)
+	%assign newTidGuard = LibIsSampleHit(ssBlock.SubsystemTID[tidIdx])
+	%if newTidGuard != "1"
+	  %assign tidGuard = tidGuard +"%<orOperator>%<newTidGuard>"
+	  %assign orOperator = " || "
+	%else
+	  %assign tidGuard = ""
+	  %break
+	%endif
+      %endforeach
+    %endif
+    %return tidGuard
+  %endwith
+%endfunction %% FcnUpdateTidGuard
+
+
+%function InsertElapseTime(ss, ssBlock, openCode, closeCode)
+
+  %openfile tmpBuf
+  {
+    %<openCode>
+    %<FcnCalculateElapseTime(ss, ssBlock)>
+    %closefile tmpBuf
+    %assign openCode = tmpBuf
+    
+    %openfile tmpBuf
+    %<closeCode>
+  }
+  %closefile tmpBuf
+  %assign closeCode = tmpBuf
+  
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+%% Function: EnableUpdate ======================================================
+%% Abstract:
+%%
+%%
+%function EnableUpdate(ssBlock, enabledSystem, condition) void
+  %assign  tidGuard = SLibIsRateGrouping() ? ...
+                       "" : FcnUpdateTidGuard(ssBlock, enabledSystem)
+  
+  %assign  openCode = ""
+  %assign closeCode = ""
+  
+  %openfile openCode
+  %if tidGuard == "" || tidGuard == "1"
+    if (%<condition>) \
+  %else
+    if (%<condition> && (%<tidGuard>)) \
+  %endif
+    {
+  %closefile openCode
+  %% CALL SYSTEM UPDATE FUNCTION
+  %openfile closeCode
+    }
+  %closefile closeCode
+  
+  %if SysNeedsElapseTime(enabledSystem)
+      %assign openClose = ...
+	InsertElapseTime(enabledSystem, ssBlock, openCode, closeCode)
+      %assign openCode  = openClose[0]
+      %assign closeCode = openClose[1]
+  %endif
+
+  
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+
+%% Function: EnableDerivative ==================================================
+%% Abstract:
+%%
+%%
+%function EnableDerivative(ssBlock, enabledSystem, condition) void
+  %assign ncStates = ssBlock.ParamSettings.SystemContStates[0]
+  %assign dxOffset = ssBlock.ParamSettings.SystemContStates[1]
+  
+  %assign  openCode = ""
+  %assign closeCode = ""
+  
+  %openfile openCode
+  if (%<condition>) {
+    /* compute derivatives */
+  %closefile openCode
+  %% CALL SYSTEM DERIVATIVE FUNCTION
+    %if ncStates>1
+    %assign needDxAndI = 1
+  %else
+    %assign needDxAndI = 0
+  %endif
+  %openfile closeCode
+  } else {
+    /* zero derivatives to prevent integration while disabled */
+    %if needDxAndI
+      int_T i;
+      real_T * dx;
+    %endif
+    %<SLibZeroOutDerivativesForSystem(ssBlock,enabledSystem)>
+  }
+  %closefile closeCode
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+%% Function: EnableProjection ==================================================
+%% Abstract:
+%%
+%%
+%function EnableProjection(ssBlock, enabledSystem, condition) void
+  %assign ncStates = ssBlock.ParamSettings.SystemContStates[0]
+  
+  %assign  openCode = ""
+  %assign closeCode = ""
+  
+  %openfile openCode
+  if (%<condition>) {
+    /* compute projection */
+  %closefile openCode
+  %% CALL SYSTEM PROJECTION FUNCTION
+  %openfile closeCode
+  } else {
+    /* don't project if disabled */
+  }
+  %closefile closeCode
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+%% Function: FcnGenerateEnableMethod ===========================================
+%% Abstract:
+%%   - Update method for enabled, triggered, and enabled-triggered SS
+%%   - Derivative and Projections for enabled SS
+%%
+%function FcnGenerateEnableMethod(ssBlock, enableSystem, method) void
+
+  %if ModeVector[0] != 0
+    %if CompiledModel.TrigSSSplitOutUpd && ...
+      (enableSystem.Type == "enable_with_trigger")
+      %assign condition = ...
+	"(%<LibBlockMode("", "", 0)> & (int_T)SUBSYS_ENABLED) " + ...
+	      " == (int_T)SUBSYS_ENABLED"
+    %else
+      %assign condition = "%<LibBlockMode("", "", 0)> == (int_T)SUBSYS_ENABLED"
+    %endif
+    %assign retVal = Enable%<method>(ssBlock, enableSystem, condition)
+    %return ["%<retVal[0]>","%<retVal[1]>"]
+  %else
+    %assign enabTest = FcnAppendToEnableTest(ssBlock)
+    %assign enableDataTypeId = LibBlockInputSignalDataTypeId("enable")
+    
+    %if LibIsBuiltInDataType(enableDataTypeId)
+      %assign enabSignal = LibBlockInputSignal("enable", "", "", 0)
+      %assign condition  = "%<enabSignal>%<enabTest>"
+      %assign retVal = Enable%<method>(ssBlock, enableSystem, condition)
+      %return ["%<retVal[0]>","%<retVal[1]>"]
+    %else %% non builtin datatype
+      %assign enabSignal = "rtTempEnable"
+      %assign condition  = "%<enabSignal>%<enabTest>"
+      %assign isPositiveFcn = LibIsPositiveTLCFcnName(enableDataTypeId)
+      %assign enableBody = ""
+      
+      %if LibIsPositiveTLCFcnFile(enableDataTypeId) != ""
+        %include "%<LibIsPositiveTLCFcnFile(enableDataTypeId)>"
+      %endif
+      
+      %assign    retVal = Enable%<method>(ssBlock, enableSystem, condition)
+      %assign  openCode = ""
+      %assign closeCode = ""
+      
+      %openfile openCode
+      {
+       boolean_T  rtTempEnable;
+      \   
+      %assign status = %<isPositiveFcn>(enableDataTypeId, ...
+	LibBlockInputSignal("enable", "", "", 0), "", "rtTempEnable")
+      %if status != 1
+	%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+      %endif
+      
+      %<retVal[0]> %% open code
+      %closefile openCode
+      %openfile closeCode
+      %<retVal[1]> %% open code
+      }
+      %closefile closeCode
+      %return ["%<openCode>", "%<closeCode>"]
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: FcnSubsystemDisable ================================================
+%% Abstract:
+%%      Only enable and enable with trigger systems can become disabled
+%%      during execution, thus we need to generate the disable code
+%%      for the internal system blocks.
+%%
+%function FcnSubsystemDisable(ss) void
+  %assign  openCode = ""
+  %assign closeCode = ""
+  %%
+  %% Subsystem block may not have a mode
+  %%
+  %if ModeVector[0] != 0
+    %assign blockMode = LibBlockMode("", "", 0)
+    
+    %if !LibSystemFcnIsEmpty(ss,"Disable")
+      %openfile openCode
+      /* DisableFcn of %<ss.Type> %<Type> Block: %<Name> */
+      %if ModeVector[0] > 1
+	%if CompiledModel.TrigSSSplitOutUpd && (ss.Type == "enable_with_trigger")
+	  if ((%<blockMode> & (int_T)SUBSYS_ENABLED) == (int_T)SUBSYS_ENABLED) {
+	%else
+	  if (%<blockMode> == (int_T) SUBSYS_ENABLED) {
+	%endif
+      %endif
+      %closefile openCode
+      %% SYSTEM DISABLE FCN CALL
+      %openfile closeCode
+      %<blockMode> = (int_T) SUBSYS_DISABLED;
+      %if ModeVector[0] > 1
+        }
+      %endif
+      %closefile closeCode
+    %else
+      %openfile openCode
+      /* DisableFcn of %<ss.Type> %<Type> Block: %<Name> */
+      %<blockMode> = (int_T) SUBSYS_DISABLED;
+      %closefile openCode
+    %endif
+  %endif
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction
+
+%% Output Utility functions
+
+%% Function: FcnSetTriggerBlockOutput ==========================================
+%% Abstract:
+%%   Generates the output of the trigger block
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerOutputPort 
+%%                       -> FcnSetTriggerBlockOutput
+%%
+%function FcnSetTriggerBlockOutput(nU, dtId, zcDir, dType, y, event, u) Output
+
+  %if SLibIsUnsignedBuiltinFromId(dtId)
+    %switch zcDir
+      %case "RISING_ZERO_CROSSING"
+        %% Mapping from true/false to rising/falling not required
+        %<y> = (%<dType>) %<event>;
+        %break
+      %case "FALLING_ZERO_CROSSING"
+        %% Map true/false to falling/none
+        %<y> = (%<dType>) %<event> ? FALLING_ZCEVENT : NO_ZCEVENT;
+        %break
+      %case "ANY_ZERO_CROSSING"
+        %if SLibIsIntegerFromId(dtId)
+          %assign ulocal = "(%<u> > 0)"
+        %else
+          %assign ulocal = u
+        %endif
+        %if nU == 1
+          %% Map true/false to rising/falling
+          %<y> = (%<dType>) ((%<event> && %<ulocal>) ?
+          RISING_ZCEVENT : FALLING_ZCEVENT);
+        %else
+          %% Map true/false to rising/falling/none
+          %<y> = (%<dType>) (%<event> ?
+          (%<ulocal> ? RISING_ZCEVENT : FALLING_ZCEVENT) :
+          NO_ZCEVENT);
+        %endif
+        %break
+    %endswitch
+  %else
+    %% zero-crossing function sets event to rising/falling/none, so no
+    %% mapping is requried.
+    %<y> = (%<dType>) %<event>;
+  %endif
+%endfunction %% FcnSetTriggerBlockOutput
+
+
+%% Function: FcnTriggerZC_SingleA ==============================================
+%% Abstract:
+%%   Generates the zero-crossing code for single input triggers for:
+%%      %if tidScope == "ScopeIndividually" && TYPE(taskId) == "Number"
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerZC 
+%%                       -> FcnTriggerZC_SingleA
+%%
+%function FcnTriggerZC_SingleA(ssBlock, zcFcn, triggerDataTypeId, ...
+                                  trigSignal, prevZC, taskId, zcDir) Output
+      %% Resolve thru aliases
+      %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+      %assign signFcn        = LibSignTLCFcnName(triggerDataTypeId)
+      %assign isRateGrouping = SLibIsRateGrouping()
+      %assign tidGuard       = LibIsSampleHit(taskId)
+      %if !isRateGrouping
+	%if tidGuard == "1"
+	  { %<LibTaskComment(taskId)>
+	%else
+	  if (%<LibIsSampleHit(taskId)>) { %<LibTaskComment(taskId)>
+	%endif
+      %endif
+      %if triggerDataTypeId == tSS_BOOLEAN
+	trigEvent = ...
+	  (%<SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 1)>);
+	%<prevZC> = (ZCSigState) %<trigSignal>;
+      %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+	trigEvent = (%<SLibUnsignedTriggerTest (zcDir, trigSignal, prevZC, 1)>);
+	%<prevZC> = (ZCSigState) %<trigSignal>;
+      %elseif LibIsBuiltInDataType(triggerDataTypeId)
+	trigEvent = %<zcFcn>(%<zcDir>, &(%<prevZC>), %<trigSignal>);
+      %else
+	{
+	  int8_T  rtTempTrigger;
+	  \
+	  %assign status = %<signFcn> ...
+	    (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+	  %if status != 1
+	    %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	  %endif
+	  
+	  trigEvent = %<zcFcn>(%<zcDir>, &(%<prevZC>), rtTempTrigger);
+	}
+      %endif
+      %if !isRateGrouping
+	%if tidGuard == "1"
+	  }
+	%else
+	  } else {
+	    trigEvent = NO_ZCEVENT;
+	  }
+	%endif
+      %endif
+%endfunction %% FcnTriggerZC_SingleA
+
+
+%% Function: FcnTriggerZC_SingleB ==============================================
+%% Abstract:
+%%   Generates the zero-crossing code for single input triggers for:
+%%      %if !(tidScope == "ScopeIndividually" && TYPE(taskId) == "Number")
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerZC 
+%%                       -> FcnTriggerZC_SingleB
+%%
+%function FcnTriggerZC_SingleB(ssBlock, zcFcn, triggerDataTypeId, ...
+                                  trigSignal, prevZC, taskId, zcDir) Output
+      %% Resolve thru aliases
+      %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+      %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+      %if triggerDataTypeId == tSS_BOOLEAN
+        trigEvent =...
+          %<SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 1)>;
+        %<prevZC> = (ZCSigState) %<trigSignal>;
+      %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+        trigEvent = ...
+          %<SLibUnsignedTriggerTest(zcDir, trigSignal, prevZC, 1)>;
+        %<prevZC> = (ZCSigState) %<trigSignal>;
+      %elseif LibIsBuiltInDataType(triggerDataTypeId)
+        trigEvent = %<zcFcn>(%<zcDir>, &(%<prevZC>), %<trigSignal>);
+      %else
+        {
+           int8_T  rtTempTrigger;
+        \
+          %assign status = %<signFcn>...
+            (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+	  %if status != 1
+	    %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	  %endif
+      
+          trigEvent = %<zcFcn>(%<zcDir>, &(%<prevZC>), rtTempTrigger);
+        }
+      %endif
+%endfunction %% FcnTriggerZC_SingleB
+
+
+%% Function: FcnTriggerZC_MultiA ===============================================
+%% Abstract:
+%%   Generates the zero-crossing code for multi-input triggers for:
+%%      %if tidScope == "ScopeIndividually" && TYPE(taskId) == "Number"
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerZC 
+%%                       -> FcnTriggerZC_MultiA
+%%
+%function FcnTriggerZC_MultiA(zcResult, zcFcn, triggerDataTypeId, ...
+                                 trigSignal, prevZC, taskId, zcDir) Output
+        %% Resolve thru aliases
+        %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+        %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+	%assign isRateGrouping = SLibIsRateGrouping()
+	%assign tidGuard       = LibIsSampleHit(taskId)
+	%if !isRateGrouping
+	  %if tidGuard == "1"
+	    { %<LibTaskComment(taskId)>
+	  %else
+	    if (%<LibIsSampleHit(taskId)>) { %<LibTaskComment(taskId)>
+	  %endif
+	%endif
+        %if triggerDataTypeId == tSS_BOOLEAN
+          %<zcResult> =...
+            (%<SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 1)>);
+            %<prevZC> = (ZCSigState) %<trigSignal>;
+        %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+          %<zcResult> =...
+            (%<SLibUnsignedTriggerTest(zcDir, trigSignal, prevZC, 1)>);
+          %<prevZC> = (ZCSigState) %<trigSignal>;
+        %elseif LibIsBuiltInDataType(triggerDataTypeId)
+          %<zcResult> = %<zcFcn>(%<zcDir>,
+          &(%<prevZC>),
+          %<trigSignal>);
+        %else
+          {
+             int8_T  rtTempTrigger;
+          \
+            %assign status = %<signFcn>...
+              (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+	    %if status != 1
+	      %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	    %endif
+      
+            %<zcResult> = %<zcFcn>(%<zcDir>,
+            &(%<prevZC>),
+	    rtTempTrigger);
+          }
+        %endif
+	%if !isRateGrouping
+	  %if tidGuard == "1"
+	    }
+	  %else
+	    } else {
+	      %<zcResult> = NO_ZCEVENT;
+	    }
+	  %endif
+	%endif
+%endfunction %% FcnTriggerZC_MultiA
+
+
+%% Function: FcnTriggerZC_MultiB ===============================================
+%% Abstract:
+%%   Generates the zero-crossing code for multi-input triggers for:
+%%      %if !(tidScope == "ScopeIndividually" && TYPE(taskId) == "Number")
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerZC 
+%%                       -> FcnTriggerZC_MultiB
+%%
+%function FcnTriggerZC_MultiB(zcResult, zcFcn, triggerDataTypeId, ...
+                                 trigSignal, prevZC, taskId, zcDir) Output
+        %% Resolve thru aliases
+        %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+        %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+        %if triggerDataTypeId == tSS_BOOLEAN
+          %<zcResult> = ...
+            %<SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 1)>;
+          %<prevZC> = (ZCSigState) %<trigSignal>;
+        %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+          %<zcResult> = ...
+            %<SLibUnsignedTriggerTest(zcDir, trigSignal, prevZC, 1)>;
+          %<prevZC> = (ZCSigState) %<trigSignal>;
+        %elseif LibIsBuiltInDataType(triggerDataTypeId)
+          %<zcResult> = %<zcFcn>(%<zcDir>,
+          &(%<prevZC>),
+          %<trigSignal>);
+        %else
+          {
+             int8_T  rtTempTrigger;
+          \
+            %assign status = %<signFcn>...
+              (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+            %if status != 1
+	      %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	    %endif
+      
+            %<zcResult> = %<zcFcn>(%<zcDir>,
+            &(%<prevZC>),
+            rtTempTrigger);
+          }
+        %endif
+%endfunction %% FcnTriggerZC_MultiB
+
+
+%% Function: FcnTriggerZC ======================================================
+%% Abstract:
+%%   Generates the zero-crossing code for triggers in triggered subsystems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerZC 
+%%
+%function FcnTriggerZC(ssBlock, trigPort, tidScope, numTriggerInputs, ...
+                       zcFcn, triggerDataTypeId) void
+  %% Resolve thru aliases
+  %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+  %if numTriggerInputs == 1
+
+    %%
+    %% Single control input
+    %%
+
+    %assign trigSignal = LibBlockInputSignal("trigger", "", "", 0)
+    %assign prevZC     = LibBlockPrevZCState("", "", 0)
+    %assign taskId     = trigPort.SignalSrcTID[0]
+    %assign zcDir      = LibConvertZCDirection(ZCEvent[0].Direction)
+
+    %openfile zcCodeBuffer
+    %%
+    %% Note that constant TIDs may be mixed in with non-constant TIDs
+    %%
+    %if tidScope == "ScopeIndividually" && TYPE(taskId) == "Number"
+      %<FcnTriggerZC_SingleA(ssBlock, zcFcn, triggerDataTypeId, trigSignal, ...
+                             prevZC, taskId, zcDir)>\
+    %else
+      %<FcnTriggerZC_SingleB(ssBlock, zcFcn, triggerDataTypeId, trigSignal, ...
+                             prevZC, taskId, zcDir)>\
+    %endif
+    %closefile zcCodeBuffer
+
+  %else
+
+    %%
+    %% Multiple control inputs
+    %%
+
+    %openfile zcCodeBuffer
+    
+    /* subsystem trigger input */
+    trigEvent = false;
+    %assign taskId     = trigPort.SignalSrcTID[0]
+    %roll trigSigIdx = trigPort.RollRegions, lcv = RollThreshold, ...
+      ssBlock, "Roller", ["trigger","PZC"]
+      %assign trigSignal = LibBlockInputSignal("trigger", "", lcv, trigSigIdx)
+      %assign prevZC     = LibBlockPrevZCState("", lcv, trigSigIdx)
+      %assign zcResult   = lcv == "" ? ...
+	"zcEvents[%<trigSigIdx>]" : "zcEvents[%<lcv>]"
+ 
+      %assign zcDir      = LibConvertZCDirection(ZCEvent[trigSigIdx].Direction)
+       %if tidScope == "ScopeIndividually" && TYPE(taskId) == "Number"
+	%<FcnTriggerZC_MultiA(zcResult, zcFcn, triggerDataTypeId, ...
+                              trigSignal, prevZC, taskId, zcDir)>\
+      %else
+        %<FcnTriggerZC_MultiB(zcResult, zcFcn, triggerDataTypeId, ...
+                              trigSignal, prevZC, taskId, zcDir)>\
+      %endif
+      trigEvent |= %<zcResult>;
+    %endroll
+    %closefile zcCodeBuffer
+
+  %endif  %% numTriggerInputs == 1
+  %return zcCodeBuffer
+%endfunction %% FcnTriggerZC
+
+
+%% Function: FcnTriggerOutputPort ===========================================
+%% Abstract:
+%%   Generates code to output trigger port
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerOutputPort 
+%%
+%function FcnTriggerOutputPort(ssBlock, numTriggerInputs, zcDir) Output
+  %assign tbSysIdx = CallSiteInfo.SystemIdx
+  %assign tbBlkIdx = CompiledModel.System[tbSysIdx].TriggerBlkIdx
+  %assign tb       = CompiledModel.System[tbSysIdx].Block[tbBlkIdx]
+  %if numTriggerInputs > 1
+    /* update trigger block outputs */
+  %endif
+  %if numTriggerInputs > 1
+    %roll trigSigIdx = tb.RollRegions, lcv = RollThreshold, ...
+       tb, "Roller", ["Y"]
+       %with tb 
+	 %assign y = LibBlockOutputSignal(0, "", lcv, trigSigIdx)
+	 %assign dataTypeName = LibBlockOutputSignalDataTypeName(0,"")
+       %endwith
+       %assign dtId = LibBlockInputSignalDataTypeId("trigger")
+       %assign trigSignal = LibBlockInputSignal("trigger", "",lcv, trigSigIdx)
+       %assign event = (lcv == "") ? ...
+	 "zcEvents[%<trigSigIdx>]" : "zcEvents[%<lcv>]"
+       %<FcnSetTriggerBlockOutput(numTriggerInputs, dtId, zcDir, ...
+	 dataTypeName, y, event, trigSignal)>\
+     %endroll
+  %else
+    %assign skipOutput = 0
+    %if EXISTS("ssBlock.MaskType")
+      %if ssBlock.MaskType == "Stateflow"
+	%% This means that this trigger block is
+	%% within a Stateflow block and its width is 1
+	%% It has already been untestpointed and will not be needed
+	%% by any of the Stateflow code. Hence, we try not to declare
+	%% even this local variable
+	%assign skipOutput = 1
+      %endif
+    %endif
+    %if !skipOutput
+      /* update trigger block outputs */
+      %assign trigSigIdx = 0
+      %with tb
+	%assign dataTypeName = LibBlockOutputSignalDataTypeName(0,"")
+	%assign y = LibBlockOutputSignal(0, "", "", trigSigIdx)
+      %endwith
+      %assign dtId = LibBlockInputSignalDataTypeId("trigger")
+      %assign trigSignal = LibBlockInputSignal("trigger", "", "", trigSigIdx)
+      %assign event = "trigEvent"
+      %<FcnSetTriggerBlockOutput(numTriggerInputs, dtId, zcDir, ...
+	dataTypeName, y, event, trigSignal)>\
+    %endif
+  %endif
+%endfunction %% FcnTriggerOutputPort
+
+%% Function: SysMaintainsElapseTime =======================
+%%
+%%
+%function SysMaintainsElapseTime(ss) void
+
+  %return ss.Type == "enable" || ...
+          ss.Type == "enable_with_trigger" || ...
+	  ss.Type == "trigger" || ...
+	  ss.Type == "function-call" || ...
+          ss.Type == "iterator"
+%endfunction %% SysMaintainsElapseTime
+
+%% Function: SysNeedsElapseTime ======================
+%%
+%%
+%function SysNeedsElapseTime(ss) void
+  %return ISFIELD(ss, "ElapseTimeDataTypeId")
+%endfunction
+
+%% Function: SysNeedsElapseTimeArg
+%%
+%%
+%function SysNeedsElapseTimeArg(ss, fcnType) void 
+  %return SysNeedsElapseTime(ss) && ...
+    !SysMaintainsElapseTime(ss) && ...
+    (fcnType == "Output" || fcnType == "OutputUpdate" ...
+    || fcnType == "Update")
+%endfunction
+
+
+%% Function: FcnResetSystemElapseTime ============================
+%% Abstract:
+%%    This function is called when the subsystem is reinitialized
+%% subsystem. We set prevT = -1, so that we can make sure
+%% elaspseTime of trigger subsystem is 0.0 when it run first time
+%% after initialization.
+%%    ssblock   -
+%function FcnResetSystemElapseTime(ss) void
+  %if SLibGetElapseTimeIsConstantZero(ss)
+    %return ""
+  %endif
+  %openfile tmpBuf
+  %if ISFIELD(ss, "HasElapseTimeDWork")  
+    %if CompiledModel.StartTime != 0.0
+      %assign tStart = RTMGet("TStart")
+    %else
+      %assign tStart = 0.0
+    %endif
+    %if ss.Type != "iterator"
+      %assign isFirstTimGuardOpen = ...
+      "if (%<LibBlockDWork(PREV_T,"","",0)> > %<tStart>) {"
+      %assign isFirstTimGuardClose = "}" 
+    %else
+      %assign isFirstTimGuardOpen = ""
+      %assign isFirstTimGuardClose = "" 
+    %endif
+    %if LibGetElapseTimeCounterDTypeId(ss) == tSS_DOUBLE
+      /* Reset the prev time of the subsystem */
+      %<isFirstTimGuardOpen>
+      %<LibBlockDWork(PREV_T,"","",0)> = -1.0;
+      %<isFirstTimGuardClose>
+    %else
+      /* Reset the elapsed time of the subsystem */
+      %<isFirstTimGuardOpen>
+      %<LibBlockDWork(RESET_ELAPS_T,"","",0)> = true;
+      %<isFirstTimGuardClose>
+    %endif
+  %endif  
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% FcnResetSystemElapseTime
+
+%% Function: FcnCalculateElapseTime ============================
+%% Abstract:
+%%    This function is called if need ElapseTime in triggered
+%% subsystem.
+%%    ss        - system 
+%%    ssblock   - system block
+%function FcnCalculateElapseTime(ss, ssBlock) void
+
+  %if SLibGetElapseTimeIsConstantZero(ss)
+    %return ""
+  %endif
+  %%
+  %openfile tmpBuf
+  %with ssBlock
+    %assign elapseTimeCounterDtypeId = LibGetElapseTimeCounterDTypeId(ss)
+    %if elapseTimeCounterDtypeId == tSS_TIMER_UINT32_PAIR
+      %<UpdateElapseTimeArray(ss, ssBlock)>
+    %else
+      %<UpdateElapseTime(ss, ssBlock, elapseTimeCounterDtypeId)>
+    %endif
+  %endwith
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% FcnCalcluateElapseTime
+
+%% Function: UpdateElapseTime ============================
+%% Abstract:
+%%    This function is called if need ElapseTime in triggered
+%% subsystem.
+%%    ss        - system 
+%%    ssblock   - system block
+%function UpdateElapseTime(ss, ssBlock,elapseT_DTypeId) void
+  %assign tid = (CodeFormat == "Embedded-C") ? ss.CurrentTID : LibTID()
+  %assign canReset      = SLibXBInitRequired(ss,ssBlock,[],"","",0)
+  %assign elapseT_DType = LibGetDataTypeNameFromId(elapseT_DTypeId)			      
+  %openfile tmpBuf
+  %assign prev_T   = LibBlockDWork(PREV_T,"","",0)
+  %%
+  %if TYPE(tid) == "Number" 
+    %<elapseT_DType> rt_currentTime = ((%<elapseT_DType>)%<LibGetClockTick(tid)>);
+  %else
+    %assign timer_resolution = LibGetElapseTimeResolution(ss)
+    %if timer_resolution == 0
+      real_T rt_currentTime = %<LibGetTaskTime(tid)>;
+    %else
+      %<elapseT_DType> rt_currentTime = (%<elapseT_DType>) floor(...
+	%<LibGetTaskTime(tid)> / %<timer_resolution>+0.5);
+    %endif
+  %endif
+  %%
+  %if canReset
+    %if elapseT_DTypeId == tSS_DOUBLE 
+      %assign prev_T = LibBlockDWork(PREV_T,"","",0)
+      /* reset elapsed time after system is reset */
+      %<elapseT_DType> rt_elapseTime = (%<prev_T> < 0) ? 
+      0 : (rt_currentTime - %<prev_T>); 
+    %else
+      %assign reset_ET = LibBlockDWork(RESET_ELAPS_T,"","",0)
+      /* reset elapsed time after system reset */
+      %<elapseT_DType> rt_elapseTime = (%<reset_ET>) ? ...
+	0 : (rt_currentTime - %<prev_T>); 
+      %<reset_ET> = false;
+    %endif
+  %else		    
+    %<elapseT_DType> rt_elapseTime = rt_currentTime - %<prev_T>; 
+  %endif
+  %%  
+  %<prev_T> = rt_currentTime;
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% FcnCalcluateElapseTime
+
+%% Function: UpdateElapseTimeArray  ============================
+%% Abstract:
+%%    This function is for ERT code format
+%%    This function is called if need ElapseTime in triggered
+%% subsystem and the absolute timer dytpe is uint64. 
+%%    ss        - system 
+%%    ssblock   - system block
+%function UpdateElapseTimeArray(ss, ssBlock) void
+  %assign tid             = ss.CurrentTID 
+  %assign canReset        = SLibXBInitRequired(ss,ssBlock,[],"","",0)
+  %assign elpsT_DType     = LibGetDataTypeNameFromId(tSS_UINT32)
+  
+  %openfile tmpBuf
+
+  %assign prev_T   = LibBlockDWork(PREV_T,"","",0)
+  %assign prev_T_H = LibBlockDWork(PREV_T_H,"","",0)
+  %<elpsT_DType> rt_currentTime[2];
+  %<elpsT_DType> rt_elapseTime[2];
+  
+  rt_currentTime[0] = ((%<elpsT_DType>)%<LibGetClockTick(tid)>);
+  rt_currentTime[1] = ((%<elpsT_DType>)%<LibGetClockTickHigh(tid)>);
+      
+  %if canReset 
+    %assign reset_ET = LibBlockDWork(RESET_ELAPS_T,"","",0)
+    /* reset elapse time after system is reset */
+    if (%<reset_ET>) {
+        rt_elapseTime[0] = 0;
+        rt_elapseTime[1] = 0;
+        %<reset_ET> = false;
+      } else {
+  %endif
+        rt_elapseTime[0] = ...
+	  (rt_currentTime[0] - %<prev_T>);
+	rt_elapseTime[1] = ...
+	  (rt_currentTime[1] - %<prev_T_H>);
+	if (rt_currentTime[0] < (%<prev_T>)) {
+	  rt_elapseTime[1]-- ;
+        }
+  %if canReset
+     }
+  %endif 
+
+  %<prev_T>   = rt_currentTime[0];
+  %<prev_T_H> = rt_currentTime[1];
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% GetElapseTimeArray
+
+
+%% Function: FcnCalculatePrevTime ============================
+%% Abstract:
+%%    This function is called if need ElapseTime in triggered
+%% subsystem.
+%%    ss        - system 
+%%    ssblock   - system block
+%function FcnCalculatePrevTime(ss, ssBlock) void
+  %if SLibGetElapseTimeIsConstantZero(ss)
+    %return ""
+  %endif
+  %%
+  %openfile tmpBuf
+  %with ssBlock
+    %assign elapseTimeCounterDtypeId = LibGetElapseTimeCounterDTypeId(ss)
+    %if elapseTimeCounterDtypeId == tSS_TIMER_UINT32_PAIR
+      %<UpdatePrevTimeArray(ss, ssBlock)>
+    %else
+      %<UpdatePrevTime(ss, ssBlock, elapseTimeCounterDtypeId)>
+    %endif
+  %endwith
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% FcnCalcluateElapseTime
+
+%% Function: UpdatePrevTime ============================
+%% Abstract:
+%%    This function is called if need ElapseTime in triggered
+%% subsystem.
+%%    ss        - system 
+%%    ssblock   - system block
+%function UpdatePrevTime(ss, ssBlock,elapseT_DTypeId) void
+  %assign tid = (CodeFormat == "Embedded-C") ? ss.CurrentTID : LibTID()
+  %if ss.Type == "function-call" || ss.Type == "trigger"
+    %assign tid = FcnGetSubsystemTID(ss)
+  %endif
+  %assign canReset      = SLibXBInitRequired(ss,ssBlock,[],"","",0)
+  %assign elapseT_DType = LibGetDataTypeNameFromId(elapseT_DTypeId)
+  
+  %openfile tmpBuf
+  %assign prev_T   = LibBlockDWork(PREV_T,"","",0)
+  %%
+  %if TYPE(tid) == "Number" && RTMClockTickForTIDIsReqFcn(tid)
+    %<elapseT_DType> rt_currentTime =  ((%<elapseT_DType>)%<LibGetClockTick(tid)>);
+  %else
+    %assign timer_resolution = %<LibGetElapseTimeResolution(ss)>
+    %if timer_resolution == 0
+      real_T rt_currentTime = %<LibGetTaskTime(tid)>;
+    %else
+      %<elapseT_DType> rt_currentTime = (%<elapseT_DType>) floor(...
+	%<LibGetTaskTime(tid)> / %<timer_resolution>+0.5);
+    %endif
+  %endif
+  %if canReset && elapseT_DTypeId != tSS_DOUBLE
+    %assign reset_ET = LibBlockDWork(RESET_ELAPS_T,"","",0)
+    /* reset elapsed time after system is reset */
+    %<reset_ET> = false;
+  %endif
+  %%    
+  %<prev_T> = rt_currentTime;
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% UpdatePrevTime
+
+%% Function: UpdatePrevTimeArray  ============================
+%% Abstract:
+%%    This function is for ERT code format
+%%    This function is called if need ElapseTime in triggered
+%% subsystem and the absolute timer dytpe is uint64. 
+%%    ss        - system 
+%%    ssblock   - system block
+%function UpdatePrevTimeArray(ss, ssBlock) void
+  %assign tid                 = ss.CurrentTID 
+  %if ss.Type == "function-call" || ss.Type == "trigger"
+    %assign tid = FcnGetSubsystemTID(ss)
+  %endif
+  %assign canReset        = SLibXBInitRequired(ss,ssBlock,[],"","",0)
+  %assign elpsT_DType     = LibGetDataTypeNameFromId(tSS_UINT32)
+  
+  %openfile tmpBuf
+
+  %assign prev_T   = LibBlockDWork(PREV_T,"","",0)
+  %assign prev_T_H = LibBlockDWork(PREV_T_H,"","",0)
+  %<elpsT_DType> rt_currentTime[2];
+  
+  rt_currentTime[0] = ((%<elpsT_DType>)%<LibGetClockTick(tid)>);
+  rt_currentTime[1] = ((%<elpsT_DType>)%<LibGetClockTickHigh(tid)>);
+  
+  %if canReset 
+    %assign reset_ET = LibBlockDWork(RESET_ELAPS_T,"","",0)
+    /* reset elapse time after system is reset */
+    if (%<reset_ET>) {
+      %<reset_ET> = false;
+    }
+  %endif
+
+  %<prev_T>   = rt_currentTime[0];
+  %<prev_T_H> = rt_currentTime[1];
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% GetElapseTimeArray
+
+
+%% Function: FcnTriggerOutputFormA ==========================================
+%% Abstract:
+%%   Generates triggered subsystem output code "FormA":
+%%     o No scopes required
+%%     o Scalar control input
+%%     o Don't need major time step guard
+%%     o Trigger block outport not shown
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerOutputFormA 
+%%
+%function FcnTriggerOutputFormA(ss, ssBlock, triggerDataTypeId, zcDir, ...
+                               trigSignal, prevZC, zcFcn) void
+  %% Resolve thru aliases
+  %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+  %assign     openCode = ""
+  %assign    closeCode = ""
+  %assign  addOpenCode = ""
+  %assign addCloseCode = ""
+  %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+  %if triggerDataTypeId == tSS_BOOLEAN
+    %assign check = SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 0)
+    %assign addCloseCode = "%<prevZC> = (ZCSigState) %<trigSignal>;"
+  %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+    %assign check = SLibUnsignedTriggerTest(zcDir,  trigSignal, prevZC, 0)
+    %assign addCloseCode = "%<prevZC> = (ZCSigState) %<trigSignal>;"
+  %elseif LibIsBuiltInDataType(triggerDataTypeId)
+    %assign check = "%<zcFcn>(%<zcDir>, &(%<prevZC>), %<trigSignal>)"
+  %else
+    %openfile addOpenCode
+      {
+       int8_T  rtTempTrigger;
+      \
+      %assign status = %<signFcn>(triggerDataTypeId, trigSignal, ...
+	                          "", "rtTempTrigger")			
+    %closefile addOpenCode
+    %if status != 1
+      %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+    %endif
+    %assign check = "%<zcFcn>(%<zcDir>, &(%<prevZC>), rtTempTrigger)"
+    %openfile addCloseCode
+      }
+    %closefile addCloseCode
+  %endif
+  %openfile openCode
+    %<addOpenCode>\
+    if (%<check>) {
+    %% get elapse time if NeedElapseTime
+    %%
+    %if SysNeedsElapseTime(ss)
+      %<FcnCalculateElapseTime(ss, ssBlock)>
+    %endif
+  %closefile openCode
+  %openfile closeCode
+  %%
+  %% Set the mode flag that shows the subsystem was triggered
+  %%
+  %if CompiledModel.TrigSSSplitOutUpd && ModeVector[0] != 0
+    %<LibBlockMode("", "", 0)> |= (int_T)SUBSYS_TRIGGERED;
+  %endif
+  }
+  %<addCloseCode>\
+  %closefile closeCode
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction %% FcnTriggerOutputFormA
+
+
+%% Function: FcnTriggerOutputFormB ==========================================
+%% Abstract:
+%%   Generates triggered subsystem output code "FormB":
+%%     o No scopes required
+%%     o Scalar control input
+%%     o Don't need major time step guard
+%%     o Trigger block outport shown
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput  -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput -> FcnTriggerOutputFormB
+%%
+%function FcnTriggerOutputFormB(ss, ssBlock, triggerDataTypeId, zcDir, ...
+                                trigSignal, prevZC, zcFcn) void
+  %% Resolve thru aliases
+  %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+  %assign signFcn   = LibSignTLCFcnName(triggerDataTypeId)
+  %assign tbSysIdx  = CallSiteInfo.SystemIdx
+  %assign tbBlkIdx  = CompiledModel.System[tbSysIdx].TriggerBlkIdx
+  %assign setZCStr  = ""
+  %assign tb        = CompiledModel.System[tbSysIdx].Block[tbBlkIdx]
+  %assign openCode  = ""
+  %assign closeCode = ""
+  
+  %openfile openCode
+  {
+    ZCEventType trigEvent;
+  \
+  %if triggerDataTypeId == tSS_BOOLEAN
+    trigEvent = (%<SLibBooleanTriggerTest(zcDir, trigSignal, prevZC, 1)>);
+    %assign setZCStr = "\n%<prevZC> = (ZCSigState) %<trigSignal>;\n\n"
+  %elseif SLibIsUnsignedBuiltinFromId(triggerDataTypeId)
+    trigEvent = (%<SLibUnsignedTriggerTest(zcDir, trigSignal, prevZC, 1)>);
+    %assign setZCStr = "\n%<prevZC> = (ZCSigState) %<trigSignal>;\n\n"
+  %elseif LibIsBuiltInDataType(triggerDataTypeId)
+    trigEvent = %<zcFcn>(%<zcDir>,
+      &(%<prevZC>), 
+      %<trigSignal>);
+  %else
+    {
+       int8_T  rtTempTrigger;
+    \
+    %assign status = %<signFcn>(triggerDataTypeId, trigSignal, ...
+                                "", "rtTempTrigger")
+    %if status != 1
+      %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+    %endif
+      
+    trigEvent = %<zcFcn>(%<zcDir>,
+      &(%<prevZC>),
+      rtTempTrigger);
+    }
+  %endif
+  %<setZCStr>\
+  if (trigEvent) {
+
+ %%
+ %% get elapse time if NeedElapseTime
+ %%
+ %if SysNeedsElapseTime(ss)
+   %<FcnCalculateElapseTime(ss, ssBlock)>
+ %endif
+ 
+ %assign skipOutput = 0
+ %if EXISTS("ssBlock.MaskType")
+   %if ssBlock.MaskType == "Stateflow"
+     %% This means that this trigger block is
+     %% within a Stateflow block and its width is 1
+      %% It has already been untestpointed and will not be needed
+      %% by any of the Stateflow code. Hence, we try not to declare
+      %% even this local variable
+      %assign skipOutput = 1
+    %endif
+  %endif
+  %if !skipOutput
+    %with tb
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      %assign dataTypeName = LibBlockOutputSignalDataTypeName(0,"")
+    %endwith
+    %assign dtId = LibBlockInputSignalDataTypeId("trigger")
+    %assign trigSignal = LibBlockInputSignal("trigger", "", "", 0)
+    %assign event = "trigEvent"
+    %<FcnSetTriggerBlockOutput(1,dtId,zcDir,dataTypeName,y,event,trigSignal)>\
+  %endif
+  %closefile openCode
+  %openfile closeCode
+  %%
+  %% Set the mode flag that shows the subsystem was triggered
+  %%
+  %if CompiledModel.TrigSSSplitOutUpd && ModeVector[0] != 0
+    %<LibBlockMode("", "", 0)> |= (int_T)SUBSYS_TRIGGERED;
+  %endif
+  }
+  }
+  %closefile closeCode
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction %% FcnTriggerOutputFormB
+
+
+%% Function: FcnTriggerOutput ==================================================
+%% Abstract:
+%%   Generates the output code required to execute
+%%
+%%    o A triggered subsystem
+%%    o The triggered portion of a enable with trigger subsystem
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnCommonEnableOutput
+%%                       -> FcnTriggerOutput
+%%
+%function FcnTriggerOutput(ssBlock, parentSystem, tInputIdx) void
+
+  %assign trigPort          = ControlInputPort[tInputIdx]
+  %assign ss                = CompiledModel.System[CallSiteInfo.SystemIdx]
+  %assign parentSystemTasks = LibSystemTasks(parentSystem)
+  %assign numTriggerInputs  = trigPort.Width
+  %assign triggerBlkPresent = (ss.TriggerBlkIdx != -1)
+  %assign tidScope          = ssBlock.ParamSettings.TriggerScope
+  %assign openCode          = ""
+  %assign closeCode         = ""
+  %assign isRateGrouping    = SLibIsRateGrouping() 
+
+  %% The ssIsMajorTimeStep guard is required so that the output of the
+  %% trigger block will not change in a minor step
+
+  %assign needMajorTimeStepGuard = (ssBlock.ParamSettings.MinorStepGuard == "yes")
+
+  %% Setup correct zero-crossing function to call based on data type of control
+  %assign triggerDataTypeId = LibBlockInputSignalDataTypeId("trigger")
+  %% Resolve thru aliases
+  %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+  %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+  %%
+  %% C does not use boolean or unsigned zc functions.
+  %%
+  %if triggerDataTypeId == tSS_BOOLEAN
+      %assign zcFcn = tBZCFcn
+  %elseif triggerDataTypeId == tSS_INT8
+      %assign zcFcn = tI8ZCFcn
+  %elseif triggerDataTypeId == tSS_INT16
+      %assign zcFcn = tI16ZCFcn
+  %elseif triggerDataTypeId == tSS_INT32
+      %assign zcFcn = tI32ZCFcn
+  %elseif triggerDataTypeId == tSS_UINT8
+      %assign zcFcn = tU8ZCFcn
+  %elseif triggerDataTypeId == tSS_UINT16
+      %assign zcFcn = tU16ZCFcn
+  %elseif triggerDataTypeId == tSS_UINT32
+      %assign zcFcn = tU32ZCFcn
+  %elseif triggerDataTypeId == tSS_SINGLE
+      %assign zcFcn = tR32ZCFcn
+  %elseif triggerDataTypeId == tSS_DOUBLE
+      %assign zcFcn = tRZCFcn
+  %elseif LibSignTLCFcnName(triggerDataTypeId) != ""
+    %assign zcFcn = tI8ZCFcn
+    %if LibSignTLCFcnFile(triggerDataTypeId) != ""
+      %include "%<LibSignTLCFcnFile(triggerDataTypeId)>"
+    %endif
+  %else
+    %assign dataTypeName = LibGetDataTypeSLNameFromId(triggerDataTypeId)
+      %assign errTxt = "The data type '%<dataTypeName>' on the trigger " ...
+        "port is not supported because it has no Sign function."
+      %<LibBlockReportFatalError(ssBlock, errTxt)>
+  %endif
+  
+  %%
+  %% Combine zero-crossing and output code
+  %%
+  %% Note: We will optimize for the most common configuration (both
+  %%       single and multi-tasking)
+  %%
+  %%   o No scopes required
+  %%   o Scalar control input
+  %%   o Don't need major time step guard
+  %%
+
+  %assign trigShortCut = ...
+    (...
+    tidScope == "NoScope" && ...
+    numTriggerInputs == 1 && ...
+    !needMajorTimeStepGuard ...
+    ) ? 1 : 0
+
+  %if trigShortCut
+    %%
+    %% Apply short cut
+    %%
+    %assign trigSignal = LibBlockInputSignal("trigger", "", "", 0)
+    %assign prevZC     = LibBlockPrevZCState("", "", 0)
+    %assign taskId     = trigPort.SignalSrcTID[0]
+    %assign zcDir      = LibConvertZCDirection(ZCEvent[0].Direction)
+    %if !triggerBlkPresent
+      %%
+      %% Trigger block output not shown.  Therefore, simply call the
+      %% output when an event is detected.
+      %%
+      %assign retVal = FcnTriggerOutputFormA(ss, ssBlock, triggerDataTypeId, ...
+	                                     zcDir, trigSignal, prevZC, zcFcn)
+    %else
+      %%
+      %% Short cut case with trigger block output shown.
+      %%
+      %assign retVal = FcnTriggerOutputFormB(ss, ssBlock, triggerDataTypeId, ...
+	                                     zcDir, trigSignal, prevZC, zcFcn)
+    %endif
+    %assign openCode = retVal[0]
+    %assign closeCode = retVal[1]   
+  %else
+    %%
+    %% Block not configured for the optimized common case so generate
+    %% more general solution.
+    %%
+    
+    %%
+    %% Compute control input zero-crossing code
+    %%
+    %assign zcCodeBuffer = FcnTriggerZC(ssBlock, trigPort, tidScope, ...
+                                        numTriggerInputs, zcFcn, ...
+					triggerDataTypeId)
+    %%
+    %% Update trigger block output and call output/update function
+    %%
+    %% Note that the trigger block only executes in the GCD tasks, therefore
+    %% we need to guard for this when individual tid scopes were used.
+    %%
+    %openfile openCode
+    %if needMajorTimeStepGuard
+      if (%<RTMIs("MajorTimeStep")>) \
+    %endif
+    {
+    ZCEventType trigEvent;
+    %if numTriggerInputs > 1
+      ZCEventType zcEvents[%<numTriggerInputs>] ;
+    %endif
+    \
+
+    %if tidScope == "ScopeOnce" && !isRateGrouping 
+      %assign tidGuard = LibIsSampleHit(SubsystemTID)
+      %if tidGuard != "1"
+	if (%<tidGuard>) { ...
+	   %<LibTaskComment(SubsystemTID)>
+	   %<zcCodeBuffer>\
+	 } else {
+	   trigEvent = NO_ZCEVENT;
+	 }
+       %else
+	  %<zcCodeBuffer>\
+       %endif
+    %else
+      %<zcCodeBuffer>\
+    %endif
+    /* conditionally execute */
+    %if tidScope == "ScopeIndividually" && !isRateGrouping 
+      %assign tidGuard = LibIsSampleHit(SubsystemTID)
+      %if tidGuard != "1"
+	if (trigEvent && %<tidGuard>) {
+      %else
+	if (trigEvent) {
+      %endif
+    %else
+      if (trigEvent) {
+    %endif
+    %%
+    %% Calculate elapse time if NeedElapseTime
+    %%
+    %if SysNeedsElapseTime(ss)
+      %<FcnCalculateElapseTime(ss, ssBlock)>
+    %endif
+    %%
+    %% Update trigger block outputs (if output port present)
+    %%
+    %if triggerBlkPresent
+      %assign zcDir = LibConvertZCDirection(ZCEvent[0].Direction)
+      %<FcnTriggerOutputPort(ssBlock, numTriggerInputs, zcDir)>\
+    %endif
+    %closefile openCode
+    %% SYSTEM CODE OUTPUT UPDATE
+    %openfile closeCode
+    %%
+    %% Set the mode flag that shows the subsystem was triggered
+    %%
+    %if CompiledModel.TrigSSSplitOutUpd && ModeVector[0] != 0
+      %<LibBlockMode("", "", 0)> |= (int_T)SUBSYS_TRIGGERED;
+    %endif
+    }
+    }
+    %closefile closeCode
+  %endif
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction %% FcnTriggerOutput
+
+
+%% Function: FcnTriggerUpdate ==================================================
+%% Abstract:
+%%   Generates the update open/close code for trig and enab-trig subsystems
+%%
+%function FcnTriggerUpdate(ssBlock, parentSystem, tInputIdx) void
+
+  %assign trigPort          = ControlInputPort[tInputIdx]
+  %assign ss                = CompiledModel.System[CallSiteInfo.SystemIdx]
+  %assign parentSystemTasks = LibSystemTasks(parentSystem)
+  %assign numTriggerInputs  = trigPort.Width
+  %assign triggerBlkPresent = (ss.TriggerBlkIdx != -1)
+  %assign tidScope          = ssBlock.ParamSettings.TriggerScope
+  %assign openCode          = ""
+  %assign closeCode         = ""
+  %assign isRateGrouping    = SLibIsRateGrouping() 
+
+  %assign trigShortCut = ...
+    (tidScope == "NoScope" && ...
+     numTriggerInputs == 1) ? 1 : 0
+
+  %assign guard = ""
+  %if !trigShortCut
+    %if (tidScope == "ScopeOnce" || tidScope == "ScopeIndividually") && ...
+      !isRateGrouping 
+      %assign tidGuard = LibIsSampleHit(SubsystemTID)
+      %if tidGuard != "1"
+	%assign guard = "%<tidGuard> && "
+      %endif
+    %endif
+  %endif
+  
+  %assign openP  = (guard == "") ? "" : "("
+  %assign closeP = (guard == "") ? "" : ")"
+  %assign bMode  = LibBlockMode("", "", 0)
+
+  %openfile openCode
+  if (%<guard>%<openP>(%<bMode> & (int_T)SUBSYS_TRIGGERED) == \
+      (int_T)SUBSYS_TRIGGERED%<closeP>) {
+  %closefile openCode
+  %%
+  %openfile closeCode
+  %<LibBlockMode("", "", 0)> &= ~(int_T)SUBSYS_TRIGGERED;
+  }
+  %closefile closeCode
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction %% FcnTriggerUpdate
+
+
+%% Function FcnDisableSwitchCase ===============================================
+%% Abstract:
+%%   This function produces the DISABLE case of the enable with trigger
+%%   switch statement
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnDisableSwitchCase
+%%
+%function FcnDisableSwitchCase(ssBlock, parentSystem, tInputIdx) void
+
+  %assign ss                = CompiledModel.System[CallSiteInfo.SystemIdx]
+  %assign trigPort          = ControlInputPort[tInputIdx]
+  %assign parentSystemTasks = LibSystemTasks(parentSystem)
+  %assign numTriggerInputs  = trigPort.Width
+
+  %assign tidScope = ssBlock.ParamSettings.TriggerScope
+
+  %assign needMajorTimeStepGuard = (ssBlock.ParamSettings.MinorStepGuard == "yes")
+
+  %% Setup correct zero-crossing macro to call based on data type of control
+  %assign triggerDataTypeId = LibBlockInputSignalDataTypeId("trigger")
+  %% Resolve thru aliases
+  %assign triggerDataTypeId = LibGetDataTypeIdAliasedThruToFromId(triggerDataTypeId)
+  %assign signFcn = LibSignTLCFcnName(triggerDataTypeId)
+  %if LibIsBuiltInDataType(triggerDataTypeId)
+    %if triggerDataTypeId == tSS_BOOLEAN
+      %assign zcMacro = "rt_SET_BZC_SIGSTATE"
+    %elseif SLibIsIntegerFromId(triggerDataTypeId)
+      %if SLibIsUnsignedFromId(triggerDataTypeId)
+        %assign zcMacro = "rt_SET_UZC_SIGSTATE"
+      %else
+        %assign zcMacro = "rt_SET_IZC_SIGSTATE"
+      %endif
+    %else
+      %assign zcMacro = "rt_SET_RZC_SIGSTATE"
+    %endif
+  %elseif LibSignTLCFcnName(triggerDataTypeId) != ""
+    %assign zcMacro = "rt_SET_IZC_SIGSTATE"
+    %if LibSignTLCFcnFile(triggerDataTypeId) != ""
+      %include "%<LibSignTLCFcnFile(triggerDataTypeId)>"
+    %endif
+  %else
+    %assign dataTypeName = LibGetDataTypeSLNameFromId(triggerDataTypeId)
+      %assign errTxt = "The data type '%<dataTypeName>' on the trigger " ...
+        "port is not supported because it has no Sign TLC Function."
+      %<LibBlockReportFatalError(ssBlock, errTxt)>
+  %endif
+
+  %openfile codeBuffer
+  %if needMajorTimeStepGuard   %% MajorTimeStep guard
+    if (%<RTMIs("MajorTimeStep")>) %<"{">
+  %endif
+  %if tidScope == "ScopeOnce" %% ScopeOnce guard
+    %<FcnGenerateTidGuardOpenCode(SubsystemTID)>
+  %endif
+  %foreach trigSigIdx = numTriggerInputs
+    %assign trigSignal = LibBlockInputSignal("trigger", "", "", trigSigIdx)
+    %assign prevZC     = LibBlockPrevZCState("", "", trigSigIdx)
+    %assign taskId     = trigPort.SignalSrcTID[trigSigIdx]
+    %%
+    %% Note that constant TIDs may be mixed in with non-constant TIDs
+    %%
+    %if tidScope == "ScopeIndividually" && TYPE(taskId) == "Number"
+      %<FcnGenerateTidGuardOpenCode(taskId)>
+      %if LibIsBuiltInDataType(triggerDataTypeId)
+	%<prevZC> = %<zcMacro>(%<trigSignal>);
+      %else
+	int8_T rtTempTrigger;
+        \ 
+	%assign status = %<signFcn> ...
+	  (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+	%if status != 1
+	  %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	%endif
+	
+	%<prevZC> = %<zcMacro>(rtTempTrigger);
+      %endif
+      %<FcnGenerateTidGuardCloseCode(taskId)>
+    %else
+      %if LibIsBuiltInDataType(triggerDataTypeId)
+      %<prevZC> = %<zcMacro>(%<trigSignal>);
+      %else
+        {
+          int8_T rtTempTrigger;
+        \
+          %assign status = %<signFcn> ...
+            (triggerDataTypeId, trigSignal, "", "rtTempTrigger")
+	  %if status != 1
+	    %<FcnReportSubsystemError(ssBlock, "trigger", signFcn)>
+	  %endif
+      
+          %<prevZC> = %<zcMacro>(rtTempTrigger);
+        }
+      %endif
+    %endif
+  %endforeach
+  %if tidScope == "ScopeOnce" %% ScopeOnce guard
+    %<FcnGenerateTidGuardCloseCode(SubsystemTID)>
+  %endif
+  %<(needMajorTimeStepGuard)  ? "}\n" : "">  %% MajorTimeStep
+  %closefile codeBuffer
+  %return codeBuffer
+%endfunction %% FcnDisableSwitchCase
+
+
+%% Function: FcnAppendToEnableTest =============================================
+%% Abstract:
+%%   To be used with the enable input condition.  For example,
+%%
+%%   %assign signal = LibBlockInputSignal("enable", "", "", 0)
+%%   %assign test = FcnAppendToEnableTest(ssBlock)
+%%   if (%<signal>%<test>) {
+%%     :
+%%   END
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnAppendToEnableTest
+%%
+%function FcnAppendToEnableTest(ssBlock) void
+  %% Setup correct signal test based on data type of control input
+  %assign enableDataTypeId = LibBlockInputSignalAliasedThruDataTypeId("enable")
+  %if enableDataTypeId == tSS_BOOLEAN
+      %return ""
+  %elseif LibIsBuiltInDataType(enableDataTypeId)
+      %assign zero = SLibGetFormattedValueFromId(enableDataTypeId, 0)
+      %return " > %<zero>"
+  %elseif LibIsPositiveTLCFcnName(enableDataTypeId) != ""
+    %return ""
+  %else
+    %assign dataTypeName = LibGetDataTypeSLNameFromId(enableDataTypeId)
+      %assign errTxt = "The data type '%<dataTypeName>' on the enable " ...
+        "port is not supported because it has no IsPositive TLC Function."
+    %<LibBlockReportFatalError(ssBlock, errTxt)>
+  %endif
+%endfunction %% FcnAppendToEnableTest
+
+
+%% Function: FcnEnableState ====================================================
+%% Abstract:
+%%   Generates the enable state for enable subsystems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnEnableState
+%%
+%function FcnEnableState(ssBlock, enabPort, enabTest) void
+  %assign tidScope = ssBlock.ParamSettings.EnableScope
+  %assign needMajorTimeStepGuard = ...
+    (ssBlock.ParamSettings.MinorStepGuard == "yes")
+  %assign numEnableInputs  = enabPort.Width
+  %assign numUniqueTIDs    = enabPort.NumUniqueTIDs
+  %assign enableDataTypeId = LibBlockInputSignalDataTypeId("enable")
+  %assign isPositiveFcn    = LibIsPositiveTLCFcnName(enableDataTypeId)
+  %if LibIsPositiveTLCFcnFile(enableDataTypeId) != ""
+    %include "%<LibIsPositiveTLCFcnFile(enableDataTypeId)>"
+  %endif
+
+  %openfile enableStateBuffer
+  %switch tidScope
+    %case "ScopeIndividually"
+      %%
+      %% Enable inputs computed separately
+      %%
+      %assign orOperator = ""
+      %assign updateCondition = ""
+      %assign hadMajorTimeStepGuard = 0
+      %with enabPort
+	%foreach srcTIDIdx = numUniqueTIDs
+	  %assign modeIdx = srcTIDIdx+1
+	  %assign taskId = SrcTID[srcTIDIdx].tid
+	  %assign rollRegions = SrcTID[srcTIDIdx].RollRegions
+	  %%
+	  %% Sample hit protection
+	  %%
+	  %if TYPE(taskId) == "Number" && !SLibIsRateGrouping()
+	    %assign sampleHitGuard = LibIsSampleHit(taskId)
+	    %if sampleHitGuard == "1"
+	      %assign sampleHitGuard = ""
+	    %endif
+	  %else
+	    %assign sampleHitGuard = ""
+	  %endif
+	  %%
+	  %% Major time step protection
+	  %%
+	  %if needMajorTimeStepGuard && LibIsContinuous(taskId)
+	    %assign majorTimeStepGuard = "%<RTMIs("MajorTimeStep")>"
+	    %assign hadMajorTimeStepGuard = 1
+	  %else
+	    %assign majorTimeStepGuard = ""
+	  %endif
+	  %%
+	  %% Piece it together
+	  %%
+	  %if sampleHitGuard != "" && majorTimeStepGuard != ""
+	    %assign opVal = " && "
+	  %else
+	    %assign opVal = ""
+	  %endif
+	  %assign scope = "%<sampleHitGuard>%<opVal>%<majorTimeStepGuard>"
+	  %assign blockMode = LibBlockMode("", "", modeIdx)
+	  %openfile tmpCodeBuf
+          %<blockMode> = (int_T) SUBSYS_DISABLED;
+          %assign rollVars = ["enable"]
+	  %roll sigIdx=rollRegions,lcv=RollThreshold,ssBlock,"Roller",rollVars
+	    %assign enabSignal = LibBlockInputSignal("enable","",lcv, sigIdx)
+	    %if !LibIsBuiltInDataType(enableDataTypeId)
+	      %assign status = %<isPositiveFcn> ...
+		(enableDataTypeId, enabSignal, "", "rtTempEnable")
+	      %if status != 1
+		%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+	      %endif
+	      %assign enabSignal = "rtTempEnable"
+	    %endif
+            %<blockMode> |= (int_T) (%<enabSignal>%<enabTest>) ?
+              SUBSYS_ENABLED : SUBSYS_DISABLED;
+          %endroll
+          %closefile tmpCodeBuf
+	  %if scope != ""
+	    if (%<scope>) { %<LibTaskComment(taskId)>
+	    %<tmpCodeBuf>\
+	    }
+	  %else
+	    %<tmpCodeBuf>\
+	  %endif
+	  %%
+	  %% Create the conditon code for updating enable state 
+	  %%
+	  %if sampleHitGuard != "" 
+	    %assign updateCondition = ...
+	      updateCondition + orOperator + sampleHitGuard
+	    %assign orOperator = " ||\n"
+	  %endif
+	%endforeach
+      %endwith
+      %if hadMajorTimeStepGuard
+	%assign updateCondition = "%<RTMIs("MajorTimeStep")> && \n"...
+	  + "(" + updateCondition + ")"
+      %endif
+      %break
+
+    %case "ScopeOnce"
+      %%
+      %% Enable inputs computed inside one scope
+      %%
+      %assign blockMode = LibBlockMode("", "", 1)
+      %%
+      %% Find the "valued" task.
+      %%
+      %foreach enabSigIdx = numEnableInputs
+	%assign taskId = enabPort.SignalSrcTID[enabSigIdx]
+	%if TYPE(taskId) == "Number"
+	  %break
+	%endif
+      %endforeach
+      %assign majorTimeStepGuard = ...
+        (needMajorTimeStepGuard && LibIsContinuous(taskId)) ? ...
+        "%<RTMIs("MajorTimeStep")>" : ""
+      %if SLibIsRateGrouping()
+        %assign updateCondition = majorTimeStepGuard
+      %else 
+        %assign updateCondition = LibIsSampleHit(taskId)
+	%if updateCondition == "1"
+	  %assign updateCondition = majorTimeStepGuard
+	%else
+	  %assign updateCondition = WHITE_SPACE(majorTimeStepGuard) ? ...
+	    "%<LibIsSampleHit(taskId)>" :                           ...
+	    "%<LibIsSampleHit(taskId)> && %<majorTimeStepGuard>"
+	%endif
+      %endif
+      %if !WHITE_SPACE(updateCondition)
+        if (%<updateCondition>) { ...
+          %<LibTaskComment(taskId)>
+      %endif
+      %assign rollRegions                   = enabPort.SrcTID.RollRegions
+      %assign lastTid                       = System[SystemIdx].CurrentTID
+      %assign System[SystemIdx].CurrentTID  = enabPort.SrcTID.tid
+      %if !WILL_ROLL(rollRegions,RollThreshold)
+	%assign orOperator = "="
+	%foreach enabSigIdx = numEnableInputs
+          %assign enabSignal = LibBlockInputSignal("enable","","",enabSigIdx)
+	  %if !LibIsBuiltInDataType(enableDataTypeId)
+	    %assign status = %<isPositiveFcn> ...
+	      (enableDataTypeId, enabSignal, "", "rtTempEnable")
+	    %if status != 1
+	      %<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+	    %endif      
+	    %assign enabSignal = "rtTempEnable"
+	  %endif
+          %<blockMode> %<orOperator> (%<enabSignal>%<enabTest>) ? ...
+	    SUBSYS_ENABLED : SUBSYS_DISABLED;
+	  %assign orOperator = "|="
+        %endforeach
+      %else
+        %<blockMode>= (int_T) SUBSYS_DISABLED;
+        %assign rollVars = ["enable"]
+	%roll sigIdx=rollRegions,lcv=RollThreshold,ssBlock,"Roller",rollVars
+	  %assign enabSignal = LibBlockInputSignal("enable", "", lcv, sigIdx)
+	  %if !LibIsBuiltInDataType(enableDataTypeId)
+	    %assign status = %<isPositiveFcn> ...
+	      (enableDataTypeId, enabSignal , "", "rtTempEnable")
+	    %if status != 1
+	      %<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+	    %endif
+	    %assign enabSignal = "rtTempEnable"
+	  %endif
+          %<blockMode> |= (int_T) (%<enabSignal>%<enabTest>) ?
+          SUBSYS_ENABLED : SUBSYS_DISABLED;
+        %endroll
+      %endif
+      %assign System[SystemIdx].CurrentTID = lastTid
+      %if !WHITE_SPACE(updateCondition)
+	}
+      %endif
+      %break
+
+    %case "NoScope"
+      %%
+      %% MajorTime Step guard possibly required
+      %%  
+      %if ISEQUAL(enabPort.SignalSrcTID[0],"constant")
+        %assign updateCondition = ""
+      %else
+        %assign updateCondition = needMajorTimeStepGuard ? ...
+          "%<RTMIs("MajorTimeStep")>" : ""
+      %endif
+      %%
+      %assign blockMode = LibBlockMode("", "", 1)
+      %assign numRollRegions = enabPort.NumUniqueTIDs
+      %assign numRollRegions = numRollRegions == 0 ? 1 : numRollRegions
+      %foreach rollIdx = numRollRegions
+        %assign lastTid = System[SystemIdx].CurrentTID
+        %if enabPort.NumUniqueTIDs == 0 
+	  %assign rollRegions = enabPort.RollRegions
+	%else
+	  %assign rollRegions = enabPort.SrcTID[rollIdx].RollRegions
+          %assign System[SystemIdx].CurrentTID = enabPort.SrcTID[rollIdx].tid
+	%endif
+	%if !WILL_ROLL(rollRegions,RollThreshold)
+	  %assign orOperator = "="
+	  %foreach enabSigIdx = numEnableInputs
+	    %assign enabSignal= LibBlockInputSignal("enable","","",enabSigIdx)
+	    %if !LibIsBuiltInDataType(enableDataTypeId)
+	      %assign status = %<isPositiveFcn> ...
+		(enableDataTypeId, enabSignal, "", "rtTempEnable")
+	      %if status != 1
+		%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+	      %endif
+	      %assign enabSignal = "rtTempEnable"
+	    %endif
+            %<blockMode> %<orOperator> (%<enabSignal>%<enabTest>) ? ...
+	      SUBSYS_ENABLED : SUBSYS_DISABLED;
+            %assign orOperator = "|="
+          %endforeach
+        %else
+          %<blockMode>= (int_T) SUBSYS_DISABLED;
+          %assign rollVars = ["enable"]
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, ssBlock, ...
+	    "Roller", rollVars
+	    %assign enabSignal = LibBlockInputSignal("enable","",lcv,sigIdx)
+	    %if !LibIsBuiltInDataType(enableDataTypeId)
+	      %assign status = %<isPositiveFcn> ...
+		(enableDataTypeId, enabSignal, "", "rtTempEnable")
+	      %if status != 1
+		%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+	      %endif
+	      %assign enabSignal = "rtTempEnable"
+	    %endif
+            %<blockMode> |= (int_T) (%<enabSignal>%<enabTest>) ?
+              SUBSYS_ENABLED : SUBSYS_DISABLED;
+          %endroll
+        %endif
+        %assign System[SystemIdx].CurrentTID = lastTid
+      %endforeach
+      %break
+    %default
+      %<LibBlockReportFatalError(ssBlock, ...
+        "Unknown tid scoping requirement: %<tidScope>")>
+  %endswitch
+  %closefile enableStateBuffer
+  %return ["%<enableStateBuffer>", "%<updateCondition>"]
+%endfunction %% FcnEnableState
+
+
+%% Function: FcnEnableTransition ===============================================
+%% Abstract:
+%%   Generates the enable/disable transition code for enabled subsystems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnEnableTransition
+%%
+%function FcnEnableTransition(ss, ssBlock, latchEnableCondition, ...
+      updateCondition, tmpBecomingEnabledBuffer, tmpBecomingDisabledBuffer) void
+  %openfile transitionBuffer
+  %if CompiledModel.TrigSSSplitOutUpd && (ss.Type=="enable_with_trigger")
+    %assign bMode = "((CondStates)(%<LibBlockMode("", "", 0)> & SUBSYS_ENABLED))"
+  %else
+    %assign bMode = "(CondStates) %<LibBlockMode("", "", 0)>"
+  %endif
+  %% Open scope
+  %if updateCondition != ""
+    if (%<updateCondition>) {
+    \
+  %else
+    {
+    \
+  %endif
+  %% Declare vars
+  CondStates prevEnableState = %<bMode>;
+  CondStates enableState;
+  \
+  %assign orOperator = "="
+  %assign orAssign = "|="
+  %assign numModes = ModeVector[0]
+  %<latchEnableCondition>
+  %if numModes == 1
+    %% Set the base mode (the only mode in fact)
+    %assign blockMode = LibBlockMode("", "", 0)
+    enableState = (CondStates) %<blockMode>;
+  %else
+    %% The base mode has already been set in the start function.
+    %% Now set the individual input rate modes (starting at index
+    %% 1 and up to numModes-1)
+    %foreach mIdx = numModes-1
+      %assign blockMode = LibBlockMode("", "", mIdx+1)
+      %if CompiledModel.TrigSSSplitOutUpd && (ss.Type=="enable_with_trigger")
+	enableState %<orOperator> ((CondStates)%<blockMode> & SUBSYS_ENABLED);
+      %else
+	enableState %<orOperator> (CondStates) %<blockMode>;
+      %endif
+      %assign orOperator = orAssign
+    %endforeach
+  %endif
+  if (enableState == SUBSYS_ENABLED) {
+    if (prevEnableState == SUBSYS_DISABLED) {
+      /* SUBSYS_BECOMING_ENABLED */
+      %<tmpBecomingEnabledBuffer>
+    }
+  } else {
+    if (prevEnableState == SUBSYS_ENABLED) {
+      /* SUBSYS_BECOMING_DISABLED */
+      %<tmpBecomingDisabledBuffer>
+    }
+  }
+  %if updateCondition != ""
+   }
+  %else
+    }
+  %endif
+  %closefile transitionBuffer
+  %return transitionBuffer
+%endfunction %% FcnEnableTransition
+
+
+%% Function: FcnCommonEnableOutput =============================================
+%% Abstract:
+%%   Generates the common enable code for enabled and enable-with-trigger 
+%%   systems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnCommonEnableOutput
+%%
+%function FcnCommonEnableOutput(ss, ssBlock, parentSystem, tInputIdx) void
+  %assign  openCode = ""
+  %assign closeCode = ""
+  
+  %if ss.Type == "enable"
+    %%
+    %% Purely enabled system
+    %%
+    %assign enableOutputScope = ssBlock.ParamSettings.EnableOutputScope
+    %if !LibSystemFcnIsEmpty(ss,"Output") && ...
+         enableOutputScope != "no" && !SLibIsRateGrouping()
+      %assign conditionBuffer = ""
+      %assign orOperator = ""
+      %foreach tidIdx = SIZE(SubsystemTID, 1)
+	%assign tidGuard = LibIsSampleHit(SubsystemTID[tidIdx])
+	%if tidGuard != "1"
+	  %assign conditionBuffer = conditionBuffer + ...
+	    "%<orOperator>%<tidGuard>"
+	  %assign orOperator = " || "
+	%else
+	  %assign conditionBuffer = ""
+	  %break
+	%endif
+      %endforeach
+      %if !WHITE_SPACE(conditionBuffer)
+	%assign  openCode = "if (%<conditionBuffer>) {"
+	%assign closeCode = "}"
+      %else
+	%assign  openCode = "{"
+	%assign closeCode = "}"
+      %endif
+    %endif
+    
+    %if !LibSystemFcnIsEmpty(ss, "OutputUpdate")
+      %if SysNeedsElapseTime(ss)
+	%assign openClose = ...
+	  InsertElapseTime(ss, ssBlock, openCode, closeCode)
+	%assign openCode  = openClose[0]
+	%assign closeCode = openClose[1]
+      %endif
+    %endif
+    %% Update the system ran breadcrumb (ModelRefSimTarget only)
+    /* Update the system ran breadcrumb state */
+    %assign closeCode = "%<closeCode>%<FcnUpdateSubsysRanBC(ss)>"
+  %else
+    %%
+    %% Enabled with trigger system
+    %%
+    %if !LibSystemFcnIsEmpty(ss, "OutputUpdate") || ...
+      (CompiledModel.TrigSSSplitOutUpd && !LibSystemFcnIsEmpty(ss, "Output"))
+      %if tInputIdx != 1
+        %<LibBlockReportFatalError(ssBlock,"tInputIdx = " + ...
+          "%<tInputIdx> where 1 was expected.")>
+      %endif
+      %assign    retVal = FcnTriggerOutput(ssBlock, parentSystem, tInputIdx)
+      %assign  openCode = retVal[0]
+      %assign closeCode = retVal[1]
+    %endif
+  %endif
+  
+  %return ["%<openCode>", "%<closeCode>"]
+%endfunction %% FcnCommonEnableOutput
+
+
+%% Function: FcnBecomingEnabled ================================================
+%% Abstract:
+%%   Generates the becoming enabled code for enabled and 
+%%   enabled with trigger systems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnBecomingEnabled
+%%
+%function FcnBecomingEnabled(ss, ssBlock) void
+  %openfile tmpBecomingEnabledBuffer
+  %if SolverType == "VariableStep"
+        %<SLibSetStatesDisabled(ssBlock,ss,"FALSE")>
+        if ( %<LibGetT()> !=  %<RTMGet("TStart")> ) {
+          %<RTMSetSolverNeedsReset()>;
+        }
+  %endif
+  %if ParamSettings.StatesWhenEnabling == "reset"
+    %if LibSystemFcnIsEmpty(ss, "Initialize")
+      /* (system initialize function is empty) */
+    %else
+      %if ProtectCallInitFcnTwice
+	/* protect against calling initialize function twice at startup */
+        if (!(%<LibIsFirstInitCond()>)) {
+        %<LibGenSystemFcnCallIn(ss,"Output","Initialize",ssBlock.CallSiteIdx)>
+	}
+      %else
+	%<LibGenSystemFcnCallIn(ss,"Output","Initialize",ssBlock.CallSiteIdx)>
+      %endif
+    %endif
+  %endif
+  %if LibSystemFcnIsEmpty(ss, "Enable")
+    /* (system enable function is empty) */
+  %else
+    %<LibGenSystemFcnCallIn(ss, "Output", "Enable", ssBlock.CallSiteIdx)>
+  %endif
+  %% set the base mode (overall mode) to enable
+  %<LibBlockMode("", "", 0)> = (int_T) SUBSYS_ENABLED;
+  %closefile tmpBecomingEnabledBuffer
+  %return tmpBecomingEnabledBuffer
+%endfunction %% FcnBecomingEnabled
+
+
+%% Function: FcnBecomingDisabled ===============================================
+%% Abstract:
+%%   Generates the becoming disabled code for enabled and 
+%%   enabled with trigger systems
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput -> FcnBecomingDisabled
+%%
+%function FcnBecomingDisabled(ss, ssBlock) void
+    %openfile tmpBecomingDisabledBuffer
+    %if SolverType == "VariableStep"
+      %<RTMSetSolverNeedsReset()>;
+        %<SLibSetStatesDisabled(ssBlock,ss,"TRUE")>
+    %endif
+    %if LibSystemFcnIsEmpty(ss, "Disable")
+      /* (system disable function is empty) */
+      %% set the base mode (overall mode) to disable
+      %<LibBlockMode("", "", 0)> = (int_T) SUBSYS_DISABLED;
+    %else
+      %<LibGenSystemFcnCallIn(ss, "Output", "Disable", ssBlock.CallSiteIdx)>
+    %endif
+    
+    %closefile tmpBecomingDisabledBuffer
+    %return tmpBecomingDisabledBuffer
+%endfunction %% FcnBecomingDisabled
+
+%% Function: FcnUpdatePrevSigState ========================
+%% Abstract:
+%%    This function is called for enable_with_trigger subsystem to
+%%    update prevSig.
+%%
+%function FcnUpdatePrevSigState(ss, ssBlock, parentSystem, tInputIdx) void
+  %assert ss.Type == "enable_with_trigger"
+
+  %return FcnDisableSwitchCase(ssBlock, parentSystem, tInputIdx)
+
+%endfunction
+
+%% Function: FcnEnableOutput ===================================================
+%% Abstract:
+%%   Generates the output code required to execute these subsytem types
+%%
+%%    o enable
+%%    o enable with trigger
+%%
+%%   Call Trace: Outputs -> FcnEnableOutput
+%%
+%function FcnEnableOutput(ssBlock, parentSystem, eInputIdx, tInputIdx) void
+  %% Need rtlib
+  %assign ::CompiledModel.IncludeLibsrc = 1
+
+  %assign ss                = CompiledModel.System[CallSiteInfo.SystemIdx]
+  %assign enabPort          = ControlInputPort[eInputIdx]
+  %assign numEnableInputs   = enabPort.Width
+  %assign numUniqueTIDs     = enabPort.NumUniqueTIDs
+  %assign parentSystemTasks = LibSystemTasks(parentSystem)
+  %assign enableDataTypeId  =  LibBlockInputSignalAliasedThruDataTypeId("enable")
+  %assign openCode          = ""
+  %assign closeCode         = ""
+  
+  %if !LibIsBuiltInDataType(enableDataTypeId)
+    %assign isPositiveFcn = LibIsPositiveTLCFcnName(enableDataTypeId)
+    %if LibIsPositiveTLCFcnFile(enableDataTypeId) != ""
+      %include "%<LibIsPositiveTLCFcnFile(enableDataTypeId)>"
+    %endif
+  %endif
+  
+  %% Get scope requirement
+  %assign tidScope = ssBlock.ParamSettings.EnableScope
+
+  %% The ssIsMajorTimeStep guard prevents transitions during a minor step
+  %% and is required when parent system executes in minor steps
+  %assign needMajorTimeStepGuard = (ssBlock.ParamSettings.MinorStepGuard == "yes")
+
+  %% Get the enable test
+  %assign enabTest = FcnAppendToEnableTest(ssBlock)
+  
+  %% Get the shortcut requriement
+  %%
+  %% Used to optimize the most common configuration
+  %% (both single and multi-tasking)
+  %%   o No scopes required
+  %%   o Scalar control input
+  %%   o No continuous states in parent system (don't need major time step
+  %%     guard)
+  %%
+  %assign enabShortCut = (tidScope == "NoScope" && numEnableInputs == 1 && ...
+                          !needMajorTimeStepGuard) ? 1 : 0
+  %%
+  %% Setup enable code for enabled and enabled with trigger systems
+  %% Shared between enabShortCut and !enabShortCut code
+  %% Shared whether we have a mode vector or not
+  %%
+  %assign tmpEnabledBuffer = ...
+      FcnCommonEnableOutput(ss, ssBlock, parentSystem, tInputIdx)
+  
+  %if ModeVector[0] != 0
+    %%
+    %% Setup disable code for enabled with trigger systems
+    %% Shared between enabShortCut and !enabShortCut code
+    %% Not used if enable mode vector is not required
+    %%
+    
+    %% disabled
+    %openfile tmpDisableBuffer
+      /* no action required while system is disabled */
+    %closefile tmpDisableBuffer
+    
+    %%
+    %% Setup becoming enabled and becoming disabled buffers
+    %% Shared between enabShortCut and !enabShortCut code
+    %% Not used if enable mode vector is not required
+    %%
+    
+    %assign offsetStr = ""
+    %if SolverType == "VariableStep"
+      %assign ncStates = ParamSettings.SystemContStates[0]
+      %assign disableOffset = ParamSettings.SystemContStates[1]
+      %if disableOffset > 0
+        %assign offsetStr = " + %<disableOffset>"
+      %endif
+    %else
+      %assign ncStates = 0
+    %endif
+    %% becoming enabled
+    %assign tmpBecomingEnabledBuffer = ...
+        FcnBecomingEnabled(ss, ssBlock)
+    
+    %% becoming disabled
+    %assign tmpBecomingDisabledBuffer = ...
+        FcnBecomingDisabled(ss, ssBlock)
+    
+  %endif %% ModeVector[0] != 0
+
+  %if SLibIsMultiRateAndRateGrouping(ss) 
+    %assign openCodeofTransition = ""
+    %assign closeCodeofTransition = ""
+    %assign NeedCombinedTransitionCode = TLC_FALSE  
+    %assign Num_SubsystemTIDs = SIZE(ssBlock.SubsystemTID, 1)
+    %assign tid01Eq = ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+    %if Num_SubsystemTIDs == 1 
+      %% in the case that there is only  one subsystemTID, 
+      %% SignalSrcTID still may be different from SubsystemTID
+      %% because constant TID is not included in SubsystemTID
+      %% where subsystem has TID other than constant.
+      %if ISEQUAL(enabPort.SignalSrcTID[0],SubsystemTID)
+	%assign NeedCombinedTransitionCode = TLC_TRUE
+      %elseif tid01Eq && (TYPE(enabPort.SignalSrcTID[0]) == "Number") ...
+                      && (TYPE(SubsystemTID) == "Number")
+        %if (enabPort.SignalSrcTID[0] <= 1) && (SubsystemTID <= 1)
+	  %assign NeedCombinedTransitionCode = TLC_TRUE
+        %endif
+      %endif
+    %else
+      %foreach tidIdx = SIZE(ssBlock.SubsystemTID, 1)
+	%% if single src TID is one of subsystem TID
+	%% transition code need to combined with code
+	%% with each TID involved.
+	%%
+	%if ISEQUAL(enabPort.SignalSrcTID[0], SubsystemTID[tidIdx])
+	  %assign NeedCombinedTransitionCode = TLC_TRUE
+        %elseif tid01Eq && (TYPE(enabPort.SignalSrcTID[0]) == "Number") ...
+                        && (TYPE(SubsystemTID[tidIdx]) == "Number") 
+          %if (enabPort.SignalSrcTID[0] <= 1) && (SubsystemTID[tidIdx] <= 1)
+	    %assign NeedCombinedTransitionCode = TLC_TRUE
+          %endif
+	%endif
+      %endforeach
+    %endif
+  %endif
+  %%
+  %% Setup remaining buffers for the no enabShortCut case
+  %%
+  %if !enabShortCut
+
+    %%
+    %% Compute enable state
+    %%
+    %assign enableStateBuffer = FcnEnableState(ssBlock, enabPort, enabTest)
+    %assign latchEnableCondition = enableStateBuffer[0]
+    %assign updateCondition = enableStateBuffer[1]
+
+    %%
+    %% Enable/disable transition code
+    %%
+    %assign transitionBuffer = ...
+        FcnEnableTransition(ss, ssBlock, latchEnableCondition, updateCondition, ...
+                            tmpBecomingEnabledBuffer, tmpBecomingDisabledBuffer)
+  %endif %% enabShortCut
+
+
+  %%
+  %% Piece everything together
+  %%
+  %% open close Code for all subsystemTID
+  %openfile openCode
+  %if !LibIsBuiltInDataType(enableDataTypeId)  
+    {
+     boolean_T  rtTempEnable;
+    \
+  %endif
+  \
+  %if enabShortCut 
+    %%
+    %% Apply the enable short cut.
+    %%
+    %assign enabSignal = LibBlockInputSignal("enable", "", "", 0)
+    %if !LibIsBuiltInDataType(enableDataTypeId)
+      %assign status = %<isPositiveFcn>(enableDataTypeId, enabSignal, "", ...
+	"rtTempEnable")
+      %if status != 1
+	%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+      %endif
+      %assign enabSignal = "rtTempEnable"
+      %assign enabCast = ""
+    %elseif enableDataTypeId != tSS_BOOLEAN
+      %assign enabCast = "(boolean_T)"
+    %else
+      %assign enabCast = ""
+    %endif
+    %%
+    %%
+    %if ModeVector[0] == 0
+      %%
+      %% The various modes are not required.  This means a simple
+      %% "if" can be employed
+      %%
+      if (%<enabSignal>%<enabTest>) {
+        %<tmpEnabledBuffer[0]>\
+        %closefile openCode
+        %% SYSTEM OUTPUT(UPDATE)FCN
+        %openfile closeCode
+        %<tmpEnabledBuffer[1]>
+      }
+    %else
+      %assign blockMode = LibBlockMode("", "", 0)
+      /* switch on enable state */
+      %if enabTest != ""
+	%assign enabExpr = "(%<enabSignal>%<enabTest>)"
+      %else
+	%assign enabExpr = enabSignal
+      %endif
+      switch (rt_EnableState(%<enabCast>%<enabExpr>, %<blockMode>)) {
+      %if !SLibIsMultiRateAndRateGrouping(ss)
+      case SUBSYS_BECOMING_ENABLED:
+        %<tmpBecomingEnabledBuffer>\
+	/*FALLTHROUGH*/
+      %endif
+      case SUBSYS_ENABLED:
+        %<tmpEnabledBuffer[0]>\
+	%closefile openCode
+	%% SYSTEM OUTPUT(UPDATE)FCN
+	%openfile closeCode
+	%<tmpEnabledBuffer[1]>\
+	break;
+      %if !SLibIsMultiRateAndRateGrouping(ss)
+      case SUBSYS_BECOMING_DISABLED:
+        %<tmpBecomingDisabledBuffer>\
+	/*FALLTHROUGH*/
+      %endif
+      case SUBSYS_DISABLED:
+	%<tmpDisableBuffer>\
+	break;
+      default:
+	break;
+      }
+    %endif %% ModeVector[0] == 0
+  %else
+    %%
+    %% Block not configured for the optimized common case so generate
+    %% the more general solution.
+    %%
+    %assign blockMode = LibBlockMode("", "", 0)
+    %if !SLibIsMultiRateAndRateGrouping(ss)
+      /* detect enable/disable transitions */
+      %<transitionBuffer>\
+    %endif
+    
+    /* run blocks if enabled */
+    %if CompiledModel.TrigSSSplitOutUpd && (ss.Type=="enable_with_trigger")
+      if ((%<blockMode> & (int_T)SUBSYS_ENABLED) == (int_T)SUBSYS_ENABLED) {
+    %else
+      if (%<blockMode> == SUBSYS_ENABLED) {
+    %endif
+      %<tmpEnabledBuffer[0]>\
+      %closefile openCode
+      %% SYSTEM OUTPUT(UPDATE)FCN
+      %openfile closeCode
+      %<tmpEnabledBuffer[1]>
+    }
+  %endif  %% applyShortCut
+  %if ss.Type == "enable_with_trigger"
+    %% Enable_with_trigger system need update prevSigState
+    %% regardless enable signal status, see G143937
+    /* update prevSigState */
+    %<FcnUpdatePrevSigState(ss, ssBlock, parentSystem, tInputIdx)>
+  %endif
+  \
+  %if !LibIsBuiltInDataType(enableDataTypeId)
+    }
+  %endif 
+  %closefile closeCode
+  %% end of open-close code for all subsystemlTID ----------------
+  %if !SLibIsMultiRateAndRateGrouping(ss)
+    %return ["%<openCode>", "%<closeCode>"]
+  %endif
+  %% If rate grouping, open-close code for TID of
+  %% enable signal is different from open-close code
+  %% for other TIDs. 
+  %% -------------------------------------------------------
+  %% open close code for TID of enable signal
+  %openfile openCodeofTransition
+  %if !LibIsBuiltInDataType(enableDataTypeId)  
+    {
+     boolean_T  rtTempEnable;
+    \
+  %endif
+  \
+  %if enabShortCut 
+    %%
+    %% Apply the enable short cut.
+    %%
+    %assign enabSignal = LibBlockInputSignal("enable", "", "", 0)
+    %if !LibIsBuiltInDataType(enableDataTypeId)
+      %assign status = %<isPositiveFcn>(enableDataTypeId, enabSignal, "", ...
+	"rtTempEnable")
+      %if status != 1
+	%<FcnReportSubsystemError(ssBlock, "enable", isPositiveFcn)>
+      %endif
+      %assign enabSignal = "rtTempEnable"
+      %assign enabCast = ""
+    %elseif enableDataTypeId != tSS_BOOLEAN
+      %assign enabCast = "(boolean_T)"
+    %else
+      %assign enabCast = ""
+    %endif
+    %%
+    %%
+    %if ModeVector[0] == 0
+      %%
+      %% The various modes are not required.  This means a simple
+      %% "if" can be employed, not code is needed 
+      %%
+      %closefile openCodeofTransition
+      %openfile closeCodeofTransition
+    %else
+      %assign blockMode = LibBlockMode("", "", 0)
+      /* switch on enable state */
+      %if enabTest != ""
+	%assign enabExpr = "(%<enabSignal>%<enabTest>)"
+      %else
+	%assign enabExpr = enabSignal
+      %endif
+      switch (rt_EnableState(%<enabCast>%<enabExpr>, %<blockMode>)) {
+	case SUBSYS_BECOMING_ENABLED:
+	  %<tmpBecomingEnabledBuffer>\
+	  /*FALLTHROUGH*/
+	%if NeedCombinedTransitionCode
+	case SUBSYS_ENABLED:
+          %<tmpEnabledBuffer[0]>\
+	  %closefile openCodeofTransition
+	  %% SYSTEM OUTPUT(UPDATE)FCN
+	  %openfile closeCodeofTransition
+	  %<tmpEnabledBuffer[1]>\
+	  break;
+	%else
+	  %closefile openCodeofTransition
+	  %% SYSTEM OUTPUT(UPDATE)FCN
+	  %openfile closeCodeofTransition
+	%endif
+	case SUBSYS_BECOMING_DISABLED:
+          %<tmpBecomingDisabledBuffer>\
+	  /*FALLTHROUGH*/
+	%if NeedCombinedTransitionCode  
+        case SUBSYS_DISABLED:
+	  %<tmpDisableBuffer>\
+	%endif
+	  break;
+	default:
+	  break;
+      }
+    %endif %% ModeVector[0] == 0
+  %else
+    %%
+    %% Block not configured for the optimized common case so generate
+    %% the more general solution.
+    %%
+    %assign blockMode = LibBlockMode("", "", 0)
+    /* detect enable/disable transitions */
+    %<transitionBuffer>\
+    
+    %if NeedCombinedTransitionCode
+      /* run blocks if enabled */
+      %if CompiledModel.TrigSSSplitOutUpd &&(ss.Type=="enable_with_trigger")
+	if ((%<blockMode> & (int_T)SUBSYS_ENABLED) == (int_T)SUBSYS_ENABLED) {
+      %else
+	if (%<blockMode> == SUBSYS_ENABLED) {
+      %endif      
+        %<tmpEnabledBuffer[0]>\
+	%closefile openCodeofTransition
+	%% SYSTEM OUTPUT(UPDATE)FCN
+	%openfile closeCodeofTransition
+	%<tmpEnabledBuffer[1]>
+       }
+       
+     %else
+       %closefile openCodeofTransition
+          %% SYSTEM OUTPUT(UPDATE)FCN
+       %openfile closeCodeofTransition
+    %endif
+  %endif  %% applyShortCut
+  %if ss.Type == "enable_with_trigger"
+    %% Enable_with_trigger system need update prevSigState
+    %% regardless enable signal status, see G143937
+    /* update prevSigState */
+    %<FcnUpdatePrevSigState(ss, ssBlock, parentSystem, tInputIdx)>
+  %endif
+  \
+  %if !LibIsBuiltInDataType(enableDataTypeId)
+    }
+  %endif
+  %closefile closeCodeofTransition
+  %%% end of open-close code for enable src signal TID%%
+  %return ["%<openCode>", "%<closeCode>",...
+      "%<openCodeofTransition>", "%<closeCodeofTransition>"]
+%endfunction %% FcnEnableOutput
+
+%%%%
+%%%% Interater output utility functions
+%%%%
+
+%% Function: GetLoopVariableName ===============================================
+%% Abstract:
+%%   Returns the loop variable name that is used for the iterator block.  This
+%%   name is formed by concatenating "iter" with SYSNAME[0].
+%function GetLoopVariableName(iteratorBlock) void
+  %with iteratorBlock
+    %assign loopSuffix = SYSNAME(Name)[0]
+  %endwith
+  %return "iter%<loopSuffix>"
+%endfunction
+  
+%% Function: InitializeIteratorSystem ==========================================
+%% Abstract:
+%%   Writes out the initialization code needed by the for/while blocks.
+%%   We need special handling for this in the case of nested iterator
+%%   loops when the inner iterator block resets their states.  In this case,
+%%   we need to reset the innner subsystem multiple times on the first
+%%   time step, so we need an extra check in addition to IsFirstInitCond
+%%   to see if this not the first iteration of the outer loop.
+%%   In this case, each iterator subsystem that is set to reset and has
+%%   a parent iterator block will have a uint8 dwork.  This dwork is 
+%%   initialized to 0 when it is allocated, and is set to 1 just before we
+%%   we run the iterator subsystem.  That means when the initialization
+%%   code is run for this system, the dwork will equal 0 only the first 
+%%   time it is called.  
+%function InitializeIteratorSystem(ss, ssBlock, hasParentIter, dwork) Output
+  %if LibSystemFcnIsEmpty(ss, "Initialize")
+    /* (system initialize function is empty) */
+  %else
+    %if ProtectCallInitFcnTwice
+      /* protect against calling initialize function twice at startup */
+      %if hasParentIter
+        if (!(%<LibIsFirstInitCond()>) || (%<dwork> != 0)) {
+      %else
+        if (!(%<LibIsFirstInitCond()>)) {
+      %endif
+      %if SolverType == "VariableStep"
+        %<RTMSetSolverNeedsReset()>;
+      %endif
+      %<LibGenSystemFcnCallIn(ss, "OutputUpdate", "Initialize", ssBlock.CallSiteIdx)>
+      }
+    %else
+      %if SolverType == "VariableStep"
+	%<RTMSetSolverNeedsReset()>;
+      %endif
+      %<LibGenSystemFcnCallIn(ss, "OutputUpdate", "Initialize", ssBlock.CallSiteIdx)>
+    %endif
+  %endif
+%endfunction
+
+%% Function: FcnIteratorWhileOpen ==============================================
+%% Abstract:
+%%   Generates the output code for a WhileIterator subsystem
+%%   Call Trace: Outputs -> FcnIteratorOutput -> FcnIteratorForLoop
+%%                                            -> FcnIteratorWhileLoop
+%%
+%function FcnIteratorWhileOpen(ss, ssBlock) void
+  %with ssBlock
+    %assign itSysIdx = CallSiteInfo.SystemIdx
+    %assign itBlkIdx = ParamSettings.IteratorBlock
+    %assign statesWhenEnabling = ParamSettings.StatesWhenEnabling
+  %endwith
+  %assign ib       = CompiledModel.System[itSysIdx].Block[itBlkIdx]
+  %assign setIBOutput = 0
+  %% Get any information from the iterator block
+  %with CompiledModel.System[itSysIdx]
+    %with ib
+      %assign hasParentIter = HasParentIterator
+      %assign needDWork = (NumDWork > 0)
+      %if needDWork
+        %assign dworkIdx = DWork.FirstRootIdx
+      %endif
+      %assign nInputPorts = NumDataInputPorts
+      %assign inpDType0 = LibBlockInputSignalDataTypeId(0)
+      %if nInputPorts > 1
+        %assign initCond = LibBlockInputSignal(1,"","",0)
+        %assign inpDType1 = LibBlockInputSignalDataTypeId(1)
+      %endif
+      %assign maxIters = MaxNumberOfIterations
+      %assign useMaxIters = (maxIters != -1)
+      %assign needIterVar = (NeedIterationVariable == "yes")
+      %assign needLocFirstIter = (NeedIterationVariable == "firstonly")
+      %assign loopSuffix = SYSNAME(Name)[0]
+      %assign nOutputPorts = NumDataOutputPorts
+      %if nOutputPorts == 1
+        %assign ibOutput = LibBlockOutputSignal(0, "", "", 0)
+        %assign ibOutDType = LibBlockOutputSignalDataTypeName(0,"")
+        %assign ibOutDTid  = LibBlockOutputSignalDataTypeId(0)
+        %if LibBlockOutputSignalIsInBlockIO(0)
+          %assign setIBOutput = 1
+        %endif
+      %endif
+      %if DWorkSrcIdx > -1
+        %assign whileDwork = LibBlockDWork(DWork, "", "", DWorkSrcIdx)
+      %else
+        %assign whileDwork = 0
+      %endif
+    %endwith
+  %endwith
+  %%
+  %% When there are 2 input ports, this means the block
+  %% is in while mode, otherwise it is in do-while mode
+  %% We need to keep track of the current iteration number
+  %% if either of the following are true:
+  %%  - the user has specified a maximum # of iterations
+  %%  - there is an output port on the while block
+  %%
+  %% If there is no iteration number, and there are either assign blocks 
+  %% in the iterator subsystem or nested iterator blocks that need their
+  %% states reset, then we will have a boolean DWork that
+  %% is true on the first iteration only.
+  %%
+  %% Declare any local variables in the local block outputs.
+  %assign iterVar = GetLoopVariableName(ib)
+  %assign loopVar = "loopCond%<loopSuffix>"
+  %assign zero = SLibGetGroundValueFromId(inpDType0)
+  %assign tid = LibAsynchronousTriggeredTID(ssBlock.SubsystemTID) ? ...
+    ssBlock.SubsystemTID : ""
+  %openfile tmpBuffer
+  %<LibDumpSystemLocalBO(ss, "OutputUpdate%<tid>")>
+  %% if need update elapse time, we need trace first time
+  
+  %if nInputPorts == 2
+    %if inpDType1 != tSS_BOOLEAN
+      boolean_T %<loopVar> = (%<initCond> != %<zero>);
+    %else
+      boolean_T %<loopVar> = %<initCond>;
+    %endif
+  %endif
+  %if (nOutputPorts == 1) && (ibOutDTid != tSS_DOUBLE)
+    %<ibOutDType> %<iterVar> = 1;
+  %elseif needIterVar
+    int32_T %<iterVar> = 1;
+  %elseif needLocFirstIter
+    boolean_T %<iterVar> = true;
+  %endif
+  %closefile tmpBuffer
+  %<LibSetSystemField(ss, "CachedOutputUpdate%<tid>LocalBO", tmpBuffer)>
+
+  %openfile outputCodeBuffer
+  %with ss
+    %with ssBlock
+      %if statesWhenEnabling == "reset"
+        
+        %<InitializeIteratorSystem(ss, ssBlock, hasParentIter, whileDwork)>
+      %endif
+    %endwith
+  %endwith
+  %if needDWork
+    %% Roll over the dworks
+    %assign rollRegion = [0:%<CompiledModel.DWorks.DWork[dworkIdx].Width-1>]
+    %with ib
+      %roll idx = rollRegion, lcv = RollThreshold, ib, "Roller", ["DWork"]
+        %assign dw = LibBlockDWork(DWork, "", lcv, idx)
+        %<dw> = 1;
+      %endroll
+    %endwith
+  %endif
+  %if nInputPorts == 2
+    %if useMaxIters
+      while (%<loopVar> && (%<iterVar> <= %<maxIters>)) {
+    %else
+      while (%<loopVar>) {
+    %endif
+  %else
+    do { 
+  %endif
+  %% if update elapse time if needed
+  %if SysNeedsElapseTime(ss)
+    %<FcnCalculateElapseTime(ss, ssBlock)>
+  %endif
+  
+  %if setIBOutput
+    %if ibOutDTid != tSS_DOUBLE
+      %<ibOutput> = %<iterVar>;
+    %else
+      %<ibOutput> = (double)%<iterVar>;
+    %endif
+  %endif
+  %closefile outputCodeBuffer
+  %return outputCodeBuffer
+%endfunction %%FcnIteratorWhileOpen
+
+
+%% Function: FcnIteratorWhileClose =============================================
+%% Description:
+%%
+%function FcnIteratorWhileClose(ss, ssBlock) void
+  %with ssBlock
+    %assign itSysIdx = CallSiteInfo.SystemIdx
+    %assign itBlkIdx = ParamSettings.IteratorBlock
+  %endwith  
+  %assign ib        = CompiledModel.System[itSysIdx].Block[itBlkIdx]
+  %with CompiledModel.System[itSysIdx]
+    %with ib
+      %assign nInputPorts = NumDataInputPorts
+      %assign inpDType0 = LibBlockInputSignalDataTypeId(0)
+      %assign whileCond = LibBlockInputSignal(0,"","",0)
+      %assign maxIters = MaxNumberOfIterations
+      %assign useMaxIters = (maxIters != -1)
+      %assign needIterVar = (NeedIterationVariable == "yes")
+      %assign loopSuffix = SYSNAME(Name)[0]
+      %assign needLocFirstIter = (NeedIterationVariable == "firstonly")
+    %endwith
+  %endwith
+  %assign iterVar = GetLoopVariableName(ib)
+  %assign loopVar = "loopCond%<loopSuffix>"
+  %assign zero = SLibGetGroundValueFromId(inpDType0)
+
+  %openfile outputCodeBuffer
+  %if nInputPorts == 2
+    /* Compute the loop condition */
+    %if inpDType0 == tSS_BOOLEAN
+      %<loopVar> = %<whileCond>;
+    %else
+      %<loopVar> = (%<whileCond> != %<zero>);
+    %endif
+  %endif
+    
+  %if needIterVar
+    /* Update the iteration counter */
+    %<iterVar>++;
+  %elseif needLocFirstIter
+    /* Update first iteration variable */
+    if (%<iterVar>) {
+    %<iterVar> = false;
+    }
+  %endif
+  %if nInputPorts == 2
+    }
+  %else
+    %if inpDType0 == tSS_BOOLEAN
+      %assign whileStr = "(%<whileCond>)"
+    %else
+      %assign whileStr = "(%<whileCond> != %<zero>)"
+    %endif
+    %if useMaxIters
+      } while (%<whileStr> && (%<iterVar> <= %<maxIters>));
+    %else
+      } while %<whileStr>;
+    %endif
+  %endif
+  %closefile outputCodeBuffer
+  %return outputCodeBuffer
+%endfunction %%FcnIteratorWhileClose
+
+%% Function: FcnIteratorForOpen ================================================
+%% Abstract:
+%%   Generates the output code for a ForIterator subsystem
+%%   Call Trace: Outputs -> FcnIteratorOutput -> FcnIteratorForLoop
+%%                                            -> FcnIteratorWhileLoop
+%%
+%function FcnIteratorForOpen(ss, ssBlock) void
+  %with ssBlock
+    %assign itSysIdx = CallSiteInfo.SystemIdx
+    %assign itBlkIdx = ParamSettings.IteratorBlock
+    %assign statesWhenEnabling = ParamSettings.StatesWhenEnabling
+  %endwith  
+  %assign ib       = CompiledModel.System[itSysIdx].Block[itBlkIdx]
+  %assign setIBOutput = 0
+  %% Get any information from the iterator block
+  %with CompiledModel.System[itSysIdx]
+    %with ib
+      %% Check if the the block is in a nested loop
+      %assign hasParentIter = HasParentIterator
+      %% Check if this block needs to set a "firstIteration" dwork
+      %assign needDWork = (NumDWork > 0)
+      %if needDWork
+        %assign dworkIdx = DWork.FirstRootIdx
+      %endif
+      %% If we are reading the number of iterations from an
+      %% external port, cast it to the correct data type.
+      %assign itersExternal = (IterationSrc == "external")
+      %if IterationSrc == "external"
+        %assign numIters = LibBlockInputSignal(0,"","",0)
+        %assign ibInpDTid = LibBlockInputSignalDataTypeId(0)
+      %else 
+        %assign numIters = NumberOfIterations
+      %endif
+      %assign externIncrement = (ExternalIncrement == "on")
+      %% Get all information from the outupt port
+      %assign nOutputPorts = NumDataOutputPorts
+      %if nOutputPorts == 1
+        %assign ibOutput = LibBlockOutputSignal(0, "", "", 0)
+        %assign ibOutDType = LibBlockOutputSignalDataTypeName(0,"")
+        %assign ibOutDTid  = LibBlockOutputSignalDataTypeId(0)
+        %if LibBlockOutputSignalIsInBlockIO(0)
+          %assign setIBOutput = 1
+        %endif
+      %endif
+      %if DWorkSrcIdx > -1
+        %assign dwork = LibBlockDWork(DWork, "", "", DWorkSrcIdx)
+      %else
+        %assign dwork = 0
+      %endif
+    %endwith    
+  %endwith
+  %% 
+  %% We always have a loop counter in a for system, and it's type
+  %% is int32 is there is no output port or the output data
+  %% type is double, otherwise it has the same type as the output.
+  %% 
+  %% If the number of iterations is being read from the input port,
+  %% then we need to cast this value to the same type as the loop counter.
+  %%
+  %% If the for block does not have an output port, but it needs a global
+  %% output because there are nested assigment or iterator blocks, then
+  %% there will be a boolean DWork that is set to true on the first
+  %% iteration and false otherwise.
+  %%
+  %% Put the declaration of the local iteration variable into the
+  %% local block outputs.
+  %assign loopVar = GetLoopVariableName(ib)
+  %assign tid = LibAsynchronousTriggeredTID(ssBlock.SubsystemTID) ? ...
+    ssBlock.SubsystemTID : ""
+  %openfile tmpBuffer
+  %<LibDumpSystemLocalBO(ss, "OutputUpdate%<tid>")>
+  %if (nOutputPorts == 1) && (ibOutDTid != tSS_DOUBLE)
+    %<ibOutDType> %<loopVar>;
+    %assign castNumIters = itersExternal ? "(%<ibOutDType>)%<numIters>"...
+      : numIters
+  %else
+    int32_T %<loopVar>;
+    %assign castNumIters = itersExternal ? "(int32_T)%<numIters>"...
+      : numIters
+  %endif
+  %closefile tmpBuffer
+  %<LibSetSystemField(ss, "CachedOutputUpdate%<tid>LocalBO", tmpBuffer)>
+  
+  %openfile outputCodeBuffer
+  %with ss
+    %with ssBlock
+      %if statesWhenEnabling == "reset"
+        
+        %<InitializeIteratorSystem(ss, ssBlock, hasParentIter, dwork)>
+      %endif    
+    %endwith
+  %endwith
+  %if needDWork
+    %% Roll over the dworks
+    %assign rollRegion = [0:%<CompiledModel.DWorks.DWork[dworkIdx].Width-1>]
+    %with ib
+      %roll idx = rollRegion, lcv = RollThreshold, ib, "Roller", ["DWork"]
+        %assign dw = LibBlockDWork(DWork, "", lcv, idx)
+        %<dw> = 1;
+      %endroll
+    %endwith
+  %endif
+  %assign loopVarUpdate = (externIncrement) ? "" : "%<loopVar>++"
+  %if LibBlockIsIndexZeroBased(ssBlock)
+    for (%<loopVar> = 0; %<loopVar> < %<castNumIters>; %<loopVarUpdate>) {
+  %else 
+    for (%<loopVar> = 1; %<loopVar> <= %<castNumIters>; %<loopVarUpdate>) {
+  %endif
+  %% update elapse time is needed
+  %if SysNeedsElapseTime(ss)
+    %<FcnCalculateElapseTime(ss, ssBlock)>
+  %endif
+  
+  %if setIBOutput
+    %if ibOutDTid != tSS_DOUBLE
+      %<ibOutput> = %<loopVar>;
+    %else
+      %<ibOutput> = (double)%<loopVar>;
+    %endif
+  
+  %endif
+  %closefile outputCodeBuffer
+  %return outputCodeBuffer
+%endfunction %%FcnIteratorForOpen  
+
+
+%% Function: FcnIteratorForClose ===============================================
+%% Description:
+%%
+%function FcnIteratorForClose(ss, ssBlock) void
+  %with ssBlock
+    %assign itSysIdx = CallSiteInfo.SystemIdx
+    %assign itBlkIdx = ParamSettings.IteratorBlock
+  %endwith  
+  %assign ib        = CompiledModel.System[itSysIdx].Block[itBlkIdx]
+  %with CompiledModel.System[itSysIdx]
+    %with ib
+      %assign externIncrement = (ExternalIncrement == "on")
+      %if externIncrement
+        %assign itersExternal = (IterationSrc == "external")
+        %assign incrPortIdx = (itersExternal) ? 1 : 0
+        %assign loopIncrement = LibBlockInputSignal(incrPortIdx,"","",0)
+        %assign ibOutDTid  = LibBlockOutputSignalDataTypeId(0)
+      %endif
+    %endwith
+  %endwith
+  %openfile outputCodeBuffer
+  %if externIncrement
+    %assign loopVar = GetLoopVariableName(ib)
+    %if ibOutDTid != tSS_DOUBLE
+      %<loopVar> = %<loopIncrement>;
+    %else
+      %<loopVar> = (int32_T)%<loopIncrement>;
+    %endif
+  %endif
+  }
+  %closefile outputCodeBuffer
+  %return outputCodeBuffer
+%endfunction %%FcnIteratorForClose
+
+
+%% Function: FcnGenerateIteratorOpen ===========================================
+%% Description:
+%%
+%function FcnGenerateIteratorOpen(system) void
+  %with system
+    %assign callSites = CallSites
+  %endwith
+  %assign graphicalSys = CompiledModel.System[callSites[0][2]]
+  %assign ssBlock = graphicalSys.Block[callSites[0][3]]
+
+  %if ssBlock.ParamSettings.IteratorBlockType == "for"
+    %return FcnIteratorForOpen(system, ssBlock)
+  %else 
+    %return FcnIteratorWhileOpen(system, ssBlock)
+  %endif
+%endfunction
+  
+
+%% Function: FcnGenerateIteratorClose ==========================================
+%% Description:
+%%
+%function FcnGenerateIteratorClose(system) void
+  %with system
+    %assign callSites = CallSites
+  %endwith
+  %assign graphicalSys = CompiledModel.System[callSites[0][2]]
+  %assign ssBlock = graphicalSys.Block[callSites[0][3]]
+
+  %if ssBlock.ParamSettings.IteratorBlockType == "for"
+    %return FcnIteratorForClose(system, ssBlock)
+  %else 
+    %return FcnIteratorWhileClose(system, ssBlock)
+  %endif  
+%endfunction
+
+%% Function: FcnSetSystemOpenCloseCodeFieldForTID ==========================================
+%% Description:
+%%
+%function FcnSetSystemOpenCloseCodeFieldForTID(system,fcnType,tid,openCode,closeCode) void
+  %assign numTids = SIZE(tid, 1)
+  %if numTids < 1 
+    %<LibSetSystemField(system, ...
+      "Cached%<fcnType>OpenCode", openCode)>
+    %<LibSetSystemField(system, ...
+      "Cached%<fcnType>CloseCode", closeCode)>
+  %else
+    %foreach tidIdx = numTids 
+      %% Non number tid "constant", code will be put into
+      %% non-tid specific Cached field
+      %if (TYPE(tid[tidIdx]) != "Number") 
+        %assign currTid = ""
+      %else
+        %assign tid01Eq =                       ...
+            (CodeFormat == "Embedded-C")     && ...
+            ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ
+        %% For tid01Eq=1, add tid=1 code to tid=0 buffer
+        %assign currTid =  tid01Eq && (tid[tidIdx] == 1) ? 0 : tid[tidIdx]
+      %endif
+      %<LibSetSystemField(system, ...
+	"Cached%<fcnType>%<currTid>OpenCode", openCode)>
+      %<LibSetSystemField(system, ...
+	"Cached%<fcnType>%<currTid>CloseCode", closeCode)>
+    %endforeach
+  %endif
+%endfunction
+
+%% Function: FcnAsyncTaskUpdatesTimersFromBaseRate ===========================
+%%
+%% Abstract:
+%%   For asynchronous tasks that don't manage own absolute time,
+%% task time is obtained from absolute time for base rate. 
+%% To insure data integrity, code for obtaining async task time 
+%% has to parts: one part runs at base rate, the other part runs
+%% when asynchronous task runs. 
+%%   This function generate code runs with asynchronous tasks. 
+%% FcnUpdateAsyncTaskTimers generates code runs at base rate. For
+%% more information, please see abstract of FcnUpdateAsyncTaskTimers.
+%% 
+%%
+%function FcnAsyncTaskUpdatesTimersFromBaseRate(tid)
+
+  %if CodeFormat != "Embedded-C"
+    %% currently, we only support ert code format. 
+    %return ""
+  %endif
+  
+  %openfile tmpBuf
+  %assert SampleTime[tid].Asynchronous == "yes"
+  %assert SampleTime[tid].TimeSource   == "BaseRate"
+  
+  %switch SLibComparePriority(tid,0)
+    %case -1  %% Comparson failed, not priority assigned to this async task
+      %if SampleTime[tid].NeedAbsoluteTime == "yes" 
+	%% Comparson failed, not priority assigned to this async task
+	  /* Warning: Priority of this asynchronous task is not assigned.
+	  * Task time for this task is directly obtained from task time 
+	  * of fundemental task. Data integrity is not insured 
+	  */
+	  %if SampleTime[tid].ClockTickDataTypeId == tSS_DOUBLE
+	    %<LibGetTaskTime(tid)> = %<LibGetTaskTime(0)>;
+	  %else
+	    %<LibGetClockTick(tid)> = %<LibGetClockTick(0)>;
+	    %if SLibClockTickIsUnit32Pair(tid)
+	      %<LibGetClockTickHigh(tid)> = %<LibGetClockTickHigh(0)>;
+	    %endif
+	  %endif
+	%endif
+	%break
+    %case 1  %% This aync task has higher priority than base rate
+	/* Higher priority asynchronous task obtains 
+	* task time from base rate 
+	*/ 
+	bool bufIdx = %<LibGetBufIdxForClockTick0()>;
+	%if SampleTime[tid].ClockTickDataTypeId == tSS_DOUBLE
+	  %assert LibIsContinuous(0)
+	  %<LibGetClockTick(tid)> = %<LibGetDoubleBufContT()>[bufIdx];
+	%else
+	  %<LibGetClockTick(tid)> = %<LibGetDbBufForClockTick0()>[bufIdx];
+	  %if SLibClockTickIsUnit32Pair(tid)
+	    %<LibGetClockTickHigh(tid)> = %<LibGetDbBufForClockTick0High()>[bufIdx];
+	  %endif
+	%endif
+	%break
+    %case 2  %% This aync task has lower priority than base rate
+	/* Lower priority asynchronous task obtains 
+	 * task time from base rate 
+	 */ 
+	 %<LibGetTimerBufSemaphoreForTID(tid)> = TRUE;
+	 %if SampleTime[tid].ClockTickDataTypeId == tSS_DOUBLE
+	   %assert LibIsContinuous(0)
+	   %<LibGetClockTick(tid)> = %<LibGetBufContT()>;
+	 %else
+	   %<LibGetClockTick(tid)> = %<LibGetBufClockTick0()>;
+	   %if SLibClockTickIsUnit32Pair(tid)
+	     %<LibGetClockTickHigh(tid)> = %<LibGetBufClockTick0High()>;
+	   %endif
+	 %endif
+	 %<LibGetTimerBufSemaphoreForTID(tid)> = FALSE; 
+	 %break
+    %default
+      %assign errTxt = "Unknown priority comparison result"
+      %<LibReportFatalError(errTxt)>
+      %break
+  %endswitch  
+  %closefile tmpBuf
+  
+  %return tmpBuf
+%endfunction %%FcnAsyncTaskUpdatesTimersFromBaseRate
+
+%% Initialize all SubSystemRan breadcrumbs to disable
+%function FcnGenSysRanInitCode(system)
+  %assign buf = ""
+  %assign dworks          = CompiledModel.DWorks
+  %assign subsysRanVector = CompiledModel.SubsystemRanBC.ActiveVector
+  %assign subsysRanSize   = SIZE(subsysRanVector,1)
+
+  %if IsModelReferenceBaseSys(system)
+  %openfile buf
+    %foreach j = subsysRanSize
+      %assign idx = subsysRanVector[j]
+      %if idx > -1
+        %assign dwRec = dworks.DWork[idx]
+        %assign idxVec  = SLibGetSystemAndCallSideIndex(dwRec)
+        %assign sysIdx  = idxVec[0]
+        %assign csIdx   = idxVec[1]
+        %assign baseIdx = GetBaseSystemIdx()
+        %assign dwPath  = FcnGetLocalDWorkPath(sysIdx, csIdx, baseIdx)
+        %<dwPath>%<dwRec.Identifier> = SUBSYS_RAN_BC_DISABLE;
+      %endif
+    %endforeach
+  %closefile buf
+  %endif
+
+  %return buf
+
+%endfunction %%FcnGenSysRanInitCode
+
+
+%% Function: SLibGenerateSubSystemCode =========================================
+%% Abstract:
+%%    This function generates the unconditional part 
+%%    (condtion open/close bracked) of conditional executed systems such as
+%%    enabled triggered and interator systems. This function is called in
+%%    commonbodlib.
+%%
+%function SLibGenerateSubSystemCode(system, fcnType) void
+  %if system.Type == "root"
+    %return
+  %endif
+  %assign openCode       = ""
+  %assign closeCode      = ""
+  %assign callSites      = system.CallSites
+  %assign graphParentSys = CompiledModel.System[callSites[0][2]]
+  %assign ssBlock        = graphParentSys.Block[callSites[0][3]]
+  %if ssBlock.SkipBlockFcn
+    %return
+  %endif
+  %assign system.CurrentTID = FcnGetSubsystemTID(system)
+  %assign cntrlsrcTID       = -1
+  %with system
+    %switch fcnType
+      %case "Initialize" %% xxx MJE
+%%	%if system.Type == "function-call"
+%%	  %% update elapse time if system has elapse time dwork
+%%	  %if SysNeedsElapseTime(system)
+%%	    %assign count = -1
+%%	    %openfile tmpBuf
+%%	    {
+%%	      %<FcnCalculatePrevTime(system, ssBlock)>
+%%	    }
+%%	    %closefile tmpBuf
+%%	    %assign openCode = tmpBuf
+%%	  %endif
+%%	%endif
+	%break
+      %case "OutputUpdate"
+	%assign ::CompiledModel.GeneratingOutputsCode = 1
+	%if system.Type == "trigger"
+	  %with ssBlock
+	    %assign retVal  = FcnTriggerOutput(ssBlock, graphParentSys, 0)
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	%elseif system.Type == "enable_with_trigger"
+	  %with ssBlock
+	    %assign retVal      = FcnEnableOutput(ssBlock, graphParentSys, 0, 1)
+	    %assign cntrlsrcTID = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	  %if SLibIsMultiRateAndRateGrouping(system) 
+	    %assign openCodeofTransition  = retVal[2]
+	    %assign closeCodeofTransition = retVal[3]
+	    %assign cntrlsrcTID_trig      = ...
+	      ssBlock.ControlInputPort[1].SignalSrcTID
+	  %endif 
+	%elseif system.Type == "enable"
+	  %with ssBlock
+	    %assign retVal       = FcnEnableOutput(ssBlock, graphParentSys, 0, -1)
+	    %assign cntrlsrcTID  = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	  %if SLibIsMultiRateAndRateGrouping(system) 
+	    %assign openCodeofTransition  = retVal[2]
+	    %assign closeCodeofTransition = retVal[3]
+	  %endif 
+	%elseif system.Type == "iterator"
+	  %assign  openCode = FcnGenerateIteratorOpen(system)
+	  %assign closeCode = FcnGenerateIteratorClose(system)
+	%elseif system.Type == "function-call"
+	  %assign tid = FcnGetSubsystemTID(system)
+	  %assign ts  = SampleTime[tid]
+	  %if ts.TimeSource == "Self" && ...
+	    ts.NeedAbsoluteTime == "yes"
+	    %assert ts.TopSSIdx[0] >= 0 && ts.TopSSIdx[2] >= 0
+	  %endif
+	  %% If sample time is Asynchronous and need abs time,
+	  %% and this subsystem is the top one associated with
+	  %% the async sample time, then
+	  %% fcnCall need update absolute time whenever it
+	  %% runs. 
+	  %assign updateTime = ts.Asynchronous == "yes" && ...
+	    ts.NeedAbsoluteTime == "yes" && ...
+	    System[ts.TopSSIdx[0]].Block[ts.TopSSIdx[2]] == ssBlock
+	  %openfile tmpBuf
+	  %if updateTime
+	    %with ssBlock
+	      %if ts.TimeSource == "BaseRate"
+		{
+		  %<FcnAsyncTaskUpdatesTimersFromBaseRate(tid)>
+		}
+		{
+		%assign closeCode = "}\n"
+	      %else
+		{
+		%assign closeCode = "}\n"
+	      %endif
+	    %endwith
+	  %endif
+	  %closefile tmpBuf
+	  %% update elapse time if system has elapse time dwork
+	  %if SysNeedsElapseTime(system)
+	    %openfile openCode
+	    %<tmpBuf>
+	    %<FcnCalculateElapseTime(system, ssBlock)>
+	    %closefile openCode
+	  %else
+	    %assign openCode = tmpBuf
+	  %endif
+	%endif
+	%break
+      %case "Output"
+	%assign ::CompiledModel.GeneratingOutputsCode = 1
+	%if system.Type == "trigger"
+	  %assert (CompiledModel.TrigSSSplitOutUpd)
+	  %with ssBlock
+	    %assign retVal  = FcnTriggerOutput(ssBlock, graphParentSys, 0)
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	%elseif system.Type == "enable_with_trigger"
+	  %assert (CompiledModel.TrigSSSplitOutUpd)
+	  %with ssBlock
+	    %assign retVal      = FcnEnableOutput(ssBlock, graphParentSys, 0, 1)
+	    %assign cntrlsrcTID = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	  %if SLibIsMultiRateAndRateGrouping(system) 
+	    %assign openCodeofTransition  = retVal[2]
+	    %assign closeCodeofTransition = retVal[3]
+	    %assign cntrlsrcTID_trig      = ...
+	      ssBlock.ControlInputPort[1].SignalSrcTID
+	  %endif 
+	%elseif system.Type == "enable"
+	  %with ssBlock
+	    %assign retVal       = FcnEnableOutput(ssBlock, graphParentSys, 0, -1)
+	    %assign cntrlsrcTID  = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	  %if SLibIsMultiRateAndRateGrouping(system) 
+	    %assign openCodeofTransition  = retVal[2]
+	    %assign closeCodeofTransition = retVal[3]
+	  %endif
+	%endif 
+	%break 
+      %case "Start"
+	%if system.Type == "enable" || system.Type == "enable_with_trigger"
+	  %with ssBlock
+	    %assign openCode = FcnEnableStart(system.Type)
+	  %endwith
+        %elseif system.Type == "function-call"
+          %with ssBlock
+            %assign openCode = FcnFunctionCallStart(system.Type)
+          %endwith
+	%endif
+	%assign subsysRanInit = FcnGenSysRanInitCode(system)
+	%assign openCode      = "%<openCode>%<subsysRanInit>"
+	%break
+      %case "Update"
+	%if system.Type == "trigger" || system.Type == "enable_with_trigger"
+	  %%
+	  %assert (CompiledModel.TrigSSSplitOutUpd)
+	  %with ssBlock
+	    %assign retVal      = FcnTriggerUpdate(ssBlock,graphParentSys,0)
+	    %assign openCode    = retVal[0]
+	    %assign closeCode   = retVal[1]
+	    %assign cntrlsrcTID = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	%elseif system.Type == "enable"
+	  %with ssBlock
+	    %assign retVal      = FcnGenerateEnableMethod(ssBlock, system, fcnType)
+	    %assign cntrlsrcTID = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode    = retVal[0]
+	  %assign closeCode   = retVal[1]
+	%endif
+	%break
+      %case "Derivative"
+      %case "Projection"
+	%if system.Type == "enable"
+	  %with ssBlock
+	    %assign retVal      = FcnGenerateEnableMethod(ssBlock, system, fcnType)
+	    %assign cntrlsrcTID = ControlInputPort[0].SignalSrcTID
+	  %endwith
+	  %assign openCode    = retVal[0]
+	  %assign closeCode   = retVal[1]
+	%endif
+	%break
+      %case "Disable"
+	%if system.Type == "enable" || system.Type == "enable_with_trigger"
+	  %with ssBlock
+	    %assign retVal = FcnSubsystemDisable(system)
+	  %endwith
+	  %assign openCode  = retVal[0]
+	  %assign closeCode = retVal[1]
+	%endif
+	%break
+      %case "ZeroCrossing"
+	 %with ssBlock
+	  %assign retVal = FcnSubsystemZeroCrossing(system, system.Type,ssBlock)
+	%endwith
+	%assign openCode  = retVal[0]
+	%assign closeCode = retVal[1]
+	%break
+      %default
+    %endswitch
+  %endwith
+  %assign system.CurrentTID = -1
+  %if SLibIsMultiRateAndRateGrouping(system) && ...
+      !ISEQUAL(cntrlsrcTID,-1) &&               ...
+      !ISEQUAL(fcnType, "Derivative")
+    %if system.Type == "enable"
+      %with ssBlock
+	%assign Num_SubsystemTIDs = SIZE(SubsystemTID, 1) 
+	%if Num_SubsystemTIDs == 1
+	  %assign subsys_tid = (TYPE(SubsystemTID) == "Number") ? SubsystemTID : ""
+	  %%  Subsystem is multirate but Num_SystemTIDs 
+	  %%  is ONE, this means that subsystem contain 
+	  %%  different control src TID, or has constant TID
+	  %%  subsystem. Constant TID is  not 
+	  %%  included in SubsystemTID
+	  %%  one case not cover:
+	  %%    subsystem A has constant subsystem B, 
+	  %%    and control signal TID of subsystem A
+	  %%    is different from subsystemTID.
+	  %if !ISEQUAL(cntrlsrcTID, subsys_tid)
+	    %if fcnType == "Output" || fcnType == "OutputUpdate"
+	      %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+		fcnType, cntrlsrcTID, openCodeofTransition,closeCodeofTransition)>
+	    %endif
+	    %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	      fcnType, subsys_tid, openCode,closeCode)>
+	  %else
+	    %if fcnType == "Output" || fcnType == "OutputUpdate"
+	      %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+		fcnType, subsys_tid, openCodeofTransition, closeCodeofTransition)>
+	    %endif
+	    %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+		fcnType, "", openCode, closeCode)>
+	  %endif 
+	%else
+	  %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	    fcnType, SubsystemTID, openCode, closeCode)>
+	  %if (fcnType == "Output" || fcnType == "OutputUpdate")
+	    %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+		fcnType, cntrlsrcTID, openCodeofTransition, closeCodeofTransition)>
+	  %endif
+	%endif
+      %endwith
+    %elseif system.Type == "enable_with_trigger"
+      %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+		fcnType, cntrlsrcTID_trig, openCode, closeCode)>
+      %if fcnType == "Output" || fcnType == "OutputUpdate"
+	%<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	  fcnType, cntrlsrcTID, openCodeofTransition, closeCodeofTransition)>
+      %elseif !ISEQUAL(cntrlsrcTID, cntrlsrcTID_trig)
+	%<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	  fcnType, cntrlsrcTID, openCode, closeCode)>
+      %endif
+    %endif
+  %else
+    %assign ssTid = FcnGetSubsystemTID(system)
+    %if (fcnType == "Output" || fcnType == "OutputUpdate" || fcnType == "Update") ...
+      && LibAsynchronousTriggeredTID(ssTid) 
+      %% async tid 
+      %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	fcnType, ssTid, openCode, closeCode)>	
+    %else
+      %<FcnSetSystemOpenCloseCodeFieldForTID(system, ...
+	fcnType, "", openCode, closeCode)>	
+    %endif
+  %endif
+  
+  %assign ::CompiledModel.GeneratingOutputsCode = 0
+%endfunction %% SLibGenerateSubSystemCode
+
+%% Function: SLibDumpSubSystemOpenCode =========================================
+%% Abstract:
+%%      Outputs the cached subsystems open function.
+%%
+%function SLibDumpSubSystemOpenCode(system, fcnType) void
+  %return LibGetSystemField(system, "Cached%<fcnType>OpenCode")
+%endfunction
+
+
+%% Function: SLibDumpSubSystemCloseCode ========================================
+%% Abstract:
+%%      Outputs the cached subsystems close function.
+%%
+%function SLibDumpSubSystemCloseCode(system, fcnType) void
+  %return LibGetSystemField(system, "Cached%<fcnType>CloseCode")
+%endfunction
+
+%% Function: SLibGetSubsystemRanBCReset =================================
+%% Abstract:
+%%   Returns code that resets the system ran breadcrumbs
+%%
+%% For SingleTasking, every dwork appears in the main output function for the
+%% modelreference outputfcn guarded by tid
+%%
+%% For MultiTasking all the appropriate dwork's just appear as a flat list, no
+%% reason for the tid guard
+%%
+%function SLibGetSubsystemRanBCReset(ss, tid)
+
+  %assign retBuf          = ""
+  %assign numSampleTimes  = CompiledModel.NumSampleTimes
+  %assign dworks          = CompiledModel.DWorks
+  %assign subsysRanVector = CompiledModel.SubsystemRanBC.ActiveVector
+  %assign subsysRanSize   = SIZE(subsysRanVector,1)
+  %assign buffers         = []
+  %assign tid01Eq         = ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ  
+  
+  %createrecord hashTable { }
+
+  %% First initialize an empty sample time based array
+  %foreach i = numSampleTimes
+    %assign buffers = buffers + ""
+  %endforeach
+  
+  %% Cache away the BlockFcn. We don't want to mark this system as being
+  %% "dwork accessed" as this should've already been done in
+  %%  FcnUpdateSubsysRanBC during Outputs
+  %% xxx Mojdeh suggests that, perhaps, a better way would be to change the
+  %%     scope of the System and set the BlockFcn to "Output" - but I couldn't
+  %%     make it work - farhan
+  %assign tmpBlockFcn = ::BlockFcn
+  %assign ::BlockFcn  = ""
+  
+  %% Loop over the subsysRan vector and put the update code in the appropriate
+  %% vector above.
+  %%
+  %% Note: We create a temporary hash to prevent the dwork entries from updating
+  %%       more than once
+  %assign tmpBuf = ""
+  %foreach subsysRanIdx = subsysRanSize
+    %assign dworkIdx = subsysRanVector[subsysRanIdx]
+    
+    %if dworkIdx > -1  %% invalid index
+      %assign dwRec    = dworks.DWork[dworkIdx]
+      %assign dwTid    = dwRec.TID
+
+      %% Add this dwork entry to the hashTable record
+      %assign hashKey = dwRec.LogicalSrc
+      %if !ISFIELD(hashTable, hashKey)
+	%assign tmpRet = SETFIELD(hashTable, hashKey, 1)
+	
+	%if TYPE(dwTid) == "Number"
+	  %% If tid01eq is true, then we should be clearing (tid = 1)
+	  %% breadcrumbs in (tid = 0)
+	  %if (tid01Eq == 1) && (dwTid == 1)
+	    %assign dwTid = 0
+	  %endif
+
+	  %assign idxVec  = SLibGetSystemAndCallSideIndex(dwRec)
+	  %assign sysIdx  = idxVec[0]
+	  %assign csIdx   = idxVec[1]
+	  %assign baseIdx = GetBaseSystemIdx()
+	  %assign dwPath  = FcnGetLocalDWorkPath(sysIdx, csIdx, baseIdx)
+	  %openfile tmpBuf
+	  srClearBC(&%<dwPath>%<dwRec.Identifier>);
+	  %closefile tmpBuf
+	  %% add to the correct spot
+	  %assign buffers[dwTid] = "%<buffers[dwTid]>%<tmpBuf>"
+	%endif
+      %endif
+    %endif
+  %endforeach
+  
+  %assign ::BlockFcn = tmpBlockFcn
+
+  %if (SLibSingleTasking())
+    /* Reset all the subsysRan breadcrumbs */
+    %openfile tmpBuf
+    %foreach i = numSampleTimes
+      %if !(ISEMPTY(buffers[i]))
+	%assign sampleHitStr = LibIsSampleHit(i)
+	%if sampleHitStr != "1"
+	  %% open paren
+	  if (%<sampleHitStr>) {
+	  %endif
+	  %<buffers[i]>
+	  %% close paren
+	  %if sampleHitStr != "1"
+	  }
+	%endif
+      %endif
+    %endforeach
+    %closefile tmpBuf
+    %assign retBuf = tmpBuf
+  %else
+    %% Multitasking mode. No need to generate the tid guard
+    %assign retBuf = buffers[tid]
+  %endif
+
+  %return retBuf
+  
+%endfunction
+
+%endif %% _SUBSYSTEMLIB_

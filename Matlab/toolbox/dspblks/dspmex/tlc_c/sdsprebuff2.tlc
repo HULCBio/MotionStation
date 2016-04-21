@@ -1,0 +1,472 @@
+%% $RCSfile: sdsprebuff2.tlc,v $
+%% $Revision: 1.21.4.4 $ 
+%% $Date: 2004/04/20 23:16:20 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Convert a frame to a smaller or larger size with optional overlap.
+
+%implements sdsprebuff2 "C"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dsprebuff_rt")>
+  %<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+
+  %assign cplx       = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign DTYPE_NAME = LibBlockInputSignalDataTypeName( INPORT,"%<tRealPart>")
+  %assign dtype_in   = cplx ? ("c"+DTYPE_NAME) : DTYPE_NAME
+  %assign inWidth    = CAST("Number",LibDataInputPortWidth(INPORT))
+
+  %assign isMultiRate = !LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+
+  %assign isFrame  = LibBlockInputSignalIsFrameData(INPORT) 
+  %assign dims     = LibBlockInputSignalDimensions(INPORT)
+  %assign nChans   = (isFrame) ? dims[1]: inWidth    
+  %assign F        = (isFrame) ? dims[0] : 1
+  %assign dims_out = LibBlockOutputSignalDimensions(OUTPORT)
+  %assign N        = LibBlockOutputSignalIsFrameData(OUTPORT) ? dims_out[0] : 1
+  %assign V        = CAST("Number",SFcnParamSettings.OVERLAP[0])
+  %if isMultiTasking
+      %assign B = isMultiRate ? ((F<=N) ? N : ( ((F%N)==0) ? F : F+N-V)) : V
+  %else
+      %assign B = isMultiRate ? ((F<=N) ? N : ( ((F%N)==0) ? F : N)) : V
+  %endif
+  %assign bufLen   = (F<=N) ? N+B : F+B
+
+  %assign IS_NOLAP     = (V == 0)
+  %assign IS_UNDERLAP  = (V < 0)
+  %assign inCplx       = LibBlockInputSignalIsComplex(INPORT)
+  %assign inDTypeId    = LibBlockInputSignalDataTypeId(INPORT)
+  %assign inDTypeName  = getRealOrComplexDataType(inDTypeId, inCplx)
+  %assign bytesPerElem = "sizeof(%<inDTypeName>)" 
+  %assign needICs      = CAST("Boolean",SFcnParamSettings.NEED_ICS[0])
+  %assign needBuf      = !(!isMultiTasking && (N == 1) && (F == 1))
+  %assign needSingleBuf = (!needICs) && isMultiRate
+
+  %assign block = block + INPORT + OUTPORT + inWidth                                \
+                        + dtype_in + nChans + N + V + F + B + bufLen                \
+                        + isMultiRate + isMultiTasking + needICs + needSingleBuf    \
+                        + needBuf + IS_UNDERLAP + IS_NOLAP + bytesPerElem
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+%%
+%% Only generate code if necessary for this function
+%%
+%assign initCondCodeNeeded = IS_UNDERLAP || \
+                             needICs     || \
+                             ( !isMultiTasking && (F > 1) && (N == 1) && IS_NOLAP )
+%assign numIC = IC.Dimensions[0] * IC.Dimensions[1]
+%%
+%if initCondCodeNeeded
+    /* Signal Processing Blockset Buffer/Unbuffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %if IS_UNDERLAP
+        %% Don't initialize DWork if it is not present (i.e., no underlap): 
+        if (%<LibBlockDWork(enableSysFlag,"", "", 0)> == 0) {
+            %<LibBlockDWork(UL_COUNT, "", "", 0)> = 0; /* Initialize underlap count buffer */
+        }
+    %endif
+    %if (!isMultiTasking && (F > 1) && (N == 1) && IS_NOLAP)
+        if (%<LibBlockDWork(enableSysFlag,"", "", 0)> == 0) {
+            %<LibBlockDWork(CircBuff,"", "", 0)> = 0; /* Reset counter */
+        }
+    %endif
+    %%
+    %if (needICs)
+        %%
+        %% Note: the IC Handler guarantees that IC RTPs are stored as 2-D matrices
+        %%
+        /* Copy ICs into circular buffer */
+        {
+            const int_T bufLenBytes   = %<bufLen> * %<bytesPerElem>;
+            byte_T *circBufPtr  = (byte_T *)%<LibBlockDWorkAddr(CircBuff, "", "", "0")>;
+            const byte_T *icPtr = (const byte_T *)%<LibBlockParameterAddr(IC, "", "", "0")>;
+            int_T  i = %<nChans>;
+
+        %if (numIC <= 1)
+            while (i-- > 0) {
+              MWDSP_CopyScalarICs(circBufPtr, icPtr, %<bufLen>, %<bytesPerElem>);
+              circBufPtr += bufLenBytes;
+            }
+        %%
+        %else     
+            %%
+            %% numIC > 1
+            %%
+            {
+                const int_T BBytes = %<B> * %<bytesPerElem>;
+
+                %if ((numIC == F) || (numIC == N)) 
+                    memset(circBufPtr, 0, %<nChans>*%<bufLen>*%<bytesPerElem>);
+                    while (i-- > 0) {
+                        memcpy( circBufPtr, icPtr, BBytes );
+                        circBufPtr += bufLenBytes;
+                    } 
+                %else
+                    const int_T strideBytes = %<bytesPerElem> * ( ( (%<F> <= %<N>) ? %<N> : %<F> ) );
+                    memset(circBufPtr, 0, %<nChans>*%<bufLen>*%<bytesPerElem>);
+                    while (i-- > 0) {
+                        memcpy( circBufPtr, icPtr, BBytes );
+                        circBufPtr += bufLenBytes; 
+                        icPtr += strideBytes;
+                    }
+                %endif
+            }
+            %%     
+        %endif
+        }
+        /* Initialize DWork for IN_BUF_PTR and OUT_BUF_PTR */
+        {
+            if (%<LibBlockDWork(enableSysFlag,"", "", 0)> == 0) { 
+                %assign plusOutBufOffsetStr = (V <= 0) ? "" : " + %<V> * %<bytesPerElem>"
+                *%<LibBlockDWorkAddr(IN_BUF_PTR, "", "", "0")> = \
+                (void *)( (byte_T *)%<LibBlockDWorkAddr(CircBuff, "", "", "0")> + %<B> * %<bytesPerElem> );
+                *%<LibBlockDWorkAddr(OUT_BUF_PTR, "", "", "0")> = \
+                (void *)( (byte_T *)%<LibBlockDWorkAddr(CircBuff, "", "", "0")>%<plusOutBufOffsetStr> );
+            }
+        }
+        /* Calculate shiftPerElement
+         * (assuming that number of bits
+         *  per element is power of two)
+         */
+        {
+            int_T  expn;
+            frexp((double)%<bytesPerElem>, &expn);
+            *%<LibBlockDWorkAddr(ShiftPerElem, "", "", "0")> = expn - 1;
+        }
+    %endif %% needICs 
+%endif %% initCondCodeNeeded
+%%
+%if (needSingleBuf)
+  /* Copy ICs into buffer */
+  {
+      const int_T bufLenBytes = %<F> * %<bytesPerElem>;
+      byte_T *bufPtr = (byte_T *)%<LibBlockDWorkAddr(SingleBuff, "", "", "0")>;
+      const byte_T *icPtr = (const byte_T *)%<LibBlockParameterAddr(IC, "", "", "0")>;
+    %if (numIC <= 1)
+      int_T  i = %<nChans>;
+      while (i-- > 0) {
+        MWDSP_CopyScalarICs(bufPtr, icPtr, %<F>, %<bytesPerElem>);
+        bufPtr += bufLenBytes;
+      }
+    %else
+      memset(bufPtr, 0, %<nChans> * %<F> * %<bytesPerElem>);
+    %endif
+  }
+%endif %% needSingleBuf 
+%%
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Buffer/Unbuffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %%
+    %if (needICs)
+        %<needICs_output(block)>
+    %else
+      %%
+      %if (!isMultiRate)
+        %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+      %elseif ( (V<0) && (F==N) )
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+          %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)> \
+        }
+      %else
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+          memcpy(%<LibBlockDWorkAddr(SingleBuff,"", "", 0)>,    \
+                 %<LibBlockInputSignalAddr(INPORT, "", "", 0)>, \
+                 %<inWidth> * %<bytesPerElem>);
+        }
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+          %<needSingleBuf_output(block)> \
+        }
+      %endif
+    %endif 
+    }
+%endfunction %% Outputs
+
+
+%% Function: OutputsForTID =====================================================
+%% This functions is called only for multi-rate, multi-tasking ert mode.
+%% This implies needIcs = true when this function is called.
+%%
+%function OutputsForTID(block, system, tid) Output
+  /* Signal Processing Blockset Buffer/Unbuffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %if (tid == LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))
+      /* Copy input samples to buffer */
+      %<GenerateRebuffInpFcnCall(block)>
+    %endif
+    %if (tid == LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0"))
+      /* Copy output samples from buffer */
+      %<GenerateRebuffOutFcnCall(block)>
+    %endif
+  }
+%endfunction %% OutputsForTID
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                           Local Functions                      %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: needICs_output
+%function needICs_output(block) Output
+    /* Copy input samples to buffer */
+    %if !LibIsSFcnSingleRate(block)
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { 
+    %else
+      {
+    %endif
+        %<GenerateRebuffInpFcnCall(block)>
+      }
+
+    /* Copy output samples from buffer */
+    %if !LibIsSFcnSingleRate(block)
+      if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+    %else
+      {
+    %endif
+        %<GenerateRebuffOutFcnCall(block)>
+      }
+
+%endfunction %% needICs_output
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: needSingleBuf_output
+%function needSingleBuf_output(block) Output
+    %assign u = "(const byte_T *)" + LibBlockDWorkAddr(SingleBuff, "", "", 0)
+    %assign y = "(byte_T *)"  + LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign cnt = "(int32_T *)" + LibBlockDWorkAddr(CircBuff,"", "", 0)
+    %assign arg_list = "%<u>, %<y>, %<cnt>, %<bytesPerElem>, %<bytesPerElem>*%<N>, %<F>, %<N>"
+    %if (nChans == 1) 
+      MWDSP_Buf_CopyInputToOutput_1ch(%<arg_list>);
+    %else
+      %assign arg_list = arg_list + ", %<nChans>"
+      MWDSP_Buf_CopyInputToOutput(%<arg_list>);
+    %endif
+%endfunction %% needSingleBuf_output
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: GenerateRebuffInpFcnCall
+%function GenerateRebuffInpFcnCall(block) Output
+    %%
+    %assign u            = "(const byte_T *)" + LibBlockInputSignalAddr(INPORT, "", "", 0)
+    %assign inBufPtr     = "(byte_T **)" + LibBlockDWorkAddr(IN_BUF_PTR, "", "", "0")
+    %assign memBase      = "(byte_T *)"  + LibBlockDWorkAddr(CircBuff, "", "", "0")
+    %assign shiftPerElem = "*%<LibBlockDWorkAddr(ShiftPerElem, "", "", "0")>"
+    %%
+    %%Generate Input Copy Function Name String
+    %%
+    %assign in_fcn_str = "MWDSP_Buf_Copy"
+    %%
+    %if (F == 1)
+        %assign in_fcn_str = in_fcn_str + "Scalar"
+    %else
+        %assign in_fcn_str = in_fcn_str + "Frame"
+    %endif
+    %%
+    %if (IS_UNDERLAP)
+        %assign in_fcn_str = in_fcn_str + "_UL"
+    %else
+        %assign in_fcn_str = in_fcn_str + "_OL"
+    %endif
+    %%
+    %if (nChans == 1)
+        %assign in_fcn_str = in_fcn_str + "_1ch"
+    %endif
+    %%
+    %%Generate Input Function Argument List
+    %%
+    %assign in_arg_list = "%<u>, %<inBufPtr>, %<memBase>, %<shiftPerElem>, %<bufLen> * %<bytesPerElem>" 
+    %if ( nChans > 1 )
+        %assign in_arg_list = in_arg_list + " ,%<nChans>"
+    %endif
+    %if (F > 1)
+        %assign in_arg_list = in_arg_list + " ,%<F>"
+    %endif
+    %if (IS_UNDERLAP)
+        %assign ul_count = "(int32_T *)" + LibBlockDWorkAddr(UL_COUNT, "", "", "0")
+        %assign in_arg_list = in_arg_list + " ,%<ul_count>, %<N>, %<V>"
+    %endif
+    %%
+    %<in_fcn_str>(%<in_arg_list>);
+    %%
+%endfunction %% GenerateRebuffInpFcnCall
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: GenerateRebuffOutFcnCall
+%function GenerateRebuffOutFcnCall(block) Output
+    %%
+    %assign y            = "(byte_T *)"  + LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign outBufPtr    = "(byte_T **)" + LibBlockDWorkAddr(OUT_BUF_PTR, "", "", "0")
+    %assign memBase      = "(byte_T *)"  + LibBlockDWorkAddr(CircBuff, "", "", "0")
+    %assign shiftPerElem = "*%<LibBlockDWorkAddr(ShiftPerElem, "", "", "0")>"
+    %%
+    %%Generate Output Function Name String
+    %%
+    %assign out_fcn_str = "MWDSP_Buf_Output"
+    %%
+    %if (%<N> == 1)
+        %assign out_fcn_str = out_fcn_str + "Scalar"
+    %else
+        %assign out_fcn_str = out_fcn_str + "Frame"
+    %endif
+    %%
+    %if (%<nChans> == 1)
+        %assign out_fcn_str = out_fcn_str + "_1ch"
+    %endif
+    %%
+    %%Generate Output Function Argument List
+    %%
+    %assign out_arg_list = "%<y>, %<outBufPtr>, %<memBase>, " 
+    %if ( (%<nChans>) > 1 )
+        %assign out_arg_list = out_arg_list + "%<nChans>, "
+    %endif
+    %assign out_arg_list = out_arg_list + "%<shiftPerElem>, %<bufLen> * %<bytesPerElem>"
+    %if ( (%<N>) > 1 )
+      %if V > 0
+        %assign out_arg_list = out_arg_list + " ,%<N>, %<V> * %<bytesPerElem>"
+      %else
+        %assign out_arg_list = out_arg_list + " ,%<N>, 0"
+      %endif
+    %endif
+    %%
+    %<out_fcn_str>(%<out_arg_list>);
+    %%
+%endfunction %% GenerateRebuffOutFcnCall
+
+%% Function: Start ==========================================================
+%%
+%function Start(block, system) Output
+%if (needBuf && (!isMultiTasking) )
+  /* Signal Processing Blockset Buffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %<LibBlockDWork(enableSysFlag,"", "", 0)> = 0;
+  }
+%endif
+%endfunction %% Start
+
+%% Function: Enable ==========================================================
+%%
+%function Enable(block, system) Output
+%% Enable/Disable functions are not needed for trig subsystem.
+%% TLC function LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0") errors out inside trig subsystem
+%if ISEQUAL(TID,"triggered")
+  %return
+%endif
+{
+%if (((needICs) || (F!=N)) && (!isMultiTasking) )
+  /* Signal Processing Blockset Buffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (SLibClockTickIsUnit32Pair(LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0")))
+    uint32_T currentOutportTick = (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0"))>;
+    uint32_T lastOutportTick = (uint32_T)%<LibBlockDWork(OutportTick,"", "", 0)>;
+    uint32_T OutportTickElapsed = (lastOutportTick<=currentOutportTick)  \
+                                ? currentOutportTick - lastOutportTick   \
+                                : (uint32_T)(pow(2,32) - lastOutportTick + currentOutportTick);
+  %else
+    uint32_T OutportTickElapsed = \
+    (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0"))> - \
+    %<LibBlockDWork(OutportTick,"", "", 0)>;
+  %endif
+  %%
+  %if (needICs)
+    %if (SLibClockTickIsUnit32Pair(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")))
+    uint32_T currentInportTick = (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))>;
+    uint32_T lastInportTick = (uint32_T)%<LibBlockDWork(InportTick,"", "", 0)>;
+    uint32_T InportTickElapsed = (lastInportTick<=currentInportTick)  \
+                               ? currentInportTick - lastInportTick   \
+                               : (uint32_T)(pow(2,32) - lastInportTick + currentInportTick);
+    %else
+    uint32_T InportTickElapsed = \
+    (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))> - \
+    %<LibBlockDWork(InportTick,"", "", 0)>;
+    %endif
+    %%
+    int_T inputBytesMissed = InportTickElapsed * %<bytesPerElem> * %<F>;
+    int_T outputBytesMissed = %<V> > 0                                              \
+                            ? OutportTickElapsed * %<bytesPerElem> * (%<N>-%<V>) \
+                            : OutportTickElapsed * %<bytesPerElem> * %<N>;
+    byte_T *outBufPtr = (byte_T *)%<LibBlockDWork(OUT_BUF_PTR, "", "", "0")>;
+    /* Update outBufPtr */
+    outBufPtr -= (inputBytesMissed - outputBytesMissed);
+    /* outBufPtr must not exceed lower memory buffer boundary */
+    if (outBufPtr < (byte_T *)%<LibBlockDWorkAddr(CircBuff, "", "", "0")>) \
+        outBufPtr += %<bufLen> * %<bytesPerElem>;
+    /* outBufPtr must not exceed upper memory buffer boundary */
+    if (outBufPtr >= (byte_T *)%<LibBlockDWorkAddr(CircBuff, "", "", "0")> + %<bufLen> * %<bytesPerElem> ) \
+        outBufPtr -= %<bufLen> * %<bytesPerElem>;
+    %<LibBlockDWork(OUT_BUF_PTR, "", "", "0")> = outBufPtr;
+  %elseif (F!=N)
+    int_T i = OutportTickElapsed;
+    while (i-- > 0) {
+      %<LibBlockDWork(CircBuff, "", "", "0")> += %<N>;
+      if (%<LibBlockDWork(CircBuff, "", "", "0")> >= %<F>) \
+        %<LibBlockDWork(CircBuff, "", "", "0")> -= %<F>;
+    }
+  %endif
+%%
+%endif
+}
+
+%endfunction %% Enable
+
+%% Function: Disable ==========================================================
+%%
+%function Disable(block, system) Output
+%% Enable/Disable functions are not needed for trig subsystem.
+%% TLC function LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0") errors out inside trig subsystem
+%if ISEQUAL(TID,"triggered")
+  %return
+%endif
+%if (needBuf && (!isMultiTasking) )
+  /* Signal Processing Blockset Buffer (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %<LibBlockDWork(OutportTick,"", "", 0)> = (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0"))>;
+    %if (needICs)
+      %<LibBlockDWork(InportTick,"", "", 0)> = (uint32_T)%<LocalLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))>;
+    %endif
+    %<LibBlockDWork(enableSysFlag,"", "", 0)> = 1;
+  }
+%endif
+%endfunction %% Disable
+
+%% LocalLibGetClockTick ===================
+%% Abstract:
+%%   Return ClockTick of the tid .   
+%%
+%function LocalLibGetClockTick(tid) void
+  %assert TYPE(tid) == "Number" && tid >= 0
+  %if ClockTickForTIDIsReqFcn(tid) 
+    %return RTMGet("ClockTick%<tid>")
+  %else
+    %% only used in accelerator mode
+    %assign retStr = ...
+      "ceil(%<LibGetT()> / %<SampleTime[tid].ClockTickStepSize>)"
+    %return retStr
+  %endif
+%endfunction %% LocalLibGetClockTick
+
+%% [EOF] sdsprebuff2.tlc

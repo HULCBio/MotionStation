@@ -1,0 +1,165 @@
+%%
+%% $Revision $ 
+%% $RCSfile: vxinterrupt1.tlc,v $
+%%
+%% Abstract:
+%%      TLC file for the VxWorks Asynchronous Interrupt Block.
+%%
+%% Copyright 2003 The MathWorks, Inc.
+
+%implements "vxinterrupt1" "C"
+
+%include "vxlib.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%      Setup ISR function names. Warn if output not connected.
+%%
+%function BlockInstanceSetup(block, system) void
+  %addtorecord SFcnParamSettings ISRNames []
+  %foreach callIdx = NumSFcnSysOutputCalls
+    %assign number = CAST("Number",SFcnParamSettings.Numbers[callIdx])
+    %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+      %% The element is not connected to anything
+      %assign wrnTxt = "No code will be generated for ISR %<number> "\
+      "since it is not connected to a system."
+      %<LibReportWarning(wrnTxt)>
+      %assign SFcnParamSettings.ISRNames = SFcnParamSettings.ISRNames + ""
+      %continue
+    %endif
+    %assign vectorOffset = CAST("Number",SFcnParamSettings.Offsets[callIdx])
+    %assign isrFuncName  = "isr_num%<number>_vec%<vectorOffset>"
+    %assign SFcnParamSettings.ISRNames = SFcnParamSettings.ISRNames + isrFuncName
+  %endforeach
+%endfunction
+      
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      Create the ISR function. Lock-out interrupts in the ISR's critical code
+%%      section if the ISR is configured as non-preemptive. Save floating point
+%%      context in the ISR's critical code section (unless the ISR represents
+%%      the VxWorks Task block).
+%%
+%function Outputs(block, system) Output
+  %foreach callIdx = NumSFcnSysOutputCalls
+    %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+      %continue
+    %endif
+    %% Get the downstream block
+    %assign ssBlock = LibGetFcnCallBlock(block,callIdx)
+    %% Determine the ISR configuration information
+    %if SIZE(SFcnParamSettings.Preemption, 1) == 1 
+      %assign preemptable = SFcnParamSettings.Preemption[0]
+    %else
+      %assign preemptable = SFcnParamSettings.Preemption[callIdx]
+    %endif
+    %if LibIsEqual(LibGetBlockAttribute(ssBlock,"MaskType"), "VxWorks Task Block")
+      %assign isTaskBlock = TLC_TRUE
+    %else
+      %assign isTaskBlock = TLC_FALSE
+    %endif
+    %% Leave interrupts enabled inside ISR if it's making a system call
+    %if !preemptable && isTaskBlock
+      %assign errTxt = "The interrupt on port element %<callIdx> cannot be "\
+      "configured as non-preemptable when it is connection to a Task Block."
+      %<LibReportError(errTxt)>
+    %endif
+    %% Call the downstream f-c subsystem, it can inline
+    %openfile tmpBuf
+    %<LibBlockExecuteFcnCall(block, callIdx)>\
+    %closefile tmpBuf
+    %% Alwarys create the ISR function
+    %openfile funcbuf
+    /* VxWorks Interrupt Block: '%<Name>' */
+    void %<SFcnParamSettings.ISRNames[callIdx]>(void)
+    {
+      %if WHITE_SPACE(tmpBuf)
+	/* Nothing to do for system: %<ssBlock.Name> */
+      %else
+	%if !preemptable
+	  int_T lock;
+	%endif
+	%% Make ISR floating-point safe if it isn't calling a Task block
+	%if !isTaskBlock && !PurelyIntegerCode
+	  FP_CONTEXT context;
+	%endif
+
+	%% Manage the async counter
+	%if LibNeedAsyncCounter(block,callIdx)
+	  /* Use tickGet() as a portable tick counter example. A much higher
+	  resolution can be achieved with a hardware counter */
+	  %<LibSetAsyncCounter(block,callIdx,"tickGet()")>
+	%endif
+
+	%if !preemptable
+	  /* disable interrupts (system is configured as non-preemptive) */
+	  lock = intLock();
+
+	%endif
+	%if !isTaskBlock && !PurelyIntegerCode
+	  /* save floating point context */
+	  fppSave(&context);
+	  
+	%endif
+	/* Call the system: %<ssBlock.Name> */
+	%<tmpBuf>\
+	
+	%if !isTaskBlock && !PurelyIntegerCode
+	  /* restore floating point context */
+	  fppRestore(&context);
+	  
+	%endif
+	%if !preemptable
+	  /* re-enable interrupts */
+	  intUnlock(lock);
+	%endif
+      %endif
+    }
+    
+    %closefile funcbuf
+    %assign srcFile = LibGetModelDotCFile()
+    %<LibSetSourceFileSection(srcFile, "Functions", funcbuf)>
+  %endforeach
+%endfunction
+
+%% Function: Start =============================================================
+%% Abstract:
+%%      Connect and enable each ISR in the model's start function.
+%%
+%function Start(block, system) Output
+  %foreach callIdx = NumSFcnSysOutputCalls
+    %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+      %continue
+    %endif
+    %assign number       = CAST("Number",SFcnParamSettings.Numbers[callIdx])
+    %assign vectorOffset = CAST("Number",SFcnParamSettings.Offsets[callIdx])
+    %assign isrFuncName  = SFcnParamSettings.ISRNames[callIdx]
+    /* VxWorks Interrupt Block: '%<Name>' */
+    /* Connect and enable ISR function: %<isrFuncName> */
+    if( intConnect(INUM_TO_IVEC(%<vectorOffset>), %<isrFuncName>, 0) != OK) {
+      printf("intConnect failed for ISR %<number>.\n");
+    }
+    sysIntEnable(%<number>);
+    
+  %endforeach
+%endfunction
+
+%% Function: Terminate =========================================================
+%% Abstract:
+%%      Disable each ISR in the model's terminate function.
+%%
+%function Terminate(block, system) Output
+  %foreach callIdx = NumSFcnSysOutputCalls
+    %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+      %continue
+    %endif
+    %assign number       = CAST("Number",SFcnParamSettings.Numbers[callIdx])
+    %assign isrFuncName  = SFcnParamSettings.ISRNames[callIdx]
+    /* VxWorks Interrupt Block: '%<Name>' */
+    /* Disable interrupt for ISR system: %<isrFuncName> */
+    sysIntDisable(%<number>);
+    
+  %endforeach
+%endfunction
+
+%% [EOF] vxinterrupt1.tlc

@@ -1,0 +1,135 @@
+               S-function direct feedthrough handling
+
+File: matlabroot/simulink/src/sfuntmpl_directfeed.txt
+Copyright 1990-2003 The MathWorks, Inc.
+$Revision: 1.7.4.2 $
+
+
+It is very common for S-function authors to write incorrect S-functions when
+configuring the S-function direct feedthrough flag. We often find that
+S-function authors are confused about what the correct setting for the direct
+feedthrough flag should be. Part of the confusion is because the term direct
+feedthrough is misleading. To reduce the confusion, you can think of the direct
+feedthrough setting as a 'needs input' setting. Specifically, if the S-function
+access an input signal in either mdlOutputs() or mdlGetTimeOfNextVarHit(), then
+the direct feedthrough flag must be set to 1 (true).
+
+For example, if a level 2 C-MEX S-function uses:
+
+   ssGetInputPortSignal(S,inputPortIndex)
+
+in its mdlOutputs() or mdlGetTimeOfNextHit() methods, then the S-function
+is required to set the direct feedthrough flag to true in its 
+mdlInitializeSizes() method:
+
+   ssSetInputPortDirectFeedThrough(S, 0, 1);  /* need direct feedthrough */
+
+If the S-Function fails to specify the direct feedthrough, or
+specifes it wrongly as:
+
+   ssSetInputPortDirectFeedThrough(S, 0, 0);  /* no direct feedthrough */
+                                              /* (this is the default) */
+
+then the S-Function is incorreclty written.
+
+Simulink R12 and prior had a special S-function block sorting mode to try and
+compensate for S-functions with incorrect direct feedthrough settings. Simulink
+would first try sorting blocks for execution by assuming the S-function had
+direct feedthrough when the S-function specified that it did not have direct
+feedthough. If this resulted in an algebraic loop, a second sorting would be
+done with the direct feedthrough flag in its original state (i.e., no direct
+feedthrough). The problem with this scheme is that it can lead to incorrect
+execution orders for cases involving S-functions within nonvirtual
+subsystems. It can also result in slower update diagram (compile) times. In
+addition to these problems, accessing an input signal when the corresponding
+input port direct feedthough is not set will result in uninitialized memory
+reads which can cause crashes.
+
+In Simulink R12.1 we removed the 'special S-funciton block sorting mode' and
+NULL'd out the input signals provided to S-functions during mdlOutput()
+and mdlGetTimeOfNextVarHit() when the corresponding input port does
+not have direct feedthrough. Note, for M-file/Fortran S-functions, Simulink 
+sets the input signal values to NaN for this condition. Therefore, in R12.1
+and later C-MEX S-functions will cause a segmentation violation when
+illegally accessing the input signal. On some of our supported platforms
+we are able to detect this condition in our signal handler and will
+report the following diagnostic message:
+
+    <segmentation violation, register state, and stack trace output>
+
+    This segmentation violation occurred while executing an S-function. 
+    A common cause of this segmentation violation is an incorrect input port
+    direct feedthrough setting. Each input port of the S-function that is
+    read (accessed) in mdlOutputs and/or mdlGetTimeOfNextVarHit must
+    specify that it needs its input signal in these routines by setting
+    direct feedthrough for these input ports. 
+    1) To debug your C-MEX S-function, you can enable diagnostics by compiling
+       the S-function source with the -g flag, for example, 
+          mex -g sfunction_name.c. 
+    2) You can ask Simulink to try assuming your S-function has direct 
+       feedthrough using
+          set_param('modelname','TryForcingSFcnDF','on')           
+       If Simulink can find a valid sorting mode that does not result in
+       algebraic loops involving your S-function, your model will execute
+       (assuming that the cause of this segmentation violation is an 
+       incorrect direct feedthrough setting on an input port). 
+    See matlabroot/toolbox/simulink/src/sfuntmpl_directfeed.txt
+
+If you have S-functions with incorrect settings for the direct feedthrough,
+we suggest correcting the settings. To correct the setting, you need
+to edit your S-function source code. If you have a level 2 C-MEX S-function,
+you need to have specify
+   ssSetInputPortDirectFeedThrough(S,inputPortIndex,1);
+in mdlInitializeSizes for each input port that requires it input signal in the
+mdlOutput or mdlGetTimeOfNextVarHit function. If you have an M-file
+S-function you need to set the 6 element of the first output argument
+(usualy sys or sizes) to 1.
+
+In Simulink R12.1 we enhanced the mex compilation phase such that
+if you specify the -g switch when compiling your C-MEX S-function, e.g.,
+
+   mex -g sfunction_name.c
+
+your code will be instrumented such that an incorrect access to an
+input signal will generate a diagnostic message like the following when
+an invalid access is performed during model execution:
+
+     S-function 'sfun_name' in block 'modelname/sfcn' is attempting to 
+     access the signal entering input port 2 in either mdlOutput() or 
+     mdlGetTimeOfNextVarHit(). This is not permitted because 
+     this S-function did not register in its mdlInitializeSizes()
+     that it has has direct feedthrough using
+     ssSetInputPortDirectFeedthrough(S,inputPortIndex,1). Please
+     update the S-function to have direct feedthrough or
+     remove the calls to ssGetInputPort[Real]Signal[Ptrs]() in
+     mdlOutputs() and mdlGetTimeOfNextVarHit(). Illegally accessing the input
+     will cause a segmentation violation by dereferencing the NULL pointer.
+
+
+If for some reason you don't have the source code so you can fix your
+S-function, we have provided a temporary simulation parameter,
+  set_param('modelname','TryForcingSFcnDF','on')
+that will enable the 'special S-function block sorting mode'. When you specify
+this parameter you will receive the once per model load message:
+
+    Model 'modelname' has specified
+        set_param('modelname','TryForcingSFcnDF','on');
+    This setting enables a special execution mode found in Simulink 4.0 and
+    earlier that attempts to compensate for S-functions that:
+        (1) Specify in mdlInitializeSizes that they don't have direct
+            feedthrough on their input ports; and
+	(2) In their mdlOutputs or mdlGetTimeOfNextVarHit methods they then
+            access the corresponding input signals.
+    This compensation mode can result in incorrect block execution orders for
+    models involving S-functions within nonvirtual subsystems. Please update any
+    S-functions in your model to specify direct feedthrough for any input port
+    signals that are accessed in mdlOutputs() or mdlGetTimeOfNextVarHit() and
+    then run set_param('modelname','TryForcingSFcnDF','off');
+    Note, the term 'direct feedthrough' can be misleading. To reduce the
+    confusion, you can think of the direct feedthrough setting as a 'needs
+    input' setting. Specifically, if the S-function access an input signal in
+    either mdlOutputs() or mdlGetTimeOfNextVarHit(), then the direct feedthrough
+    flag must be set to 1 (true). For more information see
+    matlabroot/simulink/src/sfuntmpl_directfeed.txt
+
+[eof]

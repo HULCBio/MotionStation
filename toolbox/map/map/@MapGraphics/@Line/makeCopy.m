@@ -1,0 +1,23 @@
+function hLine = makeCopy(this)
+%makeCopy Copy this Line object
+%
+%   makeCopy returns a new line that is a copy of this line.  The properties
+%   copied are: XData, YData, Color, LineWidth, LineStyle, ButtonDownFcn.
+%   The new line is not visible.
+
+%   Copyright 1996-2003 The MathWorks, Inc.
+%   $Revision: 1.1.6.3 $  $Date: 2004/02/01 21:55:53 $
+
+props = get(this);
+hLine = MapGraphics.Line('Parent',double(props.Parent),...
+                         'XData',props.XData,...
+                         'YData',props.YData,...
+                         'Color',props.Color,...
+                         'LineWidth',props.LineWidth,...
+                         'LineStyle',props.LineStyle,...
+                         'ButtonDownFcn',props.ButtonDownFcn,...
+                         'Visible','off');
+
+hLine.LayerName = props.LayerName;
+
+hLine.IsArrow = this.IsArrow;

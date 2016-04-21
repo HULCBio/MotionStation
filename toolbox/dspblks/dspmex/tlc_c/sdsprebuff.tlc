@@ -1,0 +1,443 @@
+%% $RCSfile: sdsprebuff.tlc,v $
+%% $Revision: 1.25.4.2 $ 
+%% $Date: 2004/04/12 23:09:33 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Convert a frame to a smaller or larger size with optional overlap.
+
+%implements sdsprebuff "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %assign block = block + INPORT + OUTPORT
+  %%
+  %if !IsInputPortContiguous(block,INPORT)
+    %<LibDiscontiguousInputError(block)>
+  %endif 
+  %%
+
+  %%
+  %assign cplx_in  = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign dtype_in = cplx_in ? "creal_T" : "real_T"
+  %assign inWidth  = CAST("Number",LibDataInputPortWidth(INPORT))
+  %%
+  %assign frame    = (SFcnParamSettings.FRAME[0] != 0)
+  %assign nChans   = (frame) ? CAST("Number",SFcnParamSettings.NCHANS[0]) : inWidth
+  %assign N        = CAST("Number",SFcnParamSettings.BUF_SIZE[0])
+  %assign V        = CAST("Number",SFcnParamSettings.OVERLAP[0])
+  %assign F        = CAST("Number",inWidth / nChans)
+  %assign B        = (F<=N) ? N : ( ((F%N)==0) ? F : F+N-V)
+  %assign bufLen   = (F<=N) ? N+B : F+B
+  %%
+  %assign isMultiRate = !LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+  %%
+  %assign IS_BUFFERING_WITH_NONSCALAR_OUTPUT       = ((F==1) && (N>1))
+  %assign IS_REBUFFERING                           = ((F != 1) && (N != 1))
+  %assign IS_DIFFERING_FRAME_SIZES                 = (F != N)
+  %assign IS_FRAME_UNBUFF_NOLAP_INDIVISIBLE_FRAMES = ((F > N) && (V == 0) && (F%N != 0))
+  %assign IS_FRAME_BUFF_NOLAP                      = ((F < N) && (V == 0))
+  %assign IS_OVERLAP                               = (V > 0)
+  %%
+  %assign needICs =                                                            \
+           (    isMultiTasking &&                                               \
+                          (isMultiRate ||                                       \
+                           IS_DIFFERING_FRAME_SIZES                             \
+                           )                                                    \
+                ||                                                              \
+                !isMultiTasking &&                                              \
+                          ( IS_BUFFERING_WITH_NONSCALAR_OUTPUT ||               \
+                            IS_REBUFFERING &&                                   \
+                                  ( IS_FRAME_UNBUFF_NOLAP_INDIVISIBLE_FRAMES || \
+                                    IS_FRAME_BUFF_NOLAP ||                      \
+                                    IS_OVERLAP                                  \
+                                   )                                            \
+                           )                                                    \
+           )
+  %%  
+  %assign block = block + cplx_in + dtype_in + inWidth \
+                        + frame + nChans + N + V + F + B + bufLen \
+                        + isMultiRate + isMultiTasking + needICs
+  %%
+  %% The IWork is only needed in the underlap case.
+  %%
+  %if SFcnParamSettings.OVERLAP[0] < 0
+    %<LibDefineIWork(block, "UL_COUNT", 1)>
+  %endif
+  %%
+  %<LibDefinePWork(block, "BUFFER", 2)>
+  %%
+  %%
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Rebuffer (%<ParamSettings.FunctionName>) - %<Name> */
+  %if V < 0
+    %% Don't initialize IWork if it is not present (i.e., no underlap): 
+    %<LibBlockIWork(UL_COUNT, "", "", 0)> = 0;
+  %endif
+
+  %if (!isMultiTasking && (F > 1) && (N == 1) && (V == 0) ) 
+    %<LibBlockDWork(CircBuff,"", "", 0)> = 0; /* Reset counter */
+  %endif
+
+  %if (needICs)
+      %%
+      %assign IC       = SFcnParamSettings.IC
+      %assign ic_cplx  = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+      %assign ic_rows  = SFcnParamSettings.IC_ROWS
+      %assign ic_cols  = SFcnParamSettings.IC_COLS
+      %assign numIC    = SIZE(SFcnParamSettings.IC,1)
+      %assign dtype_ic = ic_cplx ? "creal_T" : "real_T"
+      {
+        %if numIC > 1
+          %%
+          %% Number of ICs is greater than one, so we have to build up a variable.
+          %% ICs are nontunable, so they are not written out in the param file.
+          %%    
+          %assign astr    = ""
+          %assign count   = 0
+          %if (ic_cplx)
+	    creal_T ic[%<numIC>] = {
+	      %foreach Col = ic_cols
+	        %foreach Row = ic_rows
+	          %assign astr  = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+	          %assign count = count + 1
+	          %if (count < numIC)
+		    %assign astr = astr + ","
+	          %else
+		    %assign astr = astr + "};"
+	          %endif
+	        %endforeach
+	        %<astr>
+	        %assign astr    = ""
+	      %endforeach
+          %else
+	    real_T ic[%<numIC>] = {
+	      %foreach Col = ic_cols
+	        %foreach Row = ic_rows
+	          %assign astr = astr + "%<IC[count]>"
+	          %assign count   = count + 1
+	          %if (count < numIC)
+		    %assign astr = astr + ","
+	          %else
+		    %assign astr = astr + "};"
+	          %endif
+	        %endforeach
+	        %<astr>
+	        %assign astr    = ""
+	      %endforeach
+          %endif
+        %endif
+        %%
+        %<dtype_in> *inBuf;
+        %if nChans != 1
+          int_T n;      
+          for (n=0; n<%<nChans>; n++) {
+	    inBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)> + (%<bufLen>*n);
+        %else
+    	    inBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)>;            
+        %endif
+          %%
+          %if (numIC <= 1) 
+	    %%
+	    %if numIC == 0
+	      %assign IC_re = 0.0
+	      %assign IC_im = 0.0
+	    %else
+	      %assign IC_re = REAL(IC[0])
+	      %if !ic_cplx
+	        %assign IC_im = 0.0
+	      %else
+	        %assign IC_im = IMAG(IC[0])
+	      %endif
+	    %endif
+	    { 
+	      /* Scalar IC */  
+	      int_T  i;
+	      for (i=0; i++ < %<B>; ) {
+	        %if !cplx_in
+	        *inBuf++ = %<IC_re>;
+	      %else
+	        inBuf->re     = %<IC_re>;
+	        (inBuf++)->im = %<IC_im>;
+	      %endif
+	      }
+	    }
+          %else
+	    {	    
+	      %if (numIC == F) || (numIC == N)
+	        /* Vector IC */
+	        int_T i;
+	        for (i=0; i < %<B>; i++) {
+	      %else
+	        /* Matrix IC */
+	        int_T i;   %% move pointer for each channel
+	        for (i=n*%<((F<=N) ? N : F)> ; i < (n+1)*%<B>; i++) {
+	        %%
+	      %endif
+	        %if !cplx_in
+	          *inBuf++ = ic[i];
+	        %else
+	          inBuf->re     = %<(ic_cplx) ? "ic[i].re" : "ic[i]">; 
+	          (inBuf++)->im = %<(ic_cplx) ? "ic[i].im"  : 0.0>;
+	        %endif
+	      }	    
+	    }
+          %endif
+          %%
+        %if nChans != 1
+         }  %% for loop closing brace
+         inBuf -= %<(nChans-1)*bufLen>;
+        %endif
+        %%
+        %assign OUTBUF_PTR = 0
+        %assign INBUF_PTR  = 1
+        %%
+        %<LibBlockPWork(BUFFER,"","",INBUF_PTR)>  = inBuf;
+        %<LibBlockPWork(BUFFER,"","",OUTBUF_PTR)> = \
+        (%<LibBlockDWorkAddr(CircBuff,"", "", 0)>%<((V<=0) ? "" : "+ %<V>")>); 
+      }
+  %endif %% needICs 
+  
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Rebuffer (%<ParamSettings.FunctionName>) - %<Name> */
+  {
+  %%
+  %if (needICs)
+        %<needICs_output(block)>
+  %else
+
+        %<dtype_in> *y = (%<dtype_in> *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>);
+        const %<dtype_in> *u = (%<dtype_in> *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+
+        %%
+        %if isMultiRate
+            %assign InportHit = LibIsSFcnSampleHit("InputPortIdx0")
+            %assign OutportHit = LibIsSFcnSampleHit("OutputPortIdx0")
+
+            %if ( (N-V)/F > 1)
+              %% Fast to Slow block
+                if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+            %else
+              %% Slow to Fast block
+                if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+            %endif
+        %endif            
+
+        %if( (F == 1) && (N == 1) ) 
+            %if (nChans > 1)            
+            int_T n;
+
+            for (n = 0; n < %<nChans>; n++) {
+            %endif
+                *y++ = *u++;
+            %if (nChans > 1)
+            }
+            %endif
+        %else 
+	  int_T  c;
+	  int_T  i;
+	  %if (nChans > 1) 
+	    %assign chanLoopOpening = "int_T n;\n\n" ...
+	      "for (n = 0; n < %<nChans>; n++) {\n"
+	    %assign chanLoopClosing = "}"
+	  %else
+	    %assign chanLoopOpening = ""
+	    %assign chanLoopClosing = ""
+	  %endif
+	  %<chanLoopOpening>\
+	  c = %<LibBlockDWork(CircBuff,"", "", 0)>;
+	  for (i=0; i<%<N>; i++) {
+	    %if (nChans > 1) 
+	      *y++ = u[n*%<F> + c++];
+	    %else
+	      *y++ = u[c++];		
+	    %endif
+	    if (c == %<F>) c = 0;
+	  }
+	  %<chanLoopClosing>\
+	  %<LibBlockDWork(CircBuff,"", "", 0)> = c;
+        %endif            
+    %if isMultiRate
+     }
+    %endif
+  %endif
+  }
+%endfunction %% Outputs
+
+%% [EOF] sdsprebuff.tlc
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                           Local Functions                      %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%          Need ICs          %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: needICs_output
+%function needICs_output(block) Output
+      %assign OUTBUF_PTR = 0
+      %assign INBUF_PTR  = 1
+      %%
+      %if V > 0
+        %assign V_tmp  = "- %<V>"
+      %else
+        %assign V_tmp  = ""
+      %endif
+      %%
+      %%
+      %%
+      %% Output Hit:
+      %%  
+      %if !LibIsSFcnSingleRate(block)
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+      %else
+        {
+      %endif
+      %%
+        %<dtype_in> *y = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+        %<dtype_in> *outBuf;
+        %%
+        %if nChans > 1
+          int_T   n;
+    
+          for (n=0; n<%<nChans>; n++) {
+	    %<dtype_in> *topBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)> + (n*%<bufLen>);
+	    %<dtype_in> *endBuf = topBuf + %<bufLen>;
+	    
+	    /* Get the original output pointer relative to this channel
+	    * and back it up V samples: 
+	    */
+	    outBuf = (%<dtype_in> *)%<LibBlockPWork(BUFFER,"","", OUTBUF_PTR)> + (n*%<bufLen>);
+	    outBuf = ((outBuf %<V_tmp>) < topBuf) ? (endBuf-(topBuf-(outBuf %<V_tmp>))) : (outBuf %<V_tmp>);
+        %else
+          %<dtype_in> *topBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)>;
+          %<dtype_in> *endBuf = topBuf + %<bufLen>;
+      
+          /* Get the original output pointer relative to this channel
+          * and back it up V samples: 
+          */
+          outBuf = (%<dtype_in> *)%<LibBlockPWork(BUFFER,"","", OUTBUF_PTR)>;
+          outBuf = ((outBuf %<V_tmp>) < topBuf) ? (endBuf-(topBuf-(outBuf %<V_tmp>))) : (outBuf %<V_tmp>);      
+        %endif
+        %%
+         /* Read %<N> samples: */
+          {
+	    const int_T nSampsAtBot = (endBuf-outBuf);
+	    int_T       nSamps = %<N>;
+	    int_T       i;
+
+	    if ( nSampsAtBot <= %<N> ) {
+	      /* Need to wrap pointer */
+	      /* Copy all samples left in buffer before wrapping pointer */
+	      for (i=0; i++ <nSampsAtBot; ) {
+	        *y++ = *outBuf++;
+	      }
+	      outBuf = topBuf;       /* Wrap outBuf to beginning of buffer*/
+	      nSamps -= nSampsAtBot; /* Left over samples to copy from top of buffer */
+	    } 
+	    for(i=0; i++ < nSamps; ) {
+	      *y++ = *outBuf++;
+	    }
+          }
+        %if nChans > 1
+         }   %% for loop closing brace
+         /* Update outBuf pointer relative to the first channel */
+         outBuf -= %<(nChans-1)*bufLen>;
+        %endif
+        %%
+        %<LibBlockPWork(BUFFER,"","", OUTBUF_PTR)> = outBuf;
+      }
+
+      %%
+      %% Input Hit:
+      %%  
+      %if !LibIsSFcnSingleRate(block)
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+      %else
+        {
+      %endif
+        %%
+        %if V < 0
+          /* Underlap: only works when buffering scalar inputs */
+          %<LibBlockIWork(UL_COUNT, "", "", 0)>++;
+      
+          if (%<LibBlockIWork(UL_COUNT, "", "", 0)> > %<N>) {
+	    /* Skip this sample because of negative overlap */
+	    if (%<LibBlockIWork(UL_COUNT, "", "", 0)> == %<N-V>) {
+	      %<LibBlockIWork(UL_COUNT, "", "", 0)> = 0;
+	    }
+          } else {
+        %%
+        %endif
+	    const %<dtype_in> *u = %<LibBlockInputSignalAddr(INPORT,"","", 0)>;
+	    %<dtype_in> *inBuf;
+	    %%
+	    %if nChans > 1
+	      int_T     n;      
+	      
+	      for (n=0; n<%<nChans>; n++) {
+	        %<dtype_in> *topBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)> + (n*%<bufLen>);
+	        %<dtype_in> *endBuf = topBuf + %<bufLen>;
+	        
+	        /* Get the original input pointer relative to this channel */
+	        inBuf = (%<dtype_in> *)%<LibBlockPWork(BUFFER,"","",INBUF_PTR)> + (n*%<bufLen>);
+	    %else
+	      %<dtype_in> *topBuf = %<LibBlockDWorkAddr(CircBuff,"", "", 0)>;
+	      %<dtype_in> *endBuf = topBuf + %<bufLen>;
+	      
+	      /* Get the original input pointer relative to this channel */
+	      inBuf = (%<dtype_in> *)%<LibBlockPWork(BUFFER,"","",INBUF_PTR)>;	  	  
+	    %endif
+	    %%
+	      /* Copy F samples */
+	      {
+	        const int_T nSampsAtBot = (endBuf-inBuf);
+	        int_T       nSamps = %<F>;
+	        int_T       i;
+	        
+	        if (nSampsAtBot <= nSamps) {
+	          /* Need to wrap inBuf pointer */
+	          for (i=0; i++ < nSampsAtBot; ) {
+		    *inBuf++ = *u++;
+	          }
+	          inBuf = topBuf;
+	          nSamps -= nSampsAtBot;
+	        }
+	        for (i=0; i++ < nSamps; ) {
+	          *inBuf++ = *u++;
+	        }
+	      }
+	    %if nChans > 1
+	     /* Update inBuf pointer relative to the first channel */
+	     inBuf -= %<(nChans-1)*bufLen>;
+             }      %% for nChans loop closing brace	      
+	    %endif
+	    %%
+	    %<LibBlockPWork(BUFFER,"","",INBUF_PTR)>  = inBuf;
+	    %%
+         %if V<0
+          }           %% if v<0 else closing brace
+         %endif
+       }
+
+%endfunction %% needICs_output

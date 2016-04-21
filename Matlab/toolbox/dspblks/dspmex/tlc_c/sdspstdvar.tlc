@@ -1,0 +1,364 @@
+%% $RCSfile: sdspstdvar.tlc,v $
+%% $Revision: 1.11.4.2 $ 
+%% $Date: 2004/04/12 23:09:49 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Find the stdvar value of a vector
+
+%implements sdspstdvar "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Function")>
+  %<LibRenameParameter(block, P2, "Running")>
+  %<LibRenameParameter(block, P3, "Framebased")>
+  %<LibRenameParameter(block, P4, "Nchans")>
+  %<LibRenameParameter(block, P5, "ResetPort")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %%
+  %if running
+    /* Signal Processing Blockset Stdvar (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %<LibBlockDWork(Iteration,"", "", 0)> = 0.0;
+    %%
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Stdvar (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT      = 0
+  %%
+  %assign fcn     = LibBlockParameterValue(Function,0)
+  %assign FcnVar  = 0
+  %assign FcnStd  = 1
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %assign cplx    = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+  %assign contig  = IsInputPortContiguous(block, INPORT_DATA)
+  %assign width   = LibDataInputPortWidth(INPORT_DATA)
+  %assign dtype   = cplx ? "creal_T" : "real_T"
+  %%
+%if !running
+  %%
+  %% Not Running 
+  %%
+  %if width==1
+    %%
+    %% When width is 1, the stdvar output equals the input
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","", 0)> = 0.0;
+  %else	
+    %%
+    %if !cplx
+      %% REAL
+      {	 
+        real_T   sx  = 0.0;
+        real_T   sx2 = 0.0;
+        %assign rollVars = ["U"]
+        %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+  	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  sx  += %<u>;
+	  sx2 += %<u> * %<u>;
+        %endroll
+	%if fcn == FcnVar
+	  /* Variance */
+	  %<LibBlockOutputSignal(0, "","",0)> = (sx2 - sx*sx / %<width>) / %<width-1>;
+	%else 
+	  /* Standard Deviation */
+	  %<LibBlockOutputSignal(0, "","",0)> = sqrt((sx2 - sx*sx / %<width>) / %<width-1>);
+	%endif
+      }
+    %else
+      %% COMPLEX
+      {	 
+        creal_T sx   = {0.0, 0.0};
+        real_T  sx2  = 0.0;
+	%assign rollVars = ["U"]
+        %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  sx.re += %<LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")>;
+	  sx.im += %<LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")>;
+	  sx2   += CMAGSQ(%<LibBlockInputSignal(0, "", lcv, sigIdx)>);
+	%endroll
+	%if fcn == FcnVar
+	  /* Variance */
+	  %<LibBlockOutputSignal(0, "","",0)> = (sx2 - CMAGSQ(sx) / %<width>) / %<width-1>;
+	%else 
+	  /* Standard Deviation */
+	  %<LibBlockOutputSignal(0, "","",0)> = sqrt((sx2 - CMAGSQ(sx) / %<width>) / %<width-1>);
+	%endif
+      }                    
+    %endif
+  %endif %% if width==1  
+%else
+    %%
+    %% Running
+    %%
+    %assign resetport  = LibBlockParameterValue(ResetPort,0) != 0
+    %assign framebased = LibBlockParameterValue(Framebased,0) != 0
+    %assign nchans     = framebased ? CAST("Number",LibBlockParameterValue(Nchans,0)) : width
+    %assign nsamps     = framebased ? width/nchans : 1
+    %%
+    %if (!contig)
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    {
+      typedef struct {
+	%<dtype> sum; 
+	real_T sqsum;
+      } sv;
+
+      sv     *sv_data  = (sv *)%<LibBlockDWorkAddr(StdVarData, "", "", 0)>;
+      real_T *iter_cnt = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    
+      %if resetport
+	if(%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) { /* Reset iteration count. */
+	  *iter_cnt = 0.0;
+	}
+      %endif
+      %%
+    %if !cplx
+      %%
+      %% Real Running
+      %%
+        if(*iter_cnt == 0.0) {
+	  %if nsamps == 1
+	    %if nchans !=1
+	      /* Single time step - special case for output value: */
+	      real_T *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+	      real_T *y = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	      int_T i = %<nchans>;
+	      
+	      while(i-- > 0) {
+		real_T val = *u++;
+		sv_data->sum       = val;
+		(sv_data++)->sqsum = val * val;
+		*y++ = 0.0;
+	      }
+	    %else
+	      %assign u = LibBlockInputSignal(INPORT_DATA,"","",0)
+	      sv_data->sum   = %<u>;
+	      sv_data->sqsum = %<u> * %<u>;
+	      %<LibBlockOutputSignal(OUTPORT,"", "", 0)> = 0.0;
+	    %endif
+	    (*iter_cnt)++;
+	    } else {
+	  %else
+	    %if nchans!=1
+	      /* Multiple time steps - reset states and continue: */
+	      int_T i = %<nchans>;
+	      
+	      while(i-- > 0) {
+		sv_data->sum       = 0.0;
+		(sv_data++)->sqsum = 0.0;
+	      }
+	      sv_data -= %<nchans>;  /* Reset the pointer */
+	    %else
+	      sv_data->sum   = 0.0;
+	      sv_data->sqsum = 0.0;
+	    %endif
+	    }
+	  %endif
+	  %%
+
+	  *iter_cnt += %<nsamps>;
+
+	  {
+	    %assign yout         = (nchans !=1) ? "*y++" : "*y"
+	    %assign uptr         = (nchans !=1) ? "*u++" : "*u"
+	    real_T *u   = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	    real_T *y   = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	    real_T iter = *iter_cnt;	    
+	    %if nchans != 1
+	      int_T   i   = %<nchans>;
+	      
+	      while(i-- > 0) {
+	    %endif
+	    %%
+	    %if nsamps !=1
+	      real_T sx  = sv_data->sum;
+	      real_T sx2 = sv_data->sqsum;
+	      int_T  j    = %<nsamps>;
+	      
+	      while(j-- > 0) {
+		const real_T val = *u++;
+		sx  += val;
+		sx2 += val * val;
+	      }
+	      
+	      /* Update state: */
+	      sv_data->sum       = sx;
+	      (sv_data++)->sqsum = sx2;
+	      
+	      %if fcn == FcnVar
+		/* Variance */
+		%<yout> = (sx2 - sx*sx / iter) / (iter-1);
+	      %else 
+		/* Standard Deviation */
+		%<yout> = sqrt((sx2 - sx*sx / iter) / (iter-1));
+	      %endif	      
+	      %%
+	    %else
+	      /* Update the state: */
+	      real_T val = %<uptr>;
+	      sv_data->sum += val;
+	      sv_data->sqsum += val * val;
+
+	      %if fcn == FcnVar
+		/* Variance */
+		%<yout> = (sv_data->sqsum - sv_data->sum * sv_data->sum / iter) / (iter-1);
+	      %else 
+		/* Standard Deviation */
+		%<yout> = sqrt((sv_data->sqsum - sv_data->sum * sv_data->sum / iter) / (iter-1));
+	      %endif
+	      %%
+	      %if nchans !=1
+		sv_data++;
+	      %endif
+	      %%
+	    %endif
+	    %%
+	    %if nchans != 1
+	    }
+	    %endif
+	  }
+	%if nsamps ==1
+	}
+	%endif
+  %else
+    %%
+    %% COMPLEX Running
+    %%
+        if(*iter_cnt == 0.0) {
+	  %if nsamps == 1
+	    %if nchans !=1
+	      /* Single time step - special case for output value: */
+	      creal_T *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+	      real_T  *y = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	      int_T    i = %<nchans>;
+	      
+	      while(i-- > 0) {
+		creal_T val = *u++;
+		sv_data->sum       = val;
+		(sv_data++)->sqsum = CMAGSQ(val);
+		*y++ = 0.0;
+	      }
+	    %else
+	      %assign u = LibBlockInputSignal(INPORT_DATA,"","",0)
+	      sv_data->sum   = %<u>;
+	      sv_data->sqsum = CMAGSQ(%<u>);
+	      %<LibBlockOutputSignal(OUTPORT,"", "", 0)> = 0.0;
+	    %endif
+	    (*iter_cnt)++;
+	    } else {
+	  %else
+	    %if nchans!=1
+	      /* Multiple time steps - reset states and continue: */
+	      int_T i = %<nchans>;
+	      
+	      while(i-- > 0) {
+		sv_data->sum.re    = 0.0;
+		sv_data->sum.im    = 0.0;
+		(sv_data++)->sqsum = 0.0;
+	      }
+	      sv_data -= %<nchans>;  /* Reset the pointer */
+	    %else
+	      sv_data->sum.re = 0.0;
+	      sv_data->sum.im = 0.0;
+	      sv_data->sqsum  = 0.0;
+	    %endif
+	    }
+	  %endif
+	  %%
+
+	  *iter_cnt += %<nsamps>;
+
+	  {
+	    %assign yout         = (nchans !=1) ? "*y++" : "*y"
+	    %assign uptr         = (nchans !=1) ? "*u++" : "*u"
+	    creal_T *u    = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	    real_T  *y    = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	    real_T   iter = *iter_cnt;	    
+	    %if nchans != 1
+	      int_T   i   = %<nchans>;
+	      
+	      while(i-- > 0) {
+	    %endif
+	    %%
+	    %if nsamps !=1
+	      creal_T sx  = sv_data->sum;
+	      real_T  sx2 = sv_data->sqsum;
+	      int_T   j   = %<nsamps>;
+	      
+	      while(j-- > 0) {
+		const creal_T val = *u++;
+		sx.re += val.re;
+		sx.im += val.im;
+		sx2   += CMAGSQ(val);
+	      }
+	      
+	      /* Update state: */
+	      sv_data->sum       = sx;
+	      (sv_data++)->sqsum = sx2;
+	      
+	      %if fcn == FcnVar
+		/* Variance */
+		%<yout> = (sx2 - CMAGSQ(sx) / iter) / (iter-1);
+	      %else 
+		/* Standard Deviation */
+		%<yout> = sqrt((sx2 - CMAGSQ(sx) / iter) / (iter-1));
+	      %endif	      
+	      %%
+	    %else
+	      /* Update the state: */
+	      creal_T val = %<uptr>;
+	      sv_data->sum.re += val.re;
+	      sv_data->sum.im += val.im;
+	      sv_data->sqsum  += CMAGSQ(val);
+
+	      %if fcn == FcnVar
+		/* Variance */
+		%<yout> = (sv_data->sqsum - CMAGSQ(sv_data->sum) / iter) / (iter-1);
+	      %else 
+		/* Standard Deviation */
+		%<yout> = sqrt((sv_data->sqsum - CMAGSQ(sv_data->sum) / iter) / (iter-1));
+	      %endif
+	      %%
+	      %if nchans !=1
+		sv_data++;
+	      %endif	      
+	      %%
+	    %endif
+	    %%
+	    %if nchans != 1
+	    }
+	    %endif
+	  }
+	%if nsamps ==1
+	}
+	%endif
+  %endif  %% end complex running
+}
+%endif
+
+%endfunction
+
+%% [EOF] sdspstdvar.tlc
+

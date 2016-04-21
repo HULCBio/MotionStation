@@ -1,0 +1,598 @@
+%% 
+%% $Revision: 1.1.6.4 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%     Library routines for Pulse Generator block.
+%%
+
+%% Function: PulseStart ========================================================
+%% Abstract:
+%%      During startup initialize the clock tick count in the DWork vector with
+%%      the value specified by the Phase Delay ParamSetting.
+%%
+%function PulseStart(block, system) Output
+    %assign pulseType = ParamSettings.PulseType
+    %assign pulseMode = ParamSettings.PulseMode
+    /* %<Type> Block: %<Name> */
+    {
+    %if ISEQUAL(pulseMode,"Time-based-Variable")
+      %%
+      %% PULSE_MODE_CONTINUOUS_TIME_BASED
+      %%
+      real_T time = %<LibGetT()>;
+      %assign delaySize = SIZE(ParamSettings.PhaseDelay)
+      %if delaySize[1] > 1
+	%assign buffer = "const real_T delayParam[] = { \n"
+	%assign entryCount = 0
+	%foreach idx = delaySize[1]
+	  %assign value = ParamSettings.PhaseDelay[idx]
+	  %if entryCount > 5
+	    %assign buffer = buffer + "\n"
+	    %assign entryCount = 1
+	  %else
+	    %assign entryCount = entryCount + 1
+	  %endif
+	  %if idx == delaySize[1]-1
+	    %assign buffer = buffer + "%<value>"
+	  %else
+	    %assign buffer = buffer + "%<value>, "
+	  %endif
+	%endforeach
+	%assign buffer = buffer + "\n};\n"
+	%<buffer>
+	real_T delay;
+      %else
+	real_T delay = %<ParamSettings.PhaseDelay[0]>;
+      %endif
+      %assign just_enabled = LibBlockDWork(JustEnabled, "", "", 0)
+      %<just_enabled> = (int) false;
+
+      %assign rollVars = ["P", "DWork"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%assign period      = LibBlockParameter(Period,     "", lcv, idx)
+	%assign duty  = LibBlockParameter(PulseWidth, "", lcv, idx)
+	%assign curr_value   = LibBlockDWork(CurrentValue, "", lcv, idx)
+	%assign num_complete_cycles = LibBlockDWork(CompleteCycles,"", "",idx)
+	%assign next_time    = LibBlockDWork(NextTime, "", lcv, idx)
+	%%
+	%% This is a source block, hence there will be no
+	%% dis-contiguous roll regions (because of no inputs).
+	%if SIZE(ParamSettings.PhaseDelay,1) > 1
+	  delay = delayParam[%<lcv == "" ? idx : lcv>];
+	%endif
+	%%
+	if (time >= delay) {
+	  real_T ratio = (time - delay)/ %<period>;
+	  int_T num_cycles = (int)floor(ratio);
+
+	  if ( fabs((num_cycles+1)- ratio ) < \
+	  %<LibGetMathConstant("EPSILON",tSS_DOUBLE)> * ratio  )
+	  {
+	    num_cycles = num_cycles+1;
+	  }
+	  %<num_complete_cycles> = num_cycles;
+	  if (time < delay + num_cycles * %<period>
+	  + %<duty> * %<period>/100) {
+	    %<curr_value> = 1;
+	    %<next_time>  = delay + num_cycles * %<period>
+	    + %<duty> * %<period>/100;
+	  } else {
+	    %<curr_value> = 0;
+	    %<next_time> = delay + (num_cycles + 1) * %<period>;
+	  }
+	} else {
+	  %<num_complete_cycles> = 0;
+	  %<curr_value> = 0;
+	  %<next_time> = delay;
+	}
+      %endroll
+    %elseif ISEQUAL(pulseMode,"Sample-based-Discrete") || ...
+      ISEQUAL(pulseMode,"Time-based-Discrete") || ...
+      ISEQUAL(pulseMode,"Port_Sample_based_Discrete")
+      %%
+      %% PULSE_MODE_DISCRETE_SAMPLE_BASED
+      %% PULSE_MODE_DISCRETE_TIME_BASED
+      %% PULSE_MODE_TIMEPORT_DISCRETE_SAMPLE_BASED
+      %%
+    %if LibIsDiscrete(TID)
+      %assign sampleTime = CompiledModel.SampleTime[TID].PeriodAndOffset[0]
+      int_T Ns;
+      %% tFirst needs to be the first time at which the pulse block will 
+      %% have a hit so that we can set the counter (Ns), which keeps track of
+      %% where in the cycle we are, appropriately so that the output at that 
+      %% first hit will be the correct value
+      %if CompiledModel.StartTime != 0.0
+        real_T tStart = %<RTMGet("TStart")>;
+        real_T tFirst;
+        real_T tStartInSamples = tStart / %<sampleTime>;
+        if ( floor( tStartInSamples) ==  tStartInSamples) {
+          tFirst = tStart;
+        } else {
+          tFirst = ceil(tStartInSamples) * %<sampleTime>;
+        }
+      %endif
+    %endif
+    %%
+    %assign noutputs = LibBlockOutputSignalWidth(0)
+    %foreach idx = noutputs
+      %%
+      %if SIZE(ParamSettings.PhaseDelay,1) > 1
+	%if ISEQUAL(pulseType,"Sample based")
+	  %assign delay = ParamSettings.PhaseDelay[idx]
+	%else
+	  %assign delay = (ParamSettings.PhaseDelay[idx])/sampleTime
+	%endif
+      %else
+	%if ISEQUAL(pulseType,"Sample based")
+	  %assign delay = ParamSettings.PhaseDelay[0]
+	%else
+	  %assign delay = ParamSettings.PhaseDelay[0]/sampleTime
+	%endif
+      %endif
+      %assign delay = CAST("Number", delay)
+      %%
+      %assign period = LibBlockParameter(Period, "", "", idx)
+      %assign periodReal = period
+      %if TYPE(period) == "Real"
+	%assign periodReal = CAST("Real", period)
+	%assign period     = CAST("Number", period)
+      %endif
+      %assign count = LibBlockDWork(Counter, "", "", idx)
+      %%
+
+      %if LibIsDiscrete(TID)
+	%if CompiledModel.StartTime != 0.0
+	  %assign suffix = (delay == 0) ? "" : " - (%<delay>)"
+	  %assign fraction = (sampleTime==1) ? "tFirst" : "tFirst / %<sampleTime>"
+	  Ns = (int_T)floor(%<fraction> + 0.5) %<suffix>;
+	%else
+	  %assign suffix = (delay == 0) ? "0" : " - (%<delay>)"
+	  Ns =  %<suffix>;	  
+	%endif
+
+        if (Ns <= 0) {
+          %<count> = Ns;
+        } else {
+          %<count> = Ns - (int_T)(%<period>*floor((real_T)Ns / %<periodReal>));
+        }
+      %elseif LibTriggeredTID(TID)
+	%if delay == 0
+	  %<count> = 0;
+	%elseif delay > 0
+	  %<count> = %<-delay>;
+	%else
+	  %<count> = %<-delay> \
+          - (int_T)(%<period>*floor(((real_T) %<-delay>) / %<periodReal>));
+        %endif
+      %else
+	%%START_ASSERT
+	%<LibBlockReportFatalError(block, "Invalid TID value %<TID>")>
+	%%END_ASSERT
+      %endif
+    %endforeach
+  %else
+    %%
+    %% PULSE_MODE_TIMEPORT_DISCRETE_TIME_BASED
+    %% PULSE_MODE_TIMEPORT_CONTINUOUS_TIME_BASED
+    %% No output code
+    %%
+  %endif
+  }
+%endfunction %% Start
+
+
+%% Function: PulseContinuousOutputs ============================================
+%%
+%%  PULSE_MODE_CONTINUOUS_TIME_BASED
+%%
+%function PulseContinuousOutputs(block, system) Output
+  %%
+  %assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign zero = SLibGetFormattedValueFromId(outDType,0)
+  %%
+  real_T time = %<LibGetTaskTimeFromTID(block)>;
+  %assign delaySize = SIZE(ParamSettings.PhaseDelay)
+  %if delaySize[1] > 1
+    %assign buffer = "const real_T delayParam[] = { \n"
+    %assign entryCount = 0
+    %foreach idx = delaySize[1]
+      %assign value = ParamSettings.PhaseDelay[idx]
+      %if entryCount > 5
+	%assign buffer = buffer + "\n"
+	%assign entryCount = 1
+      %else
+	%assign entryCount = entryCount + 1
+      %endif
+      %if idx == delaySize[1]-1
+	%assign buffer = buffer + "%<value>"
+      %else
+	%assign buffer = buffer + "%<value>, "
+      %endif
+    %endforeach
+    %assign buffer = buffer + "\n};\n"
+    %<buffer>
+    real_T delay;
+  %else
+    real_T delay = %<ParamSettings.PhaseDelay[0]>;
+  %endif
+  %%
+  if ( (int_T)%<LibBlockDWork(JustEnabled, "", "", 0)> ) {
+    %<LibBlockDWork(JustEnabled, "", "", 0)> = 0;
+    %assign rollVars = ["P", "DWork"]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %assign period      = LibBlockParameter(Period,     "", lcv, idx)
+      %assign duty  = LibBlockParameter(PulseWidth, "", lcv, idx)
+      %assign y           = LibBlockOutputSignal(0, "", lcv, idx)
+      %assign curr_value   = LibBlockDWork(CurrentValue, "", lcv, idx)
+      %assign num_complete_cycles = LibBlockDWork(CompleteCycles,"", lcv,idx)
+      %assign next_time    = LibBlockDWork(NextTime, "", lcv, idx)
+      %%
+      %% this is a source block, hence there will be no
+      %% discontiguous roll regions (because of no inputs).
+      %if SIZE(ParamSettings.PhaseDelay,1) > 1
+	delay = delayParam[%<lcv == "" ? idx : lcv>];
+      %endif
+      %%
+      if (time >= delay) {
+	real_T ratio = (time - delay)/ %<period>;
+	
+	%<num_complete_cycles> = (int)floor(ratio);
+	
+	if ( fabs((%<num_complete_cycles>+1)- ratio ) < \
+	%<LibGetMathConstant("EPSILON",tSS_DOUBLE)> * ratio  )
+	{
+	  %<num_complete_cycles> = %<num_complete_cycles>+1;
+	}
+	%<num_complete_cycles> = %<num_complete_cycles>;
+	if (time < delay + %<num_complete_cycles> * %<period>
+	+ %<duty> * %<period>/100) {
+	  %<curr_value> = 1;
+	  %<next_time>  = delay + %<num_complete_cycles> * %<period>
+	  + %<duty> * %<period>/100;
+	} else {
+	  %<curr_value> = 0;
+	  %<next_time> = delay + (%<num_complete_cycles> + 1) * %<period>;
+	}
+      } else {
+	%<num_complete_cycles> = 0;
+	%<curr_value> = 0;
+	%<next_time> = delay;
+      }
+    %endroll
+  } else {
+    %assign rollVars = ["P", "DWork"]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign period      = LibBlockParameter(Period,     "", lcv, idx)
+      %assign duty        = LibBlockParameter(PulseWidth, "", lcv, idx)
+      %assign y           = LibBlockOutputSignal(0, "", lcv, idx)
+      %assign curr_value   = LibBlockDWork(CurrentValue, "", lcv, idx)
+      %assign num_complete_cycles = LibBlockDWork(CompleteCycles,"", lcv,idx)
+      %assign next_time    = LibBlockDWork(NextTime, "", lcv, idx)
+      %%
+      %% this is a source block, hence there will be no
+      %% discontiguous roll regions (because of no inputs).
+      %if SIZE(ParamSettings.PhaseDelay,1) > 1
+	delay = delayParam[%<lcv == "" ? idx : lcv>];
+      %endif
+      /* Determine if any values need to change */
+      if (%<next_time> <= time) {
+	if (%<curr_value> == 1) {
+	  %<curr_value> = 0;
+	  %<next_time> = delay + (%<num_complete_cycles> + 1) * %<period>;
+	} else {
+	  if ( %<next_time> != delay) {
+	    %<num_complete_cycles> += 1;
+	  }
+	  %<curr_value> = 1;
+	  %<next_time> = delay + %<num_complete_cycles> * %<period>
+	  + 0.01 * %<duty> * %<period>;
+	}
+      }
+    %endroll
+  }
+  
+  /* Set the next hit time */
+  {
+    real_T tNext = %<LibBlockDWork(NextTime, "", "", 0)>;
+    %if ( LibBlockOutputSignalWidth(0)>1 )
+      %assign rollVars = ["DWork"]
+      %assign rollRegions = [1:%<LibBlockOutputSignalWidth(0)-1>]
+      %roll idx =rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign next_time    = LibBlockDWork(NextTime, "", lcv, idx)
+	if (tNext > %<next_time>) {
+	  tNext = %<next_time>;
+	}
+      %endroll
+    %endif
+    %<LibSetVarNextHitTime(block,"tNext")>;
+  }
+  
+  /* Output the values */
+  %assign rollVars = ["Y", "P","DWork"]
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign amplitude  = LibBlockParameter(Amplitude,  "", lcv, idx)
+    %assign curr_value   = LibBlockDWork(CurrentValue, "", lcv, idx)
+    %assign y     = LibBlockOutputSignal(0, "", lcv, idx)
+    if (%<curr_value> == 1){
+      %<y> = %<amplitude>;
+    } else {
+      %<y> = %<zero>;
+    }
+  %endroll
+  %%
+%endfunction %% ContinuousOutput
+  
+%% Function: PulseDiscreteNoPortOutputs ========================================
+%%
+%%   PULSE_MODE_DISCRETE_SAMPLE_BASED
+%%   PULSE_MODE_DISCRETE_TIME_BASED
+%%   PULSE_MODE_TIMEPORT_DISCRETE_SAMPLE_BASED
+%%
+%function PulseDiscreteNoPortOutputs(block, system) Output
+  %%
+  %assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign rollVars = ["Y", "P", "DWork"]
+  %%
+  %assign zero = SLibGetFormattedValueFromId(outDType,0)
+  %%
+  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign period     = LibBlockParameter(Period,     "", lcv, idx)
+    %assign amplitude  = LibBlockParameter(Amplitude,  "", lcv, idx)
+    %assign pulseWidth = LibBlockParameter(PulseWidth, "", lcv, idx)
+    %if TYPE(pulseWidth) == "Real"
+      %assign pulseWidth = CAST("Number", pulseWidth)
+    %endif
+    %%
+    %assign y     = LibBlockOutputSignal(0, "", lcv, idx)
+    %assign count = LibBlockDWork(Counter, "", lcv, idx)
+    %%
+    %<y> =
+      (%<count> < %<pulseWidth> &&
+      %<count> >= 0) ?
+      %<amplitude> :
+      %<zero>;
+    %%
+    %if TYPE(period) == "Real"
+      %assign rhsVal = CAST("Number", period-1)
+    %else
+    %assign rhsVal = "%<period>-1"
+    %endif
+    if (%<count> >= %<rhsVal>) {
+      %<count> = 0;
+    } else {
+      (%<count>)++;
+    }
+  %endroll
+%endfunction %% DiscreteNoPort
+
+
+%% Function: PulseTimePortTimeBaseOutputs ======================================
+%%
+%% PULSE_MODE_TIMEPORT_DISCRETE_TIME_BASED
+%% PULSE_MODE_TIMEPORT_CONTINUOUS_TIME_BASED
+%%
+%function PulseTimePortTimeBaseOutputs(block, system) Output
+  %%
+  %assign yDtId = LibBlockOutputSignalDataTypeId(0)
+  %assign yDtGround = SLibGetGroundValueFromId(yDtId)
+  %%
+  %assign perSize     = LibBlockParameterSize(Period)
+  %%
+  %assign dutySize    = LibBlockParameterSize(PulseWidth)
+  %%
+  %assign rollVars = ["Y", "U", "P"]
+  %%
+  %assign RollThreshold = 2
+  %%
+  {
+    real_T diff = 0.0;
+    real_T ratio = 0.0;
+    real_T posToNeg = 0.0;
+    uint32_T numCycles = 0U;
+    %%
+    %assign scalarExp = (perSize[0] == 1 && perSize[1] == 1 && ...
+      dutySize[0] == 1 && dutySize[1] == 1)
+    %if scalarExp
+      %%
+      %assign period      = LibBlockParameter(Period,     "", "", 0)
+      %assign duty        = LibBlockParameter(PulseWidth, "", "", 0)
+      %%
+      real_T pulseWidth = %<period> * (%<duty> / 100.0);
+      %%
+    %else
+      real_T pulseWidth = 0.0;
+    %endif
+    %%
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %%
+      %if !scalarExp
+	%%
+	%assign period      = LibBlockParameter(Period,     "", lcv, idx)
+	%%
+	%assign duty        = LibBlockParameter(PulseWidth, "", lcv, idx)
+	%%
+	pulseWidth = %<period> * (%<duty> / 100.0);
+	%%
+      %endif
+      %%
+      %assign y           = LibBlockOutputSignal(0, "", lcv, idx)
+      %assign amp         = LibBlockParameter(Amplitude,  "", lcv, idx)
+      %assign delay       = LibBlockParameter(PhaseDelay, "", lcv, idx)
+      %%
+      %assign time = LibBlockInputSignal(0, "", lcv, idx)
+      %%
+      if (%<time> >= %<delay>) {
+	
+	diff  = %<time> - %<delay>;
+	ratio = diff / %<period>;
+	numCycles = (uint32_T)floor(ratio);
+
+	if ( fabs((numCycles + 1) - ratio ) < \
+	%<LibGetMathConstant("EPSILON",tSS_DOUBLE)> * ratio  ) {
+	  numCycles += 1;
+	}
+      
+	posToNeg  = (numCycles * %<period> + pulseWidth);
+	if (diff  < posToNeg) {
+	  %<y> = %<amp>;
+	} else {
+	  %<y> = %<yDtGround>;
+	}
+	
+      } else {
+	%<y> = %<yDtGround>;
+      }
+  %endroll
+}
+%%
+%endfunction %% TimePortTimeBaseOutput
+
+
+%% Function: PulseOutputs ======================================================
+%%
+%function PulseOutputs(block, system) Output
+  %%
+  %assign pulseMode = ParamSettings.PulseMode
+  %if ISEQUAL(pulseMode,"Time-based-Variable")
+    %%
+    %% PULSE_MODE_CONTINUOUS_TIME_BASED
+    %%
+    %<PulseContinuousOutputs(block, system)>
+    %%
+  %elseif ISEQUAL(pulseMode,"Sample-based-Discrete") || ...
+    ISEQUAL(pulseMode,"Time-based-Discrete") || ...
+    ISEQUAL(pulseMode,"Port_Sample_based_Discrete")
+    %%
+    %% PULSE_MODE_DISCRETE_SAMPLE_BASED
+    %% PULSE_MODE_DISCRETE_TIME_BASED
+    %% PULSE_MODE_TIMEPORT_DISCRETE_SAMPLE_BASED
+    %%
+    %%
+    %<PulseDiscreteNoPortOutputs(block, system)>
+    %%
+  %else
+    %%
+    %% PULSE_MODE_TIMEPORT_DISCRETE_TIME_BASED
+    %% PULSE_MODE_TIMEPORT_CONTINUOUS_TIME_BASED
+    %%
+    %<PulseTimePortTimeBaseOutputs(block, system)>
+    %%
+  %endif
+  %%
+%endfunction %% Outputs
+
+%% Function: PulseEnable =======================================================
+%% Abstract:
+%%      Subsystem Enable code is only required for the Time-based-Variable
+%%      mode of the pulse generator
+%%      Setting the boolean to TRUE causes the Output function to
+%%      re-sync with time
+%%
+%function PulseEnable(block, system) Output
+  %assign pulseMode = ParamSettings.PulseMode
+  %if ISEQUAL(pulseMode,"Time-based-Variable")
+    /* %<Type> Block: %<Name> */
+    {
+      real_T time = %<LibGetT()>;
+      %if CompiledModel.StartTime != 0.0
+	%assign tStart = RTMGet("TStart")
+      %else
+	%assign tStart = 0.0
+      %endif
+      if (time > %<tStart>) {
+	%assign delaySize = SIZE(ParamSettings.PhaseDelay)
+	%if delaySize[1] > 1
+	  %assign buffer = "const real_T delayParam[] = { \n"
+	  %assign entryCount = 0
+	  %foreach idx = delaySize[1]
+	    %assign value = ParamSettings.PhaseDelay[idx]
+	    %if entryCount > 5
+	      %assign buffer = buffer + "\n"
+	      %assign entryCount = 1
+	    %else
+	      %assign entryCount = entryCount + 1
+	    %endif
+	    %if idx == delaySize[1]-1
+	      %assign buffer = buffer + "%<value>"
+	    %else
+	      %assign buffer = buffer + "%<value>, "
+	    %endif
+	  %endforeach
+	  %assign buffer = buffer + "\n};\n"
+	  %<buffer>
+	  real_T delay;
+	%else
+	  real_T delay = %<ParamSettings.PhaseDelay[0]>;
+	%endif
+	%assign rollVars = ["P", "DWork"]
+	%roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %%
+	  %assign period    = LibBlockParameter(Period,     "", lcv, idx)
+	  %assign duty      = LibBlockParameter(PulseWidth, "", lcv, idx)
+	  %assign next_time = LibBlockDWork(NextTime, "", lcv, idx)
+	  %%
+	  %% this is a source block, hence there will be no
+	  %% discontiguos roll regains (because of no inputs).
+	  %if SIZE(ParamSettings.PhaseDelay,1) > 1
+	    delay = delayParam[%<lcv == "" ? idx : lcv>];
+	  %endif
+	  %%
+	  if (time >= delay) {
+	    int_T num_cycles = (int)floor((time - delay)/ %<period>);
+	    if (time < delay + num_cycles * %<period> + %<duty> * %<period>/100) {
+	      %<next_time>  = delay + num_cycles * %<period> + %<duty> * %<period>/100;
+	    } else {
+	      %<next_time> = delay + (num_cycles + 1) * %<period>;
+	    }
+	  } else {
+	    %<next_time> = delay;
+	  }
+	%endroll
+
+	/* Set the next hit time */
+	{
+	  real_T tNext = %<LibBlockDWork(NextTime, "", "", 0)>;
+	  %if ( LibBlockOutputSignalWidth(0)>1 )
+	    %assign rollVars = ["DWork"]
+	    %assign rollRegions = [1:%<LibBlockOutputSignalWidth(0)-1>]
+	    %roll idx=rollRegions, lcv=RollThreshold, block, "Roller", rollVars
+	      %assign next_time    = LibBlockDWork(NextTime, "", lcv, idx)
+	      if (tNext > %<next_time>) {
+		tNext = %<next_time>;
+	      }
+	    %endroll
+	  %endif
+	  %<SLibResetNextVHTDueToEnable(block,"tNext")>
+	}
+      }
+      %<LibBlockDWork(JustEnabled, "", "", 0)> = (int_T) TRUE;
+    }
+
+  %endif
+%endfunction
+
+
+%% Function: PulseDisable ======================================================
+%% Abstract:
+%%      Subsystem disable code is only required for the Time-based-Variable
+%%      mode of the pulse generator
+%%      Setting the next hit time to -inf indicates to the solver that the
+%%      block is disabled
+%%
+%function PulseDisable(block, system) Output
+  %assign pulseMode = ParamSettings.PulseMode
+  %if ISEQUAL(pulseMode,"Time-based-Variable")
+    /* %<Type> Block: %<Name> */
+    %<LibSetVarNextHitTime(block,LibRealNonFinite("-inf"))>;
+  %endif
+%endfunction
+
+%% EOF dpulsegen.tlc

@@ -1,0 +1,417 @@
+%% File : sfun_lookupnd.tlc generated from sfun_lookupnd.ttlc revsion 1.15.2.2.2.1
+%% $Date: 2004/04/13 03:09:16 $
+%%
+%% Rob Aberg, 13-Aug-1999
+%% Copyright 1990-2004 The MathWorks, Inc.
+%%
+%% Abstract: N-D Lookup table with various options.
+%%
+
+%implements sfun_lookupnd "C"
+
+%% Function: BlockTypeSetup ===================================================
+%% Abstract:
+%%    Includes for Referenced symbols
+%%
+%function BlockTypeSetup(block, system) void
+  %<LibAddToCommonIncludes("rtlooksrc.h")>
+%endfunction
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      Register interest in expression folding participation.
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+%% Function: FcnGetLUTFcnName =================================================
+%% Abstract:
+%%    Determine the name for the correct LUT function from the 
+%%    run-time library.
+%%
+%function FcnGetLUTFcnName(block) void
+  %assign ioTypeId = LibBlockOutputSignalDataTypeId(0)
+  %assign ioType   = LibBlockOutputSignalDataTypeName(0,"")
+  %if SFcnParamSettings.vectorInputFlag == 0
+    %assign numDims = NumDataInputPorts
+  %else
+    %assign numDims = LibBlockInputSignalWidth(0)
+  %endif
+  %%
+  %% Data mappings used to build the function name
+  %%
+  %assign Dinterp   = [ "Flat", "Lin", "Spl" ]
+  %assign DnumDims  = [ "1", "2", "N" ]
+  %assign Dsearch   = [ "Evn", "Lin", "Bin" ]
+  %assign Dextrap   = [ "C", "X", "S" ]
+  %assign DcacheBp  = [ "Z", "S" ]
+  %assign DdType    = [ "d", "f" ]
+  %%
+  %% Instance info indices for accessing the mapping data
+  %%
+  %assign interpIdx  = SFcnParamSettings.interpMethod - 1
+  %assign numDimsIdx = (numDims > 2) ? 2 : (numDims - 1)
+  %assign numDimsIdx = (interpIdx == 2) ? 2 : numDimsIdx
+  %assign searchIdx  = SFcnParamSettings.searchMode - 1 
+  %assign extrapIdx  = (interpIdx == 0) ? 0 : SFcnParamSettings.extrapMethod - 1
+  %assign cacheBpIdx = SFcnParamSettings.cacheBpFlag
+  %assign dTypeIdx   = (ioTypeId == tSS_DOUBLE) ? 0 : 1
+  %%
+  %% Build the top-level function name
+  %%
+  %assign fcnName = "rt_Look" + Dinterp[interpIdx] + DnumDims[numDimsIdx] + ...
+                    Dsearch[searchIdx] + Dextrap[extrapIdx] + ...
+                    DcacheBp[cacheBpIdx] + DdType[dTypeIdx]
+  %return fcnName
+%endfunction
+
+
+%%Function: FcnGetIdxSearchFcnName ============================================
+%%Abstract:
+%%   Build the function name for the index search function that performs
+%%   the exact operation specified by the block options.
+%%
+%function FcnGetIdxSearchFcnName(block)
+  %assign BPSEARCH_EVEN   = 1
+  %assign BPSEARCH_LINEAR = 2
+  %assign BPSEARCH_BINARY = 3
+  %%
+  %switch SFcnParamSettings.searchMode
+    %case BPSEARCH_EVEN
+      %assign xSearchMode = "Evn"
+      %break
+    %case BPSEARCH_LINEAR
+      %assign xSearchMode = "Lin"
+      %break
+    %case BPSEARCH_BINARY
+      %assign xSearchMode = "Bin"
+      %break
+  %endswitch
+  %%
+  %%
+  %if SFcnParamSettings.extrapMethod == 1
+    %assign xCacheBpFlag = "C"
+  %else
+    %assign xCacheBpFlag = "X"
+  %endif
+  %%
+  %%
+  %assign iTypeId = LibBlockInputSignalDataTypeId(0)
+  %if iTypeId == tSS_DOUBLE
+    %assign dSuff = "d"
+  %else
+    %assign dSuff = "f"
+  %endif
+  %%
+  %%
+  %return "rt_PLook%<xSearchMode>%<xCacheBpFlag>%<dSuff>"
+%endfunction
+
+
+%% Start ======================================================================
+%% Abstract:
+%%    Initialize the state information (first input & time)
+%%
+%function Start(block, system) Output
+  %assign NUM_DIMS_FOR_TWORK = 6
+  %assign INTERP_FLAT        = 1
+  %assign INTERP_LINEAR      = 2
+  %assign INTERP_SPLINE      = 3
+  %assign interpMethod       = SFcnParamSettings.interpMethod
+  %%
+  %if SFcnParamSettings.vectorInputFlag == 0
+    %assign numDims = NumDataInputPorts
+  %else
+    %assign numDims = LibBlockInputSignalWidth(0)
+  %endif
+  %assign ttype = LibBlockOutputSignalDataTypeName(0,"")
+  %assign ioType = LibBlockOutputSignalDataTypeId(0)
+  %assign dims = SFcnParamSettings.tableDims
+  %%
+  %if SFcnParamSettings.vectorInputFlag == 0
+    %assign numEl = NumDataInputPorts
+  %else
+    %assign numEl = LibBlockInputSignalWidth(0)
+  %endif
+  %%
+  %if (interpMethod == INTERP_LINEAR && numDims >= NUM_DIMS_FOR_TWORK ) || ...
+      (interpMethod == INTERP_FLAT   && numDims >= 3 )                  || ...
+      (interpMethod == INTERP_SPLINE )
+    /* Look-Up Table (n-D): '%<Name>' */
+    %%
+    %% Need TWork setup.
+    %%
+    {
+    rt_LUTnWork *TWork = (rt_LUTnWork *) %<LibBlockDWorkAddr(TWork,"","",0)>;
+    void **bpDataSet = (void *) %<LibBlockDWorkAddr(bpDataSet,"","",0)>;
+    TWork->dimSizes  = (const int32_T *) %<LibBlockParameterBaseAddr(dimSizes)>;
+    TWork->tableData = (void *) %<LibBlockParameterBaseAddr(tableData)>;
+    TWork->bpDataSet = bpDataSet;
+    TWork->bpIndex   = %<LibBlockDWorkAddr(bpIndex,"","",0)>;
+    TWork->bpLambda  = (void *) %<LibBlockDWorkAddr(bpLambda,"","",0)>;
+    TWork->maxIndex  = (const int32_T *) %<LibBlockParameterBaseAddr(maxIndex)>;
+
+    %foreach idx = numDims
+      %assign lzIdx   = FEVAL("sprintf","%02d",idx+1)
+      %assign rtpName = "bp%<lzIdx>Data"
+      bpDataSet[%<idx>] = (void *)%<LibBlockParameterBaseAddr(GETFIELD(block,rtpName))>;
+    %endforeach
+    }
+  %endif
+  %%
+  %if interpMethod == INTERP_SPLINE
+    %%
+    %% Spline interpolation setup.
+    %%
+    {
+    rt_LUTSplineWork *rt_SplWk = (rt_LUTSplineWork*)%<LibBlockDWorkAddr(SWork,"","",0)>;
+    
+    rt_SplWk->TWork = (rt_LUTnWork*)%<LibBlockDWorkAddr(TWork, "", "", 0)>;
+    rt_SplWk->yyA   = %<LibBlockDWorkAddr(yyA, "", "", 0)>;
+    rt_SplWk->yyB   = %<LibBlockDWorkAddr(yyB, "", "", 0)>;
+    rt_SplWk->yy2   = %<LibBlockDWorkAddr(yy2, "", "", 0)>;
+    rt_SplWk->up    = %<LibBlockDWorkAddr(up,  "", "", 0)>;
+    rt_SplWk->y2    = %<LibBlockDWorkAddr(y2,  "", "", 0)>;
+    rt_SplWk->numYWorkElts = %<LibBlockParameterBaseAddr(numYWorkElts)>;
+    }
+  %endif
+
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%    Perform indicated interpolation using run time library functions.
+%%
+%function Outputs(block, system) Output
+  %assign INTERP_FLAT   = 1
+  %assign INTERP_LINEAR = 2
+  %assign INTERP_SPLINE = 3
+  %%
+  %assign BPSEARCH_EVEN   = 1
+  %assign BPSEARCH_LINEAR = 2
+  %assign BPSEARCH_BINARY = 3
+  %%
+  %assign ioTypeId = LibBlockOutputSignalDataTypeId(0)
+  %assign ioType   = LibBlockOutputSignalDataTypeName(0,"")
+  %if SFcnParamSettings.vectorInputFlag == 0
+    %assign numDims = NumDataInputPorts
+  %else
+    %assign numDims = LibBlockInputSignalWidth(0)
+  %endif
+  %%
+  %assign dims           = SFcnParamSettings.tableDims
+  %assign tabDimsStr     = "%<CAST("Number", dims[0])>"
+  %foreach i = %<SIZE(dims,1)*SIZE(dims,0)-1>
+    %assign tabDimsStr       = tabDimsStr + " x " + "%<CAST("Number", dims[i+1])>"
+  %endforeach
+  %assign interpStr = [ "None - Flat Look-Up", "Linear", "Spline" ]
+  %assign extrapStr = [ "None - Clip", "Linear", "Spline" ]
+  %assign Dsearch   = [ "Evenly Spaced Points", "Linear", "Binary" ]
+  %assign bpCache   = [ "OFF", "ON" ]
+  /* 
+   * Look-Up Table (%<numDims>-D)
+   * '%<Name>' 
+   *
+   *       Table size:  %<tabDimsStr> 
+   *    Interpolation:  %<interpStr[SFcnParamSettings.interpMethod-1]>
+   *    Extrapolation:  %<extrapStr[SFcnParamSettings.extrapMethod-1]>
+   *   Breakpt Search:  %<Dsearch[SFcnParamSettings.searchMode - 1]>
+   *    Breakpt Cache:  %<bpCache[SFcnParamSettings.cacheBpFlag]>
+   */
+  %assign y       = LibBlockOutputSignal(0,"","",0)
+  %assign fcnName = FcnGetLUTFcnName(block)
+  %%
+  %if  SFcnParamSettings.interpMethod != INTERP_SPLINE
+    %if SFcnParamSettings.interpMethod == INTERP_LINEAR && ...
+      (numDims == 3 || numDims == 4 || numDims == 5)
+      %assign bpSearchFcn = FcnGetIdxSearchFcnName(block)
+      %foreach idx = numDims
+	%assign iPort    = (SFcnParamSettings.vectorInputFlag == 0) ? idx :   0
+	%assign iPortOff = (SFcnParamSettings.vectorInputFlag == 0) ?   0 : idx
+	%assign lzIdx    = FEVAL("sprintf","%02d",idx+1)
+	%assign rtpName  = "bp%<lzIdx>Data"
+	%assign u        = LibBlockInputSignal(iPort,"","",iPortOff)
+	%assign bpDataSetAddr = LibBlockParameterBaseAddr(GETFIELD(block,rtpName))
+	%if (SFcnParamSettings.cacheBpFlag == 1)
+	  %assign xbpIndexTxt = LibBlockDWork(bpIndex,"","",idx)
+	%else
+	  %assign xbpIndexTxt = SFcnParamSettings.tableDims[idx] / 2
+	%endif
+	%<LibBlockDWork(bpIndex,"","",idx)> = %<bpSearchFcn>( %<u>, \
+	  %<LibBlockDWorkAddr(bpLambda,"","",idx)>, %<bpDataSetAddr>, \
+	  %<LibBlockParameter(maxIndex,"","",idx)>, %<xbpIndexTxt>);
+      %endforeach
+      %%
+      %% One line of white space
+      
+      %assign typeSuffix = (ioTypeId == tSS_DOUBLE) ? "d" : "f"
+      %assign interpFcnName = "rt_Intrp%<numDims>Lin" + typeSuffix
+      %assign xtableData = LibBlockParameterBaseAddr(tableData)
+      %<y> = %<interpFcnName>( %<LibBlockDWorkAddr(bpIndex,"","",0)>, \
+	%<LibBlockDWorkAddr(bpLambda,"","",0)>, %<xtableData>, \
+	%<LibBlockParameterBaseAddr(dimSizes)>);
+      %%
+      %% One line of white space
+      
+    %elseif (numDims == 1)
+      %assign u = LibBlockInputSignal(0,"","",0)
+      %%
+      %% 1-D flat or linear case
+      %%
+      %assign xbpData    = LibBlockParameterBaseAddr(bp01Data)
+      %assign xtableData = LibBlockParameterBaseAddr(tableData)
+      %assign xmaxIndex  = CAST("Unsigned",(SFcnParamSettings.tableDims[0] - 1))
+      %if (SFcnParamSettings.cacheBpFlag == 1)
+	%assign xbpIndexTxt = ", %<LibBlockDWorkAddr(bpIndex,"","",0)>"
+      %else
+	%assign xbpIndexTxt = ""
+      %endif
+      %<y> = %<fcnName>(%<u>, %<xbpData>, %<xtableData>%<xbpIndexTxt>, %<xmaxIndex>);
+    %elseif (numDims == 2)
+      %%
+      %% 2-D flat or linear case
+      %%
+      %assign xbp01Data  = LibBlockParameterBaseAddr(bp01Data)
+      %assign xbp02Data  = LibBlockParameterBaseAddr(bp02Data)
+      %assign xtableData = LibBlockParameterBaseAddr(tableData)
+      %assign xmaxIndex  = LibBlockParameterBaseAddr(maxIndex)
+      %if (SFcnParamSettings.cacheBpFlag == 1)
+        %assign xbpIndex    = LibBlockDWorkAddr(bpIndex,"","",0)
+        %assign xbpIndexTxt = ", %<xbpIndex>"
+      %else
+        %assign xbpIndexTxt = ""
+      %endif
+      %if (SFcnParamSettings.vectorInputFlag == 1)
+	%assign u0 = LibBlockInputSignal(0,"","",0)
+	%assign u1 = LibBlockInputSignal(0,"","",1)
+      %else
+	%assign u0 = LibBlockInputSignal(0,"","",0)
+	%assign u1 = LibBlockInputSignal(1,"","",0)
+      %endif
+      %<y> = %<fcnName>(%<u0>, %<u1>, %<xbp01Data>, %<xbp02Data>, ...
+	%<xtableData>%<xbpIndexTxt>, %<xmaxIndex>);
+    %else
+      %%
+      %% n-D flat or linear case
+      %%
+      %assign xTWork = "(rt_LUTnWork*)%<LibBlockDWorkAddr(TWork,"","",0)>"
+      %if (SFcnParamSettings.vectorInputFlag == 0)
+	{
+	  %<ioType> rt_LUTuVect[%<numDims>];
+	  
+	  %foreach idx = numDims
+	    rt_LUTuVect[%<idx>] = %<LibBlockInputSignal(idx,"","",0)>;
+	  %endforeach
+	  %<y> = %<fcnName>( %<numDims>, rt_LUTuVect, %<xTWork>); 
+	}
+      %else
+	%assign u = LibBlockInputSignalAddr(0,"","",0)
+        %<y> = %<fcnName>( %<numDims>, %<u>, %<xTWork>); 
+      %endif
+    %endif
+  %else
+    %%
+    %%  Spline cases
+    %%
+    %assign xSWork = "(rt_LUTSplineWork*)%<LibBlockDWorkAddr(SWork,"","",0)>"
+    %if (numDims == 1)
+      %%
+      %% 1-D (inputs always contiguous)
+      %%
+      %assign u = LibBlockInputSignalAddr(0,"","",0)
+      %<y> = %<fcnName>(%<numDims>, %<u>, %<xSWork>);
+    %else
+      %%
+      %% n-D
+      %%
+      %if (SFcnParamSettings.vectorInputFlag == 0)
+	{
+	  %<ioType> rt_LUTuVect[%<numDims>];
+	  
+	  %foreach idx = numDims
+	    rt_LUTuVect[%<idx>] = %<LibBlockInputSignal(idx,"","",0)>;
+	  %endforeach
+	  %<y> = %<fcnName>(%<numDims>, rt_LUTuVect, %<xSWork>);
+	}
+      %else
+	%%
+	%% Get base address only since block requires contiguous inputs
+	%%
+	%assign u = LibBlockInputSignalAddr(0,"","",0)
+        %<y> = %<fcnName>(%<numDims>, %<u>, %<xSWork>);
+      %endif
+    %endif
+  %endif
+  %% next line is intentionally blank whitespace
+  
+%endfunction
+
+%% Function: BlockOutputSignal ================================================
+%% Abstract:
+%%    Create expression to perform indicated interpolation using run time 
+%%    library functions.
+%%    
+%%    Currently, output expressions can be formed under the 
+%%    following conditions:
+%%
+%%    - if (!doSpline && numDims < 3)
+%%    
+%%    meaning:
+%%
+%%    - 1-D or 2-D only
+%%    - no splines
+%%    
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %assign ioType = LibBlockOutputSignalDataTypeName(0,"")
+  %if SFcnParamSettings.vectorInputFlag == 0
+    %assign numDims = NumDataInputPorts
+  %else
+    %assign numDims = LibBlockInputSignalWidth(0)
+  %endif
+  %assign y       = LibBlockOutputSignal(0,"","",0)
+  %assign fcnName = FcnGetLUTFcnName(block)
+  %%
+  %if (numDims == 1)
+    %assign u = LibBlockInputSignal(0,"","",0)
+    %%
+    %% 1-D flat or linear case
+    %%
+    %assign xbpData    = LibBlockParameterBaseAddr(bp01Data)
+    %assign xtableData = LibBlockParameterBaseAddr(tableData)
+    %assign xmaxIndex  = CAST("Unsigned",(SFcnParamSettings.tableDims[0] - 1))
+    %if (SFcnParamSettings.cacheBpFlag == 1)
+      %assign xbpIndexTxt = ", %<LibBlockDWorkAddr(bpIndex,"","",0)>"
+    %else
+      %assign xbpIndexTxt = ""
+    %endif
+    %return "%<fcnName>(%<u>, %<xbpData>, %<xtableData>%<xbpIndexTxt>, %<xmaxIndex>)"
+  %elseif (numDims == 2)
+    %%
+    %% 2-D flat or linear case
+    %%
+    %assign xbp01Data  = LibBlockParameterBaseAddr(bp01Data)
+    %assign xbp02Data  = LibBlockParameterBaseAddr(bp02Data)
+    %assign xtableData = LibBlockParameterBaseAddr(tableData)
+    %assign xmaxIndex  = LibBlockParameterBaseAddr(maxIndex)
+    %if (SFcnParamSettings.cacheBpFlag == 1)
+      %assign xbpIndex    = LibBlockDWorkAddr(bpIndex,"","",0)
+      %assign xbpIndexTxt = ", %<xbpIndex>"
+    %else
+      %assign xbpIndexTxt = ""
+    %endif
+    %if (SFcnParamSettings.vectorInputFlag == 1)
+      %assign u0 = LibBlockInputSignal(0,"","",0)
+      %assign u1 = LibBlockInputSignal(0,"","",1)
+    %else
+      %assign u0 = LibBlockInputSignal(0,"","",0)
+      %assign u1 = LibBlockInputSignal(1,"","",0)
+    %endif
+    %return "%<fcnName>(%<u0>, %<u1>, %<xbp01Data>, %<xbp02Data>, %<xtableData>%<xbpIndexTxt>, %<xmaxIndex>)"
+  %endif
+%endfunction %% BlockOutputSignal
+
+
+%% [EOF] sfun_lookupnd.tlc

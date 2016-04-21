@@ -1,0 +1,19 @@
+function setLegendInfo(this)
+%SETLEGENDINFO Set legendinfo 
+
+%   Copyright 1984-2004 The MathWorks, Inc.
+
+p = get(this,'children');
+cdata = get(p,'cdata');
+if iscell(cdata), return; end % deserializing
+cdata = mean(cdata(:));
+
+legendinfo(this,'patch',...
+    'LineWidth',this.LineWidth,...
+    'EdgeColor',this.EdgeColor,...
+    'FaceColor',this.FaceColor,...
+    'LineStyle',this.LineStyle,...
+    'CData',repmat(cdata,2,2),...
+    'CDataMapping',this.CDataMapping);
+
+setappdata(double(this),'LegendLegendType','patch');

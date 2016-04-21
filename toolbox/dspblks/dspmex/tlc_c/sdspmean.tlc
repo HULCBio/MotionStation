@@ -1,0 +1,228 @@
+%% $RCSfile: sdspmean.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:09:00 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Find the mean value of a vector
+
+%implements sdspmean "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Running")>
+  %<LibRenameParameter(block, P2, "Framebased")>
+  %<LibRenameParameter(block, P3, "Nchans")>
+  %<LibRenameParameter(block, P4, "ResetPort")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %%
+  %if running
+    /* Signal Processing Blockset Mean (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %<LibBlockDWork(Iteration,"", "", 0)> = 0.0;
+    %%
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Mean (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT      = 0
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %assign cplx    = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+  %assign contig  = IsInputPortContiguous(block, INPORT_DATA)
+  %assign width   = LibDataInputPortWidth(INPORT_DATA)
+  %assign dtype   = cplx ? "creal_T" : "real_T"
+  %%
+%if !running
+  %%
+  %% Not Running 
+  %%
+  %if width==1
+    %%
+    %% When width is 1, the mean output equals the input
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","", 0)> = %<LibBlockInputSignal(INPORT_DATA,"","",0)>;
+  %else	
+    %%
+    %if !cplx
+      %% REAL
+      {	 
+        real_T sum = 0.0;
+        %assign rollVars = ["U"]
+        %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  sum += %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+        %endroll
+	%<LibBlockOutputSignal(OUTPORT, "","", 0)> = sum / %<width>;
+      }
+    %else
+      %% COMPLEX
+      {	
+        creal_T sum = {0.0, 0.0};
+	real_T  den = 1.0 / %<width>;
+        %assign rollVars = ["U"]
+        %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  sum.re += %<LibBlockInputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")>;
+	  sum.im += %<LibBlockInputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")>;
+	%endroll
+	%<LibBlockOutputSignal(OUTPORT, "","", "%<tRealPart>1")> = sum.re * den;
+	%<LibBlockOutputSignal(OUTPORT, "","", "%<tImagPart>1")> = sum.im * den;
+      }                    
+    %endif
+  %endif %% if width==1  
+%else
+    %%
+    %% Running
+    %%
+    %assign resetport  = LibBlockParameterValue(ResetPort,0) != 0
+    %assign framebased = LibBlockParameterValue(Framebased,0) != 0
+    %assign nchans     = framebased ? CAST("Number",LibBlockParameterValue(Nchans,0)) : width
+    %assign nsamps     = width/nchans  
+    %%
+    /* Output running mean value */
+    %if (!contig)
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    {
+      %<dtype> *curr_sum = %<LibBlockDWorkAddr(Mean, "", "", 0)>;
+      real_T *iter_cnt = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    
+      %if resetport
+	if(%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) { /* Reset iteration count. */
+	  *iter_cnt = 0.0;
+	}
+      %endif
+      %%
+    %if !cplx
+      %%
+      %% Real Running
+      %%
+        if(*iter_cnt == 0.0) { /* Clear the current sum. */
+	  %if nchans!=1
+	    int_T i = %<nchans>;
+	    while(i-- > 0) {
+	      *curr_sum++ = 0.0;  
+	    }
+	    curr_sum -= %<nchans>;  /* Reset the pointer */
+	  %else
+	    *curr_sum = 0.0;
+	  %endif
+	}
+	*iter_cnt += %<nsamps>;
+	%%
+	%if width ==1
+	  *curr_sum += %<LibBlockInputSignal(INPORT_DATA,"","", 0)>;
+	  %<LibBlockOutputSignal(OUTPORT,"", "", 0)> = *curr_sum / *iter_cnt;
+	%else
+	  {
+	    real_T *u   = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	    real_T *y   = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	    real_T  den = 1.0 / *iter_cnt;	    
+	    %if nchans != 1
+	      int_T   i   = %<nchans>;
+	      
+	      while(i-- > 0) {
+	    %endif
+	    %%
+	    %if nsamps !=1
+	      real_T tsum = *curr_sum;
+	      int_T  j    = %<nsamps>;
+	      
+	      while(j-- > 0) {
+		tsum += *u++;
+	      }
+	      *curr_sum++ = tsum;
+	      *y++        = tsum * den;
+	    %else
+	      *curr_sum += *u++;
+	      *y++ = (*curr_sum++) * den;
+	    %endif
+	    %%
+	    %if nchans != 1
+	    }
+	  %endif
+	}
+      %endif
+  %else
+    %%
+    %% COMPLEX Running
+    %%
+      if(*iter_cnt == 0.0) { /* Reset the current sum. */
+	%if nchans!=1
+	  int_T i = %<nchans>;
+	  while(i-- > 0) {
+	    curr_sum->re     = 0.0;  
+	    (curr_sum++)->im = 0.0;
+	  }
+	  curr_sum -= %<nchans>;  /* reset the pointer */
+	  %else
+	    curr_sum->re = 0.0;  
+	    curr_sum->im = 0.0;
+	  %endif
+	}
+	*iter_cnt += %<nsamps>;
+	%%
+	%if width ==1
+	  curr_sum->re += %<LibBlockInputSignal(INPORT_DATA,"","", "re0")>;
+	  curr_sum->im += %<LibBlockInputSignal(INPORT_DATA,"","", "im0")>;
+	  %<LibBlockOutputSignal(OUTPORT,"", "", "re0")> = curr_sum->re / *iter_cnt;
+	  %<LibBlockOutputSignal(OUTPORT,"", "", "im0")> = curr_sum->im / *iter_cnt;
+	%else
+	  {
+	    creal_T *u   = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+	    creal_T *y   = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+	    real_T  den = 1.0 / *iter_cnt;	    
+	    %if nchans != 1
+	      int_T   i   = %<nchans>;
+	      
+	      while(i-- > 0) {
+	      %endif
+	      %%
+	      %if nsamps !=1
+		creal_T tsum = *curr_sum;
+		int_T  j    = %<nsamps>;
+		
+		while(j-- > 0) {
+		  tsum.re += u->re;
+		  tsum.im += (u++)->im;
+		}
+	        *curr_sum++ = tsum;
+	        y->re     = tsum.re * den;
+	        (y++)->im = tsum.im * den;
+	      %else
+	        curr_sum->re += u->re;
+		curr_sum->im += (u++)->im;
+		y->re     = curr_sum->re * den;
+		(y++)->im = (curr_sum++)->im * den;
+	      %endif
+	    %%
+	    %if nchans != 1
+	    }
+	  %endif
+	}
+      %endif
+  %endif  %% end complex running
+}
+%endif
+
+%endfunction
+
+%% [EOF] sdspmean.tlc
+

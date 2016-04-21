@@ -1,0 +1,161 @@
+%% sdsprc2lpc.tlc
+%% Abstract: TLC for Signal Processing Blockset  Reflection Coefficient to/from LPC conversion block. (sdsprc2lpc)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.1.4.2 $ $Date: 2004/04/12 23:09:32 $
+
+%implements "sdsprc2lpc" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT = 0
+  %assign OUTPORT = 0
+  %assign ERR_PORT = 1
+  %assign STABILITY_PORT = 2
+  %assign dtype = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign inSingle = (dtype == "real32_T") ? 1 : 0
+  %assign convType  = %<SFcnParamSettings.ConversionType>
+  %assign outputPredErr = %<SFcnParamSettings.OutPErr>
+  %assign outputStability = %<SFcnParamSettings.OutStability>
+  %assign order  = %<SFcnParamSettings.orderPoly>
+  %assign normalize  = %<SFcnParamSettings.DoNormalization>
+  %assign block = block + INPORT + OUTPORT + ERR_PORT + STABILITY_PORT + dtype  \
+                + inSingle + convType + outputPredErr + outputStability + order +normalize 
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsprc2lpc_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+%function getRunTimeFcnName(block) void
+    %%
+    %if inSingle
+      %if (convType == 1)
+        %assign suffix = "Rc2Lpc_R"
+      %else
+        %assign suffix = "Lpc2Rc_R"
+      %endif
+    %else
+      %if (convType == 1)
+        %assign suffix = "Rc2Lpc_D"
+      %else
+        %assign suffix = "Lpc2Rc_D"
+      %endif
+    %endif
+    %%
+%return "MWDSP_" + suffix
+%endfunction %% getRunTimeFcnName
+
+%function doLPCPolyNormalization(block) Output
+  %% This means we need to do normalization if needed
+  %assign u_ptr = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign y_ptr = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign str   = (inSingle) ? "F" : ""
+  %assign firstArg = u_ptr
+  const %<dtype> *A = %<u_ptr>; 
+  %<dtype> *NormA   = %<LibBlockDWorkAddr(NormalizedLPC, "", "", "")>;
+  if (A[0] != 1.0%<str>) {
+      %assign firstArg = LibBlockDWorkAddr(NormalizedLPC, "", "", "")
+      /* we need to read in the first value and divide the entire input vector by that value.*/
+      int_T j;
+      for (j = 1; j <= %<order>; j++) {
+        NormA[j] = A[j] / A[0];
+      }
+      NormA[0] = 1.0%<str>;
+      %<getRunTimeFcnName(block)>(NormA, %<y_ptr>, %<order>);
+  } else {
+      %<getRunTimeFcnName(block)>(%<u_ptr>, %<y_ptr>, %<order>);
+  }
+%endfunction %% doLPCPolyNormalization
+
+%function doReqdConversion(block) Output
+  %% This means we need to do normalization if needed
+  %assign u_ptr = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign y_ptr = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %if (convType == 2) && (normalize)
+    %<doLPCPolyNormalization(block)>
+  %else  
+    %<getRunTimeFcnName(block)>(%<u_ptr>, %<y_ptr>, %<order>);
+  %endif 
+%endfunction %% doReqdConversion
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset RC to/from LPC (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %assign u_ptr = LibBlockInputSignalAddr(INPORT, "", "", 0)
+    %assign y_ptr = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign rc_ptr = (%<convType> == 1) ? u_ptr : y_ptr
+    %assign str = (inSingle) ? "F" : ""
+    %assign strs = (inSingle) ? "f" : ""
+    {
+            %% Only in the case of "LPC to RC", we check to see if we need
+            %% to do any normalization or not. In "Normalize" or "Normalize and Warn"
+            %% modes, we do normalization , otherwise not. 
+            %if (%<outputPredErr> == 0) && (%<outputStability> == 0)
+              %<doReqdConversion(block)>
+            %endif
+
+            %if (%<outputPredErr> == 1) && (%<outputStability> == 0)
+              /* Output Prediction Error also */
+              int_T k;
+              const %<dtype> *rc = %<rc_ptr>;
+              %<dtype> *perr = %<LibBlockOutputSignalAddr(ERR_PORT,"","",0)>;
+              %<doReqdConversion(block)>
+              *perr = 1.0%<str>;  
+              for (k = 0; k < %<order>; ++k) {
+                  *perr = *perr * (1.0%<str> - rc[k] * rc[k]);
+              }
+            %endif
+
+            %if (%<outputPredErr> == 0) && (%<outputStability> == 1)
+            /* Output Stability status also */
+              const %<dtype> *rc      = %<rc_ptr>;
+              int_T i;
+              %<doReqdConversion(block)>
+              %<LibBlockOutputSignal(ERR_PORT,"","",0)> = true;
+              for (i = 0; i < %<order>; i++) {
+                  if (fabs%<strs>(rc[i]) > 1) {
+                      %<LibBlockOutputSignal(ERR_PORT,"","",0)> = false;
+                      i = %<order>;
+                  }
+              }
+            %endif
+
+            %if (%<outputPredErr> == 1) && (%<outputStability> == 1)
+            /* Output Stability status and Prediction error also */
+              const %<dtype> *rc = %<rc_ptr>;
+              %<dtype> *perr     = %<LibBlockOutputSignalAddr(ERR_PORT,"","",0)>;
+              int_T i;
+              /* Call the run-time to convert RC into LPC. */
+              %<doReqdConversion(block)>
+              /* As wer are calculating normalized Prediction error, 
+               * assume initial energy (autocorrelation with zero lag) to be 1 
+               */
+              *perr = 1.0%<str>;  
+              %<LibBlockOutputSignal(STABILITY_PORT,"","",0)> = true;
+              for (i = 0; i < %<order>; ++i) {
+                  *perr = *perr * (1.0%<str> - rc[i] * rc[i]);
+                  if (fabs%<strs>(rc[i]) > 1) {
+                      %<LibBlockOutputSignal(STABILITY_PORT,"","",0)> = false;
+                  }
+              }
+            %endif
+    }
+  %%
+%endfunction %% Outputs
+
+%% EOF: sdsplsf2poly.tlc

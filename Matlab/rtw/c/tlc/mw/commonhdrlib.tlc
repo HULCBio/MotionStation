@@ -1,0 +1,979 @@
+%% ============================================================================
+%% File : commonhdrlib.tlc
+%%
+%% Abstract:
+%%   This system TLC library file contains functions that are common
+%%   between the different code generators for producing the the model's
+%%   header file.
+%%
+%% $Revision: 1.1.8.15 $
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_COMMONHDRLIB_") == 0
+%assign _COMMONHDRLIB_ = 1
+
+%% Function: LibCacheModelStructureDefinitions =================================
+%% Abstract:
+%%   This function creates the guts of each model structure.  It should be
+%%   called after all code is generated, and just prior to final model
+%%   registration.
+%%
+%function LibCacheModelStructureDefinitions() void
+  %<LibCacheExportedGlobalSignalsDefinition()>
+  %<LibCacheImportedExternSignalsDefinition()>
+  %<LibCacheImportedExternPointerSignalsDefinition()>
+  %if CodeFormat != "S-Function" || Accelerator
+    %<LibCacheNonAutoStorageClassDWorkDefinition()>
+  %endif
+  %<LibCacheExternalInputsStructDefinition()>
+  %<LibCacheExternalOutputsStructDefinition()>
+%endfunction
+
+%% Function: FcnGetSystemIdentifier ============================================
+%% Abstract:
+%%    Returns the systems unique identifier prefixed with '_' for
+%%    use in a hstruct id.
+%%
+%function FcnGetSystemIdentifier(sysIdx) void
+  %return "_" + System[sysIdx].Identifier
+%endfunction
+
+
+%% Function: FcnGetHStructChildSystemTypedefs ==================================
+%% Abstract: 
+%%   This function is the same as FcnGetChildSystemTypedefs. However, it uses
+%%   for loop to generate the typedef.
+%%
+%function FcnGetHStructChildSystemTypedefs(sysIdx, prefix, struct) void
+  %assign childsysTypedefs = ""
+  %assign numElements = 0
+  %assign res = ["", 0] %% TLC bug workaround
+  %with System[sysIdx]
+    %assert SLibSystemHasOwnDataScope(System[sysIdx])    
+    %openfile childsysTypedefs    
+    %foreach childIdx = System[sysIdx].NumHStructChildSystems
+      %assign chRow = System[sysIdx].HStructChildSystems[childIdx]      
+      %assign ssblk = System[chRow[1]].Block[chRow[2]]
+      %with ssblk
+	%assign childSysIdx = CallSiteInfo.SystemIdx
+	%assign childSys    = System[childSysIdx]
+	%assert (childSys.SystemIdx == childSysIdx)
+	%%if ISFIELD(childSys, "Has%<struct>Arg") && (childSys.Has%<struct>Arg)
+	%if (childSys.Has%<struct>Arg)
+	  %with CallSiteInfo
+	    %assign structType = prefix + FcnGetSystemIdentifier(childSysIdx) 
+	    %assign structId   = CallSiteInfo.StructId
+	    %assign comment    = "/* '%<ssblk.Name>' */"
+	    %<structType> %<structId>; %<comment>
+	  %endwith
+	  %assign numElements = numElements + 1
+	%endif
+      %endwith
+    %endforeach
+    %closefile childsysTypedefs
+  %endwith
+  
+  %if numElements > 0
+    %assign res[0] = "%<childsysTypedefs>"
+    %assign res[1] = %<numElements>
+  %endif
+  %return res
+%endfunction %% FcnGetHStructChildSystemTypedefs
+
+
+%% Function: FcnGetChildSystemTypedefs =========================================
+%% 
+%% Abstract: 
+%%   Generic function called by functions that generate typedefs for the 
+%%   various data structures. This creates the definitons for Child systems 
+%%   that have typedef.
+%%
+%function FcnGetChildSystemTypedefs(sysIdx, prefix, struct) void
+  %assign childsysTypedefs = ""
+  %assign numElements = 0
+  %assign res = ["", 0] %% TLC bug workaround
+  %assign inlineFcn = "SLibGetSystem%<struct>"
+  %with System[sysIdx]
+    %if NumChildSystems > 0
+      %if struct == "Parameters"
+	%assign childSystems = ChildPrmStructs
+      %else
+	%assign childSystems = ChildSystems
+      %endif
+      %openfile childsysTypedefs
+      %foreach childIdx = NumChildSystems
+	%assign chIdx = childSystems[childIdx]
+	%% Is first memory instance ? And not a reduced subsystem
+	%if chIdx[1] == 0 && chIdx[3] > -1
+	  %assign   blk = System[chIdx[2]].Block[chIdx[3]]
+	  %with blk
+	    %assign childSys = System[CallSiteInfo.SystemIdx]
+	    %%if ISFIELD(CallSiteInfo, "%<struct>"Arg) && childSys.Has%<struct>Arg
+	    %if !SLibSystemHasOwnDataScope(childSys)
+	      %assign inlRes = %<inlineFcn>(childSys.SystemIdx)
+	      %assign numElements = numElements + inlRes[1]
+	      %<inlRes[0]>\
+	    %elseif childSys.Has%<struct>Arg
+	      %with CallSiteInfo
+		%assign structType = prefix + ...
+		  FcnGetSystemIdentifier(childSys.SystemIdx) 
+		%assign structId   = CallSiteInfo.StructId
+		%assign comment    = "/* '%<childSys.Name>' */"
+		%<structType> %<structId>; %<comment>
+	      %endwith
+	      %assign numElements = numElements + 1
+	    %endif
+	  %endwith
+	%endif
+      %endforeach
+      %closefile childsysTypedefs
+    %endif %% NumChildSystems > 0
+  %endwith %% System[sysIdx]
+  %if numElements > 0
+    %assign res[0] = "%<childsysTypedefs>"
+    %assign res[1] = %<numElements>
+  %endif
+  %return res
+%endfunction %% FcnGetChildSystemTypedefs
+
+
+%% Function: LibRegCommonIncludes ==============================================
+%% Abstact:
+%%   This function registers header fieles necessary to complile a standalone
+%%   system.
+%%
+%function LibRegCommonIncludes(sysIdx) void
+  %%
+  %% Common Includes
+  %%
+  %if DoAsserts == 1
+    %<SLibAddToCommonIncludes("<assert.h>")>
+  %endif
+  
+  %if PurelyIntegerCode == 0
+    %<SLibAddToCommonIncludes("<math.h>")>
+    %if CodeFormat == "Embedded-C"
+      %<SLibAddToCommonIncludes("<float.h>")>
+    %endif
+  %endif
+  
+  %if CodeFormat != "S-Function"
+    %<SLibAddToCommonIncludes("<string.h>")>
+  %endif
+
+    %if EXISTS(::OrigName)      
+      %assign modelName = CompiledModel.OrigName
+    %else
+      %assign modelName = CompiledModel.Name
+    %endif
+    %<SLibAddToCommonIncludes("rtwtypes.h")>
+    %assign ansi_datasize_checksum =  FEVAL("rtwprivate","getAnsiDataType", ...
+      "%<modelName>","RtwTypesID")
+    
+    %if TYPE(ansi_datasize_checksum) != "Scope"
+      %<LibReportError(FEVAL("lasterr"))>
+    %endif
+      
+    %openfile tmpBuf
+    /* Check for inclusion of an incorrect version of rtwtypes.h */
+    #ifndef %<ansi_datasize_checksum.val>
+    #error This code was generated with a different "rtwtypes.h" than the file included
+    #endif
+    %closefile tmpBuf
+    %<LibCacheDefine(tmpBuf)>
+
+  %if !GenRTModel || CompiledModel.NumChildSFunctions > 0 || ...
+      IsModelReferenceForASimstructBasedTarget() || ...
+      GenerateGRTWrapper
+    %<SLibAddToCommonIncludes("simstruc.h")>
+    %<SLibAddToCommonIncludes("fixedpoint.h")>
+  %elseif CodeFormat == "Embedded-C"
+    %if ::ExtMode == 1 || CompiledModel.GenUtilsSrcInSharedLocation
+      %<SLibAddToCommonIncludes("rtw_extmode.h")>
+    %endif
+    %if CompiledModel.ConfigSet.SupportContinuousTime == 1
+      %<SLibAddToCommonIncludes("rtw_continuous.h")>
+      %if !PurelyIntegerCode
+        %<SLibAddToCommonIncludes("rtw_solver.h")>
+      %endif
+    %endif
+  %endif
+
+  %if EXISTS("_RSIM_") %% ok ModelReference
+    %<SLibAddToCommonIncludes("rsim.h")>
+    %<SLibAddToCommonIncludes("rt_nonfinite.h")>
+  %endif
+  
+  %if MatFileLogging != 0
+    %<SLibAddToCommonIncludes("rt_logging.h")>
+  %endif
+  
+  %if SLibRealNonFinitesRequired()
+    %<SLibAddToCommonIncludes("rt_nonfinite.h")>
+  %endif
+  %if (IncludeLibsrc != 0) || (NumZCEvents > 0)
+    %<SLibAddToCommonIncludes("rtlibsrc.h")>
+  %endif
+  %if ExtMode == 1
+    %<SLibAddToCommonIncludes("dt_info.h")>
+  %endif
+  %if UsingMalloc || EXISTS("_RSIM_") || EXISTS("_RSIM_FULL_") %% ok Model Reference
+    %<SLibAddToCommonIncludes("<stdlib.h>")>
+  %endif
+  
+  %%
+  %% Custom user code for adding header files which
+  %% contain profiling information
+  %%
+  %<SLibGenProfHeaders()>
+
+%endfunction %% LibRegCommonIncludes
+
+%% Function: LibDumpCommonDefines ==============================================
+%% Abstract:
+%%    Common Defines - Does not include generic model defines.
+%%    Returns macros necessary to compile a standalone system.
+%%
+%function LibDumpCommonDefines(sysIdx) void
+  %openfile tmpDefineBuf
+  
+  %if UsingMalloc || EXISTS("_RSIM_")
+    #ifndef _RTW_COMMON_DEFINES_
+    # define _RTW_COMMON_DEFINES_
+    %<LibDeclareMemoryAllocationMacros()>\
+    #endif /* _RTW_COMMON_DEFINES_ */
+  %endif
+
+  %if (UsingMalloc || EXISTS("_RSIM_")) && CodeFormat != "S-Function"
+    %assign tmpS = Accelerator ? "" : "(S)"
+    #ifdef rt_VALIDATE_MEMORY
+      #undef rt_VALIDATE_MEMORY
+      #define rt_VALIDATE_MEMORY(S, ptr) \
+      if(!(ptr)) {%<"\\">
+      %<RTMSetErrStat("RT_MEMORY_ALLOCATION_ERROR")>;%<"\\">
+      return%<tmpS>;%<"\\">
+      %<"}">
+   #endif
+  %endif
+
+  %if CodeFormat == "Embedded-C" && !GenerateGRTWrapper
+    %assign ertcomdef = LibDeclareERTDefines(sysIdx)
+    %if !WHITE_SPACE(ertcomdef)
+      #ifndef _ERT_COMMON_DEFINES_
+      # define _ERT_COMMON_DEFINES_
+      %<ertcomdef>
+      #endif /* _ERT_COMMON_DEFINES_ */
+    %endif
+  %endif
+  
+  %closefile tmpDefineBuf
+  %return tmpDefineBuf
+%endfunction %% LibDumpCommonDefines 
+
+%% Function: LibDeclareERTDefines ==============================================
+%% Abstract:
+%%   Returns ERT specific macros necessary to compile a standalone system.
+%%
+%function LibDeclareERTDefines(sysIdx) void
+  %openfile tmpDefineBuf
+  %if MatFileLogging == 1 || GenerateGRTWrapper
+
+    #define QUOTE1(name) #name
+    #define QUOTE(name) QUOTE1(name)    /* need to expand name */
+    %if MatFileLogging == 1
+      #ifndef SAVEFILE
+      # define MATFILE2(file) #file ".mat"
+      # define MATFILE1(file) MATFILE2(file)
+      # define MATFILE MATFILE1(MODEL)
+      #else
+      # define MATFILE QUOTE(SAVEFILE)
+      #endif
+    %endif
+  %endif
+  %closefile tmpDefineBuf
+  %return tmpDefineBuf
+%endfunction  
+
+%% Function: LibSFcnPreSimstrucDefines =========================================
+%% Abstract:
+%%   Return the neccesary macros the need to be declared before the   
+%%   simstruct will be included for the S-Function target and Accelerator.
+%%
+%function LibSFcnPreSimstrucDefines(system) void
+  %assign tmpDefineBuf = ""
+  
+  %openfile tmpDefineBuf
+  %assign tmpName = Accelerator ? "simulink_only_sfcn" : Name
+  %if system.Type == "root"
+    #define S_FUNCTION_NAME %<tmpName> 
+  %endif
+  #define S_FUNCTION_LEVEL 2
+  #define RTW_GENERATED_S_FUNCTION
+  %closefile tmpDefineBuf
+  %return tmpDefineBuf
+%endfunction %% LibSFcnPreSimstrucDefines
+
+%% Function: LibSFcnPostSimstrucDefines ========================================
+%% Abstract:
+%%   Return the neccesary macros the need to be declared after the   
+%%   simstruct is included for the S-Function target and Accelerator.
+%%
+%function LibSFcnPostSimstrucDefines() void
+  %assign tmpDefineBuf = ""
+  %if !Accelerator
+    %openfile tmpDefineBuf
+    #if !defined(RTW_SFUNCTION_DEFINES)
+    #define RTW_SFUNCTION_DEFINES
+    typedef struct {
+      void *blockIO;
+      void *defaultParam;
+      void *nonContDerivSig;
+    } LocalS;
+    
+    #define %<RTMSet("LocalBlockIO","io")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->blockIO = ((void *)(io))
+    #define %<RTMGet("LocalBlockIO")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->blockIO
+    
+    #define %<RTMSet("LocalDefaultParam", "paramVector")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->defaultParam = (paramVector)
+    #define %<RTMGet("LocalDefaultParam")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->defaultParam
+
+    #define %<RTMSet("LocalNonContDerivSig", "pSig")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->nonContDerivSig = (pSig)
+    #define %<RTMGet("LocalNonContDerivSig")> ...
+      ((LocalS *)%<RTMGet("UserData")>)->nonContDerivSig
+    #endif
+    
+    %closefile tmpDefineBuf
+  %endif
+  %return tmpDefineBuf
+%endfunction  
+
+%% Function: LibDeclareTrueFalse ===============================================
+%% Abstract:
+%%   Define TRUE/FALSE = 0/1 and also Define fcn_call_T and pointer_T.
+%%   This is a  temporary fix so that external mode code can compile (these
+%%   types shows up in the model_dt.c file).  Note that these types should
+%%   never be accessed by RTW.  Also define action_T like fcn_call_T
+%%   for the same reasons.
+%% WARNING: This function will be obsoleted in next release, definition is inside
+%%          rtwtypes.h.
+%%
+%function LibDeclareTrueFalse() void
+  %warning This function will be obsoleted in next release. True/False definitions is inside rtwtypes.h.
+  %openfile tmpFcnBuf
+
+  #ifndef TRUE
+  # define TRUE (1)
+  #endif
+  #ifndef FALSE
+  # define FALSE (0)
+  #endif
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: SLibDeclareUnusedParameter =========================================
+%% Abstract:
+%%   Defines UNUSED_PARAMETER.
+%%
+%function SLibDeclareUnusedParameter(system) void
+  %openfile tmpFcnBuf
+  /*  
+   * UNUSED_PARAMETER(x)  
+   *   Used to specify that a function parameter (argument) is required but not  
+   *   accessed by the function body.  
+   */  
+  #ifndef UNUSED_PARAMETER  
+  # if defined(__LCC__)  
+  #   define UNUSED_PARAMETER(x)  /* do nothing */  
+  # else  
+  /*  
+   * This is the semi-ANSI standard way of indicating that a  
+   * unused function parameter is required.  
+   */  
+  #   define UNUSED_PARAMETER(x) (void) (x)  
+  # endif  
+  #endif  
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: SLibDeclarePrimitiveTypedefs ======================================
+%% Abstract:
+%%   Uses intrinsic types.
+%%
+%function SLibDeclarePrimitiveTypedefs() void
+  %openfile tmpFcnBuf
+  %% This is by design, do not remove this function since we will
+  %% have primitive typedefs in the future.
+  %if 0
+    
+    /* Primitive typedefs */
+    #ifndef TMW_PRIMITIVE_TYPEDEFS
+    #define TMW_PRIMITIVE_TYPEDEFS
+    #endif
+  %endif
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: LibDeclareGenericModelDefines =====================================
+%% Abstract:
+%%   Declare generic model defines 
+%%
+%function LibDeclareGenericModelDefines() void
+  %openfile tmpFcnBuf
+  #define MODEL_NAME %<Name>
+  #define NSAMPLE_TIMES (%<NumSampleTimes>) /* Number of sample times */
+  #define NINPUTS (%<NumModelInputs>)       /* Number of model inputs */
+  #define NOUTPUTS (%<NumModelOutputs>)     /* Number of model outputs */
+  #define NBLOCKIO (%<BlockOutputs.NumSignalsInBlockIO>) ...
+    /* Number of data output port signals */
+  #define NUM_ZC_EVENTS (%<NumZCEvents>) /* Number of zero-crossing events */
+  
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: LibDeclareNCSTATES ================================================
+%% Abstract:
+%%   Create the number of continous states define.
+%%
+%function LibDeclareNCSTATES() void
+  %openfile tmpFcnBuf
+  #ifndef NCSTATES
+  # define NCSTATES (%<NumContStates>)   /* Number of continuous states */
+  #elif NCSTATES != %<NumContStates>
+  # error Invalid specification of NCSTATES defined in compiler command
+  #endif
+  
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+
+%% Function: LibCacheSystemIncludes ============================================
+%% Abstract:
+%%   Goes through each system, and caches the include of any child
+%%   systems that will be parented by the system.
+%%   Called in *wide.tlc.
+%%
+%function LibCacheSystemIncludes(sysIdx) void
+  %% Cache necessary includes
+  %assign system = System[sysIdx]
+  %if (system.FileNameOwnerIdx == sysIdx)
+    %openfile sysheader
+    %foreach idx = SIZE(system.IncludedChildSystemIdx,1)
+      %assign inChildSysIdx = system.IncludedChildSystemIdx[idx]
+      %assign name = CompiledModel.System[inChildSysIdx].SystemFileName
+      #include "%<name>.h"
+    %endforeach
+    %assign numMdlRefBlks = SIZE(system.IncludedModelReference,0)
+    %foreach rowIdx = numMdlRefBlks
+      %% a row matrix containing [sysIdx, bIdx]
+      %assign mdlRefInfo = system.IncludedModelReference[rowIdx] 
+      %assign mSysIdx = mdlRefInfo[0]
+      %assign bIdx    = mdlRefInfo[1]
+      %assign blk     = System[mSysIdx].Block[bIdx]
+      %assign blockInterface = GetModelrefInterface(blk)
+      %assign name           = blockInterface.FileName
+      #include "%<name>.h"
+    %endforeach
+    %closefile sysheader
+    %<LibAddToSystemField(system, "SystemIncludes", sysheader)>
+  %endif
+%endfunction %% LibCacheSystemIncludes
+
+%% Function: LibDumpSystemIncludes =============================================
+%% Abstract:
+%%   Dumps headers(C)/specifications(Ada) of the systems non-inlined 
+%%   children systems.  
+%%
+%function LibDumpSystemIncludes(system) void
+  %assign systemIncludes = LibGetSystemField(system, "SystemIncludes")
+  %if !WHITE_SPACE(systemIncludes)
+    %openfile sysIncludeBuffer
+    
+    /* Child system includes */
+    %<systemIncludes>
+    %closefile sysIncludeBuffer
+    %return sysIncludeBuffer
+  %else
+    %return ""
+  %endif
+%endfunction %% LibDumpSystemIncludes
+
+%% Function: LibDumpSystemTypeDefs =============================================
+%% Abstract:
+%%   Dump systems type definitions.
+%%
+%function LibDumpSystemTypeDefs(system) void
+  %assign systemTypeDefs = LibGetSystemField(system, "SystemTypeDefs")
+  %if !WHITE_SPACE(systemTypeDefs)
+    %openfile sysTypeDefBuffer
+    
+    /* Type definitions */
+    %<systemTypeDefs>
+    %closefile sysTypeDefBuffer
+    %return sysTypeDefBuffer
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%% Function: LibDumpSystemFcnPrototype =========================================
+%% Abstract:
+%%   This function return the function prototype definition for a non-inlined
+%%   system
+%%
+%function LibDumpSystemFcnPrototype(system) void
+  %assign tmpFcnBuffer = ""
+  %if !WHITE_SPACE(LibGetSystemField(system, "SystemFcnPrototype"))
+    %openfile tmpFcnBuffer
+    %<LibDumpSystemPrototype(system)>\
+    %closefile tmpFcnBuffer
+  %endif
+  %return tmpFcnBuffer  
+%endfunction %% LibDumpSystemFcnPrototype
+
+%% Function: LibDumpSystemBanner ===============================================
+%% Abstract:
+%%   This function return the banner of a non-inlined system
+%%
+%function LibDumpSystemBanner(system) void
+  %assign bannerBuf = ""
+  %openfile bannerBuf
+  /*
+  * Real-Time Workshop code generation for Simulink system "%<system.Name>"
+  * For more details, see corresponding source file %<system.SystemFileName>.c 
+  *
+  */
+  %closefile bannerBuf
+  %return bannerBuf
+%endfunction %% LibDumpSystemBanner
+
+
+%% Function: LibDumpSystemHeader ===============================================
+%% Abstract: 
+%%   Dump required details in the Systems header file. (does not include 
+%%   "root").
+%%     - #include for children systems
+%%     - Functionprototype for the system
+%%   This function is called from srthdr.tlc
+%%
+%%   NOTE: 
+%% 	   We have included the main system header file here, this has to be 
+%% 	   removed once we have split the vectors (Parameters, BIO, etc) and 
+%% 	   put them in corresponding system header file.
+%%
+%function LibDumpSystemHeader(system) void
+  %if system.FileNameOwnerIdx == system.SystemIdx
+    %assign fileName  = SLibGetSystemHeaderFileName(system)
+    %% Subsystem prototypes
+    %assign fcnBuff   = LibDumpSystemFcnPrototype(system)
+    %assign rootSysFileName = GetRootSystemFileName()
+    
+    %assert(system.SystemFileName != rootSysFileName)
+    
+    %assign duplicate = LibAddToModelHeaders(fileName)
+    %% Dump comments, only the first time
+    %assign bannerBuf = LibDumpSystemBanner(system)
+    %<LibRegCommonIncludes(system.SystemIdx)>
+    %assign includeBuf = SLibDumpCommonIncludes(system)
+    %assign fileName = SLibGetSystemOutputFileBaseName(system)
+    %assign opFile   = SLibAddModelFile("SystemHeader","Simulink",fileName)
+    %<SLibSetModelFileAttribute(opFile, "Banner", bannerBuf)>
+    %<SLibSetModelFileAttribute(opFile, "Declarations", fcnBuff)>
+    %<SLibSetModelFileAttribute(opFile, "Includes", includeBuf)>
+    %<SLibSetModelFileAttribute(opFile, "Includes", ...
+      LibDumpSystemIncludes(system))>
+    %% Include the types header file
+    %openfile typesIncludeBuf
+    #include "%<Name>_types.h"
+    %closefile typesIncludeBuf
+    %<SLibSetModelFileAttribute(opFile, "Includes", typesIncludeBuf)>
+    %% Intrinsic types
+    %% Primitive types
+    %<SLibSetModelFileAttribute(opFile, "PrimitiveTypedefs", ...
+      SLibDeclarePrimitiveTypedefs())>
+  %endif
+%endfunction %%  LibDumpSystemHeader
+  
+%% Function: LibDeclareCompoundDataTypes =======================================
+%% Abstract:
+%%   Reserved for compound data types.
+%%
+%function LibDeclareCompoundDataTypes() void
+  %return ""
+%endfunction
+
+
+%% Function: LibDeclareMemoryAllocationMacros ==================================
+%% Abstract:
+%%   Place in model.h the following macros.
+%%
+%function LibDeclareMemoryAllocationMacros() void
+  %assign tmpS = Accelerator ? "" : "(S)"
+  %openfile tmpFcnBuf
+  %%
+  %% rt_VALIDATE_MEMORY can only be used in the registration function.
+  %%
+  #define rt_VALIDATE_MEMORY(S, ptr) \
+  if(!(ptr)) {%<"\\">
+  %<RTMSetErrStat("RT_MEMORY_ALLOCATION_ERROR")>;%<"\\">
+  return%<tmpS>;%<"\\">
+  %<"}">
+  
+  #if !defined(_WIN32)
+  #define rt_FREE(ptr) \
+  if((ptr) != NULL) {%<"\\">
+  free((ptr));%<"\\">
+  (ptr) = NULL;%<"\\">
+  %<"}">
+  #else
+  /* Visual and other windows compilers delcare free without const! */
+  #define rt_FREE(ptr) \
+  if((ptr) != NULL) {%<"\\">
+  free((void *)(ptr));%<"\\">
+  (ptr) = NULL;%<"\\">
+  %<"}">
+  #endif
+
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+
+
+%% Function: LibCheckForValidMTaskDefine =======================================
+%% Abstract:
+%%   Add C directives to verify that the MULTITASKING define is correct for
+%%   the way the code was generated. Prior to RTW 3.0 (R11), the
+%%   MULTITASKING define was under user control. As of RTW 3.0, the
+%%   define now is controlled by Simulink based upon the Solver Mode
+%%   fixed step setting.
+%% 
+%function LibCheckForValidMTaskDefine() void
+  %openfile tmpFcnBuf
+  %if CompiledModel.SolverType == "FixedStep"
+    %if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+      %assign str = "Model (%<CompiledModel.Name>) was built \\\n" ...
+	"in MultiTasking solver mode, however the MULTITASKING define \\\n" ...
+	"is not present. Please verify that your template makefile is \\\n" ...
+	"configured correctly."
+      
+      #if !defined(MULTITASKING) && !defined(NRT)
+      #  error %<str>
+      #endif
+    %else
+      %assign str = "Model (%<CompiledModel.Name>) was built in \\\n" ...
+	"SingleTasking solver mode, however the MULTITASKING define is " ...
+	"\\\npresent. If you have multitasking (e.g. -DMT or " ...
+	"-DMULTITASKING) \\\ndefined on the RTW page of Simulation " ...
+	"parameter dialog, please \\\nremove it and on the Solver page, " ...
+	"select solver mode \\\nMultiTasking. If the Simulation parameter " ...
+	"dialog is configured \\\ncorrectly, please verify that your " ...
+	"template makefile is \\\nconfigured correctly."
+      
+      #if defined(MULTITASKING)
+      #  error %<str>
+      #endif
+    %endif
+  %else
+    %assign str = "Models using the variable step solvers cannot define " ...
+      "MULTITASKING"
+    
+    #if defined(MULTITASKING)
+    #  error %<str>
+    #endif
+  %endif
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction %% LibCheckForValidMTaskDefine
+
+
+%function LibDeclareSystemRequirements() void
+  %openfile tmpFcnBuf
+
+  %if ISFIELD(CompiledModel, "Requirements")
+      /* 
+       * Requirements for '<Root>' : %<Name>
+      %if ISFIELD(CompiledModel.Requirements, "Requirements")
+          %<CompiledModel.Requirements.Requirements>
+      %endif
+      %if ISFIELD(CompiledModel.Requirements, "InheritedRequirements")
+          %<CompiledModel.Requirements.InheritedRequirements>
+      %endif
+      */
+  %endif
+
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: LibDeclareSystemHierarchy =========================================
+%% Abstract:
+%%   Create the system heirarchy comment.
+%%
+%function LibDeclareSystemHierarchy() void
+  %openfile tmpFcnBuf
+  
+  /* 
+   * The generated code includes comments that allow you to trace directly 
+   * back to the appropriate location in the model.  The basic format
+   * is <system>/block_name, where system is the system number (uniquely
+   * assigned by Simulink) and block_name is the name of the block.
+   *
+   * Use the MATLAB hilite_system command to trace the generated code back
+   * to the model.  For example,
+   *
+   * hilite_system('<S3>')    - opens system 3
+   * hilite_system('<S3>/Kp') - opens and selects block Kp which resides in S3
+   *
+   * Here is the system hierarchy for this model
+   *
+   * '<Root>' : %<Name>
+  %foreach sysIdx = NumSubsystems
+    %assign id   = sysIdx+1
+    %assign path = LibMangledPathName(Subsystem[sysIdx].Name)
+    %if id < 10
+      * '<S%<id>>'   : %<path>
+    %elseif id < 100
+      * '<S%<id>>'  : %<path>
+    %else
+      * '<S%<id>>' : %<path>
+    %endif
+  %endforeach
+   */
+   %closefile tmpFcnBuf
+   %return tmpFcnBuf
+%endfunction
+
+
+%% Function: LibDeclareReducedBlocks ===========================================
+%% Abstract:
+%%   Create the reduced blocks comment.
+%%
+%function LibDeclareReducedBlocks() void
+  %if (!ShowEliminatedStatements)
+    %return
+  %endif
+  
+  %openfile tmpFcnBuf
+  %with ReducedBlocks
+  %if NumReducedBlocks > 0
+
+    /* 
+     * These blocks were eliminated from the model due to optimizations:
+     *
+    %foreach bIdx = NumReducedBlocks
+      %assign b = Block[bIdx]
+     * Block '%<b.Name>' : %<b.OptimizationInfo>
+    %endforeach
+     */
+  %endif
+  %endwith
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+
+%% Function: LibDumpGroundExterns ==============================================
+%% Abstract:
+%%   Declare external references to ground variables
+%%
+%function LibDumpGroundExterns() void
+  %openfile tmpFcnBuf
+  %with DataTypes
+    %foreach dtIdx = NumDataTypes
+      %assign dt = DataType[dtIdx]
+      %% real ground
+      %if dt.GroundReqInMemory
+	extern %<dt.Name> %<CompiledModel.Name>_%<dt.GroundName>;\
+	/* %<dt.Name> ground */
+      %endif
+      %% complex ground
+      %if dt.ComplexGroundReqInMemory
+	extern %<dt.ComplexName> %<CompiledModel.Name>_%<dt.ComplexGroundName>;\
+	/* %<dt.Name> complex ground */
+      %endif
+    %endforeach
+  %endwith
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+%% Function: LibDumpGroundDeclarations =========================================
+%% Abstract:
+%%   Declares global ground variables.
+%%   Arguments:
+%%     declareAsStatic: declare ground local or global for 1 and 0,
+%%                      respectively.  That is, use "static" keyword if
+%%                      declareAsStatic == 1.
+%%
+%function LibDumpGroundDeclarations(declareAsStatic) void
+  %assign keyword = declareAsStatic ? "static" : ""
+  %openfile tmpFcnBuffer
+  %with DataTypes
+    %foreach dtIdx = NumDataTypes
+      %assign dt = DataType[dtIdx]
+      %% real ground
+      %if dt.GroundReqInMemory
+	%assign name = "%<CompiledModel.Name>_%<dt.GroundName>"
+        %<keyword> %<dt.Name> %<name> = %<dt.GroundValue>;\
+	/* %<dt.Name> ground */
+      %endif
+      %% complex ground
+      %if dt.ComplexGroundReqInMemory
+	%assign name = "%<CompiledModel.Name>_%<dt.ComplexGroundName>"
+	%<keyword> %<dt.ComplexName> %<name> = ...
+	  {%<dt.GroundValue>, %<dt.GroundValue>};\
+	/* %<dt.Name> complex ground */
+      %endif
+    %endforeach
+  %endwith
+  %closefile tmpFcnBuffer
+  %if !WHITE_SPACE(tmpFcnBuffer)
+    %return ("\n" + tmpFcnBuffer)
+  %else
+    %return ""
+  %endif
+%endfunction
+
+
+%% Function: SLibCommonHeaderInfo ==============================================
+%% Abstract:
+%%   Output the comment header for generated code.
+%%
+%function SLibCommonHeaderInfo() void
+  %openfile tmpFcnBuf
+  * Real-Time Workshop code generation for Simulink model "%<Name>.mdl".
+  *
+  * Model Version              : %<ModelVersion>
+  * Real-Time Workshop version : %<Version>
+%if GenerateFullHeader
+  * C source code generated on : %<TLC_TIME>
+%endif
+%if ISFIELD(CompiledModel, "CompiledWarningMsg")
+  * Warning Messages           : %<CompiledWarningMsg>
+%endif
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction
+
+
+%% Function: SLibSystemBanner ==================================================
+%% Abstract:
+%%   Output the banner for a generated system
+%%
+%function SLibSystemBanner(system) void
+  %openfile tmpFcnBuf
+  * Real-Time Workshop code generation for Simulink system "%<system.Name>"
+  *
+  * Model                      : %<CompiledModel.Name>
+  * Model Version              : %<ModelVersion>
+  * Real-Time Workshop version : %<Version>
+%if GenerateFullHeader
+  * C source code generated on : %<TLC_TIME>
+%endif
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction %% SLibSystemBanner
+
+
+%% Function: SLibGetSystemOutputFileBaseName ===================================
+%% Abstract:
+%%    return base file name.
+%function SLibGetSystemOutputFileBaseName(system) void
+  %if (system.Type == "root")
+    %return CompiledModel.Name
+  %else
+    %if (CodeFormat == "S-Function") && (system.SystemFileName == OrigName)
+      %return CompiledModel.Name
+    %else
+      %return system.SystemFileName
+    %endif
+  %endif
+%endfunction
+
+%% Function: SLibGetSystemOutputFileName =======================================
+%%
+%% Abstract:
+%%    Convert a "base" filename to an appropriate output filename depending on
+%%    the language for which we are generating code.
+%%
+%function SLibGetSystemOutputFileName(system) void
+  %assign baseFileName = system.SystemFileName
+  %return("%<baseFileName>.c")
+%endfunction %% SLibGetSystemOutputFileName
+
+%% Function: SLibGetSystemHeaderFileName =======================================
+%%
+%% Abstract:
+%%    Convert a "base" filename to an appropriate header filename depending on
+%%    the language for which we are generating code.
+%%
+%function SLibGetSystemHeaderFileName(system) void
+  %assign baseFileName = system.SystemFileName
+  %return("%<baseFileName>.h")
+%endfunction %% SLibGetSystemHeaderFileName
+
+
+%% Function: LibAddToModelHeaders ==============================================
+%% Abstract:
+%%      Add a file name to the list of headers needed to build this model
+%%      Returns 1 if the filename passed in was a duplicate (i.e. it was
+%%      already in the headers list) and 0 if it was not a duplicate.
+%%
+%function LibAddToModelHeaders(newFile) void
+  %assign duplicate = 0
+  %% scan for duplicates
+  %if ::CompiledModel.NumHeaders > 0
+    %foreach idx = ::CompiledModel.NumHeaders
+      %if (::CompiledModel.Headers[idx] == "%<newFile>")
+	%assign duplicate = 1
+	%break
+      %endif
+    %endforeach
+    %if (!duplicate)
+      %assign ::CompiledModel.Headers = ::CompiledModel.Headers + "%<newFile>"
+      %assign ::CompiledModel.NumHeaders = ::CompiledModel.NumHeaders + 1
+    %endif
+  %else
+    %assign ::CompiledModel.Headers    = ::CompiledModel.Headers + "%<newFile>"
+    %assign ::CompiledModel.NumHeaders = 1
+  %endif
+  %return (duplicate)
+%endfunction %% LibAddToModelHeaders
+
+%% Function: SLibIncludeRTWGeneratedChildSysExportFile =========================
+%% Abstract:
+%%   Include child s-function export files to model export file.
+%%
+%function SLibIncludeRTWGeneratedChildSysExportFile() void
+  %assign opFile = SLibAddModelFile("SystemHeader","Simulink",Name)
+  %if ISFIELD(CompiledModel, "RTWGeneratedChildSfcnExportFiles")
+    %openfile includesBuf
+    %assign expFiles = CompiledModel.RTWGeneratedChildSfcnExportFiles
+    %<expFiles>          
+    %if CodeFormat == "S-Function"
+      %assign tmpName = Accelerator ? "simulink_only_sfcn" : Name
+      #undef S_FUNCTION_NAME
+      
+      #define S_FUNCTION_NAME %<tmpName>
+    %endif
+    %closefile includesBuf
+    %<SLibSetModelFileAttribute(opFile, "Includes", includesBuf)>
+  %endif
+%endfunction %% SLibIncludeRTWGeneratedChildSysExportFile
+
+%endif %% _COMMONHDRLIB_
+
+%% [EOF] commonhdrlib.tlc

@@ -1,0 +1,256 @@
+%% 
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   This system TLC library file contains functions that are common
+%%   between the different code generators for producing the the model's
+%%   block IO structure definition.
+
+%if EXISTS("_COMMONHDR_BLKIOLIB_") == 0
+%assign _COMMONHDR_BLKIOLIB_ = 1
+
+
+%% ============================================================================
+%% Create global cache variables to hold each structure definition
+%% ============================================================================
+
+%<LibAddToCompiledModel("BlockIOStructDefn", 0)>
+%<LibAddToCompiledModel("ConstBlockIOStructDefn", 0)>
+
+
+%% Function: SLibGetSystemBlockIO =============================================
+%% Abstract:
+%%   Returns the contents of a systems block IO structure.
+%%
+%function SLibGetSystemBlockIO(sysIdx) void
+  %assign sysBlockIO    = ""
+  %assign blkIOArg      = System[sysIdx].Interface.BlockIOArgDef
+  %assign childTypeDefs = ...
+    FcnGetHStructChildSystemTypedefs(sysIdx, "rtB", "BlockIO")
+  %assign numElements   = childTypeDefs[1]
+  %assign res           = ["", 0]
+  %openfile sysBlockIO
+  %if blkIOArg.NumFlatFields > 0
+    %with CompiledModel.BlockOutputs
+      %foreach boIdx = blkIOArg.NumFlatFields
+	%assign bo = GlobalBlockOutput[blkIOArg.FirstLocation + boIdx]
+	%if bo.RequiredInBlockIO[0] == 0
+	  %continue
+	%endif
+	%with bo
+	  %assign comment  = "/* '%<SLibGrBlockName(GrSrc)>' */"
+	  %assign dataType = SLibGetRecordDataTypeName(bo, "")
+	  %assign optWidth = LibOptionalVectorWidth(Width)
+	  %<dataType> %<Identifier>%<optWidth>; %<comment>
+	  %assign numElements = numElements + 1
+	  %if bo.Padding != 0
+	    %assign optPadWidth = LibOptionalVectorWidth(bo.Padding)
+	    char pad_%<Identifier>%<optPadWidth>;
+	  %endif
+	%endwith %% bo
+      %endforeach
+    %endwith
+  %endif
+  %<childTypeDefs[0]>\
+  %closefile sysBlockIO
+
+  %assert !ISFIELD(System[sysIdx],"HasBlockIOArg")
+  %addtorecord System[sysIdx] HasBlockIOArg (numElements == 0 ? 0 : 1)
+  
+  %if numElements > 0
+    %assign res[0] = "%<sysBlockIO>"
+    %assign res[1] = %<numElements>
+  %endif
+  %return res %% return [%<sysBlockIO>, %<numElements>] 
+%endfunction
+
+
+%% Function: LibCacheSystemBlkIOStructDef ======================================
+%% Abstract:
+%%   Cache the definition of the system BlockIO structure.
+%%
+%function LibCacheSystemBlkIOStructDef(sysIdx) void
+  %if !SLibSystemHasOwnDataScope(System[sysIdx])
+    %return
+  %endif
+  %assign blockioBuff = SLibGetSystemBlockIO(sysIdx)
+  %assign blockIoDef = ""
+  %if (sysIdx < (NumSystems-1))
+    %assign identifier = "rtB%<FcnGetSystemIdentifier(sysIdx)>"
+    %openfile comment
+    /* Block signals for system: '%<System[sysIdx].Name>' */
+    %closefile comment
+  %else
+    %assign ::CompiledModel.BlockIOStructDefn = ...
+      WHITE_SPACE(blockioBuff[0])?"":"NonEmpty"
+    %assign identifier = tBlockIOType
+    %openfile comment
+    /* Block signals (auto storage) */
+    %closefile comment
+  %endif
+  %%
+  %assign userTypes = LibDumpTypedefsCache()
+  %assign ::CompiledModel.TypedefsCache = ""
+  %if blockioBuff[1] > 0 || userTypes!=""
+    %openfile blockIoDef
+    %if userTypes!=""
+      %<userTypes>
+    %endif
+    %if blockioBuff[1] > 0
+    
+    %<comment>\
+    %<SLibAddPreStructTypedefPragma(identifier)>\
+    typedef struct _%<identifier> {
+      %<blockioBuff[0]>
+    } %<identifier>;
+    %<SLibAddPostStructTypedefPragma(identifier)>\
+    %endif
+    %closefile blockIoDef
+  %endif
+  %%
+  %assign fileName = SLibGetSystemOutputFileBaseName(System[sysIdx])
+  %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fileName)
+  %<SLibSetModelFileAttribute(opFile, "Typedefs", blockIoDef)>
+%endfunction
+
+
+%% Function: SLibGetSystemConstBlockIO =========================================
+%% Abstract:
+%%   Returns the contents of a systems block IO structure.
+%%
+%function SLibGetSystemConstBlockIO(sysIdx) void
+  %assign sysBlockIO    = ""
+  %assign blkIOArg      = System[sysIdx].Interface.ConstBlockIOArgDef
+  %assign childTypeDefs = ...
+    FcnGetHStructChildSystemTypedefs(sysIdx, "rtC", "ConstBlockIO")
+  %assign numElements   = childTypeDefs[1]
+  %assign res           = ["", 0]
+  %openfile sysBlockIO
+  %if blkIOArg.NumFlatFields > 0
+    %with CompiledModel.BlockOutputs
+      %foreach boIdx = blkIOArg.NumFlatFields
+	%assign bo = ConstBlockOutput[blkIOArg.FirstLocation + boIdx]
+	%%
+	%% If padder is active, all fields are forced to be in the
+	%% const block I/O structure. This is because the padding 
+	%% has already been computed in Simulink assuming that all 
+	%% fields are going to be in the structure.
+	%%
+	%if !CompiledModel.PadderActive && bo.RequiredInConstBlockIO == 0
+	  %continue
+	%endif
+	%with bo
+	  %assign comment  = "/* '%<SLibGrBlockName(GrSrc)>' */"
+	  %assign dataType = SLibGetRecordDataTypeName(bo, "")
+	  %assign typeQualifier = bo.DoNotConstify ? "" : "const"
+	  %assign optWidth = LibOptionalVectorWidth(Width)
+	  %<typeQualifier> %<dataType> %<Identifier>%<optWidth>; %<comment>
+	  %assign numElements = numElements + 1
+	  %if bo.Padding != 0
+	    %assign optPadWidth = LibOptionalVectorWidth(bo.Padding)
+	    char pad_%<Identifier>%<optPadWidth>;
+	  %endif
+        %endwith %% bo
+      %endforeach
+    %endwith
+  %endif
+  %<childTypeDefs[0]>\
+  %closefile sysBlockIO
+  
+  %assert !ISFIELD(System[sysIdx],"HasConstBlockIOArg")
+  %addtorecord System[sysIdx] HasConstBlockIOArg (numElements == 0 ? 0 : 1)
+  
+  %if numElements > 0
+    %assign res[0] = "%<sysBlockIO>"
+    %assign res[1] = %<numElements>
+  %endif
+  %return res %% return [%<sysBlockIO>, %<numElements>] 
+%endfunction
+
+%% Function: LibCacheSystemConstBlkIOStructDef =================================
+%% Abstract:
+%%   Cache the definition of the system constant BlockIO structure.
+%%
+%function LibCacheSystemConstBlkIOStructDef(sysIdx) void
+  %if !SLibSystemHasOwnDataScope(System[sysIdx])
+    %return
+  %endif
+  %assign blockioBuff = SLibGetSystemConstBlockIO(sysIdx)
+  %assign blockIoDef = ""
+  %assign trailer = ""
+  %if (sysIdx < (NumSystems-1))
+    %assign identifier = "rtC%<FcnGetSystemIdentifier(sysIdx)>"
+    %openfile comment
+    /* Invariant block signals for system: '%<System[sysIdx].Name>' */
+    %closefile comment
+  %else
+    %assign ::CompiledModel.ConstBlockIOStructDefn = ...
+      WHITE_SPACE(blockioBuff[0])?"":"Nonempty"
+    %assign identifier = tConstBlockIOType
+    %openfile comment
+    /* Invariant block signals (auto storage) */
+    %closefile comment
+    %%
+    %% The #define below is not done for RealTime because of name clashess
+    %if CodeFormat != "RealTime" && CodeFormat != "Embedded-C"
+      %openfile trailer
+      /* For easy access from the SimStruct */
+      %assign constQual = ""
+      %if CodeFormat == "S-Function" && !Accelerator
+	%assign constQual = "const "
+      %endif
+      %assign str = "(%<constQual>%<CompiledModel.tConstBlockIOType> *) " ...
+	"%<RTMuGet("ConstBlockIO")>"
+      #define %<tConstBlockIOStruct> (%<str>)
+      
+      %undef str
+      %closefile trailer
+    %endif
+  %endif
+  
+  %if blockioBuff[1] > 0
+    %openfile blockIoDef
+    %if blockioBuff[1] > 0
+    %<comment>\
+    %<SLibAddPreStructTypedefPragma(identifier)>\
+    typedef struct _%<identifier> {
+      %<blockioBuff[0]>
+    } %<identifier>;
+    %<SLibAddPostStructTypedefPragma(identifier)>\
+    %<trailer>\
+    %endif
+    %closefile blockIoDef
+  %endif
+  %%
+  %assign fileName = SLibGetSystemOutputFileBaseName(System[sysIdx])
+  %assign opFile = SLibAddModelFile("SystemHeader","Simulink",fileName)
+  %<SLibSetModelFileAttribute(opFile, "Typedefs", blockIoDef)>
+%endfunction
+
+
+%% Function: LibBlockIOStructIsEmpty ==========================================
+%% Abstract:
+%%   Is the cache empty?
+%%
+%function LibBlockIOStructIsEmpty() void
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %assert ISFIELD(System[baseSysIdx],"HasBlockIOArg")
+  %return (System[baseSysIdx].HasBlockIOArg == 0)
+%endfunction
+
+
+%% Function: LibConstBlockIOStructIsEmpty =====================================
+%% Abstract:
+%%   Is the cache empty?
+%%
+%function LibConstBlockIOStructIsEmpty() void
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %assert ISFIELD(System[baseSysIdx],"HasConstBlockIOArg")
+  %return (System[baseSysIdx].HasConstBlockIOArg == 0)
+%endfunction
+
+
+%endif %%  _COMMONHDR_BLKIOLIB_

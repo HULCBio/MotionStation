@@ -1,0 +1,211 @@
+function code_chart_source_file_rtw(fileNameInfo,chart)
+
+%%   Copyright 1995-2004 The MathWorks, Inc.
+%%   $Revision: 1.1.6.11 $  $Date: 2004/04/15 00:51:14 $
+
+
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %%%%%  GLOBAL VARIABLES
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+   global gMachineInfo gChartInfo
+
+   chartNumber = sf('get',chart,'chart.number');
+   fileName = fullfile(fileNameInfo.targetDirName,fileNameInfo.chartSourceFiles{chartNumber+1});
+   sf_echo_generating('Coder',fileName);
+
+   file = fopen(fileName,'wt');
+   if file<3
+      construct_coder_error([],sprintf('Failed to create file: %s.',fileName),1);
+      return;
+   end
+
+...%implements "chartSource" "C"
+
+...%function ChartConfig(block, system) void
+...  %createrecord chartConfiguration { ...
+...          executeAtInitialization  $#sf('get',chart,'chart.executeAtInitialization')$ ...
+...  }
+...  %return chartConfiguration
+...%endfunction
+
+...%function ChartFunctions(block,system) void
+      x = sf('Cg','get_cg_fcn_data',chart);
+      excludedFcn = x.chartGateway.ptr(1);
+      funcs = sf('Cg','get_unshared_functions',chart);
+...   %openfile chartFcnsBuf
+
+        % Inserting Target Math Fcn generation here
+        fcnGenString = sf('Cg','get_module_used_target_fcns',chart);
+...     $strip_trailing_new_lines(fcnGenString)$
+%        % Inserting Target Math Includes here
+%        moduleIncludeString = sf('Cg','get_module_target_include_directives',chart);
+%...     $strip_trailing_new_lines(moduleIncludeString)$
+
+        
+         namedConsts = sf('Cg','get_named_consts',chart);
+         for namedConst = namedConsts
+            codeStr = sf('Cg','get_named_const_def',namedConst,1);
+...         $strip_trailing_new_lines(codeStr)$
+         end
+
+         if(sf('Feature','RTW New Symbol Naming'))
+            fcnNames = {};
+            for func = funcs
+               fcnName = sf('Cg','get_symbol_name', func);
+               fcnName = fcnName(1:end-1);
+
+               % Filter undesirable portions of identifier
+               fcnName = strrep(fcnName, '%', '');
+               fcnName = strrep(fcnName, '<LibSFUniquePrefix(block)>', '');
+               fcnName = strrep(fcnName, '<block.SymbolMapping.', '');
+               fcnName = strrep(fcnName, '>', '');
+
+               fcnNames{end+1} = fcnName;
+            end
+            sf('set',chart,'chart.rtwInfo.sfSymbols', fcnNames);
+         end
+
+         for func = funcs
+            codeStr = sf('Cg','get_fcn_decl',func,1);
+...         $strip_trailing_new_lines(codeStr)$
+         end
+         
+         for func = funcs
+            if func{1}.ptr(1) ~= excludedFcn
+               codeStr = sf('Cg','get_fcn_def',func,1);
+...            $strip_trailing_new_lines(codeStr)$
+            end
+         end
+...   %closefile chartFcnsBuf
+...   %return chartFcnsBuf
+...%endfunction %% ChartFunctions
+
+
+...%function ChartSharedFunctions(block,system) void
+...   %openfile chartFcnsBuf
+         modelName = sf('get',get_relevant_machine,'machine.name');
+         if(~rtw_gen_shared_utils(modelName))
+            sharedFuncs = sf('Cg', 'get_shared_functions', chart);
+            if(~isempty(funcs))
+               for func = sharedFuncs
+                  fcnName = sf('Cg','get_symbol_name', func);
+                  fcnName = fcnName(1:end-1);
+                  fcnDefCodeStr = sf('Cg','get_fcn_def',func,1);
+...                 %if %<!SFLibLookupUtilityFunction("$fcnName$")>
+...                    $strip_trailing_new_lines(fcnDefCodeStr)$
+...                    %<SFLibInsertUtilityFunction("$fcnName$")>
+...                 %endif
+               end
+            end
+         end
+...   %closefile chartFcnsBuf
+...   %return chartFcnsBuf
+...%endfunction %% ChartSharedFunctions
+
+
+
+% The chart gateway is always inlined so we only emit the body
+% for this function
+...%function Outputs(block,system) void
+      x = sf('Cg','get_cg_fcn_data',chart);
+...   %openfile codeBuf
+         codeStr = sf('Cg','get_fcn_body',x.chartGateway);
+...      $strip_trailing_new_lines(codeStr)$
+...   %closefile codeBuf
+...   %return codeBuf
+...%endfunction  %% Outputs
+
+% The chart data initializer is always inlined so we only emit the body
+% for this function
+...%function InlinedInitializerCode(block,system) Output
+...   %<SLibResetSFChartInstanceAccessed(block)>\
+...   %openfile initBodyBuf
+         x = sf('Cg','get_cg_fcn_data',chart);
+         str = sf('Cg','get_fcn_body',x.chartDataInitializer);
+...      $str$
+...   %closefile initBodyBuf
+...   %if !WHITE_SPACE(initBodyBuf)
+...      /* Initialize code for chart: %<LibParentMaskBlockName(block)> */
+...      %<initBodyBuf>\
+...   %endif
+...%endfunction
+...
+...
+% The chart enable is always inlined so we only emit the body
+% for this function
+...%function EnableUnboundOutputEventsCode(block,system) Output
+...   %openfile initBodyBuf
+         x = sf('Cg','get_cg_fcn_data',chart);
+         str = sf('Cg','get_fcn_body',x.chartEnable);
+...      $str$
+...   %closefile initBodyBuf
+...   %if !WHITE_SPACE(initBodyBuf)
+...      /* Enable code for chart: %<LibParentMaskBlockName(block)> */
+...      %<initBodyBuf>\
+...   %endif
+...%endfunction
+...
+% The chart disable is always inlined so we only emit the body
+% for this function
+...%function DisableUnboundOutputEventsCode(block,system) Output
+...   %openfile initBodyBuf
+         x = sf('Cg','get_cg_fcn_data',chart);
+         str = sf('Cg','get_fcn_body',x.chartDisable);
+...      $str$
+...   %closefile initBodyBuf
+...   %if !WHITE_SPACE(initBodyBuf)
+...      /* Disable code for chart: %<LibParentMaskBlockName(block)> */
+...      %<initBodyBuf>\
+...   %endif
+...%endfunction
+...
+
+
+
+
+% Emit shared functions and header files.
+
+...%function DumpSharedUtils(block,system) void
+   funcs = sf('Cg', 'get_shared_functions', chart);
+   if(~isempty(funcs))
+      modelName = sf('get',get_relevant_machine,'machine.name');
+      if(rtw_gen_shared_utils(modelName))
+...      %if EXISTS(::GenUtilsSrcInSharedLocation) && (::GenUtilsSrcInSharedLocation == 1)
+...         %if !ISFIELD(::CompiledModel, "RTWInfoMatFile")
+...            %<LoadRTWInfoMatFileforTLC()>
+...         %endif    
+         for func = funcs
+            fcnName = sf('Cg','get_symbol_name', func);
+            fcnName = fcnName(1:end-1);
+            fcnDefCodeStr = sf('Cg','get_fcn_def',func,1);
+            fcnDeclCodeStr = sf('Cg','get_fcn_decl',func,0);         
+            sharedUtilTargetIncludes = sf('Cg','get_shared_fcn_target_includes',func);
+            dump_single_shared_util(file, fcnName, fcnDefCodeStr, fcnDeclCodeStr, sharedUtilTargetIncludes);
+         end
+...      %else
+...         %error WISH change error message, unable to dump shared utils
+...      %endif  
+      end
+   end
+...%endfunction
+
+   fclose(file);
+   try_indenting_file(fileName);
+   sf('Cg','destroy_module',chart);
+
+
+function dump_single_shared_util(file, fcnName, fcnDefCodeStr, fcnDeclCodeStr, sharedUtilTargetIncludes)
+... %if %<!SFLibLookupUtilityFunction("$fcnName$")>
+...     %<SFLibInsertUtilityFunction("$fcnName$")>
+...     %openfile defCode
+...     $sharedUtilTargetIncludes$
+...     $fcnDefCodeStr$
+...     %closefile defCode
+...     %openfile declCode
+...     $fcnDeclCodeStr$
+...     %closefile declCode
+...     %<SLibDumpUtilsSourceCode("$fcnName$", declCode, defCode)>
+... %endif
+
+

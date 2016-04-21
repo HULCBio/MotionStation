@@ -1,0 +1,364 @@
+%% event_port_handler.tlc
+%%
+%% TLC code generation file for Signal Processing Blockset
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.9.4.3 $ $Date: 2004/04/12 23:07:59 $
+%%
+%% Abstract:
+%%   Code generation for event port handler function.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% There are six steps a user must complete in order to use the 
+%% event port handler in a block's TLC file:
+%%
+%% (1) In the block's BlockTypeSetup function, call:
+%%       %<Include_rt_header(block,"dspeph_rt")>
+%% (2) In the blocks's BlockInstanceSetup function, call:
+%%       %<EventPortHandlerInstanceSetup(block)>
+%%     See the comments for this function for further
+%%     instructions on setting up this command.
+%% (3) In the blocks's InitializeConditions function, call:
+%%       %<InitializeEventPortPrevStateCache(block, ephDWork)>
+%%     to initialize the previous state cache (if necessary).
+%%     See below for explanation on ephDWork.
+%% (4) If the input is frame based or an array where the code needs to
+%%     be generated with a loop/index variable 
+%%     (eg "inputdata[i]" instead of "inputdata")
+%%     add to the block structure the variable i_str with the loop
+%%     variable name in it. For eg. in BlockInstanceSetup function
+%%         %assign i_str = (Inputframesize > 1) ? "i" : ""
+%%     This will be used as
+%%         LibBlockInputSignal(portNum, i_str, "", 0)
+%%     This variable need not exist if the loop index is not needed.
+%% (5) In order to check to see if a reset has happened in
+%%     Outputs(), call:
+%%       %<CheckEventPort(block, resetPortNumber, ephDWork)>
+%%     which will insert a logical test returning true if a 
+%%     reset has occurred, and false otherwise.
+%%     See below for explanation on ephDWork.
+%% (6) In multi-rate, multi-tasking situation sometimes it may be needed
+%%     to store (delay) the event input port data in a DWork before further
+%%     processing. This is to have determinism in generated code. To inform event port
+%%     handler about data coming from a DWork instead of an input port, assign
+%%     a variable "ephDataSource" with the name of the DWork
+%%     and add it to "block" structure. The generated code will then use
+%%     the DWork data instead of the input port data. In this case, in the call
+%%     to CheckEventPort, the second input argument is ignored. The variable
+%%     ephDataSource, should not exist if the data is from input port.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%          EPHDWork
+%%   ephDWork is a DWork which stores the previous state for event detection.
+%%   In your S-function create this D-Work if you are in
+%%   code generation mode and EventPort requires state.
+%%   EventPort requires state in the edge triggered modes.
+%%   i.e. All modes except EVENT_PORT_MODE_NONZERO. For eg.
+%%   your code in S-function for creation of DWork will be like
+%%
+%%    //DWork for event port handler state
+%%    if (haseventport)
+%%    {
+%%      boolean_T ephRequiresState = (ephmode != EVENT_PORT_MODE_NONZERO);
+%%      if (ephRequiresState && (SL_SFCN_IN_RTW_CODEGEN_MODES(S))) {
+%%         ssSetDWorkWidth(   S, EPHSTATE, 1);
+%%         ssSetDWorkDataType(S, EPHSTATE, SS_UINT32);
+%%         ssSetDWorkName(    S, EPHSTATE, "EPHPState");
+%%      }
+%%    }
+%%
+%%    For EventPortHandler to work in accelerator mode this previous state
+%%    needs to be initialized in mdlInitializeConditions. The code for 
+%%    initialization will be like
+%%
+%%    if (haseventport)
+%%    {
+%%      if (SL_SFCN_IN_RTW_CODEGEN_MODES(S))
+%%      {   //initialize eph state for accelerated mode
+%%         boolean_T ephRequiresState = (ephmode != EVENT_PORT_MODE_NONZERO);
+%%         if (ephReqState)
+%%             *((uint32_T *)ssGetDWork(S, EPHSTATE)) = 
+%%                                 (uint32_T) EVENT_PORT_STATE_UNINIT;
+%%      }
+%%    }
+%% 
+%%    EVENT_PORT_STATE_UNINIT is defined in event_port_handler_sim.hpp
+%%    In the TLC ephDWork is not used if it is not required (ie no previous state).
+%%    You can pass a 0 (or any value) if this DWork is not used.
+%%    It will be helpful in TLC code to initialize a variable to either
+%%    ephDWork or 0 in the BlockInstanceSetup function and use that variable
+%%    in the calls to CheckEventPort. For this initialization you can use the
+%%    function EventPortRequiresState(block) which returns true if 
+%%    previous state storage is required.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: EventPortHandlerInstanceSetup
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%
+%%   This function adds two parameters to the block record:
+%%     - EventPortHandlerFcnIdx
+%%     - EventPortHandlerInline
+%%
+%%   EventPortHandlerFcnIdx:
+%%   This parameter is a number that describes the event
+%%   detection mode as enumerated in dspeph_rt.h
+%%   The client block's S-function must write out this parameter 
+%%   in it's mdlRTW function as a real uint8_T; for example:
+%%
+%%     uint8_T eventfcn_idx = (uint8_T )sfcn_cache->event_cache.eventFcnIdx;
+%%     if (!ssWriteRTWParamSettings(S, 1,
+%%             SSWRITE_VALUE_DTYPE_NUM, "EventPortHandlerFcnIndex", &eventfcn_idx,
+%%                DTINFO(SS_UINT8,COMPLEX_NO)
+%%     )) return;
+%%
+%%   EventPortHandlerInline :
+%%     This parameter controls how the 'non-zero' event checking is generated:
+%%       0 = do not inline any code (use function calls for everything)
+%%       1 = inline the query code for "non-zero" event checking
+%%
+%%
+%%   This function must be called from the client
+%%   block's TLC BlockInstanceSetup function.
+%%
+%%
+%function EventPortHandlerInstanceSetup(block) void
+
+    %assign EventPortHandlerFcnIdx = SFcnParamSettings.EventPortHandlerFcnIndex
+    %assign EventPortHandlerInline = 1
+
+    %assign block = block \
+                  + EventPortHandlerFcnIdx \
+                  + EventPortHandlerInline
+
+%endfunction %% EventPortHandlerInstanceSetup
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: InitializeEventPortPrevStateCache
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract: As necessary, creates and/or initializes the 
+%%   previous state cache.
+%%   This function must be called in the TLC InitializeConditions
+%%   routine.
+%%
+%function InitializeEventPortPrevStateCache(block, dworkname) Output
+  %%
+  %if EventPortRequiresState(block)
+      /* Initialize event port handler previous signal state: */
+      %<LibBlockDWork(dworkname, "", "", 0)> = EVENT_PORT_STATE_UNINIT;
+  %endif
+%endfunction %% InitializeEventPortPrevStateCache
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: CheckEventPort
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%    Returns a condition expression that checks for the
+%%    required event on the event port.
+%%
+%function CheckEventPort(block,portNum, dworkname) void
+
+    %if EXISTS(i_str)
+        %%i_str is loop index string present in block
+        %if EXISTS(ephDataSource)   %%Source from DWork?
+            %assign rstPortVal = LibBlockDWork(ephDataSource, i_str, "",0)
+        %else
+            %assign rstPortVal = LibBlockInputSignal(portNum, i_str, "",0)
+        %endif
+    %else
+        %if EXISTS(ephDataSource)   %%Source from DWork?
+            %assign rstPortVal = LibBlockDWork(ephDataSource, "", "",0)
+        %else
+            %assign rstPortVal = LibBlockInputSignal(portNum,"","",0)
+        %endif
+    %endif
+
+    %openfile buffer
+    %%
+    %if EventPortRequiresState(block) %% mode = rising, falling or either
+        %%
+        %% Requires zero-crossing function:
+        %%
+        %assign sigStateFcn = getEventPortSigStateFcnName(block,portNum)
+        %%
+        MWDSP_EPHZCFcn(%<getEventPortMode(block)>,
+                       (EventPortSigState *) &%<LibBlockDWork(dworkname, "", "", 0)>,
+                       %<sigStateFcn>(%<rstPortVal>)
+                       ) != EVENT_PORT_EVENT_NONE\
+        %%
+    %elseif EventPortHandlerFcnIdx == 4  %% EVENT_PORT_MODE_NONZERO
+        %%
+        %% Non-zero function
+        %%
+        %if EventPortHandlerInline
+            %%
+            %% Inline the query code (do not make a function call).
+            %%
+            %% NOTE: Do not call getEventPortSigStateFcn, since it
+            %% may generate an unnecessary sigState function by
+            %% side-effect.
+            %%
+            %<getEventPortInlineNonzeroQuery(block, portNum)>\
+            %%
+        %else
+            %assign sigStateFcn = getEventPortSigStateFcnName(block,portNum)
+            %<sigStateFcn>(%<rstPortVal>) != EVENT_PORT_STATE_ZERO\
+        %endif
+        %%
+    %endif
+    %%
+    %closefile buffer
+    
+    %return buffer
+    
+%endfunction %% CheckEventPort
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: EventPortRequiresState  
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%   Determines if event handler requires state.
+%%   "None" and "Non-zero" do not require state,
+%%   while all others do.
+%%
+%function EventPortRequiresState(block) void
+
+ %return (EventPortHandlerFcnIdx > 0) && (EventPortHandlerFcnIdx < 4)
+
+%endfunction %% EventPortRequiresState
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: getEventPortSigStateFcnName
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%    Returns name of event port signal state function
+%%    Example: EventPortSigStateFcn_D
+%%
+%%    Data type of port is indicated by last letter of function
+%%    D: Double, S:Single, B:Boolean
+%%    S#: signed #-bit integer
+%%    U#: unsigned #-bit integer
+%%
+%function getEventPortSigStateFcnName(block,portNum) void
+
+%switch LibBlockInputSignalDataTypeId(portNum)
+%case tSS_DOUBLE
+    %assign dtype = "D"
+    %break
+%case tSS_SINGLE
+    %assign dtype = "R"
+    %break
+%case tSS_BOOLEAN
+    %assign dtype = "B"
+    %break
+%case tSS_INT8
+    %assign dtype = "I8"
+    %break
+%case tSS_INT16
+    %assign dtype = "I16"
+    %break
+%case tSS_INT32
+    %assign dtype = "I32"
+    %break
+%case tSS_UINT8
+    %assign dtype = "U8"
+    %break
+%case tSS_UINT16
+    %assign dtype = "U16"
+    %break
+%case tSS_UINT32
+    %assign dtype = "U32"
+    %break
+%default
+    %error "Data type not recognized."
+%endswitch
+
+%return "EventPortSigStateFcn_%<dtype>"
+
+%endfunction %% getEventPortSigStateFcnName
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: getEventPortMode
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%
+%function getEventPortMode(block) void
+
+%switch EventPortHandlerFcnIdx
+%case 0
+    %assign fcn = "EVENT_PORT_MODE_NONE"
+    %break
+%case 1
+    %assign fcn = "EVENT_PORT_MODE_RISING"
+    %break
+%case 2
+    %assign fcn = "EVENT_PORT_MODE_FALLING"
+    %break
+%case 3
+    %assign fcn = "EVENT_PORT_MODE_EITHER"
+    %break
+%case 4
+    %assign fcn = "EVENT_PORT_MODE_NONZERO"
+    %break
+%default
+    %error "Unrecognized EventPortHandlerFcnIdx value: %<EventPortHandlerFcnIdx>"
+%endswitch
+
+%return fcn
+
+%endfunction %% getEventPortMode
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: getEventPortInlineNonzeroQuery
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Abstract:
+%%     Equivalent to getEventPortSigStateFcn, but returns
+%%     an inlined query instead of a function call.
+%%     Only for non-zero event handling.
+%%
+%function getEventPortInlineNonzeroQuery(block, portNum) Output
+    %%
+    %%i_str is a string which contains loop variable name
+    %%in case input is frame based. it is present in block
+    %%
+    %if EXISTS(i_str)
+        %assign i_var_str = i_str
+    %else
+        %assign i_var_str = ""
+    %endif
+    %if EXISTS(ephDataSource)   %%Source from DWork?
+        %assign rstPortVal = LibBlockDWork(ephDataSource, i_var_str, "",0)
+    %else
+        %assign rstPortVal = LibBlockInputSignal(portNum, i_var_str, "",0)
+    %endif
+    %switch LibBlockInputSignalDataTypeId(portNum)
+    %case tSS_BOOLEAN
+        %% For this case, the query (signal[0] != 0) is equivalent
+        %% to (signal[0] == true) or just (signal[0]), since the
+        %% input is already a boolean value.
+        %%
+        %<rstPortVal>\
+        %%
+        %break
+    %default
+        %% For all other data types, it is syntactically better
+        %% to check that the signal is non-zero.
+        %%
+        %<rstPortVal> != \
+            (%<LibBlockInputSignalDataTypeName(portNum,"")>)0\
+        %%
+        %break
+    %endswitch
+    %%
+%endfunction %% getEventPortInlineNonzeroQuery
+
+
+%% [EOF] event_port_handler.tlc
+

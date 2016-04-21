@@ -1,0 +1,491 @@
+%% $RCSfile: sdspdsamp2.tlc,v $
+%% $Revision: 1.12.4.5 $ $Date: 2004/04/12 23:08:31 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Decreases the sampling rate of a signal
+%%           by downsampling by an integer factor. 
+%%           Downsampling stars at specifid sample offset.
+ 
+%implements sdspdsamp2 "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% Block parameters:
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %assign block = block + INPORT + OUTPORT
+
+  %assign cplx     = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign inWidth  = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign outWidth = CAST("Number",LibDataOutputPortWidth(OUTPORT))
+
+  %assign outportIsComplex = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+  %assign outportDTypeName = LibBlockOutputSignalDataTypeName(OUTPORT, "%<tRealPart>")
+  %assign bytesPerElement  = (outportIsComplex) \
+                           ? "(2 * sizeof(%<outportDTypeName>))" \
+                           : "sizeof(%<outportDTypeName>)"
+  
+  %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+  %assign dims    = LibBlockInputSignalDimensions(INPORT)
+  %assign COLS    = (numDims == 2) ? dims[1] : 1
+
+  %assign isInputFrameBased  = LibBlockInputSignalIsFrameData(INPORT)
+  %assign nChans      = isInputFrameBased  ? COLS : inWidth
+
+  %assign isEnforceSingleRate = CAST("Boolean",SFcnParamSettings.isEnforceSingleRate)
+
+  %assign isMultiRate    = !LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+
+  %assign convfactor = CAST("Number",SFcnParamSettings.DFACTOR[0])
+  %assign phase      = CAST("Number",SFcnParamSettings.PHASE[0])
+  %assign SamplesPerInputFrame  = CAST("Number", inWidth  / nChans)
+
+  %assign needCounter = (convfactor > 1) && (                                                               \
+                            (!isInputFrameBased && isEnforceSingleRate)                                  || \
+                            (!isInputFrameBased && !isEnforceSingleRate && isMultiTasking)               || \
+                            (!isInputFrameBased && !isEnforceSingleRate && !isMultiTasking && (phase>0)) || \
+                            ( isInputFrameBased && isMultiRate) )
+
+  %assign isFrameMultiRateSingleTaskingMode = (convfactor>1) && (!isMultiTasking) && isMultiRate && isInputFrameBased
+
+  %assign block = block                + needCounter     + convfactor + \
+                  isInputFrameBased    + phase           + cplx       + \
+                  isMultiRate          + isMultiTasking  + nChans     + \
+                  isEnforceSingleRate  + inWidth         + outWidth   + \
+                  SamplesPerInputFrame + bytesPerElement + isFrameMultiRateSingleTaskingMode
+ 
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if needCounter
+    %%
+    if (%<LibBlockDWork(EnableSysFlag,"", "", 0)> == 0) {
+      %if ((isMultiRate && isMultiTasking) || (isFrameMultiRateSingleTaskingMode))
+        /* Initialize input and output buffer pointers */ 
+        %<LibBlockDWork(pOutBuf,"","",0)> = (byte_T *)%<LibBlockDWorkAddr(Buffer,"","",0)>;
+        %<LibBlockDWork(pInBuf,"","",0)> = (byte_T *)%<LibBlockDWorkAddr(Buffer,"","",0)> + \
+                                            %<outWidth> * %<bytesPerElement>;
+      %endif
+      /* Initialize counter */
+      %<LibBlockDWork(Count,"", "", 0)> = %<(phase == 0) ? 0 : convfactor - phase>;
+    }
+    %% Fill in ICs into top portion of buffer:
+    %%
+    %% Note: the IC Handler guarantees that IC RTPs are 
+    %% stored as 2-D matrices 
+    %assign IC_dims = IC.Dimensions
+    %assign numICs  = IC_dims[0] * IC_dims[1]
+    %assign outBuf  = "(byte_T *)" + LibBlockDWorkAddr(Buffer,"","",0)
+    %assign pIC     = "(const byte_T *)" + LibBlockParameterAddr(IC,"","",0)
+    %%
+    %if (numICs == 1)
+    %%
+    %% Scalar initial condition
+    %%
+    MWDSP_CopyScalarICs(%<outBuf>, %<pIC>, %<outWidth>, %<bytesPerElement>);
+    %elseif (numICs > 1)
+    %%
+    %% Vector of initial conditions
+    %%
+    MWDSP_CopyMatrixICs(%<outBuf>, %<pIC>, %<outWidth>, %<bytesPerElement>);
+    %endif
+    %%
+  %endif
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Start ==========================================================
+%%
+%function Start(block, system) Output
+%if (needCounter )
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %<LibBlockDWork(EnableSysFlag,"", "", 0)> = 0;
+    %<LibBlockDWork(DisableTimeTick,"", "", 0)> = 0;
+  }
+%endif
+%endfunction %% Start
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (!needCounter)
+    %if (isInputFrameBased)
+      %<frameBasedSingleRate(block, system)>\
+    %else
+      %<copyInputToOutput(block, system)>\
+    %endif
+  %%
+  %elseif (!isInputFrameBased && isEnforceSingleRate)
+    %<sampleBasedSingleRate(block, system)>
+  %%
+  %else
+  {
+    const int_T outWidthTimesBpe = %<outWidth> * %<bytesPerElement>;
+    if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+      %if (isMultiTasking)
+        %if (isInputFrameBased)
+          %<frameInputHitMultiTasking(block, system)>\
+        %else
+          %<sampleInputHitMultiTasking(block, system)>\
+        %endif
+      %else
+        %if (isInputFrameBased)
+          %<frameInputHitMultiTasking(block, system)>\   %% use frameInputHitSingleTasking in R14+
+        %else
+          %<sampleInputHitSingleTasking(block, system)>\
+        %endif
+      %endif
+    }
+    if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+        %<outputHitCode(block, system)>
+    }
+  }
+  %endif
+
+%endfunction %% Outputs
+
+
+%% Function: OutputsForTID =====================================================
+%%
+%function OutputsForTID(block, system, tid) Output
+%% This function is called only in multi-rate, multi-tasking ert mode for rate grouping
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %if (tid == LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))
+        %if (isInputFrameBased)
+          %<frameInputHitMultiTasking(block, system)>\
+        %else
+          const int_T outWidthTimesBpe = %<outWidth> * %<bytesPerElement>;
+          %<sampleInputHitMultiTasking(block, system)>\
+        %endif
+    %endif
+    %if (tid == LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0"))
+        const int_T outWidthTimesBpe = %<outWidth> * %<bytesPerElement>;
+        %<outputHitCode(block, system)>
+    %endif
+  }
+%endfunction %% OutputsForTID
+
+
+%% Function: copyInputToOutput ==========================================================
+%%
+%function copyInputToOutput(block, system) Output
+%%
+{
+  %if (convfactor > 1)
+    if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) {
+  %endif
+    %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>\
+  %if (convfactor > 1)
+    }
+  %endif
+}
+%endfunction %% copyInputToOutput
+
+%% Function: frameBasedSingleRate ==========================================================
+%%
+%function frameBasedSingleRate(block, system) Output
+{
+    const int_T bpe = %<bytesPerElement>;
+    const byte_T *u = (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"", "", 0)>;
+    byte_T *y = (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+    int_T i;
+    int32_T c = 0;
+    %if (nChans>1)
+      int_T n = %<nChans>;
+      do {
+        c = 0; /* Reset counter for each channel */
+    %endif
+        i = %<SamplesPerInputFrame>;
+        while (i--) {
+            if (c++ == %<phase>)  {
+                memcpy(y,u,bpe);
+                y += bpe;
+            }
+            u += bpe;
+            if (c == %<convfactor>) c = 0;
+        }
+    %if (nChans>1)
+      } while ((--n) > 0);
+    %endif
+}
+%endfunction %% frameBasedSingleRate
+
+%% Function: sampleBasedSingleRate ==========================================================
+%%
+%function sampleBasedSingleRate(block, system) Output
+{
+    /* Single-rate enforced */
+    const int_T outWidthTimesBpe = %<outWidth> * %<bytesPerElement>;
+    int32_T c = %<LibBlockDWork(Count,"", "", 0)>;
+    if (c++ == 0) {
+        memcpy((byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>),              \
+               (const byte_T *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>), \
+               outWidthTimesBpe);
+    }
+    if (c == %<convfactor>) c = 0;
+    memcpy((byte_T *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>),  \
+           (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>),          \
+           outWidthTimesBpe);
+    /* Update counter for next sample hit */
+    %<LibBlockDWork(Count,"", "", 0)> = c; 
+}
+%endfunction %% sampleBasedSingleRate
+
+
+%% Function: outputHitCode =====================================================
+%%
+%function outputHitCode(block, system) Output
+%%
+  /* output hit */
+  %if ((isMultiTasking) || (isFrameMultiRateSingleTaskingMode))
+    byte_T *outBuf = (%<LibBlockDWork(pOutBuf,"", "", 0)>);
+    memcpy((byte_T *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>), \
+            outBuf, outWidthTimesBpe);
+    outBuf += outWidthTimesBpe;
+    if ( outBuf == ((byte_T *)%<LibBlockDWorkAddr(Buffer,"", "", 0)> + 2*outWidthTimesBpe)) {
+        outBuf = (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>);
+    }
+    (%<LibBlockDWork(pOutBuf,"", "", 0)>) = outBuf;
+  %%
+  %else
+    memcpy((byte_T *)(%<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>),  \
+           (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>),          \
+           outWidthTimesBpe);
+  %endif
+
+%endfunction %% outputHitCode
+
+
+%% Function: sampleInputHitSingleTasking =====================================================
+%%
+%function sampleInputHitSingleTasking(block, system) Output
+    /* Input hit: Sample-based */
+    const byte_T *u = (const byte_T *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    int32_T c = %<LibBlockDWork(Count,"", "", 0)>;
+    if (c++ == 0)  {
+        memcpy((byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>), u, outWidthTimesBpe);
+    }
+    u += outWidthTimesBpe;
+    if (c == %<convfactor>) c = 0;
+    %<LibBlockDWork(Count,"", "", 0)> = c; 
+
+%endfunction %% sampleInputHitSingleTasking
+
+
+%% Function: frameInputHitSingleTasking =====================================================
+%%
+%% This function is not used in R14. It is a better algorithm for single tasking
+%% down-sample. It reduces memory usage and minimizes latencies. 
+%% Since we decide not to change latency behavior, it is left here so that we may use 
+%% it in future.
+%%
+%%function frameInputHitSingleTasking(block, system) Output
+%%    /* Input hit: Frame-based */
+%%    const byte_T *u = (const byte_T *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+%%    byte_T  *buf = (byte_T *)%<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+%%    const int_T bytesOffset = (%<SamplesPerInputFrame> - 1) * %<bytesPerElement>;
+%%    const int_T bpe = %<bytesPerElement>;
+%%    int32_T c = %<LibBlockDWork(Count,"", "", 0)>;
+%%    int_T i;
+%%    %if (nChans>1)
+%%    int_T n;
+%%    for (n=0; n<%<nChans>; n++) {
+%%        c = %<LibBlockDWork(Count,"", "", 0)>;
+%%        byte_T *chanBuf = buf + n*%<SamplesPerInputFrame>*bpe;
+%%    %endif
+%%        for (i=0; i<%<SamplesPerInputFrame>; i++) {
+%%            if (c++ == 0) {
+%%              %if (nChans>1)
+%%                memmove(chanBuf, chanBuf+bpe, bytesOffset);
+%%                memcpy(chanBuf+bytesOffset, u, bpe);
+%%              %else
+%%                memmove(buf, buf+bpe, bytesOffset);
+%%                memcpy(buf+bytesOffset, u, bpe);
+%%              %endif
+%%            }
+%%            u += bpe;
+%%            if (c == %<convfactor>) c = 0;
+%%        }
+%%    %if (nChans>1)
+%%    }
+%%    %endif
+%%    %<LibBlockDWork(Count,"", "", 0)> = c;
+%%
+%%endfunction %% frameInputHitSingleTasking
+
+
+%% Function: sampleInputHitMultiTasking =====================================================
+%%
+%function sampleInputHitMultiTasking(block, system) Output
+    /* Input hit: Sample-based */
+    %%
+    const byte_T *u = (const byte_T *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    byte_T *inBuf = %<LibBlockDWork(pInBuf,"", "", 0)>;
+    int32_T c = %<LibBlockDWork(Count,"", "", 0)>;
+    if (c++ == 0)  {
+        memcpy(inBuf, u, outWidthTimesBpe);
+        inBuf += outWidthTimesBpe;
+    }
+    u += outWidthTimesBpe;
+    if (c == %<convfactor>) c = 0;
+    %<LibBlockDWork(Count,"", "", 0)> = c;
+    if (inBuf == (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>) + 2*outWidthTimesBpe) {
+        inBuf = (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>);
+    } 
+    %<LibBlockDWork(pInBuf,"", "", 0)> = inBuf;
+
+%endfunction %% sampleInputHitMultiTasking
+
+
+%% Function: frameInputHitMultiTasking =====================================================
+%%
+%function frameInputHitMultiTasking(block, system) Output
+    /* Input hit: Frame-based */
+    const byte_T *u = (const byte_T *)(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>);
+    const int_T bpe = %<bytesPerElement>;
+    byte_T *inBuf;
+    int32_T c=%<LibBlockDWork(Count,"", "", 0)>;
+    %%
+    %if (nChans > 1)
+        int_T n;
+        for (n = 0; n < %<nChans>; n++) {
+    %endif
+        /* Point to current channel */
+        %if (nChans > 1)
+            inBuf = (byte_T *)(%<LibBlockDWork(pInBuf,"", "", 0)>) + n*%<SamplesPerInputFrame>*bpe;
+            c = %<LibBlockDWork(Count,"", "", 0)>;
+        %else
+            inBuf = (byte_T *)(%<LibBlockDWork(pInBuf,"", "", 0)>);
+        %endif
+        %if (SamplesPerInputFrame > 1)
+        {
+            int_T i;
+            for (i=0; i<%<SamplesPerInputFrame>; i++) {
+        %endif
+              if (c++ == 0) {
+                memcpy(inBuf,u,bpe);
+                inBuf += bpe;
+              }
+              u += bpe;
+              if (c == %<convfactor>) c = 0;
+        %if (SamplesPerInputFrame > 1)
+            }
+        }
+        %endif
+    %if (nChans > 1)
+    }
+    %endif
+    /* Update counter for next sample hit */
+    %<LibBlockDWork(Count,"", "", 0)> = c; 
+    /* Update input pointer buffer */
+    {
+        byte_T *aBuf =  (byte_T *)(%<LibBlockDWorkAddr(Buffer,"", "", 0)>);
+        if (inBuf == aBuf + %<2*outWidth>*bpe) {
+            inBuf = aBuf;
+        } else if (inBuf != aBuf + %<outWidth>*bpe) {
+            inBuf -= %<(nChans-1)*SamplesPerInputFrame>*bpe;
+        }
+        %<LibBlockDWork(pInBuf,"", "", 0)> = inBuf;
+    }
+
+%endfunction %% frameInputHitMultiTasking
+
+
+%% Function: Enable ==========================================================
+%%
+%function Enable(block, system) Output
+%% Enable/Disable functions are not needed for trig subsystem.
+%% TLC function LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0") errors out inside trig subsystem
+%if ISEQUAL(TID,"triggered")
+  %return
+%endif
+%if (needCounter && (!isMultiTasking) )
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  /* Enable is called */
+  %if (SLibClockTickIsUnit32Pair(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")))
+    uint32_T currentTimeTick = (uint32_T)%<DSPLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))>;
+    uint32_T lastTimeTick = (uint32_T)%<LibBlockDWork(DisableTimeTick,"", "", 0)>;
+    uint32_T timeTickElapsed = (lastTimeTick<=currentTimeTick)  \
+                             ? currentTimeTick - lastTimeTick   \
+                             : (uint32_T)(pow(2,32) - lastTimeTick + currentTimeTick);
+  %else
+    uint32_T timeTickElapsed = \
+    (uint32_T)%<DSPLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))> - \
+    %<LibBlockDWork(DisableTimeTick,"", "", 0)>;
+  %endif
+
+  %if (!isInputFrameBased)
+    while (timeTickElapsed--) {
+  %else
+    uint32_T ticksToAdvance = timeTickElapsed * %<SamplesPerInputFrame>;
+    while (ticksToAdvance--) {
+  %endif
+        if(++%<LibBlockDWork(Count,"", "", 0)> == %<convfactor>) {
+            %<LibBlockDWork(Count,"", "", 0)> = 0;
+        };
+    }
+}
+%endif
+%endfunction %% Enable
+
+%% Function: Disable ==========================================================
+%%
+%function Disable(block, system) Output
+%% Enable/Disable functions are not needed for trig subsystem.
+%% TLC function LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0") errors out inside trig subsystem
+%if ISEQUAL(TID,"triggered")
+  %return
+%endif
+%if (needCounter && (!isMultiTasking) )
+  /* Signal Processing Blockset Downsample (%<ParamSettings.FunctionName>) - '%<Name>' */
+  {
+    %<LibBlockDWork(DisableTimeTick,"", "", 0)> = %<DSPLibGetClockTick(LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0"))>;
+    %<LibBlockDWork(EnableSysFlag,"", "", 0)> = 1;
+  }
+%endif
+%endfunction %% Disable
+
+%% DSPLibGetClockTick ===================
+%% Abstract:
+%%   Return ClockTick of the tid .   
+%%
+%function DSPLibGetClockTick(tid) void
+  %assert TYPE(tid) == "Number" && tid >= 0
+  %if ClockTickForTIDIsReqFcn(tid) 
+    %return RTMGet("ClockTick%<tid>")
+  %else
+    %% only used in accelerator mode
+    %assign retStr = ...
+      "floor((%<LibGetTaskTime(tid)> / %<SampleTime[tid].ClockTickStepSize>) + 0.5)"
+    %return retStr
+  %endif
+%endfunction %% DSPLibGetClockTick
+
+%% [EOF] sdspdsamp2.tlc

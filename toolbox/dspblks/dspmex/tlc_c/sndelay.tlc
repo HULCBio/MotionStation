@@ -1,0 +1,256 @@
+%% $Revision: 1.9 $ 
+%% $RCSfile: sndelay.tlc,v $
+%% $Date: 2002/04/14 21:03:56 $
+%%
+%% 28-May-1997
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sndelay.c
+%%
+
+%implements "sndelay" "C"
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Delay")>
+  %<LibRenameParameter(block, P2, "IC")>
+  %%
+  %if RWork[0] > 0
+    %<LibDefineRWork(block, "Buffer", RWork[0])>
+  %endif
+  %<LibDefineIWork(block, "Head", IWork[0])>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the RWork vector (Buffer) to the initial values specified.
+%%      Note that the IWork is memset to zero in the registration function,
+%%      however we need to initialize it to zero again here, because this block
+%%      might be used inside an enabled subsystem that resets on disable.
+%%
+%function InitializeConditions(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+  %assign delayLen = SIZE(Delay.Value, 1)
+  %assign icLen = SIZE(IC.Value, 1)
+  %assign noutputs = LibDataOutputPortWidth(0)
+  %%
+  %% check if all delays are zero
+  %if RWork[0] > 0
+    %if icLen == 1
+      int_T i;
+
+      %assign ic = CAST("Real", LibBlockParameterValue(IC, 0))
+      for (i=0; i<%<RWork[0]>; i++) {
+        %<LibBlockRWork(Buffer, "i", "", "")> = %<ic>;
+      }
+    %else
+      int_T i;
+
+      %assign offset = 0
+      %foreach idx = noutputs
+        %assign delay = CAST("Number", LibBlockParameterValue(Delay, idx))
+        %assign ic    = CAST("Real",   LibBlockParameterValue(IC, idx))
+        for (i=%<offset>; i<%<offset+delay>; i++) {
+    	  %<LibBlockRWork(Buffer, "i", "", "")> = %<ic>;
+        }
+        %assign offset = offset + delay
+      %endforeach
+    %endif
+    memset(&%<LibBlockIWork(Head,"", "", 0)>, 0, %<IWork[0]>*sizeof(int_T));
+  %endif
+}
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+  %assign outputLen = LibDataOutputPortWidth(0)
+  %%
+  %if outputLen < RollThreshold
+    %%
+    %assign offset = 0
+    %foreach idx = outputLen
+      %%
+      %assign head    = LibBlockIWork(Head,"","",idx)
+      %assign indxStr = (offset == 0) ? "%<head>" : "%<head>+%<offset>"
+      %assign delay   = CAST("Number", LibBlockParameterValue(Delay, idx))
+      %assign offset  = offset + delay
+      %%
+      %if delay != 0
+        %assign rhs = LibBlockRWork(Buffer, indxStr, "", 0)
+      %else
+        %assign rhs = LibBlockInputSignal(0, "", "", idx)
+      %endif
+      %<LibBlockOutputSignal(0,"","",idx)> = %<rhs>;
+      %%
+    %endforeach
+  %else
+    %% If all delays are 0, no need to define buffer:
+    %if RWork[0]>0
+      real_T *buffer = &%<LibBlockRWork(Buffer, "", "", 0)>;
+      real_T *y      = %<LibBlockOutputSignalAddr(0, 0)>;
+    %endif
+    %%
+    %assign delayLen = SIZE(Delay.Value, 1)
+    %if delayLen == 1
+      %assign delay = CAST("Number", LibBlockParameterValue(Delay, 0))
+      %%
+      %if delay != 0
+        int_T   i, head   = %<LibBlockIWork(Head, "", "", 0)>;
+
+        for (i=0; i<%<outputLen>; i++) {
+          y[i] = buffer[head];
+          buffer += %<delay>;
+        }
+      %else
+        %assign rollVars = ["U", "Y"]
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %<LibBlockOutputSignal(0, "", lcv, idx)> = %<LibBlockInputSignal(0, "", lcv, idx)>;
+	%endroll
+      %endif
+    %else
+      %assign noZeroDelays = 1
+      %foreach idx = delayLen
+        %if noZeroDelays == 1
+          %assign delay = CAST("Number", LibBlockParameterValue(Delay, idx))
+	  %assign noZeroDelays = (delay == 0) ? 0 : 1
+        %endif
+      %endforeach
+      %%
+      %if noZeroDelays
+        real_T *delay = %<LibBlockParameterAddr(Delay, "", "", 0)>;
+        int_T  *head  = &%<LibBlockIWork(Head, "", "", 0)>;
+        int_T   i;
+
+        for (i=0; i<%<outputLen>; i++) {
+          y[i] = buffer[head[i]];
+          buffer += (int_T) delay[i];
+        }
+      %else
+        %if RWork[0] > 0
+	  %assign rollVars = ["U", "IWork", "<param>/Delay"]
+        %else
+	  %assign rollVars = ["Y", "U", "IWork", "<param>/Delay"]
+	%endif
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          %assign head = LibBlockIWork(Head, "", lcv, idx)
+          %assign delay = LibBlockParameter(Delay, "", lcv, idx)
+	  %assign lhs = (RWork[0] == 0) ? LibBlockOutputSignal(0, "", lcv, idx) : "*y++"
+	  if (((int_T) %<delay>) == 0) {
+	    %<lhs> = %<LibBlockInputSignal(0, "", lcv, idx)>;
+	  } else {
+	    %<lhs> = buffer[%<head>];
+            %if lcv != "" || idx < (outputLen-1)
+              buffer += (int_T) %<delay>;
+            %endif
+	  }
+	%endroll
+      %endif
+    %endif
+  %endif
+}
+
+%endfunction %% Outputs
+
+
+%% Function: Update ===========================================================
+%%
+%% Abstract:
+%%
+%function Update(block, system) Output
+/* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+{
+  %assign outputLen = LibDataOutputPortWidth(0)
+  %%
+  %if outputLen < RollThreshold
+    %%
+    %assign offset = 0
+    %assign headLen = IWork[0]
+    %%
+    %foreach idx = outputLen
+      %assign delay = CAST("Number", LibBlockParameterValue(Delay, idx))
+      %if delay > 0
+        %assign head = LibBlockIWork(Head,"","",idx)
+        %assign indxStr = (offset == 0) ? "%<head>" : "%<head>+%<offset>"
+        %assign offset = offset + delay
+        %%
+        %assign lhs = LibBlockRWork(Buffer, indxStr, "", 0)
+        %<lhs> = %<LibBlockInputSignal(0, "", "", idx)>;
+        %%
+        %if (headLen > 1)
+          if ( (++(%<head>)) == %<delay> ) {
+            %<head> = 0;
+          }
+        %endif
+      %endif
+    %endforeach
+    %%
+    %assign delay = CAST("Number", LibBlockParameterValue(Delay, 0))
+    %if (delay > 0) && (headLen == 1)
+      %assign head = LibBlockIWork(Head,"","",0)
+      if ( (++(%<head>)) == %<delay> ) {
+        %<head> = 0;
+      }
+    %endif
+  %else
+    %assign delayLen = SIZE(Delay.Value, 1)
+    %%
+    %if delayLen == 1
+      %assign delay = CAST("Number", LibBlockParameterValue(Delay, 0))
+      %if delay > 0
+        real_T *buffer = &%<LibBlockRWork(Buffer, "", "", 0)>;
+        int_T   head   = %<LibBlockIWork(Head, "", "", 0)>;
+
+        %assign rollVars = ["U"]
+        %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+          buffer[head] = %<LibBlockInputSignal(0, "", lcv, idx)>;
+          %if lcv != "" || idx < (outputLen-1)
+            buffer += %<delay>;
+          %endif
+        %endroll
+
+        if ( (++head) == %<delay> ) {
+          head = 0;
+        }
+        %<LibBlockIWork(Head,"","",0)> = head;
+      %endif
+    %else
+      real_T *buffer = &%<LibBlockRWork(Buffer, "", "", 0)>;
+      %assign rollVars = ["U", "IWork", "<param>/Delay"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %assign head = LibBlockIWork(Head, "", lcv, idx)
+        %assign delay = LibBlockParameter(Delay, "", lcv, idx)
+        if (((int_T) %<delay>) > 0) {
+	  buffer[%<head>] = %<LibBlockInputSignal(0, "", lcv, idx)>;
+          if ( (++(%<head>)) == %<delay> ) {
+            %<head> = 0;
+          }
+          %if lcv != "" || idx < (outputLen-1)
+            buffer += (int_T) %<delay>;
+          %endif
+        }
+      %endroll
+    %endif
+  %endif
+}
+
+%endfunction %% Update
+
+
+%% EOF: sndelay.tlc

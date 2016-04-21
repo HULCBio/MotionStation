@@ -1,0 +1,230 @@
+%% $Revision: 1.1.8.4 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: ToFile block target file.
+
+%implements ToFile "C"
+
+
+%% Function: BlockTypeSetup ===================================================
+%% Abstract:
+%%      Cache the function for writing the mat file header at the bottom of
+%%      model_reg.h and its prototype at the bottom of model.h 
+%%      (or model_common.h).
+%%
+%function BlockTypeSetup(block, system) void
+  %%
+  %% Needed for FILE
+  %%
+  %<SLibAddToCommonIncludes("<stdio.h>")>
+  %if Accelerator
+    %return ""
+  %endif
+
+  %openfile codeBuffer
+    
+  /* Function: rt_WriteMat4FileHeader =========================================
+   * Abstract:
+   *      Writes out MAT-file header.  Returns success or failure.
+   *
+   * Returns:
+   *      0 - success
+   *      1 - failure
+   */
+  int_T rt_WriteMat4FileHeader(FILE *fp, int32_T m, int32_T n, const char *name)
+  {
+    typedef enum { ELITTLE_ENDIAN, EBIG_ENDIAN } ByteOrder;
+
+    int16_T   one       = 1;
+    ByteOrder byteOrder = (*((int8_T *)&one)==1) ? ELITTLE_ENDIAN : EBIG_ENDIAN;
+    int32_T   type      = (byteOrder == ELITTLE_ENDIAN) ? 0: 1000;
+    int32_T   imagf     = 0;
+    int32_T   name_len  = strlen(name) + 1;
+
+    if((fwrite(&type,     sizeof(int32_T), 1, fp) == 0) ||
+       (fwrite(&m,        sizeof(int32_T), 1, fp) == 0) ||
+       (fwrite(&n,        sizeof(int32_T), 1, fp) == 0) ||
+       (fwrite(&imagf,    sizeof(int32_T), 1, fp) == 0) ||
+       (fwrite(&name_len, sizeof(int32_T), 1, fp) == 0) ||
+       (fwrite(name,       sizeof(char),    name_len, fp) == 0)) {
+      return(1);
+    } else {
+      return(0);
+    }
+
+  } /* end rt_WriteMat4FileHeader */
+
+
+  %closefile codeBuffer
+  
+  %openfile prototype
+  
+   int_T rt_WriteMat4FileHeader(FILE        *fp,
+                                int32_T      m,
+                                int32_T      n,
+			        const char_T *name);
+  
+  %closefile prototype
+  
+  %if GenUtilsSrcInSharedLocation == 1
+    %<LibPushEmptyStackSharedUtils()>
+    %<LibAddtoSharedUtilsIncludes("<stdio.h>")>
+    %<LibAddtoSharedUtilsIncludes("<string.h>")>
+    %<SLibDumpUtilsSourceCode("rt_WriteMat4FileHeader",prototype,codeBuffer)>  
+    %<LibCacheFunctionPrototype(prototype)>
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+ %else   
+   %<SLibCacheSourceCode(codeBuffer)>
+   %<LibCacheFunctionPrototype(prototype)>
+ %endif 
+  
+%endfunction %% BlockTypeSetup
+
+
+%% BlockInstanceSetup =========================================================
+%% Abstract:
+%%      Define over-ride data type for PWork structure
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ============================================================
+%% Abstract:
+%%      During startup open binary file and write .mat file header with record
+%%      count set to zero.
+%%
+%function Start(block, system) Output
+  /* %<Type> Block: %<Name> */
+  {
+    %assign fnStr = STRING(ParamSettings.Filename)
+    const char *fileName = "%<fnStr>";
+    FILE *fp;
+
+    %if EXISTS("_RSIM_")
+      rt_RSimRemapToFileName(&fileName);
+    %endif
+
+    if ((fp = fopen(fileName, "wb")) == NULL) {
+      %assign errMsg = "\"Error creating .mat file %<fnStr>\""
+      %<RTMSetErrStat(errMsg)>;
+      return;
+    }
+    %assign width   = LibBlockInputSignalWidth(0)
+    %assign mtxName = ParamSettings.MatrixName
+    if (rt_WriteMat4FileHeader(fp,%<width+1>,0,"%<mtxName>")) {
+      %assign errMsg = "\"Error writing mat file header to file %<fnStr>\""
+      %<RTMSetErrStat(errMsg)>;
+      return;
+    }
+    %<LibBlockIWork(Count, "", "", 0)> = 0;
+    %<LibBlockIWork(Decimation, "", "", 0)> = -1;
+    %<LibBlockPWork(FilePtr, "", "", 0)> = fp;
+  }
+
+%endfunction %% Start
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Write time and inputs to .mat file
+%%
+%function Outputs(block, system) Output
+  %if (CodeFormat == "Embedded-C") && (NumContStates > 0)
+    if (%<RTMIs("MajorTimeStep")>) {
+  %endif
+
+  %if Accelerator
+    /* Call into Simulink for To File */
+    %<SLibCallBlockInSimulink(system, block, "SS_CALL_MDL_OUTPUTS")>
+    
+  %else
+    %assign width      = DataInputPort[0].Width
+    %assign decimation = LibBlockIWork(Decimation, "", "", 0)
+    %%
+
+    %assign condStr = "!(++%<decimation> % %<ParamSettings.Decimation>)"
+    %if EXISTS("_RSIM_FULL_")
+      %assign condStr = RTMGet("LogOutput") + " && " + condStr
+    %endif
+
+    if ( %<condStr> ) {
+      real_T u[%<width + 1>];
+      FILE  *fp = %<LibBlockPWork(FilePtr, "", "", 0)>;
+      
+      %<decimation> = 0;
+
+      u[0] = %<LibGetTaskTimeFromTID(block)>;
+      %foreach idx = width
+	u[%<idx+1>] = %<LibBlockInputSignal(0, "", "", idx)>;
+      %endforeach
+
+      if (fwrite(u, sizeof(real_T), %<width+1>, fp) != %<width+1>) {
+	%assign fnStr  = STRING(ParamSettings.Filename)
+	%assign errMsg = "\"Error writing to MAT-file %<fnStr>\""
+	%<RTMSetErrStat(errMsg)>;
+	return;
+      }
+      %<LibBlockIWork(Count, "", "", 0)>++;
+    }
+
+  %endif
+  %if (CodeFormat == "Embedded-C") && (NumContStates > 0)
+    }
+  %endif
+%endfunction %% Outputs
+
+
+%% Function: Terminate ========================================================
+%% Abstract:
+%%      Write record count to .mat file header and close the file
+%%
+%function Terminate(block, system) Output
+  %if Accelerator
+    %return ""
+  %endif
+  /* %<Type> Block: %<Name> */
+  {
+    %assign fnStr = STRING(ParamSettings.Filename)
+    FILE *fp = (FILE *) %<LibBlockPWork(FilePtr, "", "", 0)>;
+    if (fp != NULL) {
+      const char *fileName = "%<fnStr>";
+
+      %if EXISTS("_RSIM_")
+	rt_RSimRemapToFileName(&fileName);
+      %endif
+
+      %assign matxName = ParamSettings.MatrixName
+      %assign width    = LibBlockInputSignalWidth(0)
+      %assign count    = LibBlockIWork(Count, "", "", 0)
+      %%
+
+      if (fclose(fp) == EOF) {
+	%assign errMsg = "\"Error closing MAT-file %<fnStr>\""
+        %<RTMSetErrStat(errMsg)>;
+	return;
+      }
+      if ((fp = fopen(fileName, "r+b")) == NULL) {
+	%assign errMsg = "\"Error reopening MAT-file %<fnStr>\""
+        %<RTMSetErrStat(errMsg)>;
+	return;
+      }
+      if (rt_WriteMat4FileHeader(fp, %<width+1>, %<count>, "%<matxName>")) {
+	%assign errMsg = "\"Error writing header for %<matxName> to MAT-file %<fnStr>\""
+        %<RTMSetErrStat(errMsg)>;
+      }
+      if (fclose(fp) == EOF) {
+	%assign errMsg = "\"Error closing MAT-file %<fnStr>\""
+        %<RTMSetErrStat(errMsg)>;
+	return;
+      }
+      %<LibBlockPWork(FilePtr, "", "", 0)> = NULL;
+    }
+  }
+
+%endfunction %% Terminate
+
+%% [EOF] tofile.tlc

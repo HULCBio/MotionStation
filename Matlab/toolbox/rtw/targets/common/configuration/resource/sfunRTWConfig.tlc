@@ -1,0 +1,161 @@
+%% File: sfunRTWConfig.tlc
+%%
+%% Abstract: 
+%%        The sfunction does nothing during Simulation. However at build
+%%        time it's corresponding TLC file interrogates the TargetProperties
+%%        field and generates target configuration code.
+%%
+%%
+%%   Copyright 2001-2003 The MathWorks, Inc.
+%%   $Revision: 1.11.6.3 $
+%%   $Date: 2004/04/19 01:21:31 $
+%%
+
+%implements  sfunRTWConfig "C"
+
+%% include environment routines
+%assign MATLAB_ROOT = FEVAL("matlabroot")
+%assign PATH_SEP = FEVAL("filesep")
+%assign TARGETS_PATH = "%<MATLAB_ROOT>%<PATH_SEP>toolbox%<PATH_SEP>rtw%<PATH_SEP>targets%<PATH_SEP>common%<PATH_SEP>configuration%<PATH_SEP>environment"
+%addincludepath "%<TARGETS_PATH>"
+
+%% include tlc files from TARGETS_PATH
+%include "targetlib.tlc"
+%include "env.tlc"
+
+%% include tlc files from current dir
+%include "ObjectRef.tlc"
+
+%% The Resource Configuration contains a list of Node objects.   
+%% Each Node object has an associated TLC file - <packagename>/tlc_config/<nodename>.tlc which contains a tlc
+%% function with the following prototype:
+%%
+%% %function DriverConfiguration(record) void
+%%
+%% The Node objects are iterated over and each of the DriverConfiguration functions is called (if Acclerator
+%% mode (or any Simulation mode, eg. PIL) is selected, then the DriverConfiguration functions are skipped).  This 
+%% function may contain code that configures various settings of a microprocessor - clock timing registers
+%% for example.
+%%
+%% In addition, if the code contained in the DriverConfiguration function is specific to a particular target,
+%% then code can be inserted into the DriverConfiguration function to check that the environment (system target
+%% file) is suitable.
+%%
+%% Resource configured targets should register an environment name at the start of the (target specific) 
+%% tlc code generation process.   As described above, this name can be used in the DriverConfiguration 
+%% function to check the build environment is configured correctly.   Since the Resource Configuration block
+%% can be used by many different targets it is not appropriate to check this environment name in this file - the
+%% DriverConfiguration (target specific) function is the place for this check.
+%%
+
+%% Function: BlockTypeSetup
+%% Abstract:
+%%
+%function BlockInstanceSetup(block,system) void
+    %<ProcessMethod(block, system, "DriverConfiguration", 1)>
+%endfunction %% BlockTypeSetup
+
+%function Start(block, system) Output
+    %<ProcessMethod(block, system, "Start", 0)>
+%endfunction
+
+%function ProcessMethod(block, system, method, required) Output
+      %% Add this directory to the TLC include path
+      %assign codeGenForSim = SLibCodeGenForSim()
+      %if codeGenForSim 
+          
+          %% Do not generate any driver initialization code
+
+      %else
+
+          %if ISEQUAL(CompiledModel.TargetProperties.Object.Class, "Target")
+          
+             %% -- There are config objects so process them in order. The
+             %% assumption will be that they are written to the RTW file
+             %% in the correct execution order and that no extra sorting
+             %% is required in the TLC code --
+             
+             %assign right = SLibSubsRef(CompiledModel.TargetProperties,"activeList.down")
+
+             %% -- There is no while loop in TLC ??? So we
+             %% create a 1000 step for loop and break out of
+             %% it when we run out of object to process. This
+             %% is because we have created a linked list of
+             %% objects instead of an object array. RTW will
+             %% not at the moment emit handle arrays into the
+             %% RTW file but it will emit a linked list of 
+             %% sorts --
+             %if !ISEQUAL(SLibRecordClass(right),"Terminator")
+                 %foreach idx = 1000 %% No more than 1000 likely
+
+                    %assign package = SLibSubsRef(right,"data").Object.Package
+                    %assign class = SLibSubsRef(right,"data").Object.Class
+
+                    %assign type = "%<package>::%<class>" 
+
+                    %% matlab disp("Processing Configuration %<type>")
+
+                    %% -- The TLC file to process each object lives in
+                    %% a directory of form
+                    %% 
+                    %%  <packagename>/tlc_config/<objectclass>.tlc
+                    %% or
+                    %%  <target_tlc_dir>/<objectclass>.tlc
+                    %%
+                    %% We have to register this TLC file so the GENERATE_TYPE
+                    %% function can find it.
+
+		    %assign target_tlc_dir =  get_env("tlc_config_dir")
+		    %if target_tlc_dir != ""
+		      %% Allow targets to use non-default location for tlc
+		      %% configuration files
+		      %assign filePath = "%<target_tlc_dir>/%<class>.tlc"
+		    %else
+		      %assign str = "fileparts(which('%<package>/schema'))"
+		      %assign packagePath = FEVAL("eval",str)
+		      %assign filePath = "%<packagePath>/tlc_config/%<class>.tlc"
+		    %endif
+		    
+                    %if !FILE_EXISTS(filePath)
+                       %assign errTxt = "Error: the file " + filePath + ...
+                       " does not exist, yet is needed for the driver class " + ...
+                       type
+                       %<LibReportFatalError(errTxt)>
+                    %endif
+                    %generatefile "%<type>" "%<filePath>"
+
+
+                    %% -- Now we have registerd the file we can call the DriverConfiguration
+                    %% method within the correct file for the object. The function is allowed
+                    %% to do anything it wants and should be able to place code anywhere
+                    %% in the source it likes. The result from GENERATE_TYPE is just
+                    %% a dummy value. -- 
+                    %if  GENERATE_TYPE_FUNCTION_EXISTS(SLibSubsRef(right,"data"), method, type)
+                       /* -- Resource Configuration : %<type> : [START] --- */
+                       %assign result = GENERATE_TYPE(SLibSubsRef(right,"data"), method, type)
+                       /* -- Resource Configuration : %<type> : [END] --- */
+                    %else
+                       %if required == 1
+                           %error "Could not generate type for %<type>."
+                       %endif
+                    %endif
+
+                    %% -- Get the next object in the list. If this object does
+                    %% not have a field "right" then it is a Terminator object
+                    %% and we can quit processing --
+                    %assign right = SLibSubsRef(right,"right")
+                    %if ISEQUAL(SLibRecordClass(right),"Terminator")
+                       %break
+                    %endif
+                 %endforeach
+             %endif
+          %endif
+      %endif
+%endfunction
+
+
+%% Function: BlockOutputs =============================================
+%% Abstract:
+%%
+%function Outputs(block,system) Output
+%endfunction

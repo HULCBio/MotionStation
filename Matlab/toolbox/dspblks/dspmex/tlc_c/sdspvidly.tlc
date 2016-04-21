@@ -1,0 +1,234 @@
+%% $RCSfile: sdspvidly.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:10:10 $
+%%
+%% Dale Shpak
+%% July 17, 1998
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Variable integer delay
+%% 
+
+%implements sdspvidly "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%		Name the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %%
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the delay buffer and counters to their initial values.
+%%
+%function InitializeConditions(block, system) Output
+    %% We do not support discontiguous inputs
+    %assign INPORT          = 0
+    %assign DELAY_PORT      = 1
+    %if (!IsInputPortContiguous(block,INPORT) || !IsInputPortContiguous(block,DELAY_PORT))
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign BUFF_OFFSET     = block.DWork[0]
+    %assign DELAY_ELEMS	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.nChans)
+    %assign IC              = SFcnParamSettings.IC
+    %assign IC_COMPLEX      = TYPE(IC[0]) == "Complex"
+    %assign DATA_COMPLEX    = LibBlockInputSignalIsComplex(INPORT)
+    %assign NUM_IC          = SIZE(IC, 1)
+    %assign DMAX            = SFcnParamSettings.maxDelay
+    %assign BUFF_LEN        = DMAX + 1
+    %assign NIC1            = SFcnParamSettings.nIC1
+    %assign NIC2            = SFcnParamSettings.nIC2
+    %assign NUM_IC          = NIC1 * NIC2
+    %%
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (IC_COMPLEX)
+        %assign IC_T        = "creal_T"
+    %else
+        %assign IC_T        = "real_T"
+    %endif
+    %%
+{
+    /* Signal Processing Blockset Variable Integer Delay (%<ParamSettings.FunctionName>) - %<Name> */
+    %%
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> = %<DMAX - 1>;
+
+    {
+    %if (NIC1 * NIC2 > 1)
+        %assign astr    = ""
+        %assign count   = 0
+        %if (DATA_COMPLEX)
+            creal_T ic[%<NUM_IC>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %if (IC_COMPLEX)
+                        %assign astr = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+                    %else
+                        %assign astr = astr + "{%<REAL(IC[count])>,0.0}"
+                    %endif
+                    %assign count   = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %else
+            real_T ic[%<NUM_IC>] = {
+            %foreach Col = NIC1
+                %foreach Row = NIC2
+                    %assign astr = astr + "%<IC[count]>"
+                    %assign count   = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach
+                %<astr>
+                %assign astr    = ""
+            %endforeach
+        %endif
+    %endif
+    %assign numElements = LibBlockDWorkWidth(DELAY_ELEMS)
+    %<DAT_T> *buff = %<LibBlockDWorkAddr(DELAY_ELEMS, "", "", 0)>;
+    %if (NUM_IC == 0)
+        int_T  j;
+        for (j=0; j < %<numElements>; j++) *buff++ = %<ZERO>;
+    %elseif (NIC1 * NIC2 == 1)
+        /* Use a single IC for all states */
+        int_T   j;
+	%if (DATA_COMPLEX)
+            %if (IC_COMPLEX)
+                const creal_T ic  = {%<REAL(IC[0])>,%<IMAG(IC[0])>};
+            %else
+                const creal_T ic  = {%<REAL(IC[0])>,0.0};
+            %endif
+            for (j=0; j < %<numElements>; j++) *buff++ = ic;
+        %else
+            for (j=0; j < %<numElements>; j++) *buff++ = %<IC[0]>;
+        %endif
+    %elseif(NIC2 == 1)
+	/* For each channel, use a single IC for every delay element */
+        int_T   i, j;
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            for (j=0; j < %<DMAX>; j++) *buff++ = ic[i];
+            ++buff;
+        }
+    %else 
+        /*
+         * Matrix of IC's:
+         * Assume maxDELAY rows and numCHANS columns (MATLAB)
+         */
+        int_T   i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<DAT_T> *icp = ic + i;
+            for (j=0; j < %<DMAX>; j++) {
+                *buff++ = *icp;
+                icp += %<NUM_CHANS>;
+            }
+            ++buff;
+        }
+    %endif
+    }
+}
+%endfunction
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign INPORT          = 0
+    %assign DELAY_PORT      = 1
+    %assign OUTPORT         = 0
+    %assign BUFF_OFFSET     = block.DWork[0]
+    %assign DELAY_ELEMS	    = block.DWork[1]	
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign COMPLEX         = LibBlockInputSignalIsComplex(INPORT)
+    %assign DMAX            = SFcnParamSettings.maxDelay
+    %assign UPDATE_SAMP     = SFcnParamSettings.UpdatePerSample
+    %assign BUFF_LEN        = DMAX + 1
+    %assign NUM_CHANS       = CAST("Number", SFcnParamSettings.nChans)
+    %%
+    %if (COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (NUM_CHANS == -1)
+	%assign NUM_CHANS   = PORT_WIDTH
+    %endif
+    %assign FRAME           = PORT_WIDTH / NUM_CHANS
+    %%
+    %assign CHAN_ROLL   = 2
+    %%
+{
+    /* Signal Processing Blockset Variable Integer Delay (%<ParamSettings.FunctionName>) - %<Name> */
+    %<DAT_T> *x     = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    real_T   *delay = %<LibBlockInputSignalAddr(DELAY_PORT, "", "", 0)>;
+    %<DAT_T> *buff  = %<LibBlockDWorkAddr(DELAY_ELEMS, "", "", 0)>;
+    %<DAT_T> *y     = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    int_T   dly;
+
+    %if (!UPDATE_SAMP)
+        dly = (int_T) (*delay + 0.5);	/* Get rounded delay time */
+        /* Clip delay time to legal range: [0,dmax] */
+        dly = (dly < 0 ? 0 : (dly > %<DMAX> ? %<DMAX> : dly));
+    %endif
+
+    %roll sigIdx1 = [ 1:%<NUM_CHANS> ], lc1 = CHAN_ROLL, block,  "InlineRoller"
+    {
+        %if (UPDATE_SAMP)
+            real_T *dtmp = delay;
+        %endif
+        int_T ti;
+        int_T buffstart = %<LibBlockDWork(BUFF_OFFSET, "", "", 0)>;
+
+        %roll sigIdx2 = [ 1:%<FRAME> ], lc2 = CHAN_ROLL, block,  "InlineRoller"
+            /* Rotate circular buffer */
+            if (++buffstart == %<BUFF_LEN>) buffstart = 0;
+            *(buff + buffstart) = *x++;
+
+            %if (UPDATE_SAMP)
+                dly = (int_T) (*dtmp++ + 0.5);	/* Get rounded delay time */
+                /* Clip delay time to legal range: [0,dmax] */
+                dly = (dly < 0 ? 0 : (dly > %<DMAX> ? %<DMAX> : dly));
+            %endif
+            ti = buffstart - dly;
+            if (ti < 0) ti += %<BUFF_LEN>;
+            /* Get required delayed value for output */
+            *y++ = *(buff + ti);
+        %endroll %% FRAME
+        %if (NUM_CHANS > 1)
+            buff += %<BUFF_LEN>;
+        %endif
+    }
+    %endroll %% CHANNELS
+    %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> += %<FRAME>;
+    %if (FRAME > BUFF_LEN)
+        while (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<BUFF_LEN>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<BUFF_LEN>;
+    %else
+        if (%<LibBlockDWork(BUFF_OFFSET, "", "", 0)> >= %<BUFF_LEN>) %<LibBlockDWork(BUFF_OFFSET, "", "", 0)> -= %<BUFF_LEN>;
+    %endif
+}
+%endfunction  %% Outputs
+
+%% [EOF] sdspvidly.tlc
+

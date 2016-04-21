@@ -1,0 +1,132 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: UniformRandomNumber block target file.
+
+%implements UniformRandomNumber "C"
+
+%% Function: BlockTypeSetup ====================================================
+%% Abstract:
+%%  Have mdlhdr.tlc include rtlibsrc.h
+%%
+%function BlockTypeSetup(block, system) void
+
+  %assign ::CompiledModel.IncludeLibsrc = 1
+
+%endfunction
+
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%  During startup initialize the seed
+%%
+%function Start(block, system) Output
+  /* %<Type> Block: %<Name> */
+  {
+    uint_T *RandSeed = (uint_T *) &%<LibBlockIWork(RandSeed, "", "", 0)>;
+    int_T r, t;
+    %%
+    %assign seedSize = SIZE(ParamSettings.Seed)
+    %if seedSize[1] > 1
+      %assign buffer = "const uint_T initSeed[] = { \n"
+      %assign entryCount = 0
+      %foreach idx = seedSize[1]
+        %assign value = CAST("Unsigned", ParamSettings.Seed[idx])
+        %if entryCount > 5
+          %assign buffer = buffer + "\n"
+          %assign entryCount = 1
+        %else
+          %assign entryCount = entryCount + 1
+        %endif
+        %if idx == seedSize[1]-1
+          %assign buffer = buffer + "%<value>"
+        %else
+          %assign buffer = buffer + "%<value>, "
+        %endif
+      %endforeach
+      %assign buffer = buffer + "\n};\n"
+      %<buffer>
+    %endif
+    %%
+    %assign rollVars = ["P", "RWork"]
+    %roll sigIdx = RollRegions, lcv = 1, block, "Roller", rollVars
+      %%
+      %if seedSize[1] == 1
+        *RandSeed = %<CAST("Unsigned", ParamSettings.Seed[0])>;
+      %else
+        *RandSeed = initSeed[%<lcv>];
+      %endif
+      %%
+      r = *RandSeed >> 16;
+      t = *RandSeed & RT_BIT16;
+      *RandSeed = ((*RandSeed - (r << 16) - t) << 16) + t + r;
+      if (*RandSeed < 1) {
+        *RandSeed = SEED0;
+      }
+      if (*RandSeed > MAXSEED) {
+        *RandSeed = MAXSEED;
+      }
+      %assign min = LibBlockParameter(Minimum, "", lcv, sigIdx)
+      %if Parameter[1].Name == "Range"
+        %assign range = LibBlockParameter(Range, "", lcv, sigIdx)
+        %<LibBlockRWork(NextOutput, "", lcv, sigIdx)>
+          = rt_Urand(RandSeed++) * %<range> + %<min>;
+      %else
+        %assign max = LibBlockParameter(Maximum, "", lcv, sigIdx)
+        %<LibBlockRWork(NextOutput, "", lcv, sigIdx)>
+          = rt_Urand(RandSeed++) * (%<max> - %<min>) + %<min>;
+      %endif
+    %endroll
+    }
+
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      Y = Urand(seed)*range + Minimum
+%%
+%function Outputs(block, system) Output
+  %assign rollVars = ["Y", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign nextOutput  = LibBlockRWork(NextOutput, "", lcv, sigIdx)
+    %<LibBlockOutputSignal(0, "", lcv, sigIdx)> = %<nextOutput>;
+  %endroll
+
+%endfunction
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      Y = Urand(seed)*range + Minimum
+%%
+%function Update(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %assign rollVars = ["P", "IWork", "RWork"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %assign nextOutput  = LibBlockRWork(NextOutput, "", lcv, sigIdx)
+    %assign seed        = LibBlockIWork(RandSeed, "", lcv, sigIdx)
+    %assign min         = LibBlockParameter(Minimum, "", lcv, sigIdx)
+    %if Parameter[1].Name == "Range"
+      %assign range = LibBlockParameter(Range, "", lcv, sigIdx)
+      %<nextOutput> = rt_Urand((uint_T *)&%<seed>) * %<range> + %<min>;
+    %else
+      %assign max = LibBlockParameter(Maximum, "", lcv, sigIdx)
+      %<nextOutput> = rt_Urand((uint_T *)&%<seed>) * (%<max> - %<min>) + %<min>;
+    %endif
+  %endroll
+
+%endfunction
+%% [EOF] urandnum.tlc

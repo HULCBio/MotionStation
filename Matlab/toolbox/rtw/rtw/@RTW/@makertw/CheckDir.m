@@ -1,0 +1,33 @@
+function CheckDir(h)
+%----------------------------------------------------------------------%
+% Check for UNC directory on Windows or under MATLABROOT on all        %
+% platforms to avoid corrupting product or RTW project directories.    %
+% MATLABROOT/Work will be accepted on PC.                              %
+%----------------------------------------------------------------------%
+  
+%   Copyright 2002 The MathWorks, Inc.
+%   $Revision: 1.1.6.1 $  $Date: 2002/09/23 16:26:59 $
+  
+rtw_checkdir;
+
+%Error out if matlabroot contains whitespaces in the path
+if (any(isspace(matlabroot)) ~= 0)
+    error(['The Real-Time Workshop requires that you install MATLAB ', ...
+	   'in a folder that does not have any spaces in the name. ', ...
+	   'This is because some of the third-party compiler make tools ', ...
+	   'are unable to process rules that have white spaces. Please ',...
+	   're-install MATLAB in a directory (folder) that does not '...
+	   'have spaces in the name.']);
+end
+
+
+%Error out if matlabroot contains dollar signs ($) in the path
+ispc = strncmp(computer,'PC',2);
+if ispc & (findstr('$', matlabroot))
+    error(['The Real-Time Workshop requires that you install MATLAB in a ', ...
+	   'folder that does not have any dollar signs ($) in the name. ', ...
+	   'This is because windows treats file names with dollar signs ', ...
+	   'differently and may result in unpredictable results. Please ',...
+	   're-install MATLAB in a directory (folder) that does not '...
+	   'have dollar signs in the name.']);
+end

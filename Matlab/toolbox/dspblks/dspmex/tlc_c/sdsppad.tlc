@@ -1,0 +1,407 @@
+%% $RCSfile: sdsppad.tlc,v $
+%% $Revision: 1.17.4.2 $
+%% $Date: 2004/04/12 23:09:18 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Pad library block
+
+%implements sdsppad "C"
+
+
+%% Function: BlockTypeSetup =====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsppad_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup =================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %%
+  %% Block data type (same for input, output, and pad value):
+  %%
+  %assign DTYPE_ID   = LibBlockInputSignalDataTypeId(   INPORT)
+  %assign DTYPE_NAME = LibBlockInputSignalDataTypeName( INPORT,"%<tRealPart>")
+  %%
+  %% Note: Complexity of PAD_VALUE matches complexity of output port.
+  %%       However, the complexity of the input and output ports may
+  %%       be different (for the case of real inputs, cplx outputs).
+  %%       Thus, we must cache the complexity of both i/o ports separately.
+  %%
+  %assign INP_COMPLEX = LibBlockInputSignalIsComplex( INPORT)
+  %assign OUT_COMPLEX = LibBlockOutputSignalIsComplex(OUTPORT)
+  %%
+  %% Input dimensions:
+  %%
+  %assign NUM_INP_DIMS = LibBlockInputSignalNumDimensions(INPORT)
+  %assign INPUT_DIMS   = LibBlockInputSignalDimensions(   INPORT)
+  %assign NUM_INP_ROWS = INPUT_DIMS[0]
+  %assign NUM_INP_COLS = (NUM_INP_DIMS == 2) ? INPUT_DIMS[1] : 1
+  %assign INP_WIDTH    = NUM_INP_ROWS * NUM_INP_COLS
+  %%
+  %% Output dimensions:
+  %%
+  %assign NUM_OUT_DIMS = LibBlockOutputSignalNumDimensions(OUTPORT)
+  %assign OUTPUT_DIMS  = LibBlockOutputSignalDimensions(   OUTPORT)
+  %assign NUM_OUT_ROWS = OUTPUT_DIMS[0]
+  %assign NUM_OUT_COLS = (NUM_OUT_DIMS == 2) ? OUTPUT_DIMS[1] : 1
+  %assign OUT_WIDTH    = NUM_OUT_ROWS * NUM_OUT_COLS
+  %%
+  %% Pad method (pre/post)
+  %%
+  %assign PAD_METHOD_PRE_POST = CAST("Number", SFcnParamSettings.PadMode)
+  %assign APPEND_VALUES_AFTER_FINAL_SAMP = 1
+  %assign INSERT_VALUES_BEFORE_INIT_SAMP = 2
+  %%
+  %% Add defined constants to block record:
+  %%
+  %assign block = block + INPORT + OUTPORT + DTYPE_ID + DTYPE_NAME
+  %assign block = block + INP_COMPLEX + OUT_COMPLEX + NUM_INP_DIMS + INPUT_DIMS
+  %assign block = block + NUM_INP_ROWS + NUM_INP_COLS + INP_WIDTH
+  %assign block = block + NUM_OUT_DIMS + OUTPUT_DIMS
+  %assign block = block + NUM_OUT_ROWS + NUM_OUT_COLS + OUT_WIDTH
+  %assign block = block + PAD_METHOD_PRE_POST + APPEND_VALUES_AFTER_FINAL_SAMP
+  %assign block = block + INSERT_VALUES_BEFORE_INIT_SAMP
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  %% Only generate code if any code is required
+  %% (copy and/or pad is required -> code required)
+  %%
+  %if (LibBlockInputSignalBufferDstPort(INPORT) != OUTPORT)
+    /* Signal Processing Blockset Pad (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %% Output comment appropriate for each case
+    %if (NUM_OUT_DIMS == 1)
+      /* Input width: %<INP_WIDTH>, output width: %<OUT_WIDTH> */
+    %else
+      /* Input dimensions: [%<NUM_INP_ROWS> x %<NUM_INP_COLS>], output dimensions: [%<NUM_OUT_ROWS> x %<NUM_OUT_COLS>] */
+    %endif
+    %%
+    %% Call code gen routine appropriate for given input/output dimensions
+    %if (OUT_WIDTH == 1)
+      %%
+      %% Copy with truncation only (scalar output)
+      %<LibBlockCopyAndTruncateInpOut(INPORT, OUTPORT)>
+      %%
+    %elseif (NUM_OUT_DIMS == 1) || ((NUM_INP_COLS == 1) && (NUM_OUT_COLS == 1))
+      %%
+      %% 1-D i/o cases AND 2-D column vector i/o cases
+      %<Generate1DCode(block)>
+      %%
+    %elseif (NUM_INP_ROWS == 1) && (NUM_OUT_ROWS == 1)
+      %%
+      %% 2-D row vector i/o cases
+      %<Generate2DRowVectorCode(block)>
+      %%
+    %else
+      %%
+      %% 2-D full-matrix input cases
+      %<Generate2DMatrixCode(block)>
+      %%
+    %endif
+    %%
+    %% The next line is intentionally blank...
+
+  %endif  %% Code required
+%endfunction  %% Outputs
+
+
+%% Function: Generate1DCode =====================================================
+%%
+%function Generate1DCode(block) Output
+  %if (INP_WIDTH == OUT_WIDTH)
+    %%
+    %% Simple copy
+    %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+    %%
+  %elseif (OUT_WIDTH < INP_WIDTH)
+    %%
+    %% Copy with truncation
+    %<LibBlockCopyAndTruncateInpOut(INPORT, OUTPORT)>
+    %%
+  %else
+    %%
+    %% Copy and pad down the single column
+    %<GeneratePadColsCode(block)>
+    %%
+  %endif
+%endfunction %% Generate1DCode
+
+
+%% Function: Generate2DRowVectorCode ============================================
+%%
+%function Generate2DRowVectorCode(block) Output
+  %if (INP_WIDTH == OUT_WIDTH)
+    %%
+    %% Simple copy
+    %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+    %%
+  %elseif (OUT_WIDTH < INP_WIDTH)
+    %%
+    %% Copy with truncation
+    %<LibBlockCopyAndTruncateInpOut(INPORT, OUTPORT)>
+    %%
+  %else
+    %%
+    %% Copy and pad along the single row
+    %<GeneratePadRowsCode(block)>
+    %%
+  %endif 
+%endfunction %% Generate2DRowVectorCode
+
+
+%% Function: Generate2DMatrixCode ============================================
+%%
+%function Generate2DMatrixCode(block) Output
+  %if (NUM_OUT_ROWS == NUM_INP_ROWS) && (NUM_OUT_COLS == NUM_INP_COLS)
+    %%
+    %% Simple copy
+    %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+    %%
+  %elseif (NUM_OUT_ROWS == NUM_INP_ROWS) && (NUM_OUT_COLS < NUM_INP_COLS)
+    %%
+    %% Truncate along rows only
+    %<LibBlockCopyAndTruncateInpOut(INPORT, OUTPORT)>
+    %%
+  %elseif (NUM_OUT_ROWS < NUM_INP_ROWS) && (NUM_OUT_COLS <= NUM_INP_COLS)
+    %%
+    %% Truncate along columns only (or BOTH rows and columns)
+    %<TLC_PadCopyOnlyTruncateCols(block)>
+    %%
+  %elseif (NUM_OUT_ROWS <= NUM_INP_ROWS) && (NUM_OUT_COLS > NUM_INP_COLS)
+    %%
+    %% Pad along row dimensions, since there are more output columns than
+    %% input columns.  Note: possible truncation of each column.
+    %<GeneratePadRowsCode(block)>
+    %%
+  %elseif (NUM_OUT_ROWS > NUM_INP_ROWS) && (NUM_OUT_COLS <= NUM_INP_COLS)
+    %%
+    %% Pad along column dimensions, since there are more output rows than
+    %% input rows.  Note: possible truncation of each row.
+    %<GeneratePadColsCode(block)>
+    %%
+  %else
+    %%
+    %% (NUM_OUT_ROWS > NUM_INP_ROWS) && (NUM_OUT_COLS > NUM_INP_COLS)
+    %% Pad along BOTH rows and columns
+    %<GeneratePadRowsColsCode(block)>
+    %%
+  %endif
+%endfunction %% Generate2DMatrixCode
+
+
+%% Function: GeneratePadColsCode ================================================
+%%
+%function GeneratePadColsCode(block) Output
+  %if (INP_COMPLEX == OUT_COMPLEX)
+    %<TLC_PadCols(block)>
+  %else
+    %<TLC_PadColsMixed(block)>
+  %endif
+%endfunction %% GeneratePadColsCode
+
+
+%% Function: GeneratePadRowsCode ================================================
+%%
+%function GeneratePadRowsCode(block) Output
+  %if (INP_COMPLEX == OUT_COMPLEX)
+    %<TLC_PadRows(block)>
+  %else
+    %<TLC_PadRowsMixed(block)>
+  %endif
+%endfunction %% GeneratePadRowsCode
+
+
+%% Function: GeneratePadRowsColsCode ============================================
+%%
+%function GeneratePadRowsColsCode(block) Output
+  %if (INP_COMPLEX == OUT_COMPLEX)
+    %<TLC_PadRowsCols(block)>
+  %else
+    %<TLC_PadRowsColsMixed(block)>
+  %endif
+%endfunction %% GeneratePadRowsColsCode
+
+
+%% Function: TLC_PadCols ========================================================
+%%
+%function TLC_PadCols(block) Output
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongCols( \
+%else
+  MWDSP_PadPreAlongCols( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    %<NUM_INP_COLS>, \
+    %if (INP_COMPLEX)
+      %<2*NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %else
+      %<NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %endif
+    %<NUM_OUT_ROWS - NUM_INP_ROWS>, \
+    %if (INP_COMPLEX)
+      2 * sizeof(%<DTYPE_NAME>) \
+    %else
+      sizeof(%<DTYPE_NAME>) \
+    %endif
+  );
+%endfunction  %% TLC_PadCols
+
+
+%% Function: TLC_PadColsMixed ===================================================
+%%
+%function TLC_PadColsMixed(block) Output
+{
+  const %<DTYPE_NAME> zero = %<SLibGetGroundValueFromId(DTYPE_ID)>;
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongColsMixed( \
+%else
+  MWDSP_PadPreAlongColsMixed( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    (byte_T *)(&zero), \
+    %<NUM_INP_ROWS>, \
+    %<NUM_INP_COLS>, \
+    %<NUM_OUT_ROWS - NUM_INP_ROWS>, \
+    sizeof(%<DTYPE_NAME>) \
+  );
+}
+%endfunction  %% TLC_PadColsMixed
+
+
+%% Function: TLC_PadRows ========================================================
+%%
+%function TLC_PadRows(block) Output
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongRows( \
+%else
+  MWDSP_PadPreAlongRows( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    %if (INP_COMPLEX)
+      %<2 * NUM_INP_ROWS * NUM_INP_COLS> * sizeof(%<DTYPE_NAME>), \
+    %else
+      %<NUM_INP_ROWS * NUM_INP_COLS> * sizeof(%<DTYPE_NAME>), \
+    %endif
+    %<NUM_OUT_ROWS * (NUM_OUT_COLS - NUM_INP_COLS)>, \
+    %if (INP_COMPLEX)
+      2 * sizeof(%<DTYPE_NAME>) \
+    %else
+      sizeof(%<DTYPE_NAME>) \
+    %endif
+  );
+%endfunction  %% TLC_PadRows
+
+
+%% Function: TLC_PadRowsMixed ===================================================
+%%
+%function TLC_PadRowsMixed(block) Output
+{
+  const %<DTYPE_NAME> zero = %<SLibGetGroundValueFromId(DTYPE_ID)>;
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongRowsMixed( \
+%else
+  MWDSP_PadPreAlongRowsMixed( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    (byte_T *)(&zero), \
+    %<NUM_INP_ROWS*NUM_INP_COLS>, \
+    %<NUM_OUT_ROWS * (NUM_OUT_COLS - NUM_INP_COLS)>, \
+    sizeof(%<DTYPE_NAME>) \
+  );
+}
+%endfunction  %% TLC_PadRowsMixed
+
+
+%% Function: TLC_PadRowsCols ====================================================
+%%
+%function TLC_PadRowsCols(block) Output
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongRowsCols( \
+%else
+  MWDSP_PadPreAlongRowsCols( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    %<NUM_INP_COLS>, \
+    %if (INP_COMPLEX)
+      %<2*NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %else
+      %<NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %endif
+    %<NUM_OUT_ROWS - NUM_INP_ROWS>, \
+    %<NUM_OUT_ROWS * (NUM_OUT_COLS - NUM_INP_COLS)>, \
+    %if (INP_COMPLEX)
+      2 * sizeof(%<DTYPE_NAME>) \
+    %else
+      sizeof(%<DTYPE_NAME>) \
+    %endif
+  );
+%endfunction  %% TLC_PadRowsCols
+
+
+%% Function: TLC_PadRowsColsMixed ============================================
+%%
+%function TLC_PadRowsColsMixed(block) Output
+{
+  const %<DTYPE_NAME> zero = %<SLibGetGroundValueFromId(DTYPE_ID)>;
+%if (PAD_METHOD_PRE_POST == APPEND_VALUES_AFTER_FINAL_SAMP)
+  MWDSP_PadAlongRowsColsMixed( \
+%else
+  MWDSP_PadPreAlongRowsColsMixed( \
+%endif
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    (byte_T *)(%<LibBlockParameterAddr(PadValue,"","",0)>), \
+    (byte_T *)(&zero), \
+    %<NUM_INP_ROWS>, \
+    %<NUM_INP_COLS>, \
+    %<NUM_OUT_ROWS - NUM_INP_ROWS>, \
+    %<NUM_OUT_ROWS * (NUM_OUT_COLS - NUM_INP_COLS)>, \
+    sizeof(%<DTYPE_NAME>) \
+  );
+}
+%endfunction  %% TLC_PadRowsColsMixed
+
+
+%% Function: TLC_PadCopyOnlyTruncateCols ========================================
+%%
+%function TLC_PadCopyOnlyTruncateCols(block) Output
+  MWDSP_PadCopyOnlyTruncAlongCols( \
+    (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>, \
+    (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, \
+    %if (INP_COMPLEX)
+      %<2*NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %else
+      %<NUM_INP_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %endif
+    %if (OUT_COMPLEX)
+      %<2*NUM_OUT_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %else
+      %<NUM_OUT_ROWS> * sizeof(%<DTYPE_NAME>), \
+    %endif
+    %<NUM_OUT_COLS> \
+  );
+%endfunction  %% TLC_PadCopyOnlyTruncateCols
+
+
+%% [EOF] sdsppad.tlc

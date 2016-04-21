@@ -1,0 +1,468 @@
+%% $RCSfile: sdspfirdn2.tlc,v $
+%% $Revision: 1.16.4.4 $ 
+%% $Date: 2004/04/12 23:08:39 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: FIR Decimator
+%%
+
+%implements sdspfirdn2 "C"
+
+%% Function: BlockTypeSetup ==================================================
+%%
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block, "dsp_ic_rt")>
+  %<Include_rt_header(block, "dspfirdn_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(0)
+    %assign outDT = FixPt_GetOutputDataType(0)
+    %assign block = block + inDT + outDT
+    %%
+    %assign INPORT       = 0
+    %assign OUTPORT      = 0
+    %assign INPORTWIDTH  = LibDataInputPortWidth(INPORT)
+    %assign block = block + INPORT + OUTPORT
+    %%
+    %% Complexity and other flags
+    %%
+    %assign DATA_COMPLEX    = (LibBlockInputSignalIsComplex(INPORT) != 0)
+    %assign FILT_COMPLEX    = LibBlockParameterIsComplex(FILT)
+    %assign OUT_COMPLEX     = (FILT_COMPLEX || DATA_COMPLEX)
+    %assign DFACTOR         = SFcnParamSettings.DFACTOR
+    %assign block = block + DATA_COMPLEX + FILT_COMPLEX + OUT_COMPLEX + DFACTOR
+    %%
+    %% Data types
+    %%
+    %assign INPORT_IS_SINGLE = (LibBlockInputSignalDataTypeId(INPORT) == tSS_SINGLE)
+    %assign DAT_T  = LibBlockInputSignalDataTypeName(INPORT,"")
+    %assign FILT_T = LibBlockParameterDataTypeName(FILT,"")
+    %assign OUT_T  = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+    %assign bytesPerOutElemStr  = "sizeof(%<OUT_T>)"
+    %assign block = block + FILT_T + DAT_T + OUT_T + INPORT_IS_SINGLE + bytesPerOutElemStr
+    %%
+    %% Simulation/runtime parameters for low-latency operation
+    %%
+    %assign IS_MULTI_RATE    = !LibIsSFcnSingleRate(block)
+    %assign IS_MULTI_TASKING = IsModelMultiTasking()
+    %assign block = block + IS_MULTI_TASKING + IS_MULTI_RATE
+    %%
+    %% I/O Port Dimensions
+    %%
+    %assign numDims = LibBlockInputSignalNumDimensions(INPORT)
+    %assign dims    = LibBlockInputSignalDimensions(INPORT)
+    %assign COLS    = (numDims == 2) ? dims[1] : 1
+    %assign ROWS    = dims[0]
+    %assign outnumDims = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign outdims    = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign OUT_COLS   = (outnumDims == 2) ? outdims[1] : 1
+    %assign OUT_ROWS   = outdims[0]
+    %assign FRAMEBASED = LibBlockInputSignalIsFrameData(INPORT)
+    %assign NUM_CHANS  = FRAMEBASED ? COLS : INPORTWIDTH
+    %assign block = block + FRAMEBASED + NUM_CHANS + COLS + ROWS + OUT_ROWS + OUT_COLS
+    %%
+    %% Parameter Dimensions
+    %%
+    %assign  filtLen          = LibBlockParameterSize(FILT)[1]
+    %assign  outElem          = OUT_ROWS * OUT_COLS
+    %assign  polyphaseFiltLen = filtLen/DFACTOR
+    %assign  inFrameSize      = FRAMEBASED ? ROWS : 1
+    %assign  outFrameSize     = FRAMEBASED ? OUT_ROWS : 1
+    %assign block = block + filtLen + outElem + polyphaseFiltLen + inFrameSize + outFrameSize
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset FIR Decimation %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %assign IC_CPLX       = LibBlockParameterIsComplex(IC)
+    %assign IC_dims       = IC.Dimensions
+    %assign ic_rows       = IC_dims[0]
+    %assign ic_cols       = IC_dims[1]
+    %assign NUM_IC        = ic_rows * ic_cols
+    %assign IC_Pointer    = "(const byte_T *)" + LibBlockParameterAddr(IC, "", "", "0")
+    %assign numElem       = COLS * ROWS
+    %assign outBufPointer = "(byte_T *)" + LibBlockDWorkAddr(OutBuff, "", "", 0)
+    %assign inDTypeId     = LibBlockInputSignalDataTypeId(INPORT)
+    %assign outDTypeId    = LibBlockOutputSignalDataTypeId(OUTPORT)
+    %assign dTypeName     = LibBlockInputSignalDataTypeName(INPORT,"%<tRealPart>")
+    %assign inputZeroVal  = SLibGetGroundValueFromId(inDTypeId)
+    %assign outputZeroVal = SLibGetGroundValueFromId(outDTypeId)
+    %%
+    /* Initialize partial sums buffer */
+    {
+        %if FixPt_DataTypeIsFloat(inDT)
+            %<OUT_T> *sumsPointer = %<LibBlockDWorkAddr(Sums, "", "", 0)>;
+        %else
+            %assign accDT = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+            %assign accDT = OUT_COMPLEX ? accDT.ComplexName : accDT.Name
+            %<accDT> *sumsPointer = %<LibBlockDWorkAddr(Sums, "", "", 0)>;
+        %endif
+        int_T i = %<NUM_CHANS>;
+        while (i-- > 0) {
+            %if (OUT_COMPLEX)
+                sumsPointer->re = %<outputZeroVal>;
+                sumsPointer->im = %<outputZeroVal>;
+            %else
+                *sumsPointer = %<outputZeroVal>;
+            %endif
+            sumsPointer++;
+        }
+    }
+    %%
+    /* Initialize input delay buffer */
+    {
+        %assign N = NUM_CHANS * filtLen
+        %<DAT_T> *inputTap = %<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+        int_T i = %<N>;
+        while (i-- > 0) {
+            %if (DATA_COMPLEX)
+                inputTap->re = %<inputZeroVal>;
+                inputTap->im = %<inputZeroVal>;
+            %else
+                *inputTap = %<inputZeroVal>;
+            %endif
+            inputTap++;
+        }
+    }
+    %%
+    %% We only need ICs in certain condition for this block.
+    %% The required conditions where ICs are needed are as follows:
+    %%
+    %if ( IS_MULTI_RATE && (FRAMEBASED || IS_MULTI_TASKING) )
+        /* Initialize the internal buffers with block initial conditions */
+        %if (NUM_IC <= 1)
+            MWDSP_CopyScalarICs(%<outBufPointer> + %<numElem> * %<bytesPerOutElemStr>, %<IC_Pointer>, %<numElem> , %<bytesPerOutElemStr>);
+        %else
+            memcpy(%<outBufPointer> + %<numElem> * %<bytesPerOutElemStr>, %<IC_Pointer>, %<numElem> * %<bytesPerOutElemStr>);
+        %endif
+    %endif
+    %%
+    /* Initialize indices and pointers */
+    %<LibBlockDWork(TapDelayIndex, "", "", 0)> = 0;
+    %<LibBlockDWork(OutIdx, "", "", 0)>        = 0;
+    %<LibBlockDWork(readBufIdx,    "", "", 0)> = 1;
+    %%
+    %assign COND1_NEED_ICS         = ((IS_MULTI_RATE) && IS_MULTI_TASKING)
+    %assign COND2_NEED_ICS         = ( (FRAMEBASED) && (IS_MULTI_RATE) )
+    %assign NEED_EXTRA_LATENCY_ICS = (COND1_NEED_ICS || COND2_NEED_ICS)
+    %%
+    %if NEED_EXTRA_LATENCY_ICS
+        %if COND1_NEED_ICS
+            %%
+            %% Latency Case: COND1_NEED_ICS (comments only)
+            %%
+            /* In MULTI-RATE and MULTI-TASKING mode (as per simulation params).  */
+            /* We cannot be guaranteed that the inputs are always available on   */
+            /* the first time sample hit in this mode (depending on the model    */
+            /* signal arrival times - remember that this mode is both time-based */
+            /* AND task-based, so nothing is guaranteed with respect to data     */
+            /* arrival. By setting this flag to false, a single output-width     */
+            /* delay is always inserted in this mode for consistent behavior.    */
+        %else
+            %%
+            %% Latency Case: COND2_NEED_ICS (comments only)
+            %%
+            /* When the block is FRAME-BASED with MAINTAIN FRAME SIZE chosen as     */
+            /* the framing mode while in a SINGLETASKING OR MULTITASKING mode such  */
+            /* that the block is also MULTIRATE (i.e. input port faster than output */
+            /* if the decimation factor is greater than one) then there will be     */
+            /* INHERENT LATENCY due to causality (the fact that NOT enough samples  */
+            /* will be available on the first sample hit to fill an entire frame).  */
+            /* By setting this flag to false, a single output-width delay is always */
+            /* inserted in this mode for consistent (and causal) behavior.          */
+        %endif %% COND1_NEED_ICS
+        %<LibBlockDWork(wrtBufIdx, "", "", 0)> = 0;
+    %else
+        %<LibBlockDWork(wrtBufIdx, "", "", 0)> = 1;
+    %endif %% NEED_EXTRA_LATENCY_ICS
+    %%
+    %<LibBlockDWork(PhaseIdx, "", "", 0)> = %<DFACTOR - 1>;
+    %if FixPt_DataTypeIsFloat(inDT)
+        %<LibBlockDWork(CoeffPtr, "", "", 0)> = (void *)(%<LibBlockParameterAddr(FILT,"","",0)> + %<filtLen - filtLen / DFACTOR>);
+    %else
+        %<LibBlockDWork(CoeffPtr, "", "", 0)> = %<filtLen - filtLen / DFACTOR>;
+    %endif
+}
+
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset FIR Decimation %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    /* Input polyphase filtering */
+    %if (IS_MULTI_RATE)
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+    %endif
+    %if FixPt_DataTypeIsFloat(inDT)
+        %<CallFltptRuntimeFcn(block)>
+    %else
+        %<GenerateFixPtInlineCode(block)>
+    %endif
+    %if (IS_MULTI_RATE)
+    }
+    %endif
+
+    /* Write double-buffered data to output port */
+    %if (IS_MULTI_RATE)
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>)
+    %endif
+    %<CopyDataToOutport(block)>
+}
+%endfunction  %% Outputs
+
+
+%% Function: OutputsForTID =====================================================
+%% This function is called only in multi-rate, multi-tasking ert mode
+%function OutputsForTID(block, system, tid) Output
+/* Signal Processing Blockset FIR Decimation %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    /* Input polyphase filtering */
+    %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+        %if FixPt_DataTypeIsFloat(inDT)
+            %<CallFltptRuntimeFcn(block)>
+        %else
+            %<GenerateFixPtInlineCode(block)>
+        %endif
+    %endif
+    /* Write double-buffered data to output port */
+    %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("OutputPortIdx0")>)
+        %<CopyDataToOutport(block)>
+    %endif
+}
+%endfunction %% OutputsForTID
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateFixPtInlineCode ======================================
+%%
+%function GenerateFixPtInlineCode(block) Output
+%%
+%createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+%%
+%% create accRec record
+%assign accLabel  = LibBlockDWork(Sums, "k", "", 0)
+%assign accDT     = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+%assign accIsCplx = OUT_COMPLEX
+%createrecord accRec { label     accLabel; ...
+                       dTypeRec  accDT; ...
+                       isComplex accIsCplx }
+%% create prodRec record (always real)
+%assign prodLabel = "prod"
+%assign prodDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%createrecord prodRec { label     prodLabel; ...
+                        dTypeRec  prodDT; ...
+                        isComplex 0 }
+%% create cffRec record
+%assign cffLabel = LibBlockParameter(FILT, "cffIdx", "", "0")
+%assign cffDT    = FixPt_GetParameterDataType(CFF_DATA_TYPE, 0, 0)
+%createrecord cffRec { label     cffLabel; ...
+                       dTypeRec  cffDT; ...
+                       isComplex FILT_COMPLEX }
+%% create inRec record
+%assign inLabel = LibBlockInputSignal(INPORT, "inputIdx", "","0")
+%createrecord inRec { label     inLabel; ...
+                      dTypeRec  inDT; ...
+                      isComplex DATA_COMPLEX }
+%% create input tap record
+%assign tapLabel = LibBlockDWork(TapDelayBuff, "tapIdx", "", 0)
+%createrecord tapRec { label     tapLabel; ...
+                       dTypeRec  inDT; ...
+                       isComplex DATA_COMPLEX }
+%% create outBufRec record
+%assign outBufLabel = LibBlockDWork(OutBuff, "outIdx", "", "0")
+%createrecord outBufRec { label     outBufLabel; ...
+                          dTypeRec  outDT; ...
+                          isComplex OUT_COMPLEX }
+%%
+{
+    /* Define polyphase parameters common to all channels */
+    int_T curPhaseIdx  = %<LibBlockDWork(PhaseIdx,  "", "", 0)>;
+    int_T curTapIdx    = %<LibBlockDWork(TapDelayIndex, "", "", 0)>;
+    int_T curOutBufIdx = %<LibBlockDWork(OutIdx,  "", "", 0)>;
+    int_T cffIdx       = %<LibBlockDWork(CoeffPtr, "", "", 0)>;
+    boolean_T curBuf   = %<LibBlockDWork(wrtBufIdx, "", "", 0)>;
+    %<prodDT.Name> %<prodRec.label>;
+    int_T inputIdx = 0;
+    %%
+    %if (NUM_CHANS > 1)
+    int_T k = 0;
+    /* Each channel uses the same filter phase but accesses
+       its own state memory and input. */
+    for (k = 0; k < %<NUM_CHANS>; k++) {
+        /* make per channel copies of polyphase parameters */
+        int outputSegment= k * %<outFrameSize>;
+        int inputSegment = k * %<filtLen>;
+    %endif
+    %%
+        %if (inFrameSize > 1)
+        int_T i = %<inFrameSize>;
+        %endif
+        %if (NUM_CHANS > 1)
+        curPhaseIdx  = %<LibBlockDWork(PhaseIdx,  "", "", 0)>;
+        curTapIdx    = %<LibBlockDWork(TapDelayIndex, "", "", 0)>;
+        curOutBufIdx = %<LibBlockDWork(OutIdx,  "", "", 0)>;
+        cffIdx       = %<LibBlockDWork(CoeffPtr, "", "", 0)>;
+        curBuf       = %<LibBlockDWork(wrtBufIdx, "", "", 0)>;
+        %endif
+        %if (inFrameSize > 1)
+        while (i--) {
+        %else
+        {
+        %endif
+            %if (NUM_CHANS > 1)
+            int_T tapIdx = inputSegment + curTapIdx; 
+            %else
+            int_T tapIdx = curTapIdx;
+            %endif
+            int_T j = %<polyphaseFiltLen>;
+            /* read input into TapDelayBuffer */
+            %<DSPFixptLibEquals(tapRec, inRec, rndSatRec)>\
+            ++inputIdx;
+            /* perform filtering on current phase */
+            while (j--) {
+                %<FixptMAC(accRec, "+=", prodRec, tapRec, cffRec, rndSatRec)>\
+                ++cffIdx;
+                tapIdx -= %<DFACTOR>;
+                %if (NUM_CHANS > 1)
+                if (tapIdx < inputSegment) tapIdx += %<filtLen>;
+                %else
+                if (tapIdx < 0) tapIdx += %<filtLen>;
+                %endif
+            }
+            /* increment index to input circular buffer */
+            if ( (++curTapIdx) >= %<filtLen> ) curTapIdx = 0;
+            /* increment curPhaseIdx and 
+               output to output buffer ONLY WHEN all polyphase filters are executed */
+            if ( (++curPhaseIdx) >= %<DFACTOR> ) {
+                %if (NUM_CHANS > 1)
+                int_T outIdx = outputSegment + curOutBufIdx;
+                %else
+                int_T outIdx = curOutBufIdx;
+                %endif
+                if (curBuf) outIdx += %<outElem>; 
+                %<DSPFixptLibEquals(outBufRec, accRec, rndSatRec)>\
+                /* reset sums to zero after transfering its content */
+                %if (accRec.isComplex)
+                    %assign accReLabel = accRec.label + ".re"
+                    %assign accImLabel = accRec.label + ".im"
+                    %<accReLabel> = %<accImLabel> = 0;
+                %else
+                    %<accRec.label> = 0;
+                %endif
+                /* increment index to output circular delay line 
+                   manage ping-pong buffer */
+                if ( (++curOutBufIdx) >= %<outFrameSize> ) {
+                    curOutBufIdx = 0;
+                    curBuf       = (boolean_T)!curBuf;
+                }
+                /* reset curPhaseIdx and cffIdx to zero */
+                curPhaseIdx = 0;
+                cffIdx = 0;
+            }
+        }
+    %if (NUM_CHANS > 1)
+    }
+    %endif
+    %%
+    /* save common polyphase parameters for next function call*/
+    %<LibBlockDWork(CoeffPtr,  "", "", 0)>     = cffIdx;
+    %<LibBlockDWork(PhaseIdx,  "", "", 0)>     = curPhaseIdx;
+    %<LibBlockDWork(TapDelayIndex, "", "", 0)> = curTapIdx;
+    %<LibBlockDWork(OutIdx,  "", "", 0)>       = curOutBufIdx;
+    %<LibBlockDWork(wrtBufIdx, "", "", 0)>     = curBuf;
+}
+
+%endfunction %% GenerateFixPtInlineCode
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: CallFltptRuntimeFcn ======================================
+%%
+%function CallFltptRuntimeFcn(block) Output
+%%
+    %assign ARG_LIST = "%<LibBlockInputSignalAddr(INPORT, "", "", 0)>, \
+                        (%<OUT_T> *)%<LibBlockDWorkAddr(OutBuff,      "", "", 0)>, \
+                        (%<DAT_T> *)%<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>, \
+                        (%<OUT_T> *)%<LibBlockDWorkAddr(Sums,         "", "", 0)>, \
+                        %<LibBlockParameterAddr(FILT, "", "", "0")>, \
+                        (const %<FILT_T> **)%<LibBlockDWorkAddr(CoeffPtr,      "", "", 0)>, \
+                        %<LibBlockDWorkAddr(TapDelayIndex, "", "", 0)>, \
+                        %<LibBlockDWorkAddr(OutIdx,      "", "", 0)>,   \
+                        %<LibBlockDWorkAddr(PhaseIdx,  "", "", 0)>,     \
+                        %<LibBlockDWorkAddr(wrtBufIdx,    "", "", 0)>,    \
+                        %<filtLen>,      \
+                        %<NUM_CHANS>,    \
+                        %<inFrameSize>,  \
+                        %<outFrameSize>, \
+                        %<DFACTOR>,      \
+                        %<polyphaseFiltLen>, \
+                        %<outElem>"
+    %%
+    %if (INPORT_IS_SINGLE)
+        %assign cplx_str = "C"
+        %assign real_str = "R"
+    %else
+        %assign cplx_str = "Z"
+        %assign real_str = "D"
+    %endif
+    %% 
+    %assign func_str = "MWDSP_FIRDn_DF_DblBuf_"
+    %%
+    %if (DATA_COMPLEX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %if (FILT_COMPLEX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %% GENERATE RUNTIME FUNCTION CALL
+    %%
+    %<func_str>(%<ARG_LIST>);
+
+%endfunction %% CallFltptRuntimeFcn
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: CopyDataToOutport ======================================
+%%
+%function CopyDataToOutport(block) Output
+{
+    byte_T *y = (byte_T *)%<LibBlockDWorkAddr(OutBuff, "", "", 0)>;
+    const int_T bytesToCopy = %<OUT_ROWS> * %<OUT_COLS> * %<bytesPerOutElemStr>;
+    if (%<LibBlockDWork(readBufIdx, "", "", 0)>) y += bytesToCopy;   
+    memcpy((byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,  "", "", 0)>, y, bytesToCopy);
+    %<LibBlockDWork(readBufIdx, "", "", 0)> = !(%<LibBlockDWork(readBufIdx, "", "", 0)>);
+}
+
+%endfunction %% CopyDataToOutport
+
+
+%% [EOF] sdspfirdn2.tlc

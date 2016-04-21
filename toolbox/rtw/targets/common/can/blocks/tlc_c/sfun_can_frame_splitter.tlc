@@ -1,0 +1,116 @@
+%% File: sfun_can_frame_splitter.tlc
+%%
+%% Abstract:
+%%   
+%%
+%% $Revision: 1.14.4.2 $
+%% $Date: 2004/04/19 01:20:02 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+
+%implements sfun_can_frame_splitter "C"
+
+%include "canincludes.tlc"
+
+%function BlockTypeSetup(block,system) void
+   %<SetupCanDataTypes(block)>
+%endfunction
+
+%function BlockInstanceSetup(block, system) void
+   %% we do not support the unpacking of multiword datatypes
+   %% owing to toolchain specific storage with such datatypes
+   %% check that the output datatype is no wider than the target
+   %% wordsize
+   %assign TARGET_WORD_LENGTHS = GetRTWWordLengths()
+
+   %assign dtypeID   = LibBlockOutputSignalDataTypeId(0)
+   %% get the datatype size in bytes
+   %assign dtypeSize = SLibGetDataTypeSizeFromId(dtypeID)
+   %if (dtypeSize * 8) > TARGET_WORD_LENGTHS.WordSize
+      %openfile buffer
+A signal to unpack is %<dtypeSize * 8> bits wide, but the target processor word size
+is only %<TARGET_WORD_LENGTHS.WordSize>.
+
+Multi-word signals cannot be unpacked owing to the possibility of toolchain specific memory storage of such signals.
+
+Please choose output datatypes that are at most as wide as the target processor word size.
+      %closefile buffer
+      %assign handle = FEVAL("errordlg", buffer, "CAN Message Unpacking Error", "modal")
+      %exit "CAN Message Unpacking Error" 
+   %endif
+%endfunction
+
+%function Outputs(block,system) Output
+{
+   /*------------ %<Type> Block: %<Name> ------------*/
+   %assign cOPidx = 0
+   %assign frame = LibBlockInputSignal(0,"","",0)
+   
+   %assign signal_endian = EndianParamString(CAST("Number",SFcnParamSettings.Endian))
+
+   %% Make hardware info available to TLC
+   %assign TARGET_C_IMPLEMENTATION = GetRTWCImplementation()  
+
+   %if SFcnParamSettings.ShowData
+   {
+      %assign dtypeName = LibBlockOutputSignalDataTypeName(cOPidx,"")
+      %assign outWidth  = LibBlockOutputSignalWidth(cOPidx)
+      /*--- Extract the data bytes into %<outWidth>, %<dtypeName> signals ----*/
+
+      %% Width of input vector in bytes 
+      %assign length = "%<outWidth> * sizeof(%<dtypeName>)" 
+      %assign cOPAddr = LibBlockOutputSignalAddr(cOPidx, "", "", 0)
+
+      %if ISEQUAL(dtypeName,"uint8_T") || ISEQUAL(dtypeName,"int8_T")
+         /* Signal datatype is either UINT8 or INT8, which are
+            byte datatypes.   Processor endianess does not effect
+            how these signal are packed into the CAN Frame.  No need
+            to reverse the bytes */
+         memcpy(%<cOPAddr>,%<frame>.DATA,%<length>);
+      %else
+         %if TARGET_C_IMPLEMENTATION.Endianess == signal_endian
+            /* The processor is the same endianess as the desired signal endian. 
+               No need to reverse the bytes in each signal */
+            %assign cOPAddr = LibBlockOutputSignalAddr(cOPidx, "", "", 0)
+            memcpy(%<cOPAddr>,%<frame>.DATA,%<length>);                  
+         %else
+            /* The processor is the opposite endianess to the desired signal endian
+               Reverse the bytes in each signal */
+            {
+               uint8_T * source, * sink;
+               %assign rollThreshold = LibBlockGetRollThreshold(block,RollThreshold)
+               %assign region = [0:%<outWidth-1>]
+               %assign rollVars = []
+               %assign dtypeID   = LibBlockOutputSignalDataTypeId(0)
+               %assign dtypeSize = SLibGetDataTypeSizeFromId(dtypeID)
+               source = & (((uint8_T *)(%<frame>.DATA))[%<dtypeSize-1>]);
+               sink   = & (((uint8_T *)%<cOPAddr>)[0]);
+
+               %roll signal = region, lcv=rollThreshold, block, "Roller",rollVars
+                  /* -- Signal %<signal> -- */
+                  %foreach idx = dtypeSize
+                     *(sink ++) = *(source --);
+                  %endforeach
+                  source += %<2*dtypeSize>;
+               %endroll
+            }
+         %endif
+      %endif
+		%assign cOPidx = cOPidx + 1
+   }
+   %endif
+	%if SFcnParamSettings.ShowID
+      %assign cOP = LibBlockOutputSignal(cOPidx,"","",0)
+      %assign cOPidx = cOPidx + 1
+      // Extract the ID
+      %<cOP> = %<frame>.ID; 
+   %endif
+   %%
+   %if SFcnParamSettings.ShowLength
+      %assign cOP = LibBlockOutputSignal(cOPidx,"","",0)
+      // Extract the LENGTH
+      %<cOP> = %<frame>.LENGTH; 
+   %endif
+   %%
+}
+%endfunction

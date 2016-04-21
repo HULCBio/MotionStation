@@ -1,0 +1,920 @@
+%% $RCSfile: sdspdelay.tlc,v $
+%% $Revision: 1.4.4.4 $
+%% $Date: 2004/04/12 23:08:22 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Delay
+
+%implements sdspdelay "C"
+
+%include "event_port_handler.tlc"
+
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:   Name the S-function parameters
+%%             
+%function BlockInstanceSetup (block, system) void
+    %%
+    %assign INPORT_DATA     = 0
+    %assign INPORT_RESET    = 1
+    %assign OUTPORT         = 0
+    %assign sig_datatype    = LibBlockInputSignalDataTypeName(INPORT_DATA,"%<tRealPart>")
+    %assign bytesPerElemStr = (LibBlockInputSignalIsComplex(INPORT_DATA)) \
+                            ? "(2 * sizeof(%<sig_datatype>))"             \
+                            : "sizeof(%<sig_datatype>)"
+    %%
+    %assign resetport                = (SFcnParamSettings.ResetPort == 1)
+    %assign diffPortRates            = !LibIsSFcnSingleRate(block)
+    %assign nChans                   = SFcnParamSettings.ICs_nChans
+    %assign ICs_CopyFcnIndex         = SFcnParamSettings.ICs_CopyFcnIndex
+    %assign nSamps                   = LibBlockInputSignalWidth(INPORT_DATA) / nChans
+    %assign scalarOrAllEqualDlyValue = SFcnParamSettings.scalarOrAllEqualDlyValue
+    %assign tDELAY                   = scalarOrAllEqualDlyValue
+    %assign ZeroDelay                = CAST("Boolean",(scalarOrAllEqualDlyValue == 0))
+    %assign allDelayGTfrmLen         = SFcnParamSettings.allDelayGTfrmLen
+    %assign ScalarDmultipleOfFrmLen  = SFcnParamSettings.ScalarDmultipleOfFrmLen
+    %assign allDelayLEfrmLen         = SFcnParamSettings.allDelayLEfrmLen
+    %assign directFeedThrough        = SFcnParamSettings.directFeedThrough
+    %assign DelayIsScalar            = CAST("Boolean",(scalarOrAllEqualDlyValue >= 0))
+    %assign multiTasking             = SFcnParamSettings.multiTasking
+    %%
+    %assign block  = block + INPORT_DATA + INPORT_RESET + OUTPORT \
+                           + nChans  + ICs_CopyFcnIndex + nSamps  \
+                           + scalarOrAllEqualDlyValue + ZeroDelay \
+                           + allDelayLEfrmLen + allDelayGTfrmLen  \
+                           + directFeedThrough + bytesPerElemStr  \
+                           + ScalarDmultipleOfFrmLen + tDELAY\
+                           + resetport + diffPortRates + DelayIsScalar + multiTasking
+    %%
+    %% Setup the event port handler:
+    %%
+    %if resetport
+        %if (multiTasking && diffPortRates)
+            %%To achieve determinism we delay the event port data and store it in
+            %%DWork. The variable below tells event port handler to use this DWork
+            %%instead of the input port to check for events
+
+            %assign ephDataSource = PortDataEPH
+            %assign block = block + ephDataSource
+        %endif
+      %<EventPortHandlerInstanceSetup(block)>
+      %if  EventPortRequiresState(block)
+        %assign ephdwork = EPHPState
+      %else
+        %assign ephdwork = 0
+      %endif
+      %assign block = block + ephdwork
+    %endif
+    %assign GenerateSampleHitCode = 1 %%Used by the rate grouping functions
+    %assign block = block + GenerateSampleHitCode
+%endfunction  %% BlockInstanceSetup
+
+
+%% Function: SingleChResetStates =============================================
+%%
+%% Abstract:
+%%      Reset the delay buffer and counters.
+%%
+%function SingleChResetStates(block) Output
+  %%
+  %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+  %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+  %%
+  %if (!allDelayLEfrmLen) %% delay > frmLen
+       %% for single ch, dowrk len=1; so no for loop needed
+       %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)> = 0;
+  %endif
+  %%
+  %%%%%%% Must be only scalar delay. Handle unit delay separately %%%%%%%%%% 
+  %if (scalarOrAllEqualDlyValue == 1) %% single channel, unit delay, sample-based/frame-based input
+        memcpy(%<tBUFF>, %<tIC>, %<bytesPerElemStr> );    
+  %else 
+        %switch ICs_CopyFcnIndex
+          %% case 0,2,4,6 are considered here, as for 1ch - delay must be scalar
+          %case 0 
+          %case 2 
+            {
+                byte_T *buff = %<tBUFF>;
+                byte_T *ics  = %<tIC>;
+                %%
+                int_T numElePerCh  = %<tDELAY>;
+                while (numElePerCh--) {
+                  memcpy( buff, ics, %<bytesPerElemStr> );
+                  buff += %<bytesPerElemStr>;
+                                      }                                                                    
+            }
+            %break
+          %case 4  
+          %case 6 
+            {
+              memcpy(%<tBUFF>, %<tIC>, %<bytesPerElemStr> * %<tDELAY>);
+            }
+            %break                    
+        %endswitch
+    %endif
+
+%endfunction   %%SingleChResetStates         
+
+%% Function: MultiChResetStates =============================================
+%%
+%% Abstract:
+%%      Reset the delay buffer and counters.
+%%
+%function MultiChResetStates(block) Output
+    %%
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %%    
+    %if (ICs_CopyFcnIndex<5)
+      byte_T *buff = %<tBUFF>;
+      byte_T *ics  = %<tIC>;
+    %endif
+    %assign nChans_minus_1 = %<nChans> - 1
+    %%
+    %if (!allDelayLEfrmLen) %% atleast one delay > frmLen
+        %assign CIRC_BUF_IDX_dworkLen = LibBlockDWorkWidth(CIRC_BUF_IDX)
+        %if CIRC_BUF_IDX_dworkLen == 1
+        %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)> = 0;
+        %else
+        {
+        int_T i;
+        for (i=0; i<%<CIRC_BUF_IDX_dworkLen>; i++)
+            %<LibBlockDWork(CIRC_BUF_IDX, "i", "", 0)> = 0;
+        }       
+        %endif
+    %endif
+    %%%%%% scalar delay and non-scalar delay. Handle unit delay separately %%%%%%%
+    %switch ICs_CopyFcnIndex
+      %case 0 %% IDsameDelayCopyScalarICs
+        {
+           %if (scalarOrAllEqualDlyValue == 1) %%unit delay         
+              int_T numElems =  %<nChans>;
+           %else %% (scalarOrAllEqualDlyValue >=0) 
+              int_T numElems =  %<nChans>* %<tDELAY>;
+           %endif
+              %%
+              while (numElems--) {
+                  memcpy( buff, ics, %<bytesPerElemStr> );
+                  buff += %<bytesPerElemStr>;
+                                 }
+        }
+        %break
+      %case 1 %% IDdiffrDelayCopyScalarICs (not unit delay): no optimization possible
+        {
+          int_T   chanCount    = %<nChans>;  
+          while (chanCount-- )             {
+              int_T numElePerCh  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+              while (numElePerCh--) {
+               memcpy( buff, ics, %<bytesPerElemStr> );
+               buff += %<bytesPerElemStr>;
+                                    }
+                                            }                              
+        }
+        %break    
+      %case 2 %% IDsameDelayCopyAlongDelayPipeline
+        {
+         %if (scalarOrAllEqualDlyValue == 1) %% unit delay
+            %% buff IC length  = %<nChans>
+            memcpy( buff, ics, %<nChans>*%<bytesPerElemStr>);            
+         %else %%(scalarOrAllEqualDlyValue >=0) %% non-unit scalar delay
+				%if (ScalarDmultipleOfFrmLen)
+					int_T chanCount = %<nChans>; 
+					int_T FrameDelay_mi1 =  %<tDELAY/nSamps-1>; 
+					while (chanCount--) {		                       
+						int_T FrmLen = %<nSamps>;
+						while (FrmLen-- > 0)
+						{
+							memcpy(buff, ics, %<bytesPerElemStr>);
+							buff += %<bytesPerElemStr>;
+						}
+						ics += %<bytesPerElemStr>;
+									     }
+					%% Optimization possible here if FrameDelay = 1
+					while (FrameDelay_mi1-- > 0)
+					{	
+						memcpy(buff,%<tBUFF>, %<bytesPerElemStr>*%<nSamps>*%<nChans>);
+						buff += %<bytesPerElemStr>*%<nSamps>*%<nChans>;
+					}
+				%else
+						int_T chanCount = %<nChans>;  
+						while (chanCount--) {		                       
+							int_T numElems = %<tDELAY>;
+							while (numElems-- > 0) {    
+								memcpy( buff, ics, %<bytesPerElemStr>);
+								buff += %<bytesPerElemStr>;
+													}
+							ics += %<bytesPerElemStr>;
+									         }
+				%endif							
+          %endif          							
+        }
+        %break  
+      %case 3 %% must not be unit delay (IDdiffrDelayCopyAlongDelayPipeline)
+        {
+          int_T chanCount = %<nChans>;  
+          while (chanCount--) {
+            int_T numElems = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>;
+             while (numElems-- > 0) {    
+               memcpy( buff, ics, %<bytesPerElemStr>);
+               buff += %<bytesPerElemStr>;
+                                     }
+               ics += %<bytesPerElemStr>;
+                             }
+        }
+        %break                    
+      %case 4 %% IDsameDelayCopyAlongChannels
+        {
+          %if (scalarOrAllEqualDlyValue == 1) %% unit delay
+            %% buff IC length  = %<nChans>
+            int_T chanCount = %<nChans>;  
+            while (chanCount--) {
+					memcpy( buff, ics, %<bytesPerElemStr> );
+					buff += %<bytesPerElemStr>;
+							     }           
+          %else %%(scalarOrAllEqualDlyValue >=0) %% non-unit scalar delay
+              %if (ScalarDmultipleOfFrmLen)                
+                  const int_T BytesPerFrame = %<bytesPerElemStr>*%<nSamps>;
+                  int_T FrameDelay = %<tDELAY/nSamps>;
+                  byte_T *buff2 = 0; %% %<tBUFF>
+                  while (FrameDelay-- > 0)
+				  {
+						buff2 = buff;
+						memcpy( buff, ics, BytesPerFrame );
+						buff += BytesPerFrame;
+						{
+						int_T chanCount_mi1 = %<nChans - 1>;  
+						while (chanCount_mi1-- > 0)
+						{	
+							memcpy(buff,buff2, BytesPerFrame);
+							buff += BytesPerFrame;
+						}
+						}
+						%% buff2 += BytesPerFrame*%<nChans>;
+                        ics += BytesPerFrame;							
+                  }
+              %else
+					int_T chanCount = %<nChans>;  
+					const int_T  BytesPerChannel = %<bytesPerElemStr>*%<tDELAY>;
+						while (chanCount--) {
+						memcpy( buff, ics, BytesPerChannel );
+						buff += BytesPerChannel;
+								}
+              %endif 								
+          %endif  							
+        }
+        %break
+      %% case 5: Unhandled case.                          
+      %case 6 %% IDsameDelayCopyCellOrMatrixICs
+        {
+        %if (scalarOrAllEqualDlyValue == 1)
+				memcpy(%<tBUFF>, %<tIC>, %<bytesPerElemStr> * %<nChans>);
+        %else
+          %if (ScalarDmultipleOfFrmLen) 
+				const int_T BytesPerFrame = %<bytesPerElemStr>*%<nSamps>;
+				const int_T BytesPerChannel = %<bytesPerElemStr>*%<tDELAY>;
+				int_T FrameDelay = %<tDELAY/nSamps>;
+				byte_T *ics2  = %<tIC>;
+				byte_T *buff = %<tBUFF>;
+				byte_T *ics=0;
+				while (FrameDelay-- > 0)
+				{		
+					int_T chanCount = %<nChans>; 
+					ics = ics2;
+					while (chanCount-->0) 		                       
+					{
+						memcpy(buff, ics, BytesPerFrame);
+						buff += BytesPerFrame;
+						ics += BytesPerChannel;  
+					}
+					ics2 += BytesPerFrame;				
+				}						       
+			%else %%(scalarOrAllEqualDlyValue >=0)
+				 memcpy(%<tBUFF>, %<tIC>, %<bytesPerElemStr> * %<nChans> * %<tDELAY>);
+			%endif
+         %endif
+        }
+        %break
+      %case 7 %% must not be unit delay  (IDdiffrDelayCopyCellArrayICs):no optimization
+        {
+          int_T chanCount = %<nChans>;  
+          int_T SumOfDelays = 0;
+          while (chanCount--) {
+             SumOfDelays += %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>;
+                              }
+          memcpy( %<tBUFF>, %<tIC>, %<bytesPerElemStr> * SumOfDelays);
+        }
+        %break      
+    %endswitch
+
+%endfunction %%MultiChResetStates
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the delay buffer and counters to their initial values.
+%%
+%function InitializeConditions(block, system) Output
+  /* Initialization: Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+%%
+  %if (!(ZeroDelay))
+        %if resetport
+        %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+        %endif
+        {
+    /* copy ICs from edit box to IC buffer */
+           %if (nChans == 1)
+              %% considers unitdelay, non-unity scalar delay
+              %<SingleChResetStates(block)>
+           %else
+              %% considers unitdelay, non-unity scalar delay, vector delay
+              %<MultiChResetStates(block)>
+           %endif
+        }
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Output: Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if diffPortRates
+    %if GenerateSampleHitCode
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { %<LibTaskSFcnComment("InputPortIdx0")>
+    %else
+        {
+    %endif
+    %if (multiTasking)  %% Block could be multirate only if reset port is present
+        %%Delay reset port data by storing in DWork to achieve determinism
+        if (%<LibIsSFcnSpecialSampleHit("InputPortIdx1", "InputPortIdx0")>) {
+            memcpy(%<LibBlockDWorkAddr(ephDataSource, "", "", 0)>, 
+                   %<LibBlockInputSignalAddr(INPORT_RESET, "", "", 0)>,
+                   sizeof(%<LibBlockInputSignalDataTypeName(INPORT_RESET, "")>));
+        }
+    %endif
+  %endif
+  %%
+  %%%%%%%%% Handling Reset port functionality%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %%        cases are: non-zero delay: 1 ch and multi ch.                %%
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %if (!(ZeroDelay) && resetport) 
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) 
+      {
+       %if (nChans == 1)
+          %% considers unitdelay, non-unity scalar delay
+          %<SingleChResetStates(block)>\
+       %else
+          %% considers unitdelay, non-unity scalar delay, vector delay
+          %<MultiChResetStates(block)>\
+       %endif
+      }
+    %endif
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% generating output %%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %%  cases are:  (1) zero delay  (2) non-zero delay                         %% 
+  %%  Non-zero delay has 2 options: 1 ch, multi ch                           %%
+  %%  multi ch - 2 options: multi ch scalar delay, multi ch non-scalar delay %%
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %if (ZeroDelay)  
+      %assign need_copy = (LibBlockInputSignalBufferDstPort(INPORT_DATA) != OUTPORT)
+      %if (need_copy) 
+             %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT)>
+      %endif
+    %% non-zero delay
+    %elseif (nChans == 1) %% Must be scalar delay       
+       {
+       %<SingleChannelInput(block)>
+        }
+    %else %%(nChans >1)
+       %if (scalarOrAllEqualDlyValue >= 0) %%if scalarOrAllEqualDelay
+          {  
+          %<MultiCh_ScalarORallEqualDelay(block)>
+           }
+       %else %%(vector-delay having NOT all Equal element)
+          {
+          %<MultiCh_VectorUnequalDelay(block)>
+           }
+       %endif         
+    %endif
+  %if diffPortRates
+    }
+  %endif
+%endfunction  %% Outputs       
+
+
+%% Function: OutputsForTID =====================================================
+%%
+%function OutputsForTID(block, system, tid) Output
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %assign block.GenerateSampleHitCode = 0
+    %<Outputs(block, system)>
+  %endif
+%endfunction %% OutputsForTID
+
+
+%% Function: UpdateForTID ======================================================
+%%
+%function UpdateForTID(block, system, tid) Output
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %assign block.GenerateSampleHitCode = 0
+    %<Update(block, system)>
+  %endif
+%endfunction %% UpdateForTID
+
+
+%% Function: Update ===========================================================
+%%
+%function Update(block, system) Output
+%%
+  %if (!directFeedThrough) 
+  /* Update: Signal Processing Blockset Delay (%<ParamSettings.FunctionName>) - '%<Name>' */
+     %if diffPortRates && GenerateSampleHitCode
+       if (%<LibIsSFcnSampleHit("InputPortIdx0")>) 
+       { %<LibTaskSFcnComment("InputPortIdx0")>
+     %else
+       {
+     %endif
+     %if (nChans == 1) %% Must be scalar delay       
+       %<upSingleChannelInput(block)>
+     %else %%(nChans >1)
+       %if (scalarOrAllEqualDlyValue >= 0) %%if scalarOrAllEqualDelay
+          %<upMultiCh_ScalarORallEqualDelay(block)>
+       %else %%(vector-delay having NOT all Equal element)
+          %<upMultiCh_VectorUnequalDelay(block)>
+       %endif         
+     %endif
+        }
+  %endif
+%endfunction %% Update
+
+%% Function: SingleChannelInput ==========================================================
+%%
+%function SingleChannelInput(block) Output   %% Must be scalar delay
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+    %%         
+       %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+       %% cases are: only scalar delay: 2 cases- unit delay, non-unit delay
+       %% unit delay: 2 options- frmLen =1(i.e.delay), frmLen >1(i.e.delay)
+       %% non-unit scalr delay: 3 options-frmLen =delay,frmLen >delay,frmLen <delay
+       %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+       /* Single channel input (Delay = %<tDELAY>, Samples per channel = %<nSamps>) */
+       %if (scalarOrAllEqualDlyValue == 1)
+            %% %% no CIRC_BUF_IDX exists
+            %assign buflen = 1
+            %if (buflen < nSamps) %% i.e. frmLen >1
+              %assign nSamps_minus_1 = %<nSamps> -1
+              %assign BytesNotInBuffer = "%<nSamps_minus_1> * %<bytesPerElemStr>"
+              memcpy(%<tY>, %<tBUFF>, %<bytesPerElemStr>);
+              memcpy(%<tY> + %<bytesPerElemStr>, %<tU>, %<BytesNotInBuffer>);
+              memcpy(%<tBUFF>, %<tU> + %<BytesNotInBuffer>, %<bytesPerElemStr>);
+            %else %%(buflen == nSamps i.e. frmLen =1)
+              memcpy(%<tY>, %<tBUFF>, %<bytesPerElemStr>);              
+            %endif
+       %else  %%  %<buflen>=tDELAY
+            %assign buflen = LibBlockDWorkWidth(IC_BUFF) / nChans
+            %assign nSamps_star = (nSamps == 1)? "":"%<nSamps> * "
+            %%
+            %if (buflen < nSamps)  %% i.e. (delay < nSamps)
+                 %assign bytesPerChan  = "%<nSamps_star> %<bytesPerElemStr>" 
+                 const int_T bytesInBuffer = %<tDELAY> * %<bytesPerElemStr>;
+                 const int_T  bytesNotInBuffer = %<bytesPerChan> - bytesInBuffer;
+                 %%
+                 memcpy(%<tY>, %<tBUFF>, bytesInBuffer);
+                 memcpy(%<tY> + bytesInBuffer, %<tU>, bytesNotInBuffer);
+                 memcpy(%<tBUFF>, %<tU> + bytesNotInBuffer, bytesInBuffer);
+                 %% no CIRC_BUF_IDX exists
+            %elseif (buflen == nSamps)  %% i.e. (delay == nSamps)
+                 memcpy(%<tY>, %<tBUFF>, %<tDELAY> * %<bytesPerElemStr>);  
+                 %% no CIRC_BUF_IDX exists               
+            %else  %%(buflen > nSamps)  i.e. (delay > nSamps)
+               %if ScalarDmultipleOfFrmLen
+                 %assign  BUFFSTART = "%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>"                  
+                 memcpy(%<tY>, %<tBUFF> + (%<BUFFSTART>*%<bytesPerElemStr>), %<nSamps> * %<bytesPerElemStr>);               
+               %else
+                 %%
+                 int_T  buffstart = %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>;      
+                 while (buffstart >= %<tDELAY>) buffstart -= %<tDELAY>; 
+                 {
+                 int_T copy1size   = buffstart <= (%<tDELAY-nSamps>)? %<nSamps> : %<tDELAY> - buffstart;
+                 memcpy(%<tY>, %<tBUFF> + (buffstart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+                 memcpy(%<tY> + copy1size * %<bytesPerElemStr>, %<tBUFF>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+                 } 
+               %endif                                 
+            %endif
+      %endif
+        
+%endfunction  %% SingleChannelInput
+
+
+%% Function: MultiCh_ScalarORallEqualDelay ==========================================================
+%%
+%function MultiCh_ScalarORallEqualDelay(block) Output
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+    %%          
+    %assign nSamps_star   = (nSamps == 1)? "":"%<nSamps> * "
+    %assign bytesPerChan  = "%<nSamps_star> %<bytesPerElemStr>"
+    %%
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %% cases are: only scalar delay: 2 cases- unit delay, non-unit delay
+   %% unit delay: 2 options- frmLen =1(i.e.delay), frmLen >1(i.e.delay)
+   %% non-unit scalr delay: 3 options-frmLen =delay,frmLen >delay,frmLen <delay
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %%
+   /* %<nChans> channel input, scalar delay (Delay = %<tDELAY>, Samples per channel = %<nSamps>) */
+   %if (scalarOrAllEqualDlyValue == 1) %% unit delay
+          %assign buflen = 1
+          %assign bytesInBuffer = bytesPerElemStr
+          %% %if (allDelayLEfrmLen)%%(delay <= nSamps) i.e. frmLen>=1, this is always true
+          %if (buflen != nSamps)  %% frmLen !=1 i.e. frmLen > 1
+            %% NOTE on optimization: Here delay=1, frmLen>1; so delay can never be multiple of frmLen; so no optimization possible
+			const byte_T *u = %<tU>;
+            byte_T *buff    = %<tBUFF>;
+            byte_T *y       = %<tY>;
+			%%
+			const int_T  bytesNotInBuffer = %<bytesPerChan> - %<bytesInBuffer>;              
+			int_T   chanCount    = %<nChans>;
+			%% no mdlUpdate
+			%% Note on optimization: Delay <frmLen; so no optimization possible (ScalarDmultipleOfFrmLen=0)
+			while (chanCount-- )   {
+			    memcpy(y, buff, %<bytesInBuffer>);
+			    memcpy(y + %<bytesInBuffer>, u, bytesNotInBuffer);
+				memcpy(buff, u + bytesNotInBuffer, %<bytesInBuffer>);
+				y += %<bytesPerChan>;
+				u += %<bytesPerChan>;
+				buff += %<bytesPerElemStr>;
+									}
+           %else %%if (dly == nSamps) i.e. frmLen = 1
+              memcpy(%<tY>, %<tBUFF>, %<bytesInBuffer>*%<nChans>);
+           %endif  
+   %else %% non-unity delay
+          %assign buflen = LibBlockDWorkWidth(IC_BUFF) / nChans
+         %%
+         %if (allDelayLEfrmLen)%%(delay <= nSamps)
+           %if (buflen != nSamps)  %%(delay < nSamps) 
+                %% NOTE on optimization: Here delay < nSamps; so delay can never be multiple of frmLen; so no optimization possible
+                const byte_T *u = %<tU>;
+                byte_T *buff    = %<tBUFF>;
+                byte_T *y       = %<tY>;
+                const int_T  bytesInBuffer = %<tDELAY> * %<bytesPerElemStr>;
+                const int_T  bytesNotInBuffer = %<bytesPerChan> - bytesInBuffer;              
+                int_T   chanCount    = %<nChans>;
+                %% Note on optimization: Delay <frmLen; so no optimization possible (ScalarDmultipleOfFrmLen=0) 
+                while (chanCount-- )   {
+                    memcpy(y, buff, bytesInBuffer);
+                    memcpy(y + bytesInBuffer, u, bytesNotInBuffer);
+                    memcpy(buff, u + bytesNotInBuffer, bytesInBuffer);
+                    y += %<bytesPerChan>;
+                    u += %<bytesPerChan>;
+                    buff += %<tDELAY> * %<bytesPerElemStr>;
+                                        }              
+           %else %%if (dly == nSamps) : ScalarDmultipleOfFrmLen = TRUE
+				%%ScalarIC and ScalarDmultipleOfFrmLen (as dly == nSamps) and ScalarOrAllEqualDelay
+				memcpy(%<tY>, %<tBUFF>, %<LibBlockInputSignalWidth(INPORT_DATA)> * %<bytesPerElemStr>);
+           %endif
+         %else  %%(delay > nSamps)
+           %if (ScalarDmultipleOfFrmLen) 
+                %assign BUFFSTART = "%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>" 
+                memcpy(%<tY>, %<tBUFF> + (%<BUFFSTART>*%<bytesPerElemStr>), %<LibBlockInputSignalWidth(INPORT_DATA)> * %<bytesPerElemStr>);
+           %else   
+                byte_T *buff    = %<tBUFF>;
+                byte_T *y       = %<tY>;        
+                int_T   chanCount = %<nChans>, copy1size;
+                %% the following 3 lines kept out of channel loop  
+                int_T  buffstart = %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>;      
+                while (buffstart >= %<tDELAY>) buffstart -= %<tDELAY>;            
+                copy1size   = buffstart <= (%<tDELAY-nSamps>)? %<nSamps> : %<tDELAY> - buffstart;
+                %%
+                while (chanCount-- )   {
+                    {             
+                    memcpy(y, buff + (buffstart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+                    memcpy(y + copy1size * %<bytesPerElemStr>, buff, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+                    y += %<bytesPerChan>;
+                    buff += %<tDELAY> * %<bytesPerElemStr>;
+                    }
+                                        }
+                %endif
+          %endif                
+   %endif
+%endfunction  %%MultiCh_ScalarORallEqualDelay 
+
+
+%% Function: MultiCh_VectorUnequalDelay ==========================================================
+%%
+%function MultiCh_VectorUnequalDelay(block) Output  
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+    %%       
+          byte_T *buff    = %<tBUFF>;
+          byte_T *y       = %<tY>;
+          int_T   delay ;   %% = buffLen;  
+          %assign nChans_minus_1 = %<nChans> - 1           
+          %assign nSamps_star = (nSamps == 1)? "":"%<nSamps> * "
+          %assign bytesPerChan = "%<nSamps_star> %<bytesPerElemStr>"
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %% cases are: only non-scalar delay: 3 cases- 
+  %% (1)all delay <= frmLen,(2)all delay > frmLen,(3)some delay < frmLen,some > frmLen 
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %if (allDelayLEfrmLen) %% Scalar Delay is not considered here
+                         %% "All delay equal to frame delay" has been covered above.
+             %% Must directFeedThrough = 1           
+           /* %<nChans> channel input, vector delay (all delay values <= no. of samples per channel) */
+           %if (directFeedThrough)
+           const byte_T *u = %<tU>;
+           %endif
+           int_T   chanCount        = %<nChans>;
+           %%
+           while (chanCount-- )   {
+             delay  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+             {
+             const int_T   bytesInBuffer    = delay * %<bytesPerElemStr>;             
+             const int_T   bytesNotInBuffer = %<bytesPerChan> - bytesInBuffer;
+             memcpy(y, buff, bytesInBuffer);
+             memcpy(y + bytesInBuffer, u, bytesNotInBuffer);
+             memcpy(buff, u + bytesNotInBuffer, bytesInBuffer);
+             u += %<bytesPerChan>;
+             y += %<bytesPerChan>;
+             buff += delay * %<bytesPerElemStr>;
+             }                    
+                                  }          
+  %elseif (allDelayGTfrmLen)  %% (i.e. directFeedThrough = FALSE)
+            /* %<nChans> channel input, vector delay (all delay values > no. of samples per channel) */
+            int_T   chanCount        = %<nChans>;
+            int32_T   *pBuffstart= %<LibBlockDWorkAddr(CIRC_BUF_IDX, "", "", 0)>;
+            %%
+            while (chanCount-- )   {
+             delay  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+             {
+             int_T  buffstart =  *pBuffstart++;
+             %%
+             while (buffstart >= delay) buffstart -= delay; 
+             {
+             int_T copy1size   = buffstart <= (delay - %<nSamps>)? %<nSamps> : (delay - buffstart);
+             memcpy(y, buff+ (buffstart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+             memcpy(y + copy1size * %<bytesPerElemStr>, buff, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+             y += %<bytesPerChan>;
+             buff += delay * %<bytesPerElemStr>;
+             }
+             }
+                                  }
+  %else %% some delay>frm.Len, some<=frm.Len
+          /* %<nChans> channel input, vector delay (some delay values less than or 
+           * equal to and some greater than number of samples per channel) 
+           */
+           %if (directFeedThrough)
+           const byte_T *u = %<tU>;
+           %endif
+           int_T   chanCount    = %<nChans>;
+           int32_T *pBuffstart= %<LibBlockDWorkAddr(CIRC_BUF_IDX, "", "", 0)>;
+           %% 
+           while (chanCount-- )             
+           {%%%while
+             delay  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+             {%%1d
+             const int_T  bytesInBuffer    = delay * %<bytesPerElemStr>;
+             %if (directFeedThrough)
+              const int_T  bytesNotInBuffer = %<bytesPerChan> - bytesInBuffer;
+             %endif                 
+             %%
+             if (delay <= %<nSamps>) 
+             {
+                memcpy(y, buff, bytesInBuffer);
+                %if (directFeedThrough)
+                    memcpy(y + bytesInBuffer, u, bytesNotInBuffer);
+                    memcpy(buff, u + bytesNotInBuffer, bytesInBuffer);
+                    u += %<bytesPerChan>;
+                %endif
+                y += %<bytesPerChan>;
+                buff += delay * %<bytesPerElemStr>;
+             }               
+             else  /* (delay > nSamps) */ 
+             {%%%else
+                int_T  buffstart = *pBuffstart; 
+                while (buffstart >= delay) buffstart -= delay; 
+                {
+                int_T copy1size   = buffstart <= (delay - %<nSamps>)? %<nSamps> : (delay - buffstart);
+                memcpy(y, buff + (buffstart*%<bytesPerElemStr>), copy1size * %<bytesPerElemStr>);
+                memcpy(y + copy1size * %<bytesPerElemStr>, buff, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+                %if (directFeedThrough)
+                memcpy(buff + (buffstart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+                memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+                u += %<bytesPerChan>;
+                *pBuffstart = (int32_T) (buffstart + %<nSamps>);
+                %endif
+                y += %<bytesPerChan>;
+                buff += delay * %<bytesPerElemStr>;
+                *pBuffstart++;
+                }
+             }%%else
+             }%%1d
+             }%%%while
+  %endif
+%endfunction  %%MultiCh_VectorUnequalDelay
+
+%%%%%%%%%%%%%%%%%%UPDATE%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Function: upSingleChannelInput ==========================================================
+%%
+%function upSingleChannelInput(block) Output   %% Must be scalar delay
+       %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+       %% cases are: only scalar delay: 2 cases- unit delay, non-unit delay
+       %% unit delay: 2 options- frmLen =1(i.e.delay), (not here: frmLen >1(i.e.delay))
+       %% non-unit scalr delay: 3 options-frmLen =delay,(not here: frmLen >delay), frmLen <delay
+       %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+       
+       /* Single channel input (Delay = %<tDELAY>, Samples per channel = %<nSamps>) */
+       %if (scalarOrAllEqualDlyValue == 1)
+            %%(Delay = frmLen =1)
+            memcpy(%<tBUFF>, %<tU>, %<bytesPerElemStr>); 
+       %else %% %<buflen> = delay
+            %assign nSamps_star = (nSamps == 1)? "":"%<nSamps> * "
+            %%
+            %if (scalarOrAllEqualDlyValue == nSamps)  %% i.e. (delay == nSamps)
+                 memcpy(%<tBUFF>, %<tU>, %<tDELAY> * %<bytesPerElemStr>); 
+                 %% no CIRC_BUF_IDX dwork 
+            %else  %%(delay > nSamps)
+               %if ScalarDmultipleOfFrmLen
+					%assign BUFFSTART = "%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>"                  
+					memcpy(%<tBUFF> + (%<BUFFSTART>*%<bytesPerElemStr>), %<tU>, %<nSamps> * %<bytesPerElemStr>); 
+					%<BUFFSTART> += (int32_T)%<nSamps>;
+					if (%<BUFFSTART> == %<LibBlockDWorkWidth(IC_BUFF)>) %<BUFFSTART> = 0;  
+               %else
+					byte_T *buff    = %<tBUFF>;
+					const byte_T *u = %<tU>;
+					%%
+					int_T  buffstart = %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>;      
+					%%
+					while (buffstart >= %<tDELAY>) buffstart -= %<tDELAY>; 
+					{
+					int_T copy1size   = buffstart <= (%<tDELAY> - %<nSamps>)? %<nSamps> : %<tDELAY> - buffstart;
+					memcpy(buff + (buffstart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+					memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+					}
+					%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)> = (int32_T) (buffstart + %<nSamps>);
+               %endif
+            %endif
+      %endif
+        
+%endfunction  %% upSingleChannelInput
+
+%% Function: upMultiCh_ScalarORallEqualDelay ==========================================================
+%%
+%function upMultiCh_ScalarORallEqualDelay(block) Output
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+   %%
+   %assign nSamps_star = (nSamps == 1)? "":"%<nSamps> * "
+   %assign bytesPerChan  = "%<nSamps_star> %<bytesPerElemStr>"
+   %%
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %% cases are: only scalar delay: 2 cases- unit delay, non-unit delay
+   %% unit delay: 2 options- frmLen =1(i.e.delay), (no update here for: frmLen >1(i.e.delay))
+   %% non-unit scalr delay: 3 options-frmLen =delay,frmLen >delay,frmLen <delay
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %%
+   /* %<nChans> channel input, scalar delay (Delay = %<tDELAY>, Samples per channel = %<nSamps>) */
+   %if (scalarOrAllEqualDlyValue == 1)  %%(dly = nSamps = 1)
+          memcpy(%<tBUFF>, %<tU>, %<bytesPerElemStr>*%<nChans>); 
+   %else %% delay > 1
+         %assign buflen = LibBlockDWorkWidth(IC_BUFF) / nChans
+         %%
+         %if (allDelayLEfrmLen)%%(delay == nSamps, (not here: delay < nSamps)) so ScalarDmultipleOfFrmLen=TRUE
+                %%ScalarIC and ScalarDmultipleOfFrmLen (as dly == nSamps) and ScalarOrAllEqualDelay
+                memcpy(%<tBUFF>, %<tU>, %<LibBlockInputSignalWidth(INPORT_DATA)> * %<bytesPerElemStr>);
+         %else  %%(delay > nSamps)
+           %if (ScalarDmultipleOfFrmLen==1) %%ScalarIC and ScalarORallEqualDelay
+                %assign BUFFSTART = "%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>" 
+                memcpy(%<tBUFF> + (%<BUFFSTART>*%<bytesPerElemStr>), %<tU>, %<LibBlockInputSignalWidth(INPORT_DATA)> * %<bytesPerElemStr>);
+                %<BUFFSTART> += (int32_T)%<LibBlockInputSignalWidth(INPORT_DATA)>; 
+                if (%<BUFFSTART> == %<LibBlockDWorkWidth(IC_BUFF)>) %<BUFFSTART> = 0;   
+           %else  
+             byte_T *buff    = %<tBUFF>;
+             const byte_T *u = %<tU>;
+             %%
+             int_T   chanCount = %<nChans>, copy1size;  
+             %% the following 3 lines kept out of channel loop  
+             int_T  buffstart = %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>;  
+             while (buffstart >= %<tDELAY>) buffstart -= %<tDELAY>; 
+             copy1size   = buffstart <= (%<tDELAY> - %<nSamps>)? %<nSamps> : %<tDELAY> - buffstart;        
+             while (chanCount-- ) 
+             {             
+             memcpy(buff + (buffstart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+             memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+             u += %<bytesPerChan>;
+             buff += %<tDELAY> * %<bytesPerElemStr>;
+             }
+             %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)> = (int32_T) (buffstart + %<nSamps>); 
+          %endif             
+         %endif
+   %endif
+%endfunction  %%upMultiCh_ScalarORallEqualDelay 
+
+%% Function: upMultiCh_VectorUnequalDelay ==========================================================
+%%
+%function upMultiCh_VectorUnequalDelay(block) Output 
+    %%
+    %assign   tBUFF                  = "(byte_T *)%<LibBlockDWorkAddr(IC_BUFF,"","",0)>"
+    %assign   tY                     = "(byte_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>"   
+    %assign   tIC                    = "(byte_T *)%<LibBlockParameterAddr(IC,"","",0)>"
+    %assign   tU                     = "(const byte_T *) %<LibBlockInputSignalAddr(INPORT_DATA, "", "", 0)>"
+    %%   
+              byte_T *buff    = %<tBUFF>;
+              const byte_T *u = %<tU>;
+              int_T   delay ;   %% = buffLen;  
+              %assign nChans_minus_1 = %<nChans> - 1           
+              %assign nSamps_star = (nSamps == 1)? "":"%<nSamps> * "
+              %assign bytesPerChan  = "%<nSamps_star> %<bytesPerElemStr>"
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %% cases are: only non-scalar delay: 2 cases- 
+  %% (1) all delay > frmLen,(2) some delay = frmLen, some > frmLen 
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %if  (allDelayGTfrmLen)  %% (i.e. !IS_DIRECT_FEED)
+            /* %<nChans> channel input, vector delay (all delay values > no. of samples per channel) */
+            int_T   chanCount        = %<nChans>;
+            int32_T   *pBuffstart= %<LibBlockDWorkAddr(CIRC_BUF_IDX, "", "", 0)>;
+            while (chanCount-- )   {
+             delay  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+             {
+             int_T  buffstart =  *pBuffstart; %%%<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>;      
+             
+             while (buffstart >= delay) buffstart -= delay; 
+             {
+             int_T copy1size   = buffstart <= (delay - %<nSamps>)? %<nSamps> : (delay - buffstart);
+             memcpy(buff + (buffstart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+             memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+             u +=  %<nSamps_star>  %<bytesPerElemStr>;
+             buff += delay * %<bytesPerElemStr>;
+             }
+             *pBuffstart++ = (int32_T) (buffstart + %<nSamps>);
+             }
+                                  }
+  %else %% some delay = frmLen, some<frmLen
+          /* %<nChans> channel input, vector delay (some delay values less than or 
+           * equal to and some greater than number of samples per channel) 
+           */
+           int_T   chanCount    = %<nChans>;
+           int32_T *pBuffstart= %<LibBlockDWorkAddr(CIRC_BUF_IDX, "", "", 0)>;
+           %%
+       while (chanCount-- )             {
+             delay  = %<LibBlockParameter(Delays,"%<nChans_minus_1> - chanCount","",0)>; 
+             {%%%3
+             const int_T  bytesInBuffer    = delay * %<bytesPerElemStr>;
+             const int_T  bytesNotInBuffer = %<nSamps_star>  %<bytesPerElemStr> - bytesInBuffer;
+             %%
+             if (delay <= %<nSamps>) {
+             memcpy(buff, u + bytesNotInBuffer, bytesInBuffer);
+             u += %<bytesPerChan>;
+             buff += delay * %<bytesPerElemStr>;
+                                      }               
+             else  /* (delay > nSamps) */ 
+             {%%2
+             int_T  buffstart = *pBuffstart; %% %<LibBlockDWork(CIRC_BUF_IDX, "", "", 0)>*%<nSamps> ;      
+             %%
+             while (buffstart >= delay) buffstart -= delay; 
+             {%%1
+                int_T copy1size   = buffstart <= (delay - %<nSamps>)? %<nSamps> : (delay - buffstart);
+                memcpy(buff + (buffstart * %<bytesPerElemStr>), u, copy1size * %<bytesPerElemStr>);
+                memcpy(buff, u + copy1size * %<bytesPerElemStr>, (%<nSamps> - copy1size) * %<bytesPerElemStr>);
+                u += %<nSamps_star>  %<bytesPerElemStr>;
+                buff += delay * %<bytesPerElemStr>;
+             }%%1
+             *pBuffstart++ = (int32_T) (buffstart + %<nSamps>);
+             }%%2
+             }%%%3
+                                             }
+  %endif
+%endfunction  %%upMultiCh_VectorUnequalDelay
+
+%% [EOF] sdspdelay.tlc
+

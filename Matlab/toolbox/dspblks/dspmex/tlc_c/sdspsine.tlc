@@ -1,0 +1,1079 @@
+%%
+%% $RCSfile: sdspsine.tlc,v $
+%% $Revision: 1.19.4.2 $       $Date: 2004/04/12 23:09:39 $
+%%
+%% Abstract: Signal Processing Blockset sine wave source block
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+
+%implements sdspsine "C"
+
+%% Function: BlockTypeSetup ===============================================
+%%
+%function BlockTypeSetup(block, system) void
+
+%% Cache 2*pi as a #define statement:
+%%
+%<LibCacheDefine("#define SDSPSINE_2_PI " + STRING(SFcnParamSettings.Pi2) + "\n")>
+
+%endfunction %% BlockTypeSetup
+
+ 
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign OUTPORT    = 0
+  %assign IS_COMPLEX = CAST("Boolean",(SFcnParamSettings.OutputType == "Complex"))
+  %assign dType      = (IS_COMPLEX) ? "creal_T *" : "real_T *"
+  %assign isPeriodic = CAST("Boolean",(SFcnParamSettings.isPeriodic == "Yes"))
+  %assign outWidth   = LibDataOutputPortWidth(0)
+  %assign nSamps     = (SFcnParamSettings.SampleMode == "Discrete") ? SFcnParamSettings.FrameLength : 1
+  %assign nChans     = outWidth / nSamps
+  %assign scalarY    = (nSamps * nChans == 1)
+  %%
+  %assign block = block + OUTPORT + IS_COMPLEX + dType + isPeriodic ...
+                        + outWidth + nSamps + nChans + scalarY
+
+  %assign InlineParams = (InlineParameters != 0)
+  %assign block = block + InlineParams
+  %%
+  %if (SFcnParamSettings.CompMethod != "Differential")
+    %<AmpFreqPhase(block)>\
+  %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ================================================
+%%
+%function Start(block, system) Output
+    %%
+    %if (LibIsDiscrete(TID) && SFcnParamSettings.CompMethod == "TableLookup")
+        /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - %<Name> - Start */
+        %%
+        %assign ampEle    = LibGetNumberOfElements(amp)
+        %assign freqEle   = LibGetNumberOfElements(freq)
+        %assign phaseEle  = LibGetNumberOfElements(phase)
+        %assign numCombos = MAX(freqEle, phaseEle)
+        %%
+        {
+            /* Determine table sizes */
+            const real_T Ts = %<LibBlockSampleTime(block) / nSamps>;
+            %if freqIncr
+               const real_T *freq = %<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+            %endif
+            %%
+            %%
+            %if numCombos > 1
+                int_T i;
+
+                for (i=0; i<%<numCombos>; i++) {
+                    %<LibBlockDWork(TableSpP,"i","",0)> = (uint16_T)floor(1.0 / (%<freqstr_sin> Ts ) + 0.5);
+                }
+            %else 
+                %<LibBlockDWork(TableSpP,"","",0)> = (uint16_T)floor(1.0 / (%<freqstr_cos> Ts ) + 0.5);
+            %endif
+            %%   
+
+            /* Fill sample tables: */
+            {
+                %assign Ts = LibBlockSampleTime(block) / nSamps
+                const real_T Ts_pi2 = %<SFcnParamSettings.Pi2 * Ts>;
+                %%
+                %<dType>table = (%<dType>)%<LibBlockDWorkAddr(TableValues,"","",0)>;
+                %%
+                %if numCombos > 1
+                    %if ampIncr
+                        const real_T   *amp   = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+                    %endif
+                    %if phaseIncr
+                        const real_T   *phase = %<LibBlockParameterAddr(Phase,  "", "", 0)>;
+                    %endif
+                    %if freqIncr
+                        const real_T   *freq = %<LibBlockParameterAddr(Frequency, "", "", 0)>;
+                    %endif
+                    int_T   i;
+
+                    for (i=0; i<%<numCombos>; i++) {
+				%else
+				    %% Access any one of the params even though we don't need it in the rendered code,
+					%% so that the Accelerator works properly (eg, defines the parameter structure):
+					%assign dummy = LibBlockParameterAddr(Amplitude,  "", "", 0)
+                %endif
+                        %assign       ampVal   = ((ampEle == 1.0) || (ampEle == numCombos)) ? ampstr_cos : ""
+                        const real_T  Ts_pi2_f = %<freqstr_cos> Ts_pi2;
+                        %%
+                        uint16_T      j;
+
+                        %if numCombos > 1     
+                            for (j=0; j < %<LibBlockDWork(TableSpP,"i","",0)>; j++) {
+                        %else
+                            for (j=0; j < %<LibBlockDWork(TableSpP,"","",0)>; j++) {
+                        %endif
+                        %%
+                                %if IS_COMPLEX
+                                    table->re     = %<ampVal> cos(j * Ts_pi2_f %<phasestr_cos>);
+                                    (table++)->im = %<ampVal> sin(j * Ts_pi2_f %<phasestr_cos>);
+                                %else
+                                    *table++ = %<ampVal> sin(j * Ts_pi2_f %<phasestr_cos>);
+                                %endif
+                            }
+                        %if numCombos > 1
+                            %if ampIncr
+                                amp++;
+                            %endif
+                            %if freqIncr
+                                freq++;
+                            %endif
+                            %if phaseIncr
+                                phase++;
+                            %endif
+                       %endif
+                %if numCombos > 1
+                }
+                %endif
+            }
+        }
+    %endif
+
+%endfunction %% Start
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+    %%
+    %if LibIsDiscrete(TID)
+        /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - %<Name> - Initialize */
+        %%
+        %if SFcnParamSettings.CompMethod == "Differential"
+        %%
+            /* Discrete differential mode: */
+            %if SFcnParamSettings.ResetState == "Reset"
+	            %<Init_Diff_Restart(block, nChans)>
+            %else
+                %<Init_Diff_Catchup(block, nChans)>
+            %endif
+        %%
+        %elseif SFcnParamSettings.CompMethod == "TrigFcn"
+        %%
+            %%
+            %if isPeriodic 
+            %%
+            /* Discrete periodic trigonometric mode: */
+                %if SFcnParamSettings.ResetState == "Reset"
+                    /* Restart at time zero: */
+                    %if nChans==1
+                        %<LibBlockDWork(CountIdx,"","",0)> = (uint16_T)0;
+                    %else
+                        memset(%<LibBlockDWorkAddr(CountIdx,"","",0)>, 0, %<nChans>*sizeof(uint16_T));
+                    %endif
+                %%
+                %else %% Catchup Mode
+                %%
+                    /* Catch-up to simulation time: */
+                    {
+                        const real_T Ts = %<LibBlockSampleTime(block) / nSamps>;
+                        %if freqIncr
+                            const real_T *freq = %<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+                        %else
+                            const uint16_T iSpP = (uint16_T)((1.0 / (%<freqstr_cos> Ts)) + .5);
+                        %endif
+                        %%
+                        %if nChans > 1   %% multiple channels
+                        %%
+                          uint16_T *count = %<LibBlockDWorkAddr(CountIdx,"","",0)>;
+                          int_T i;
+
+                          for (i=0; i < %<nChans>; i++) {
+                              %if freqIncr
+                                  const uint16_T iSpP = (uint16_T)((1.0 / (%<freqstr_sin> Ts)) + .5);
+                              %endif
+                              *count++ = (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % iSpP);
+                          }  %% end of channel loop
+                        %%
+                        %else  %% single channel
+                        %%
+                            %<LibBlockDWork(CountIdx,"","",0)> = (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % iSpP);
+                        %endif
+                    }
+        
+                %endif
+            %else  %% non-periodic discrete trig mode
+            %%
+            /* Discrete aperiodic trigonometric mode: */
+                %if SFcnParamSettings.ResetState == "Reset"
+                    /* Restart at time zero: */
+	                %<LibBlockDWork(CountIdx, "", "", 0)> = (uint32_T)0;
+                %else
+	                {
+                      /* Catch-up to simulation time: */
+                      %%
+	                  %% We want the cast to uint32 to always truncate for the count because
+	                  %% LibGetT() will give return a time that is some fraction later than
+	                  %% the actual time of this task.  (critical in multi-tasking mode)
+	                  %% Note the difference between this and the CMEX which uses ssGetSampleTime(S,0)
+	                  %% because it has access to the tid, which the RTW mdlInit does not.
+                      %%
+                      const real_T Ts = %<LibBlockSampleTime(block) / nSamps>;
+	                  %<LibBlockDWork(CountIdx, "", "", 0)> = (uint32_T)((%<LibGetT()> / Ts) + 0.5);
+	                }
+                %endif 
+            %endif %% isPeriodic loop
+        %%
+        %elseif SFcnParamSettings.CompMethod == "TableLookup"
+        %%
+            %assign freqEle   = LibGetNumberOfElements(freq)
+            %assign phaseEle  = LibGetNumberOfElements(phase)
+            %assign numCombos = MAX(freqEle, phaseEle)
+            %%
+            /* Table lookup: */
+            %if SFcnParamSettings.ResetState == "Reset"
+                /* Restart at time zero: */
+                %if numCombos == 1
+                    memset(%<LibBlockDWorkAddr(TableIdx,"","",0)>, 0, sizeof(uint16_T));
+                %else 
+                    memset(%<LibBlockDWorkAddr(TableIdx,"","",0)>, 0, %<numCombos>*sizeof(uint16_T));
+                %endif
+            %else
+                /* Catch up to simulation time: */
+                {
+                    const real_T Ts = %<LibBlockSampleTime(block) / nSamps>;
+                    %if numCombos > 1
+                        int_T i;
+                        for (i=0; i<%<numCombos>; i++) {            
+                            %<LibBlockDWork(TableIdx,"i","",0)> =
+                                    (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % %<LibBlockDWork(TableSpP,"i","",0)>);
+                        }
+                    %else
+                        %<LibBlockDWork(TableIdx,"","",0)> = 
+                                (uint16_T)((uint32_T)(%<LibGetT()> / Ts + 0.5) % %<LibBlockDWork(TableSpP,"","",0)>);
+                    %endif
+                }
+            %endif
+            %%
+        %endif     %% CompMethod loop
+    %endif         %% Discrete loop 
+  
+%endfunction  %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Sine Wave (%<ParamSettings.FunctionName>) - %<Name> - Output */
+  %%
+  %if LibIsDiscrete(TID)
+        %if SFcnParamSettings.CompMethod == "TrigFcn"
+            %if %<isPeriodic>
+                %%
+                %<DiscreteTrigPeriodic(block)>
+                %%
+            %else
+                %%
+                %<DiscreteTrig(block)>
+                %%
+            %endif
+        %elseif SFcnParamSettings.CompMethod == "TableLookup"
+            %%
+            %<TableLookup(block)>
+            %%
+        %else
+            %%
+            %<Differential(block)>
+            %%
+        %endif
+  %else
+        %%
+        %<Continuous(block)>
+        %%
+  %endif
+   
+%endfunction  %% Outputs
+
+
+%% Function: DiscreteTrig =====================================================
+%%
+%function DiscreteTrig(block) Output
+  %%
+  %assign Ts     = LibBlockSampleTime(block) / nSamps
+  %assign Ts_pi2 = SFcnParamSettings.Pi2 * Ts
+  {
+    /* Discrete aperiodic trigonometric mode: */
+    const real_T Ts_pi2 = %<Ts_pi2>;
+    %%
+    %if ampIncr
+      const real_T   *amp   = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+    %endif
+    %if freqIncr
+      const real_T   *freq  = %<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+    %endif
+    %if phaseIncr
+      const real_T   *phase = %<LibBlockParameterAddr(Phase,  "", "", 0)>;
+    %endif
+    %%
+    %if !scalarY
+        %if (nChans > 1) 
+            %if (nSamps == 1)
+               %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>"
+               %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.re"
+               %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.im"
+            %else
+               %<dType>y = (%<dType>)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+               %assign Ystr    = "*y++"
+               %assign Ystr_re =  "y->re"
+               %assign Ystr_im =  "(y++)->im"
+               %%
+            %endif
+        %else
+           %% Only to be used when nSamps > 1 when nChans == 1
+           %% If nSamps==1, another special case is used that ignores these assignments:
+           %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+           %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.re"
+           %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.im"
+        %endif
+    %endif
+    %%
+    %if nSamps > 1  %% multiple samples per frame
+        %if nChans > 1
+            uint32_T cnt;  /* Copy counter for time update */
+        %else
+            %% multiple samples per frame, but only one channel:
+            uint32_T cnt = %<LibBlockDWork(CountIdx, "", "", 0)>; /* Reset the counter */
+        %endif
+    %endif
+    %%
+    %if nChans > 1
+        int_T     i; 
+    
+        /* Loop over each channel: */
+        for (i = 0; i < %<nChans>; i++) {
+    %endif
+    %%
+        const real_T Ts_pi2_f = %<freqstr_cos> Ts_pi2;
+        %if (nChans > 1 && nSamps > 1 && ampIncr)
+            real_T ampVal = *amp;
+        %endif
+        %%
+        %if nSamps > 1
+            %% Frame loop
+            int_T j;
+            %if nChans > 1
+                %% multiple channels, multiple samples per frame:
+                cnt = %<LibBlockDWork(CountIdx, "", "", 0)>; /* Reset the counter */
+            %endif
+            %%
+            %% Construct argument to the cos/sin functions:
+            %%
+            %assign argstr = "(cnt++) * Ts_pi2_f " + phasestr_cos
+
+            /* Loop over frame: */
+            for (j=0; j < %<nSamps>; j++) {
+        %else
+            %% No frame loop
+            %%
+            %% Construct argument to the cos/sin functions:
+            %%
+            %if nChans==1 
+               %% If there's no frame loop, AND only 1 channel, update
+               %% the counter in-place:
+                %assign argstr = "%<LibBlockDWork(CountIdx, "", "", 0)>++ * Ts_pi2_f " + phasestr_cos
+            %else
+                %assign argstr = "%<LibBlockDWork(CountIdx, "", "", 0)> * Ts_pi2_f " + phasestr_cos
+            %endif
+        %endif
+        %%
+        %if IS_COMPLEX
+            const real_T arg = %<argstr>;
+            %if scalarY
+                %<LibBlockOutputSignal(OUTPORT, "","",0)>.re = %<ampstr_cos> cos(arg);
+                %<LibBlockOutputSignal(OUTPORT, "","",0)>.im = %<ampstr_cos> sin(arg);	    
+            %else
+                %<Ystr_re> = %<ampstr_cos> cos(arg);
+                %<Ystr_im> = %<ampstr_cos> sin(arg);	    
+            %endif
+        %else
+            %if scalarY
+                %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<ampstr_cos> sin(%<argstr>);
+            %else
+                %<Ystr> = %<ampstr_cos> sin(%<argstr>);
+            %endif
+        %endif
+    %%
+    %if nSamps > 1
+        }  %% end of frame loop
+    %endif
+    %%
+    %if nChans > 1
+        /* Next channel parameters */
+        %if ampIncr
+            amp++;
+        %endif
+        %if freqIncr
+            freq++;
+        %endif
+        %if phaseIncr
+            phase++;
+        %endif 
+        %%
+      } %% end of channel loop
+    %endif
+    %if nSamps > 1
+        %<LibBlockDWork(CountIdx, "", "", 0)> = cnt; /* Update to new count */
+    %else
+        %% If there's no frame loop, we update the counter here
+        %% However, if there's only 1 channel, we updated the counter "in place",
+        %% so don't do it again!
+        %if nChans>1
+            %<LibBlockDWork(CountIdx, "", "", 0)>++; /* Update to new count */
+        %endif
+    %endif
+  }
+
+%endfunction %% DiscreteTrig
+
+
+%% Function: DiscreteTrigPeriodic =============================================
+%%
+%function DiscreteTrigPeriodic(block) Output
+  %%
+  %assign Ts     = LibBlockSampleTime(block) / nSamps
+  %assign Ts_pi2 = SFcnParamSettings.Pi2 * Ts
+  {
+    /* Discrete periodic trigonometric mode:
+     * Uses a separate counter for each frequency to be generated,
+     * resetting it after each period.
+     */
+    %if !InlineParams
+        const real_T Ts = %<Ts>;
+        const real_T Ts_pi2 = %<Ts_pi2>;
+    %endif
+    %%
+    %if !scalarY
+        uint16_T *count = %<LibBlockDWorkAddr(CountIdx, "", "", 0)>;
+        %<dType>y  = (%<dType>)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+    %endif
+    %%
+    %if ampIncr
+      const real_T *amp   = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+    %endif
+    %if freqIncr
+      const real_T *freq  = %<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+    %endif
+    %if phaseIncr
+      const real_T *phase = %<LibBlockParameterAddr(Phase,  "", "", 0)>;
+    %endif
+    %%
+    %if nChans > 1
+      int_T i;
+
+      /* Loop over each channel: */
+      for (i = 0; i < %<nChans>; i++) {
+    %endif
+    %%
+        %if InlineParams
+            const real_T Ts_pi2_f = %<freqstr_cos> %<Ts_pi2>;
+            const int16_T  iSpP = (int16_T)((1.0 / (%<freqstr_cos> %<Ts>)) + 0.5);
+        %else
+            const real_T Ts_pi2_f = %<freqstr_cos> Ts_pi2;
+            const int16_T  iSpP = (int16_T)((1.0 / (%<freqstr_cos> Ts)) + 0.5);
+        %endif
+    %%
+    %if nSamps > 1
+        int_T j;
+
+        /* Loop over frame: */
+        for (j=0; j < %<nSamps>; j++) {  
+    %endif
+    %%
+    %% Construct argument to the cos/sin functions:
+    %if scalarY
+        %assign argstr = "(%<LibBlockDWork(CountIdx, "", "", 0)>++) * Ts_pi2_f " + phasestr_cos
+    %else
+        %assign argstr = "(*count)++ * Ts_pi2_f " + phasestr_cos
+    %endif
+    %%
+    %if IS_COMPLEX
+        const real_T arg = %<argstr>;
+
+        %if scalarY
+            %<LibBlockOutputSignal(OUTPORT, "","",0)>.re = %<ampstr_cos> cos(arg);
+            %<LibBlockOutputSignal(OUTPORT, "","",0)>.im = %<ampstr_cos> sin(arg);	    
+        %else
+            y->re     = %<ampstr_cos> cos(arg);
+            (y++)->im = %<ampstr_cos> sin(arg);	    
+        %endif
+    %else
+        %if scalarY
+            %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<ampstr_cos> sin(%<argstr>);
+        %else
+            *y++ = %<ampstr_cos> sin(%<argstr>);
+        %endif
+    %endif
+    %%
+        %if !scalarY
+            if (*count >= iSpP) *count = 0;  /* Update new count */
+        %else
+            if (%<LibBlockDWork(CountIdx, "", "", 0)> >= iSpP) %<LibBlockDWork(CountIdx, "", "", 0)> = 0; /* Update new count */
+        %endif
+    %if nSamps > 1
+        }  %% end of frame loop
+    %endif
+    %%
+    %if nChans > 1
+        count++;    /* Next channel parameters */
+        %if ampIncr
+            amp++;
+        %endif
+        %if freqIncr
+            freq++;
+        %endif
+        %if phaseIncr
+            phase++;
+        %endif 
+        %%
+      } %% end of channel loop
+    %endif
+  }
+
+%endfunction %% DiscreteTrigPeriodic
+
+
+%% Function: TableLookup =====================================================
+%%
+%function TableLookup(block) Output
+    %assign ampEle    = LibGetNumberOfElements(amp)
+    %assign freqEle   = LibGetNumberOfElements(freq)
+    %assign phaseEle  = LibGetNumberOfElements(phase)
+    %assign numCombos = MAX(freqEle, phaseEle)
+    %assign AmpEncoded = ( (ampEle==1) || (ampEle==numCombos) )
+   {
+        /* Table lookup mode: */
+        %if (nChans > 1) && AmpEncoded
+           %<dType>table = (%<dType>)%<LibBlockDWorkAddr(TableValues,"","",0)>;
+        %endif
+        %%
+        %if !scalarY
+            %if nChans>1
+               %<dType>y = (%<dType>)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>; 
+               %assign Ystr    = "*y++"
+               %assign Ystr_re =  "y->re"
+               %assign Ystr_im =  "(y++)->im"
+            %else
+               %% Only to be used when nSamps > 1 when nChans == 1
+               %% If nSamps==1, another special case is used that ignores these assignments:
+               %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+               %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.re"
+               %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.im"
+            %endif
+            %%
+            %if nChans>1
+                uint16_T *tableOffsets  = %<LibBlockDWorkAddr(TableIdx,"","",0)>;
+                %assign tableOffsets_str = "*tableOffsets"
+            %else
+                %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+            %endif
+        %else
+                %assign tableOffsets_str = LibBlockDWork(TableIdx,"","",0)
+        %endif
+        %%
+        %if !AmpEncoded
+            const uint16_T orig_offset = %<tableOffsets_str>;
+            %%
+            %% amp must be a vector if it is not encoded
+            %% therefore nChans must be > 1 
+            %%
+            const real_T *amp = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+            %%
+            int_T i;
+            
+            for (i=0; i++ < %<nChans>; ) {
+                /* Loop over each combination of freq/phase/amplitude */
+                %if nSamps>1
+                    int_T j;
+                    for (j=0; j++ < %<nSamps>;) {
+                %endif
+                    %%
+                        %if (IS_COMPLEX) 
+                            y->re     = %<ampstr_cos> %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.re;
+                            (y++)->im = %<ampstr_cos> %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.im;
+                        %else
+                            *y++ = %<ampstr_cos> %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>;
+                        %endif
+                        if (++(%<tableOffsets_str>) >= %<LibBlockDWork(TableSpP,"","",0)>) {
+                           %<tableOffsets_str>=0;   /* Increment and wrap */
+                        }
+                %if nSamps>1
+                    }
+                %endif
+                amp++;
+                if (i<%<nChans>) %<tableOffsets_str> = orig_offset;
+            }
+        %else
+            %% Amplitude is encoded in the table:
+            %%
+            %% Special Case:  
+            %if (scalarY)
+                %if (IS_COMPLEX) 
+                    %<LibBlockOutputSignal(OUTPORT, "","",0)>.re = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.re;
+                    %<LibBlockOutputSignal(OUTPORT, "","",0)>.im = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.im;
+                %else
+                    %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>;
+                %endif
+                %%
+                if (++(%<tableOffsets_str>) >= %<LibBlockDWork(TableSpP,"","",0)>) {
+                    %<tableOffsets_str>=0; /* Increment and wrap */
+                }
+                %%
+            %else
+                %if nChans>1
+                    %% Multiple channel case
+                    int_T i;
+                    for (i=0; i < %<nChans>; i++) {
+                        %%
+                        %if nSamps>1
+                           %% Have multiple samples per frame:
+                                const uint16_T SpP = %<LibBlockDWork(TableSpP,"i","",0)>;
+                                %assign SpP_str = "SpP"
+                        %else
+                           %% Single sample per frame:
+                            %assign SpP_str = LibBlockDWork(TableSpP,"i","",0)
+                        %endif
+                %else
+                        %% Single channel case - inline the SpP reference
+                        %assign SpP_str = LibBlockDWork(TableSpP,"","",0)
+                %endif
+                        %%
+                        %if nSamps>1
+                            int_T j;
+                            for (j=0; j < %<nSamps>; j++) {
+                        %endif
+                        %%
+                        %%
+                        %if nChans>1
+                                %if (IS_COMPLEX) 
+                                    %<Ystr_re> = table[%<tableOffsets_str>].re;
+                                    %<Ystr_im> = table[%<tableOffsets_str>].im;
+                                %else
+                                    %<Ystr> = table[%<tableOffsets_str>];
+                                %endif
+                        %else
+                                %if (IS_COMPLEX) 
+                                    %<Ystr_re> = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.re;
+                                    %<Ystr_im> = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>.im;
+                                %else
+                                    %<Ystr>    = %<LibBlockDWork(TableValues,"%<tableOffsets_str>","",0)>;
+                                %endif
+                        %endif
+                                if (++(%<tableOffsets_str>) >= %<SpP_str>) {
+                                    %<tableOffsets_str>=0; /* Increment and wrap */
+                                }
+                        %%
+                        %if nSamps>1
+                            }
+                        %endif
+                        %%
+                %if nChans>1
+                        %% No need to increment table pointers if no other channels exist
+                        tableOffsets++;
+                        table += %<SpP_str>;
+                    }
+                %endif
+            %endif
+        %endif
+   }
+
+%endfunction
+
+
+%% Function: Differential =====================================================
+%%
+%function Differential(block) Output
+  %%
+  %assign amp       = Amplitude.Value
+  %assign ampIncr   = LibGetNumberOfElements(amp) > 1
+  %assign ampscalar = LibBlockParameter(Amplitude,  "", "", 0)
+  %assign ampstr    = ampIncr ? ((nSamps>1 || IS_COMPLEX) ? "ampval *" : "*amp++ *") : "%<ampscalar> *"
+  %assign Frequency = SFcnParamSettings.Frequency
+  %assign Phase     = SFcnParamSettings.Phase
+  %assign freqIncr  = LibGetNumberOfElements(Frequency) > 1
+  %assign phaseIncr = LibGetNumberOfElements(Phase) > 1
+  %assign istr      = ""
+  %%
+  {
+  %if scalarY
+    %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "","",0)>"
+    %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "","",0)>.re"
+    %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "","",0)>.im"
+  %else
+    %if (nChans > 1) 
+        %if (nSamps == 1)
+           %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>"
+           %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.re"
+           %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "i","",0)>.im"
+        %else
+           %<dType>y = (%<dType>)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+           %assign Ystr    = "*y++"
+           %assign Ystr_re = "y->re"
+           %assign Ystr_im = "(y++)->im"
+        %endif
+    %else
+       %% Only to be used when nSamps > 1 when nChans == 1
+       %% If nSamps==1, another special case is used that ignores these assignments:
+       %assign Ystr    = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>"
+       %assign Ystr_re = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.re"
+       %assign Ystr_im = "%<LibBlockOutputSignal(OUTPORT, "j","",0)>.im"
+    %endif
+  %endif
+
+  %if !freqIncr && !phaseIncr
+    %% H and Phi are scalar
+    %% This can occur when amplictude is a vector and nChans > 1
+    %assign hlen   = 1
+    %assign philen = 1
+    %%
+    %assign hstr   = "h"
+    %assign phistr = "phi"
+  %else
+    %% H and Phi are vector    
+    %assign hlen      = LibGetNumberOfElements(SFcnParamSettings.H)
+    %assign philen    = LibGetNumberOfElements(SFcnParamSettings.Phi)
+    %% 
+    %assign hstr   = "h[i]"
+    %assign phistr = "phi[i]"
+  %endif
+  %%
+    /* Differential mode: */
+    %%
+    %<Define_H_and_PHI(hlen, philen)>
+    %%
+    %if ampIncr
+      const real_T *amp = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+    %endif
+    %%
+    %if nChans > 1
+      %assign istr = "i"
+      int_T i;    
+      for (i = 0; i < %<nChans>; i++) {
+    %endif
+    %%
+    %if ((nSamps > 1 || IS_COMPLEX) && ampIncr)
+	    real_T ampval = *amp++;
+    %endif
+    %if (nSamps > 1)
+      int_T j;
+      for (j=0; j < %<nSamps>; j++) {
+    %endif
+	  /* Output */
+	  creal_T lastval;
+	  
+	  lastval.re = %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tRealPart>0")>;
+	  lastval.im = %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tImagPart>0")>;
+	  
+      %if IS_COMPLEX
+        %%
+	    %<Ystr_re> = %<ampstr> (%<hstr>.re * CMULT_RE(lastval, %<phistr>) -
+                                %<hstr>.im * CMULT_IM(lastval, %<phistr>) );
+        %%
+	    %<Ystr_im> = %<ampstr> (%<hstr>.re * CMULT_IM(lastval, %<phistr>) +
+                                %<hstr>.im * CMULT_RE(lastval, %<phistr>) );
+        %%
+      %else
+        %%
+	    %<Ystr> = %<ampstr> (%<hstr>.re * CMULT_IM(lastval, %<phistr>) +
+                             %<hstr>.im * CMULT_RE(lastval, %<phistr>) );
+	  %endif
+
+	  /* Update */
+	  %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tRealPart>0")> = CMULT_RE(lastval, %<hstr>);
+	  %<LibBlockDWork(LastIdx, "%<istr>", "", "%<tImagPart>0")> = CMULT_IM(lastval, %<hstr>);
+	%if nSamps > 1  
+	}
+	%endif
+	%%
+      %if nChans > 1
+      }
+      %endif
+  }
+    
+%endfunction %% Differential
+
+
+%% Function: Continuous =======================================================
+%%
+%function Continuous(block) Output
+    %%
+    %% Assign appropriate variables for amplitude, frequency, and phase:
+    %%
+    %if outWidth == 1
+        %assign y = LibBlockOutputSignal(OUTPORT, "","",0)
+        %%
+        /* Continuous mode: */
+        %% The parentheses are important for numerical precision within the simulation.
+        %if IS_COMPLEX
+            %<y>.re = %<ampstr_cos> cos(%<freqstr_cos> (SDSPSINE_2_PI * %<LibGetTaskTimeFromTID(block)>) %<phasestr_cos>);
+            %<y>.im = %<ampstr_sin> sin(%<freqstr_sin> (SDSPSINE_2_PI * %<LibGetTaskTimeFromTID(block)>) %<phasestr_sin>);
+        %else
+            %<y>    = %<ampstr_sin> sin(%<freqstr_sin> (SDSPSINE_2_PI * %<LibGetTaskTimeFromTID(block)>) %<phasestr_sin>);
+        %endif
+        %%
+    %else
+    {
+        /* Continuous mode: */
+        const real_T t = SDSPSINE_2_PI * %<LibGetTaskTimeFromTID(block)>;
+        %<dType>y = (%<dType>)%<LibBlockOutputSignalAddr(OUTPORT, "","",0)>;  
+        %%
+        %if ampIncr  
+            const real_T   *amp   = %<LibBlockParameterAddr(Amplitude,  "", "", 0)>;
+        %endif
+        %if freqIncr
+            const real_T   *freq  = %<LibBlockParameterAddr(Frequency,  "", "", 0)>;
+        %endif
+        %if phaseIncr
+            const real_T   *phase = %<LibBlockParameterAddr(Phase,  "", "", 0)>;
+        %endif      
+        %%
+        %% The code:
+        %%
+        int_T i;
+        for (i = 0; i < %<outWidth>; i++) {
+            %if IS_COMPLEX
+                y->re     = %<ampstr_cos> cos(%<freqstr_cos> t %<phasestr_cos>);
+                (y++)->im = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+            %else
+                *y++ = %<ampstr_sin> sin(%<freqstr_sin> t %<phasestr_sin>);
+            %endif
+        }
+   }  %% scalar outWidth
+%endif
+
+%endfunction %% Continuous
+
+
+%% Function: Define_H_and_PHI =================================================
+%%
+%function Define_H_and_PHI(hlen, philen) Output
+     %%
+     %% H and PHI are always complex
+     %%
+     %assign h     = SFcnParamSettings.H
+     %assign astr  = ""
+     %%
+     %if hlen ==1
+       static const creal_T h = {%<REAL(h[0])>,%<IMAG(h[0])>};
+     %else
+       static const creal_T h[%<hlen>] = {
+	 %foreach i = hlen
+	   %assign astr  = astr + "{%<REAL(h[i])>,%<IMAG(h[i])>}"
+	   %if (i < hlen-1)
+	     %assign astr = astr + ","
+	   %else
+	     %assign astr = astr + "};"
+	   %endif
+	   %<astr>
+	   %assign astr = ""
+	 %endforeach
+     %endif
+     %%
+     %assign phi     = SFcnParamSettings.Phi
+     %assign astr    = ""
+     %%
+     %if philen == 1
+       static const creal_T phi = {%<REAL(phi[0])>,%<IMAG(phi[0])>};
+     %else
+       static const creal_T phi[%<hlen>] = {
+	 %foreach i = hlen
+	   %assign astr  = astr + "{%<REAL(phi[i])>,%<IMAG(phi[i])>}"
+	   %if (i < philen-1)
+	     %assign astr = astr + ","
+	   %else
+	     %assign astr = astr + "};"
+	   %endif
+	   %<astr>
+	   %assign astr = ""
+	 %endforeach   
+    %endif
+    %%
+%endfunction %% Define_H_and_PHI
+
+
+%% Function: Init_Diff_Restart ================================================
+%%
+%%
+%function Init_Diff_Restart(block, nChans) Output
+  %%
+  %% Set all "LastIdx" entries in RWork to 1+i0
+  %%
+  /* Restart at time zero: */
+  %if nChans > 1
+    {
+      int i;
+      for(i=0; i < %<nChans>; i++) {
+	%assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+	%assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+	%<LastRe> = 1.0;
+	%<LastIm> = 0.0;
+      }
+    }
+  %else
+    %<LibBlockDWork(LastIdx, "", "", "%<tRealPart>0")> = 1.0;
+    %<LibBlockDWork(LastIdx, "", "", "%<tImagPart>0")> = 0.0;
+  %endif  
+  %%
+%endfunction  %% Init_Diff_Restart
+
+
+%% Function: Init_Diff_Catchup ================================================
+%%
+%%
+%function Init_Diff_Catchup(block, nChans) Output
+  %%
+  %% Set all "LastIdx" entries to current simulation time
+  %%
+  %assign Ts = LibBlockSampleTime(block)
+  %% We want the cast to uint32 to always truncate for the samphits because
+  %% LibGetT() will give return a time that is some fraction later than
+  %% the actual time of this task.  (critical in multi-tasking mode)
+  %% We should use %<LibGetTaskTimeFromTID(block)>, but the tid is not
+  %% available to mdlInitialCondidtions.
+  %%
+  /* Catch up to in time: */
+  %if nChans > 1
+    %assign freqIncr  = (SIZE(SFcnParamSettings.Frequency,0) * SIZE(SFcnParamSettings.Frequency,1)) > 1
+    %%
+    %if freqIncr > 0
+      {
+	uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>) / %<Ts>);
+	real_T   pi2t     = %<SFcnParamSettings.Pi2> * samphits * %<Ts>; 
+	%<Define_Freq(nChans)>
+	int i;
+	for(i=0; i < %<nChans>; i++) {
+	  %assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+	  %assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+	  %<LastRe> = cos(pi2t * Freq[i]);
+	  %<LastIm> = sin(pi2t * Freq[i]);
+	}	
+      }
+    %else	
+      {
+	uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>) / %<Ts>);
+	real_T arg = %<SFcnParamSettings.Frequency[0]> * %<SFcnParamSettings.Pi2> * samphits * %<Ts>;
+	real_T cos_value = cos(arg);
+	real_T sin_value = sin(arg);
+	int i;
+	for(i=0; i < %<nChans>; i++) {
+	  %assign LastRe = LibBlockDWork(LastIdx, "i", "", "%<tRealPart>")
+	  %assign LastIm = LibBlockDWork(LastIdx, "i", "", "%<tImagPart>")
+	  %<LastRe> = cos_value;
+	  %<LastIm> = sin_value;
+	}
+      }
+    %endif
+    %%
+  %else    
+    {
+      uint32_T samphits = (uint32_T)((%<LibGetT()>+%<Ts/2>) / %<Ts>);
+      real_T arg = %<SFcnParamSettings.Frequency[0]> * %<SFcnParamSettings.Pi2> * samphits * %<Ts>;
+      %<LibBlockDWork(LastIdx, "", "", "%<tRealPart>0")> = cos(arg);
+      %<LibBlockDWork(LastIdx, "", "", "%<tImagPart>0")> = sin(arg);    
+    }
+  %endif
+  %%  
+%endfunction  %% Init_Diff_Catchup
+
+
+%% Function: Define_Freq ======================================================
+%%
+%function Define_Freq(freq_len) Output
+  %%
+  %assign f     = SFcnParamSettings.Frequency
+  %assign astr  = ""
+  %%
+  static const real_T Freq[%<freq_len>] = {
+    %foreach i = freq_len
+      %assign astr  = astr + "%<f[i]>"
+      %if (i < freq_len-1)
+	%assign astr = astr + ","
+      %else
+	%assign astr = astr + "};"
+      %endif
+      %<astr>
+      %assign astr = ""
+    %endforeach
+    %%
+%endfunction %% Define_Freq
+
+
+%% Function: AmpFreqPhase =====================================================
+%%
+%function AmpFreqPhase(block) void
+
+    %% ++ is for framebased.
+    %%   
+    %assign amp       = Amplitude.Value
+    %assign ampIncr   = LibGetNumberOfElements(amp) > 1
+
+    %if !ampIncr
+        %% amp is a scalar
+        %if InlineParams
+            %assign ampstr_cos = (amp[0] == 1.0) ? "" : STRING(amp[0]) + " *"
+            %assign ampstr_sin = ampstr_cos
+         %else
+            %assign ampscalar  = LibBlockParameter(Amplitude,  "", "", 0)
+            %assign ampstr_cos = "%<ampscalar> *"
+            %assign ampstr_sin = ampstr_cos
+         %endif
+    %else
+        %if (SFcnParamSettings.CompMethod == "TrigFcn" && !isPeriodic && nChans > 1 && nSamps > 1)
+            %assign ampstr_cos = "ampVal *"
+            %assign ampstr_sin = " "
+        %else
+            %assign ampstr_cos = "(*amp) *"
+            %assign ampstr_sin = "(*amp++) *"
+        %endif
+    %endif
+    %assign block = block + amp + ampIncr + ampstr_cos + ampstr_sin
+    
+    %assign freq     = Frequency.Value
+    %assign freqIncr = LibGetNumberOfElements(freq) > 1
+    %if !freqIncr
+        %% freq is a scalar
+        %if InlineParams
+            %assign freqstr_cos = (freq[0] == 1.0) ? "" : STRING(freq[0]) + " *"
+            %assign freqstr_sin = freqstr_cos
+        %else
+            %assign freqscalar  = LibBlockParameter(Frequency,  "", "", 0)  
+            %assign freqstr_cos = "%<freqscalar> *"
+            %assign freqstr_sin = freqstr_cos
+        %endif
+    %else
+        %assign freqstr_cos = "(*freq) *"
+        %assign freqstr_sin = "(*freq++) *"
+    %endif
+    %assign block = block + freq + freqIncr + freqstr_cos + freqstr_sin
+
+
+    %assign phase     = Phase.Value
+    %assign phaseIncr = LibGetNumberOfElements(phase) > 1
+    %if !phaseIncr
+        %% phase is a scalar
+        %if InlineParams
+            %assign phasestr_cos = (phase[0] == 0.0) ? "" : "+ " + STRING(phase[0])
+            %assign phasestr_sin = phasestr_cos
+        %else
+            %assign phasescalar  = LibBlockParameter(Phase,  "", "", 0)  
+            %assign phasestr_cos = "+ %<phasescalar>"
+            %assign phasestr_sin = phasestr_cos
+        %endif
+    %else
+        %assign phasestr_cos = "+ (*phase)"
+        %assign phasestr_sin = "+ (*phase++)"
+    %endif
+    %assign block = block + phase + phaseIncr + phasestr_cos + phasestr_sin
+
+%endfunction %% AmpFreqPhase
+
+
+%% [EOF] sdspsine.tlc

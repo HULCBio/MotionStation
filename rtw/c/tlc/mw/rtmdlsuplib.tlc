@@ -1,0 +1,164 @@
+%% 
+%% $Revision: 1.1.6.3 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Library to support the notion of an rtModel object.
+%%      Currently also contains routines for root SimStruct
+%%
+
+%if EXISTS("_RTMDLSUPLIB_") == 0
+%assign _RTMDLSUPLIB_ = 1
+
+%% Function: SLibGenRootTermMemFreeCode ========================================
+%% Abstract:
+%%   Dump memory free code in MdlTerminate when we are using UsingMalloc
+%%
+%function SLibGenRootTermMemFreeCode() Output
+  %assign isSfcnCF = (CodeFormat == "S-Function")
+  %assign s        = tChildSimStruct
+
+  %% Free the rest of the model.  Note these dependencies.
+  %%   o free everything in mdlInfo
+  %%   o free mdlInfo
+  %%   o free SimStruct
+  %%
+  %if isSfcnCF
+    #if defined(RT_MALLOC) || defined(MATLAB_MEX_FILE)
+  %endif
+  %if NumChildSFunctions > 0
+      
+    /* child S-function code */
+    if( %<RTMuGet("SFunctions")> ) {
+      %foreach childIdx = NumChildSFunctions
+	%assign thisBlock = ChildSFunctionList[childIdx]
+	%with thisBlock
+	  /* %<TypeLevel> Block: %<Name> (%<ParamSettings.FunctionName>) */
+	  {
+	    SimStruct *%<s> = %<RTMGetIdxed("SFunction", childIdx)>;
+	    %<SLibGenChildSfcnTermMemFreeCode(s)>
+	  }
+	%endwith
+      %endforeach
+      %%
+      %% Free all the child SimStructs in one shot. All children
+      %% were allocated in a single malloc.
+      %%
+      rt_FREE(%<RTMGetIdxed("SFunction", 0)>)
+      
+      %% Free the array of child SimStruct pointers
+      rt_FREE(%<RTMuGet("SFunctions")>);
+    }
+  %endif  %% NumChildSFunctions > 0
+ 
+  %if isSfcnCF
+    %% Free memory allocated in model_malloc()
+    if ( %<RTMGet("UserData")> != NULL ) {
+      %if NumBlockSignals > 0
+	rt_FREE(%<RTMGet("LocalBlockIO")>);
+      %endif
+      %if NumZCEvents > 0
+	rt_FREE(%<RTMuGet("PrevZCSigState")>);
+      %endif
+      %if SolverType == "VariableStep" && ...
+	SolverResetInfo.NumNonContDerivSignals > 0
+        rt_FREE(%<RTMGet("LocalNonContDerivSig")>);
+      %endif
+    }
+    rt_FREE(%<RTMGet("UserData")>);
+  %else
+    rt_FREE(%<RTMGet("RTWSolverInfo")>);
+    rt_FREE(%<RTMGet("RTWSfcnInfo")>);
+
+    /* model code */
+    %if !LibBlockIOStructIsEmpty()
+      {
+	real_T *ptr = %<RTMGet("BlockIO")>;
+	rt_FREE(ptr);
+      }
+    %endif
+    %if !LibContStatesStructIsEmpty()
+      {
+	real_T *ptr = %<RTMGet("ContStates")>;
+	rt_FREE(ptr);
+      }
+    %endif
+    %if !LibExternalInputsStructIsEmpty()
+      {
+	real_T *ptr = %<RTMGet("U")>;
+	rt_FREE(ptr);
+      }
+    %endif
+    %if !LibExternalOutputsStructIsEmpty()
+      {
+	real_T *ptr = %<RTMGet("Y")>;
+	rt_FREE(ptr);
+      }
+    %endif
+    %if !LibDWorkStructIsEmpty()
+      rt_FREE(%<RTMGet("RootDWork")>);
+    %endif
+    %if !LibPrevZCStatesStructIsEmpty()
+      rt_FREE(%<RTMGet("PrevZCSigState")>);
+    %endif
+    %if ExtMode == 1
+      {
+	DataTypeTransInfo *dtInfo = (DataTypeTransInfo *) ...
+	  %<RTMGet("ModelMappingInfo")>;
+	%if !LibBlockIOStructIsEmpty()
+	  DataTypeTransitionTable *BTransTable = ...
+	    dtGetBIODataTypeTrans(dtInfo);
+	%endif
+	
+	%if !LibBlockIOStructIsEmpty()
+	  rt_FREE(dtGetTransitions(BTransTable));
+	  rt_FREE(BTransTable);
+	%endif
+	%if LibGetNumDataTypesInModel() > 0
+	  rt_FREE(dtGetDataTypeSizes(dtInfo));
+	  {
+	    void *ptr = (void *) dtGetDataTypeNames(dtInfo);
+	    rt_FREE(ptr);
+	  }
+	%endif
+	rt_FREE(dtInfo);
+      }
+    %endif
+    rt_FREE(%<RTMGet("SampleTimePtr")>);
+    rt_FREE(%<RTMGet("OffsetTimePtr")>);
+    rt_FREE(%<RTMGet("SampleTimeTaskIDPtr")>);
+    rt_FREE(%<RTMGet("TPtr")>);
+    rt_FREE(%<RTMGet("SampleHitPtr")>);
+    %if CompiledModel.SolverType == "FixedStep"
+      %if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+	rt_FREE(%<RTMGet("PerTaskSampleHitsPtr")>);
+      %endif
+    %endif
+    %if MatFileLogging
+      {
+	void *xptr = (void *) %<RTMLoggingGet("LogXSignalPtrs")>;
+	void *yptr = (void *) %<RTMLoggingGet("LogYSignalPtrs")>;
+	rt_FREE(xptr); 
+	rt_FREE(yptr);
+      }
+      rt_FREE(%<RTMGet("RTWLogInfo")>);
+    %endif
+    %if !GenRTModel
+      rt_FREE(%<RTMGet("MdlInfoPtr")>);
+    %endif
+    %if (RTWCAPI && (im.NumDataAddr > 0))
+	rt_FREE(%<RTMGet("DataMapInfo")>.mmi.InstanceMap.dataAddrMap);
+    %endif
+    rt_FREE(%<RTMGetModelSS()>);
+  %endif
+  %if isSfcnCF
+    #endif
+  %endif
+%endfunction %% SLibGenRootTermMemFreeCode
+
+
+%endif %% _RTMDLSUPLIB_
+
+%% [EOF] rtmdlsuplib.tlc

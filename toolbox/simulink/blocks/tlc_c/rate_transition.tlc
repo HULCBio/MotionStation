@@ -1,0 +1,438 @@
+%%  Copyright 1990-2002 The MathWorks, Inc.
+%%  $Revision: 1.6.4.3 $
+%%
+%implements "rate_transition" "C"
+
+%function FcnBlkName() void
+  %return "Rate Transition Block: %<Name>"
+%endfunction
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %% cache whether or not state and output initialization is required
+  %% for the scalar expanded case
+  %<SLibSetSkipInitializationFlag(system,block,InitialCondition)>
+%endfunction
+
+%% Function: Start ============================================================
+%%
+%function Start(block, system) Output
+  %if DataIntegrity && TransitionType==1 && !block.SkipInitialization
+    %% If possible, avoid re-initializing the block outputs to
+    %% zero since they are initialized to zero in the model's registration
+    %% function.
+    %% Set the output to the state.
+    %if LibBlockOutputSignalIsInBlockIO(0)
+      %openfile tmpBuffer
+      %assign x = LibBlockDWorkAddr(block.Buffer0,"","",0)
+      %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign width = LibBlockOutputSignalWidth(0)
+      %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+      %if width  == 1
+	%<LibBlockOutputSignal(0,"","",0)> = %<LibBlockDWork(block.Buffer0,"","",0)>;
+      %else
+	(void) memcpy(%<y>, %<x>, %<width>*sizeof(%<inputDataType>));
+      %endif
+      %closefile tmpBuffer
+      %if (!WHITE_SPACE(tmpBuffer))
+	/* %<FcnBlkName()> */
+	%<tmpBuffer>\
+	
+      %endif
+    %endif
+  %endif
+%endfunction %% Start
+
+
+%% Function: InitializeConditions ==============================================
+%% Abstract:
+%%      X[i] = IC[i]
+%%
+%%  Initialize the DWork.
+%%     If the transtion block is slow to fast rate transition 
+%%  block ensuring data integrity (DirectFeedThrough is false in 
+%%  for this case) and the initial condition is 
+%%  not zero, DWork need to be initialized. Otherwise, not 
+%%  InitializeConditions is needed.5
+%%   
+%function InitializeConditions(block,system) Output
+  %%
+  %%  Initialization is need if the transtion block is slow to 
+  %%  fast rate transition block ensuring data integrity
+  %%   and the initial condition is not zer
+  %%
+  %if DataIntegrity && TransitionType==1 && !block.SkipInitialization
+    %%
+    %% Create header comment
+    %%
+    /* %<FcnBlkName()> */
+    %%
+    %% For initialization, the roll region is a function of the state
+    %%
+    %assign numStates = LibBlockDWorkWidth(block.Buffer0)
+    %%
+    %assign xRollRegion = [0:%<numStates-1>]
+    %%
+    %% Initialize the states
+    %%
+    %assign dwName = LibBlockDWorkName(block.Buffer0)
+    %assign rollVars = ["<dwork>/%<dwName>", "P"]
+    %%
+    %roll xIdx = xRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+      %% Set the real and imaginary part of the state to the initial value.
+      %assign xr = LibBlockDWork(block.Buffer0, "", xlcv, "%<tRealPart>%<xIdx>")
+      %assign rhs = LibBlockParameter(InitialCondition, "", xlcv, "%<tRealPart>%<xIdx>")
+      %<xr> = %<rhs>;
+      %if LibBlockDWorkIsComplex(block.Buffer0)
+	%assign xi = LibBlockDWork(block.Buffer0, "", xlcv, "%<tImagPart>%<xIdx>")
+	%if LibBlockParameterIsComplex(InitialCondition)
+	  %assign rhs = LibBlockParameter(InitialCondition,"", xlcv, "%<tImagPart>%<xIdx>")
+	%else
+	  %assign rhs = ...
+	    SLibGetFormattedValueFromId(LibBlockParameterDataTypeId(InitialCondition), 0)
+	%endif
+	%<xi> = %<rhs>; 
+      %endif
+    %endroll
+    
+  %endif
+%endfunction   
+
+%%-------------------------------------------------------
+%% Function: Update
+%function Update(block,system) Output
+  %assign input_output_allconnected = ...
+    (LibBlockInputSignalConnected(0) && LibBlockOutputSignalConnected(0))
+  %% 
+  %% Update function is needed only if the rate transition 
+  %% is slow to fast and ensure date integrity.
+  %%
+  %if DataIntegrity && TransitionType==1
+    %if !input_output_allconnected
+      /* Either input or output port of rate  
+         transition block  %<FcnBlkName()>  
+         is not connected,  no code generated */    
+    %else
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) {
+	%<UpdateForTID1(block,system)>
+      }
+    %endif
+  %endif
+%endfunction
+
+%% Function: UpdateForTID
+%function UpdateForTID(block,system,tid) Output
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+  %assign input_output_allconnected = ...
+    (LibBlockInputSignalConnected(0) && LibBlockOutputSignalConnected(0))
+  %if !input_output_allconnected
+      /* Either input or output port of rate 
+         transition block %<FcnBlkName()> 
+         is not connected, no code generated  */
+  %elseif inportTID > outportTID && tid == inportTID
+    %% Update function is needed only if the rate transition 
+    %% is slow to fast and ensure date integrity.
+    %if DataIntegrity && TransitionType==1
+      %<UpdateForTID1(block,system)>
+    %endif
+  %endif
+%endfunction
+
+%% Function: UpdateForTID0
+%function UpdateForTID0(block,system) Output
+%%
+%%  No update code at fast rate 
+%%
+%endfunction
+
+%% Function: UpdateForTID1
+%function UpdateForTID1(block,system) Output
+  %assign width = LibBlockOutputSignalWidth(0)
+  %% 
+  %% Update function is needed only if the rate transition 
+  %% is slow to fast and ensure date integrity.
+  %%
+  %if DataIntegrity && TransitionType==1
+    /* %<FcnBlkName()> */
+    %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+    %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+    %assign width = LibBlockOutputSignalWidth(0)
+    %if Deterministic
+      /* Update of slow to fast determinsitic   */
+      /* rate transition, ensure data integrity */
+      %if width == 1
+	%<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	  %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	%assign x = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	(void) memcpy(%<x>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+    %else 
+      %%
+      %%  atomic memory copy using double buffer
+      %%
+      /* Update of slow to fast nondeterminsitic   */
+      /* rate transition, ensure data integrity    */
+      %if width == 1
+	if (%<LibBlockDWork(block.ActiveBufIdx,"","",0)>) {
+	   %<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	    %<LibBlockInputSignal(0,"","",0)> ;
+	}
+	else{
+	  %<LibBlockDWork(block.Buffer1,"","",0)> = ...
+	    %<LibBlockInputSignal(0,"","",0)> ;
+	}
+      %else
+	%assign x0 = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	%assign x1 = LibBlockDWorkAddr(block.Buffer1, "", "", 0)
+	(void) memcpy(...
+	  (%<LibBlockDWork(block.ActiveBufIdx,"","",0)> ? ...
+	  %<x0> : %<x1>), %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+      %<LibBlockDWork(block.ActiveBufIdx,"","",0)> = ...
+	!(%<LibBlockDWork(block.ActiveBufIdx,"","",0)>);
+    %endif
+  %endif
+%endfunction
+
+%%------------------------------------------------------------
+%% Function: Outputs
+%function Outputs(block,system) Output
+  %assign input_output_allconnected = ...
+    (LibBlockInputSignalConnected(0) && LibBlockOutputSignalConnected(0))
+  %if !input_output_allconnected
+    /* Either input or output port of rate  
+    transition block  %<FcnBlkName()>  
+    is not connected,  no code generated */ 
+    %return
+  %endif
+  
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+  %if inportTID > outportTID 
+    %% slow to fast case
+    %assign IdxTID0 = "OutputPortIdx0"
+    %assign IdxTID1 = "InputPortIdx0"
+  %else
+    %% fast to slow case
+    %assign IdxTID0 = "InputPortIdx0"
+    %assign IdxTID1 = "OutputPortIdx0"
+  %endif
+  %%
+  %openfile tmpBuf
+  %<OutputsForTID0(block,system)>
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf)
+    if (%<LibIsSFcnSampleHit(IdxTID0)>) {
+	%<tmpBuf>\
+      }
+  %endif
+  %openfile tmpBuf
+  %<OutputsForTID1(block,system)>
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf)
+    if (%<LibIsSFcnSampleHit(IdxTID1)>) {
+      %<tmpBuf>\
+    } 
+  %endif 
+  %undef tmpBuf
+%endfunction
+
+%% Function: OutputsForTID
+%function OutputsForTID(block,system,tid) Output
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+  %assign input_output_allconnected = ...
+    (LibBlockInputSignalConnected(0) && LibBlockOutputSignalConnected(0))
+  %if !input_output_allconnected
+    /* Either input or output port of rate  
+    transition block %<FcnBlkName()>  
+    is not connected,  no code generated */ 
+    %return
+  %endif
+  %if inportTID > outportTID 
+    %assign tid0 = outportTID
+    %assign tid1 = inportTID
+  %else
+    %assign tid1 = outportTID
+    %assign tid0 = inportTID
+  %endif
+  %if tid == tid0
+    %<OutputsForTID0(block,system)>
+  %elseif tid == tid1
+    %<OutputsForTID1(block,system)>
+  %endif
+%endfunction
+
+%% Function: OutputsForTID0
+%function OutputsForTID0(block,system) Output
+  %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+  %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+  %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+  %assign width = LibBlockOutputSignalWidth(0)
+  %if !DataIntegrity
+    %% 
+    %%  RTB not ensure data integrity
+    %%
+    %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+    %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+    %if inportTID > outportTID %% slow to fast
+      /* %<FcnBlkName()> */
+      /* rate transition block */
+      /* (unprotected) slow to fast */
+      %if width == 1
+	%<LibBlockOutputSignal(0,"","",0)> = %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	(void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+    %endif
+  %else
+    %%
+    %% RTB ensure data integrity
+    %%
+    %if !Deterministic
+      %%
+      %% nondeterministic, ensure data integrity
+      %%
+      %if TransitionType==1
+	/* %<FcnBlkName()> */
+	/* rate transiton block output */
+	/* (Slow to fast, ensure data  */
+	/* integrity, undeterminisitic) */
+	%if width == 1
+	  if (%<LibBlockDWork(block.ActiveBufIdx,"","",0)>) {
+	    %<LibBlockOutputSignal(0,"","",0)> = ...
+	      %<LibBlockDWork(block.Buffer1,"","",0)>;
+	  }
+	  else{
+	    %<LibBlockOutputSignal(0,"","",0)> = ...
+	      %<LibBlockDWork(block.Buffer0,"","",0)>;
+	  }
+	%else
+	  %assign x0 = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	  %assign x1 = LibBlockDWorkAddr(block.Buffer1, "", "", 0)
+	  (void) memcpy(%<y>, ...
+	    (%<LibBlockDWork(block.ActiveBufIdx,"","",0)> ? ...
+	    %<x1> : %<x0>), ...
+	    %<width>*sizeof(%<inputDataType>));
+	%endif
+      %else
+	/* %<FcnBlkName()>  */
+	/* rate transiton block             */
+	/* (Fast to slow, nondeterministic, */
+	/* ensure data integrity)           */ 
+	%assign semaphoreTaken = LibBlockDWork(block.semaphoreTaken,"","",0)
+	if(!%<semaphoreTaken>) {
+	  %if width == 1
+	    %<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	      %<LibBlockInputSignal(0,"","",0)>;
+	  %else
+	    %assign x  = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	    (void) memcpy(%<x>, %<u>, %<width>*sizeof(%<inputDataType>));
+	  %endif
+	 }
+       %endif
+    %else
+      %%
+      %% deterministic, ensure data integrity
+      %%
+      %if TransitionType==1
+	%assign x = LibBlockDWorkAddr(block.Buffer0,"","",0)
+	/* %<FcnBlkName()> */
+	/* rate transiton block output   */
+	/* (Slow to fast, deterministic, */
+	/* ensure data integrity)        */
+	if (%<LibIsSFcnSpecialSampleHit("InputPortIdx0","OutputPortIdx0")>) {
+	  %if width  == 1
+	    %<LibBlockOutputSignal(0,"","",0)> = ...
+	      %<LibBlockDWork(block.Buffer0,"","",0)>;
+	  %else
+	    (void) memcpy(%<y>, %<x>, %<width>*sizeof(%<inputDataType>));
+	  %endif
+	}
+      %else
+	/* %<FcnBlkName()> */
+	/* rate transiton block          */
+	/* (Fast to slow, deterministic, */
+	/* ensure data integrity)        */
+	if (%<LibIsSFcnSpecialSampleHit("OutputPortIdx0","InputPortIdx0")>) {
+	  %if width == 1
+	    %<LibBlockOutputSignal(0,"","",0)> = ...
+	      %<LibBlockInputSignal(0,"","",0)>;
+	  %else
+	    (void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+	  %endif
+	}
+      %endif
+    %endif
+  %endif
+
+%endfunction 
+
+%% Function: OutputsForTID1
+%function OutputsForTID1(block,system) Output
+  %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+  %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+  %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+  %assign width = LibBlockOutputSignalWidth(0)
+  %if !DataIntegrity
+    %% 
+    %%  RTB not ensure data integrity
+    %%
+    %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+    %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+    %if inportTID < outportTID  %% fast to slow
+      /* %<FcnBlkName()> */
+      /* (unprotected) fast to slow */
+      %if width == 1
+	%<LibBlockOutputSignal(0,"","",0)> = %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	(void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+    %endif
+  %else
+    %%
+    %% RTB ensure data integrity
+    %%
+    %if !Deterministic
+      %%
+      %% nondeterministic, ensure data integrity
+      %%
+      %if TransitionType==1
+	%% no output code required at slow rate 
+	%% for slow to fast case
+      %else
+	/* %<FcnBlkName()> */
+	/* (Fast to slow, nondeterministic, ensure data integrity) */ 
+	%assign semaphoreTaken = LibBlockDWork    (block.semaphoreTaken,"","",0)
+	%<semaphoreTaken> = 1;
+	%if width == 1
+	  %<LibBlockOutputSignal(0,"","",0)> = ...
+	    %<LibBlockDWork(block.Buffer0,"","",0)>;
+	%else
+	  %assign x = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	  (void) memcpy(%<y>, %<x>, %<width>*sizeof(%<inputDataType>));
+	%endif
+	%<semaphoreTaken> = 0;
+      %endif
+    %else
+      %%
+      %% deterministic, ensure data integrity
+      %% no output code required at slow rate
+      %%
+    %endif
+  %endif
+
+%endfunction
+
+%% [EOF] rate_transition.tlc
+
+
+
+
+
+
+

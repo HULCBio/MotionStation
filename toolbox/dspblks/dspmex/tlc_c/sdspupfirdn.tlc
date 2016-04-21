@@ -1,0 +1,429 @@
+%% $RCSfile: sdspupfirdn.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:10:05 $
+%%
+%% Dale Shpak, Steve Conahan
+%% July 16, 1998
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: FIR Integer-Ratio Sample-Rate Conversion
+%%
+
+%implements sdspupfirdn "C"
+
+%include "dsplib.tlc"
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %assign INPORT       = 0
+    %assign OUTPORT      = 0
+    %assign INPORTWIDTH  = LibDataInputPortWidth(INPORT)
+    %assign OUTPORTWIDTH = LibDataOutputPortWidth(OUTPORT)
+    %%
+    %% DWorks: InPhaseIdx, OutIdx, MemIdx, PartialSums, DiscState, OutBuf
+    %%
+    %assign IN_PHASE_IDX = block.DWork[0]
+    %assign OUT_IDX      = block.DWork[1]
+    %assign MEM_IDX      = block.DWork[2]
+    %assign SUMS         = block.DWork[3]
+    %assign STATES       = block.DWork[4]
+    %assign OUT_BUFF     = block.DWork[5] %% OUT_BUFF needed only if (n1 > 0)
+    %%
+    %assign CFF_BASE     = 0
+    %assign CFF_PTR      = 1
+    %%
+    %assign IFACTOR      = SFcnParamSettings.IFACTOR
+    %assign DFACTOR      = SFcnParamSettings.DFACTOR
+    %assign LENGTH       = SIZE(SFcnParamSettings.FILTER,1)
+    %assign NCOLS        = IFACTOR * DFACTOR
+    %assign NROWS        = LENGTH / NCOLS
+    %assign SUB_ORDER    = LENGTH / NCOLS
+    %%
+    %assign NSTATES      = LibBlockDWorkWidth(STATES)
+    %assign FILTER       = SFcnParamSettings.FILTER
+    %assign FILT_COMPLEX = TYPE(SFcnParamSettings.FILTER[0]) == "Complex"
+    %assign DATA_COMPLEX = LibBlockInputSignalIsComplex(INPORT)
+    %assign OUT_COMPLEX  = (FILT_COMPLEX || DATA_COMPLEX)
+    %%
+    %assign NUM_CHANS    = SFcnParamSettings.NUM_CHANS
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS= INPORTWIDTH
+        %assign FRAME    = 1
+    %else
+        %assign FRAME    = INPORTWIDTH / NUM_CHANS
+    %endif
+    %assign MEM_SIZE     = NSTATES / NUM_CHANS
+    %assign N0           = SFcnParamSettings.N0
+    %assign N1           = SFcnParamSettings.N1
+    %assign MEM_STRIDE   = MEM_SIZE - N0
+    %assign OUT_LEN      = N1 * IFACTOR
+    %%
+    %assign DAT_T  = DATA_COMPLEX ? "creal_T" : "real_T"
+    %assign FILT_T = FILT_COMPLEX ? "creal_T" : "real_T"
+    %assign OUT_T  = OUT_COMPLEX  ? "creal_T" : "real_T"
+    %%
+    %assign block = block + INPORT + OUTPORT + INPORTWIDTH + OUTPORTWIDTH\
+                          + IN_PHASE_IDX + OUT_IDX + MEM_IDX + SUMS + STATES\
+                          + OUT_BUFF + CFF_BASE + CFF_PTR + IFACTOR + DFACTOR\
+                          + LENGTH + NCOLS + NROWS + SUB_ORDER + NSTATES\
+                          + FILTER + FILT_COMPLEX + DATA_COMPLEX + OUT_COMPLEX\
+                          + NUM_CHANS + FRAME + MEM_SIZE + N0 + N1 + MEM_STRIDE\
+                          + OUT_LEN + DAT_T + FILT_T + OUT_T
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset FIR Rate Conversion %<Type> (%<ParamSettings.FunctionName>) - %<Name> */
+{
+    %%
+    %% We do not support discontiguous inputs
+    %%
+    %assign CONTIG = IsInputPortContiguous(block,INPORT)
+    %if (!CONTIG)
+        LibDiscontiguousInputError(block)
+    %endif
+    %%
+    %% Note: ICs are only needed if n1 > 0
+    %%
+    %assign IC      = SFcnParamSettings.IC
+    %assign IC_ROWS = SFcnParamSettings.IC_ROWS
+    %assign IC_COLS = SFcnParamSettings.IC_COLS
+    %assign NUM_IC  = SIZE(SFcnParamSettings.IC,1)
+    %assign IC_CPLX = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %%
+    /* Filter coefficients */
+    %assign astr    = ""
+    %assign count   = 0
+    %if (FILT_COMPLEX)
+        static creal_T filter[%<LENGTH>] = {
+        %foreach Col = NCOLS
+            %foreach Row = NROWS
+                %assign astr = astr + "{%<REAL(SFcnParamSettings.FILTER[count])>,%<IMAG(SFcnParamSettings.FILTER[count])>}"
+                %assign count   = count + 1
+                %if (count < LENGTH)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach
+            %<astr>
+            %assign astr    = ""
+        %endforeach
+    %else
+        static real_T filter[%<LENGTH>] = {
+        %foreach Col = NCOLS
+            %foreach Row = NROWS
+                %assign astr = astr + "%<SFcnParamSettings.FILTER[count]>"
+                %assign count   = count + 1
+                %if (count < LENGTH)
+                    %assign astr = astr + ","
+                %else
+                    %assign astr = astr + "};"
+                %endif
+            %endforeach
+            %<astr>
+            %assign astr    = ""
+        %endforeach
+    %endif
+
+    %if (N1 > 0)
+        %if (NUM_IC > 1)
+            /* Block initial conditions definition */
+            %%
+            %% Number of ICs is greater than one, so we have to build up a variable.
+            %%
+            %assign astr    = ""
+            %assign count   = 0
+            %if (IC_CPLX)
+            creal_T ic[%<NUM_IC>] = {
+            %foreach Col = IC_COLS
+                %foreach Row = IC_ROWS
+                    %assign astr  = astr + "{%<REAL(IC[count])>,%<IMAG(IC[count])>}"
+                    %assign count = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach %% IC_ROWS
+                %<astr>
+                %assign astr    = ""
+            %endforeach %% IC_COLS
+            %else
+            real_T ic[%<NUM_IC>] = {
+            %foreach Col = IC_COLS
+                %foreach Row = IC_ROWS
+                    %assign astr  = astr + "%<IC[count]>"
+                    %assign count = count + 1
+                    %if (count < NUM_IC)
+                        %assign astr = astr + ","
+                    %else
+                        %assign astr = astr + "};"
+                    %endif
+                %endforeach %% IC_ROWS
+                %<astr>
+                %assign astr    = ""
+            %endforeach %% IC_COLS
+            %endif
+        %endif  %% (NUM_IC > 1)
+
+        /* Initialize the internal buffers with block initial conditions */
+        %%
+        %% The ICs must be filled in according to the OUTPORTWIDTH
+        %%
+        {
+            int i;
+            %%
+            %% Note: The ICs are passed into the RTW file from the C S-fcn as
+            %% COMPLEX no matter what they really are. This is corrected here.
+            %%
+            %assign IC_DTYPE = (FILT_COMPLEX || DATA_COMPLEX) ? "creal_T" : "real_T"
+            %<IC_DTYPE> *outBuff = %<LibBlockDWorkAddr(OUT_BUFF,"", "", 0)>;
+
+            for (i=0; i<%<OUT_LEN * NUM_CHANS>; i++) {
+                %%
+                %if (NUM_IC <= 1)
+                %%
+                    /* Scalar IC */
+                    %if NUM_IC == 0
+                        %assign IC_re = 0.0
+                        %assign IC_im = 0.0
+                    %else
+                        %assign IC_re = REAL(IC[0])
+                        %if !IC_CPLX
+                            %assign IC_im = 0.0
+                        %else
+                            %assign IC_im = IMAG(IC[0])
+                        %endif
+                    %endif
+
+                    %if !(FILT_COMPLEX || DATA_COMPLEX)
+                        *outBuff++ = %<IC_re>;
+                    %else
+                        outBuff->re     = %<IC_re>;
+                        (outBuff++)->im = %<IC_im>;
+                    %endif
+
+                %else
+                    %%
+                    %% We are not using memcopy here because if the input
+                    %% is complex and the ic is real, we fill in the imaginary
+                    %% part with zeros.
+                    %%
+                    /* Vector IC */
+                    %if !(FILT_COMPLEX || DATA_COMPLEX)
+                        *outBuff++ = ic[i];
+                    %else
+                        outBuff->re     = %<(IC_CPLX) ? "ic[i].re" : "ic[i]">; 
+                        (outBuff++)->im = %<(IC_CPLX) ? "ic[i].im"  : 0.0>;
+                    %endif
+                %endif
+            } %% end for OUTPORTWIDTH
+        } %% END initialize internal buffers
+    %endif  %% (N1>0)
+
+    /*
+    * Initialize the counters and pointers.
+    */
+    %<LibBlockDWork(IN_PHASE_IDX, "", "", 0)> = %<LibBlockDWork(OUT_IDX, "", "", 0)> = %<LibBlockDWork(MEM_IDX, "", "", 0)> = 0;
+    %<LibBlockPWork("", "", "", CFF_BASE)> = %<LibBlockPWork("", "", "", CFF_PTR)> = filter;
+}
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset FIR Rate Conversion %<Type> (%<ParamSettings.FunctionName>) - %<Name> */
+{
+    %<DAT_T> *x         = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<DAT_T> *tap0      = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+    %<OUT_T> *sums      = %<LibBlockDWorkAddr(SUMS, "", "", 0)>;
+    %<OUT_T> *outBuff   = %<LibBlockDWorkAddr(OUT_BUFF, "", "", 0)>;
+    %<OUT_T> *y         = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    %<FILT_T> *cff;
+
+    int_T mIdx;
+    int_T oIdx;
+    int_T inIdx;
+
+    const real_T outSigNormScaling = 1.0 / ( (real_T) %<IFACTOR> );
+
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        /* Each channel uses the same filter phase but accesses
+         * its own state memory and input.
+         */
+        inIdx = %<LibBlockDWork(IN_PHASE_IDX, "", "", 0)>;
+        mIdx  = %<LibBlockDWork(MEM_IDX,      "", "", 0)>;
+        oIdx  = %<LibBlockDWork(OUT_IDX,      "", "", 0)>;
+        cff   = %<LibBlockPWork("",           "", "", CFF_PTR)>;
+
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+        *(tap0+mIdx) = *x++;
+
+        {
+            /* Compute partial sums for each interpolation phase */
+            %roll sigIdx3 = [ 0:%<IFACTOR - 1> ], lcv3 = 2, block, "InlineRoller"
+                %<DAT_T> *tap   = tap0 + mIdx - ( (%<IFACTOR>-%<lcv3 == "" ? sigIdx3 : lcv3>) * %<N0> );
+                %<DAT_T> *stop;
+                int_T m;
+
+                while (tap < tap0) tap += %<MEM_SIZE>;
+                stop = tap - %<MEM_STRIDE>;
+                if (stop < tap0) stop += %<MEM_SIZE>;
+
+                /*
+                 * Perform the convolution for this phase (on every dFactor samples)
+                 * until we reach the start of the (linear) state memory
+                 */
+                m    = 0;
+                tap += %<DFACTOR>;
+
+                %if (DATA_COMPLEX)
+                    %if (FILT_COMPLEX)
+                        while ( ((tap -= %<DFACTOR>) >= tap0) && (++m <= %<SUB_ORDER>) ) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += (tap->re) * (cff->re) - (tap->im) * (cff->im);
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (tap->im) * (cff->re) + (tap->re) * (cff->im);
+                            ++cff;
+                        }
+
+                        /* wrap the state memory pointer to the next element */
+                        tap += %<MEM_SIZE + DFACTOR>;
+
+                        /* Finish the convolution for this phase */
+                        while (++m <= %<SUB_ORDER>) {
+                            tap -= %<DFACTOR>;
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += (tap->re) * (cff->re) - (tap->im) * (cff->im);
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (tap->im) * (cff->re) + (tap->re) * (cff->im);
+                            ++cff;
+                        }
+                    %else
+                        while ( ((tap -= %<DFACTOR>) >= tap0) && (++m <= %<SUB_ORDER>) ) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += (tap->re) * (*cff  );
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (tap->im) * (*cff++);
+                        }
+
+                        /* wrap the state memory pointer to the next element */
+                        tap += %<MEM_SIZE + DFACTOR>;
+
+                        /* Finish the convolution for this phase */
+                        while (++m <= %<SUB_ORDER>) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += (tap-=%<DFACTOR>)->re * (*cff);
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (tap->im) * (*cff++);
+                        }
+                    %endif
+                %else %% Real data
+                    %if (FILT_COMPLEX)
+                        while ( ((tap -= %<DFACTOR>) >= tap0) && (++m <= %<SUB_ORDER>) ) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += (*tap) * cff->re;
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (*tap) * (cff++)->im;
+                        }
+
+                        /* wrap the state memory pointer to the next element */
+                        tap += %<MEM_SIZE + DFACTOR>;
+
+                        /* Finish the convolution for this phase */
+                        while (++m <= %<SUB_ORDER>) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].re += *(tap -= %<DFACTOR>) * cff->re;
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>].im += (*tap) * (cff++)->im;
+                        }
+                    %else
+                        while ( ((tap -= %<DFACTOR>) >= tap0) && (++m <= %<SUB_ORDER>) ) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>] += (*tap) * (*cff++);
+                        }
+
+                        /* wrap the state memory pointer to the next element */
+                        tap += %<MEM_SIZE + DFACTOR>;
+
+                        /* Finish the convolution for this phase */
+                        while (++m <= %<SUB_ORDER>) {
+                            sums[%<lcv3 == "" ? sigIdx3 : lcv3>] += *(tap -= %<DFACTOR>) * (*cff++);
+                        }
+                    %endif
+                %endif
+            %endroll %% IFACTOR
+            }
+
+            /* Output and update the counters modulo their buffer size */
+            if (++inIdx == %<DFACTOR>) {
+                %roll sigIdx4 = [ 0:%<IFACTOR - 1> ], lcv4 = 2, block, "InlineRoller"
+                    /* Put values in their appropriate locations in the output buffer */
+                    int_T itmp = (%<lcv4 == "" ? sigIdx4 : lcv4>*%<N1>+oIdx);
+
+                    while (itmp >= %<OUT_LEN>) itmp -= %<OUT_LEN>;
+
+                    outBuff[itmp] = sums[%<lcv4 == "" ? sigIdx4 : lcv4>];
+                    itmp = %<lcv4 == "" ? sigIdx4 : lcv4>+oIdx;
+
+                    while (itmp >= %<OUT_LEN>) itmp -= %<OUT_LEN>;
+
+                    %if (!OUT_COMPLEX)
+                        /* Output the current samples, NORMALIZED by the Interpolation */
+                        /* Factor in order to preserve input signal scaling. Note that */
+                        /* this is done here once at the end of the computation (i.e.  */
+                        /* just before the output gets sent out) in order to preserve  */
+                        /* as much signal numerical precision as possible.             */
+                        *y++ = outBuff[itmp] * outSigNormScaling;
+
+                        sums[%<lcv4 == "" ? sigIdx4 : lcv4>] = 0.0;
+                    %else
+                        {
+                            /* Output the current samples, NORMALIZED by the Interpolation */
+                            /* Factor in order to preserve input signal scaling. Note that */
+                            /* this is done here once at the end of the computation (i.e.  */
+                            /* just before the output gets sent out) in order to preserve  */
+                            /* as much signal numerical precision as possible.             */
+                            creal_T normCplxOutput;
+                            real_T  normRealOutput;
+                            real_T  normImagOutput;
+
+                            normCplxOutput    = outBuff[itmp]; /* not normalized yet */
+
+                            normRealOutput    = normCplxOutput.re * outSigNormScaling;
+                            normCplxOutput.re = normRealOutput;
+
+                            normImagOutput    = normCplxOutput.im * outSigNormScaling;
+                            normCplxOutput.im = normImagOutput;
+
+                            *y++ = normCplxOutput;
+                        }
+
+                        sums[%<lcv4 == "" ? sigIdx4 : lcv4>].re = sums[%<lcv4 == "" ? sigIdx4 : lcv4>].im = 0.0;
+                    %endif %% OUT_COMPLEX
+                %endroll
+
+            if ( (oIdx += %<IFACTOR>) >= %<OUT_LEN> ) oIdx = 0;
+            inIdx = 0;
+            cff = %<LibBlockPWork("", "", "", CFF_BASE)>;
+        }
+
+        if (++mIdx >= %<MEM_SIZE>) mIdx = 0;
+        %endroll %% FRAME
+
+        %if (NUM_CHANS > 1)
+            sums    += %<IFACTOR>;
+            tap0    += %<MEM_SIZE>;
+            outBuff += %<OUT_LEN>;
+        %endif
+    %endroll %% CHANNEL
+
+    /* Update stored indices for next time */
+    %<LibBlockDWork(IN_PHASE_IDX, "", "", 0)> = inIdx;
+    %<LibBlockDWork(MEM_IDX, "", "", 0)> = mIdx;
+    %<LibBlockDWork(OUT_IDX, "", "", 0)> = oIdx;
+    %<LibBlockPWork("", "", "", CFF_PTR)> = cff;
+}
+%endfunction
+
+%% [EOF] sdspupfirdn.tlc

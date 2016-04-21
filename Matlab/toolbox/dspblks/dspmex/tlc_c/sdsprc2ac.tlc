@@ -1,0 +1,128 @@
+%% sdsprc2ac.tlc
+%% Abstract: TLC for Signal Processing Blockset  Reflection Coefficient/LPC to autocorrelation sequence
+%% conversion block. (sdsprc2ac)
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.1.4.2 $ $Date: 2004/04/12 23:09:31 $
+
+%implements "sdsprc2ac" "C"
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT = 0
+  %assign PERR_IN = 1
+  %assign OUTPORT = 0
+  %assign dtype     = LibBlockInputSignalDataTypeName(INPORT,"")
+  %assign inSingle  = (dtype == "real32_T") ? 1 : 0
+  %assign convType  = %<SFcnParamSettings.ConversionType>
+  %assign order     = %<SFcnParamSettings.orderPoly>
+  %assign normalize = %<SFcnParamSettings.DoNormalization>
+  %assign perrIsOne = %<SFcnParamSettings.UnityPerr>
+  %assign block = block + INPORT + PERR_IN + OUTPORT +  dtype + inSingle + convType + order +normalize + perrIsOne
+
+
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsprc2ac_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+    %%
+    %if perrIsOne
+    {
+         /* Prediction Error Power is assumed to be 1 in this case. This will output 
+          * Normalized Autocorrelation coefficients. 
+          */
+         %assign str      = (inSingle) ? "F" : ""
+          %<dtype> *perr_ptr = %<LibBlockDWorkAddr(UnityPerr, "", "", "")>;
+          *perr_ptr = 1.0%<str>;
+    }
+    %endif
+%endfunction  %% InitializeConditions
+
+
+%function getRunTimeFcnName(block) void
+    %%
+    %if inSingle
+      %if (convType == 1)
+        %assign suffix = "Lpc2Ac_R"
+      %else
+        %assign suffix = "Rc2Ac_R"
+      %endif
+    %else
+      %if (convType == 1)
+        %assign suffix = "Lpc2Ac_D"
+      %else
+        %assign suffix = "Rc2Ac_D"
+      %endif
+    %endif
+    %%
+%return "MWDSP_" + suffix
+%endfunction %% getRunTimeFcnName
+
+%function doLPCPolyNormalization(block) Output
+  %% This means we need to do normalization if needed
+  %assign u_ptr    = LibBlockInputSignalAddr(INPORT, "", "", 0)
+    %if perrIsOne
+      %assign perr_ptr = LibBlockDWorkAddr(UnityPerr, "", "", "")
+    %else
+      %assign perr_ptr = LibBlockInputSignalAddr(PERR_IN, "", "", 0)
+    %endif
+  %assign y_ptr    = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign Lvec_ptr = LibBlockDWorkAddr(Lvec, "", "", "")
+  %assign str      = (inSingle) ? "F" : ""
+  %assign firstArg = u_ptr
+  const %<dtype> *A = %<u_ptr>; 
+  %<dtype> *NormA   = %<LibBlockDWorkAddr(NormalizedLPC, "", "", "")>;
+  if (A[0] != 1.0%<str>) {
+      %assign firstArg = LibBlockDWorkAddr(NormalizedLPC, "", "", "")
+      /* we need to read in the first value and divide the entire input vector by that value.*/
+      int_T j;
+      for (j = 1; j <= %<order>; j++) {
+        NormA[j] = A[j] / A[0];
+      }
+      NormA[0] = 1.0%<str>;
+      %<getRunTimeFcnName(block)>(NormA, %<perr_ptr>, %<y_ptr>, %<Lvec_ptr>, %<order>);
+  } else {
+    %<getRunTimeFcnName(block)>(%<u_ptr>, %<perr_ptr>, %<y_ptr>, %<Lvec_ptr>, %<order>);
+  }
+%endfunction %% doLPCPolyNormalization
+
+%% Function: Outputs ==========================================================
+%%
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    /* Signal Processing Blockset RC to/from LPC (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %assign u_ptr    = LibBlockInputSignalAddr(INPORT, "", "", 0)
+    %if perrIsOne
+      %assign perr_ptr = LibBlockDWorkAddr(UnityPerr, "", "", "")
+    %else
+      %assign perr_ptr = LibBlockInputSignalAddr(PERR_IN, "", "", 0)
+    %endif
+    %assign y_ptr    = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign Lvec_ptr = LibBlockDWorkAddr(Lvec, "", "", "")
+    {
+        %if (convType == 1) && (normalize)
+          %<doLPCPolyNormalization(block)>
+        %else
+          %<getRunTimeFcnName(block)>(%<u_ptr>, %<perr_ptr>, %<y_ptr>, %<Lvec_ptr>, %<order>);
+        %endif
+    }
+  %%
+%endfunction %% Outputs
+
+%% EOF: sdsplsf2poly.tlc

@@ -1,0 +1,174 @@
+%% $RCSfile: sdspwindow.tlc,v $
+%% $Revision: 1.15.4.2 $ $Date: 2004/04/12 23:10:16 $
+%%
+%% Abstract: Target file for the S-Function sdspwindow.c
+%%           Used for the Window Block
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+
+%implements "sdspwindow" "C"
+
+%% Function: Start =============================================================
+%% Abstract:
+%%
+%%
+%function Start(block, system) Output
+    /* Signal Processing Blockset Window (%<ParamSettings.FunctionName>) - %<Name> */
+    %assign outMode = SFcnParamSettings.OutputMode
+    %if (outMode == "GenerateOnly")
+        %assign nChans = 1
+    %else
+        %assign nChans = SFcnParamSettings.NumChannels
+    %endif
+    %assign N = LibDataOutputPortWidth(0) / nChans
+    %assign genPortIdx = (outMode == "GenerateOnly") ? 0 : 1
+    %%
+    %foreach idx = N
+      %if (outMode == "ApplyOnly")
+	%assign sample = LibBlockDWork(Samples,"","",idx)
+	%<sample> = %<SFcnParamSettings.Samples[idx]>;
+      %else
+	%if LibBlockOutputSignalIsInBlockIO(genPortIdx)
+	  %assign sample = LibBlockOutputSignal(genPortIdx,"","",idx)
+	  %<sample> = %<SFcnParamSettings.Samples[idx]>;
+	%endif
+      %endif
+    %endforeach
+
+%endfunction
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Window (%<ParamSettings.FunctionName>) - %<Name> */
+  %assign outMode = SFcnParamSettings.OutputMode
+  %%
+  %if outMode != "ApplyOnly"
+    /* Data is persistent on Generate port */
+  %endif
+  %%
+  %if outMode != "GenerateOnly" && !LibIsEqual(TID, "constant")
+    %% outMode must be "ApplyOnly" or "ApplyAndGenerate"
+    %assign nChannels         = SFcnParamSettings.NumChannels
+    %assign samplesPerChannel = LibDataInputPortWidth(0) / nChannels
+    %%
+    %if nChannels > 1
+      %%
+      /* Apply window to %<nChannels> channels */
+      {
+	%if outMode == "ApplyOnly"
+	  real_T *window = %<LibBlockDWorkAddr(Samples,"","",0)>;
+	%else
+          %% outMode must be "ApplyAndGenerate" at this point:
+	  real_T *window = %<LibBlockOutputSignalAddr(1,"","",0)>;
+	%endif
+	int_T iw = 0;
+        %%
+        %if LibBlockInputSignalBufferDstPort(0) == 0
+          /* In-place window computation: */
+	  %assign rollVars = ["y0"]
+        %else
+	  %assign rollVars = ["U", "y0"]
+        %endif
+        %%
+	%roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign reSigIdx = "%<tRealPart>%<idx>"
+	  %assign imSigIdx = "%<tImagPart>%<idx>"
+          %if LibBlockInputSignalBufferDstPort(0) != 0
+            %%
+            %% Not sharing buffers:
+            %%
+            %if LibBlockOutputSignalIsComplex(0)
+              %% Yi = Ui * W
+              %<LibBlockOutputSignal(0,"",lcv,imSigIdx)> = ...
+                    %<LibBlockInputSignal( 0,"",lcv,imSigIdx)> * window[iw];
+	    %endif
+            %% Yr = Ur * W
+	    %<LibBlockOutputSignal(0,"",lcv,reSigIdx)> = ...
+	          %<LibBlockInputSignal( 0,"",lcv,reSigIdx)> * window[iw++];
+          %else
+            %%
+            %% Sharing buffers:
+            %%
+            %if LibBlockOutputSignalIsComplex(0)
+              %% Yi *= w
+              %<LibBlockOutputSignal(0,"",lcv,imSigIdx)> *= window[iw];
+	    %endif
+            %% Yr *= w
+	    %<LibBlockOutputSignal(0,"",lcv,reSigIdx)> *= window[iw++];
+          %endif
+          %%
+	  if (iw == %<samplesPerChannel>) iw = 0;
+	%endroll
+      }
+      %%
+      %%
+    %else
+      %% Single Channel
+      %%
+      %if LibBlockInputSignalBufferDstPort(0) == 0
+        /* In-place window computation: */
+        %if outMode == "ApplyOnly"
+	  %assign rollVars = ["y0", "DWork"]
+        %else
+          %assign rollVars = ["y0", "y1"]
+        %endif
+      %else
+        %if outMode == "ApplyOnly"
+	  %assign rollVars = ["U", "y", "DWork"]
+        %else
+          %assign rollVars = ["U", "y0", "y1"]
+        %endif
+      %endif
+      %%
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign reSigIdx = "%<tRealPart>%<idx>"
+	%assign imSigIdx = "%<tImagPart>%<idx>"
+	%% The sample comes from either the DWork or the Generate port:
+	%if (outMode == "ApplyOnly")
+	  %assign sample = LibBlockDWork(Samples,"",lcv,idx)
+	%else
+          %% outMode must be "ApplyAndGenerate" at this point:
+	  %assign sample = LibBlockOutputSignal(1,"",lcv,idx)
+	%endif
+	%%
+        %if LibBlockInputSignalBufferDstPort(0) != 0
+          %%
+          %% Not sharing buffers:
+          %%
+          %% Yr = Ur * w
+	  %<LibBlockOutputSignal(0,"",lcv,reSigIdx)> = ...
+            %<LibBlockInputSignal(0,"",lcv,reSigIdx)> * %<sample>;
+	  %%
+	  %if LibBlockOutputSignalIsComplex(0)
+            %% Yi = Ui * w
+	    %<LibBlockOutputSignal(0,"",lcv,imSigIdx)> = ...
+	      %<LibBlockInputSignal(0,"",lcv,imSigIdx)> * %<sample>;
+	  %endif
+        %else
+          %%
+          %% Sharing buffers:
+          %%
+          %% Yr *= w
+	  %<LibBlockOutputSignal(0,"",lcv,reSigIdx)> *= %<sample>;
+	  %%
+	  %if LibBlockOutputSignalIsComplex(0)
+            %% Yi *= w
+	    %<LibBlockOutputSignal(0,"",lcv,imSigIdx)> *= %<sample>;
+	  %endif
+        %endif
+      %endroll
+      %%
+    %endif
+  %else
+    /* Data is preset on the Apply port */
+  %endif
+
+%endfunction %% Outputs
+
+
+%% EOF: sdspwindow.tlc

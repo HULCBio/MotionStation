@@ -1,0 +1,215 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Sign block target file
+
+%implements Signum "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+%if (!block.InFixptMode)
+  %<LibBlockSetIsExpressionCompliant(block)>
+  %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+%else
+  %<FixPt_Setup(block, system)>
+%endif
+%endfunction
+
+  
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y[i] = sign(U[i])
+%%
+%function Outputs(block, system) Output
+%if (!block.InFixptMode)
+  %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+  %assign y = LibBlockOutputSignal(0, "", "", 0)
+  %assign u = LibBlockInputSignal(0, "", "", 0)
+  %assign zero = SLibGetFormattedValueFromId(outputDataType, 0)
+  %assign one = SLibGetFormattedValueFromId(outputDataType, 1)
+  %if NumNonsampledZCs > 0
+    if (%<RTMIs("MajorTimeStep")>) {
+      %assign rollVars = ["U", "Mode"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign m = LibBlockMode("", lcv, sigIdx)
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %if SLibIsSignedFromId(outputDataType)
+  	  %<m> = (%<u> > %<zero>) ? 1 : (%<u> < %<zero> ? -1 : 0);
+	%else
+  	  %<m> = (%<u> > %<zero>) ? 1 : 0;
+	%endif
+      %endroll
+    }
+    /* Output value */
+    %assign rollVars = ["Mode", "Y"]
+    %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0) - 1>]
+    %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign m = LibBlockMode("", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %<y> = (%<LibBlockOutputSignalDataTypeName(0,"")>) %<m>;
+    %endroll
+  %else
+    %assign rollVars = ["U", "Y"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %<y> = %<LibGenMathFcnCall("sign",outputDataType,"%<u>","")>;
+    %endroll
+  %endif
+
+%else		%%Fixpt mode
+    %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+    %% SFIX_OP_ID == "SIGN"
+    %%
+    %assign nameForComment = "Signum Block"
+    %%
+    %% Get input data type
+    %%
+    %assign u0DT = FixPt_GetInputDataType(0)
+    %%
+    %assign u0IsFloat = FixPt_DataTypeIsFloat(u0DT)
+    %%
+    %assign id = LibBlockInputSignalDataTypeId(0)
+    %assign u0Ground = SLibGetGroundValueFromId(id)
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %assign y0IsFloat = FixPt_DataTypeIsFloat(y0DT)
+    %%        
+    %if y0IsFloat
+      %if ( y0DT.NativeType == "real32_T" )
+        %assign y0PlusOne = "1.0F"
+      %else
+        %assign y0PlusOne = "1.0"
+      %endif
+      %assign y0Cast = "(%<y0DT.NativeType>)"
+    %else
+      %assign y0PlusOne = "1"
+      %assign y0Cast = ""
+    %endif
+    %%
+    %% create header comment
+    %%
+    /* %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+     *
+     */
+     {
+    %%
+    %% Roll around signal width
+    %%
+    %% %assign rollVars = ["U", "Y"]
+    %%
+    %assign rollVars = ["U", "Y", "P"]
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %% Get input
+    %%
+    %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+    %%
+    %% Get output
+    %%
+    %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %%
+    %% gen code
+    %%
+    %% Note, the output always has nominal scaling
+    %% so Real World Values  0, -1, and 1, have
+    %% Stored Integer Values 0, -1, and 1
+    %%
+    %% Real World Value 0.0 for the input has
+    %% Stored Integer given by the data types Ground
+    %% 
+    %% The block has required that Real World Value 0.0
+    %% be representable, this means that all blocks
+    %% can have at least 2 different output values.
+    %%
+    %% If Ground equals the maximum possible stored integer value, then
+    %% only 0 and -1 are possible outputs, but this is expected
+    %% to be used exceedingly rarely, so TLC run time will NOT
+    %% be expended to investigate this optimization
+    %% 
+    %% If Ground equals the minimum possible value, then
+    %% only 0 and 1 are possible outputs, this is not uncommon for 
+    %% the case of unsigned signal with ZERO bias.  This case is
+    %% expected to be somewhat common so it is optimized.  Other
+    %% cases of Ground equals minimum possible stored integer value
+    %% are expected
+    %% to be used exceedingly rarely, so TLC run time will NOT
+    %% be expended to investigate this optimization.
+    %%
+    %if !( u0IsFloat || u0DT.IsSigned ) && (u0DT.Bias > 0)
+        %%
+        %<y0Label> = %<y0PlusOne>;
+        %%
+	%elseif !( u0IsFloat || u0DT.IsSigned ) && (u0DT.Bias >= 0) 
+        %%
+        %<y0Label> = %<y0Cast>( %<u0Label> > %<u0Ground> );
+        %%
+    %else
+        if ( %<u0Label> < %<u0Ground> )
+        {
+            %<y0Label> = -%<y0PlusOne>;
+        }
+        else
+        {
+            %<y0Label> = %<y0Cast>( %<u0Label> > %<u0Ground> );
+        }
+    %endif
+    %endroll
+    %%
+    }
+%endif %% InFixptMode
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+%if (!block.InFixptMode)
+  %switch retType
+    %case "Signal"
+      %assign outputDataType = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+      %return "(" + LibGenMathFcnCall("sign", outputDataType, ...
+	  "%<LibBlockInputSignal(0, ucv, lcv, idx)>","" ) + ")" 
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endif  
+%endfunction
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      NSZC[i] = U[i];
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<Type> Block: %<Name> */
+%if (!block.InFixptMode)  
+  %if ParamSettings.InputContiguous == "yes"
+    %% Input is contiguous, do run-time loop
+    %% ZC indices are always contiguous for this case
+    %assign rollVars = ["U", "NSZC"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+      %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+    %endroll
+  %else
+    %% Input is not contiguous, do each element separately
+    %foreach idx = NumNonsampledZCs
+      %<LibBlockNonSampledZC("","",idx)> = \
+      %<LibBlockInputSignal(0, "", "", NonsampledZC[idx].MapIdx)>;
+    %endforeach
+  %endif
+%endif    
+%endfunction
+ 
+%% [EOF] signum.tlc

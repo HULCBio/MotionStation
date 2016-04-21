@@ -1,0 +1,326 @@
+%% ============================================================================
+%% $RCSfile: ptinfo.tlc,v $
+%% $Revision: 1.27.4.3 $ 
+%% $Date: 2004/04/14 23:48:39 $
+%%
+%% Abstract:
+%%   This system file creates Parameter Tuning file model_pt.c.
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%% 
+%selectfile NULL_FILE
+%realformat "CONCISE"
+
+%if EXISTS("_PTINFO_") == 0
+%assign _PTINFO_ = 1
+
+%selectfile STDOUT
+%if RTWVerbose
+### Creating parameter tuning file %<Name>_pt.c
+%endif
+%selectfile NULL_FILE
+
+%% Generate Interface API for data not of custom storage class
+%<SLibMapData()>
+
+%% Internal testing facility
+%if EXISTS("ParameterTuningTestFile")
+  %include "%<ParameterTuningTestFile>"
+%endif
+
+%% Function: FcnParamClass =====================================================
+%% Abstract:
+%%   Return class of parameter based on number of rows and columns.  Value is
+%%   rt_SCALAR, rt_VECTOR, rt_MATRIX_ROW_MAJOR, rt_MATRIX_COL_MAJOR or
+%%   rt_MATRIX_COL_MAJOR_ND
+
+%function FcnParamClass(class) void
+  %switch class
+    %case "scalar"
+      %return "rt_SCALAR"
+    %case "vector"
+      %return "rt_VECTOR"
+    %case "col-mat"
+      %return "rt_MATRIX_COL_MAJOR"
+    %case "row-mat"
+      %return "rt_MATRIX_ROW_MAJOR"
+    %case "col-mat-nd"
+      %return "rt_MATRIX_COL_MAJOR_ND"
+    %default
+      %assign errTxt = "Unhandeld parameter class: %<class>"
+      %<LibReportFatalError(errTxt)>
+  %endswitch
+%endfunction
+ 
+%% Function: FcnParamSource ====================================================
+%% Abstract:
+%%   Return the source of a parameter: rt_SL_PARAM, rt_SF_PARAM or
+%%   rt_MIXED_PARAM
+
+%function FcnParamSource(class) void
+  %switch class
+    %case "SL"
+      %return "rt_SL_PARAM"
+    %case "SF"
+      %return "rt_SF_PARAM"
+    %case "multiple"
+      %return "rt_SHARED_PARAM"
+    %default
+      %assign errTxt = "Unhandeld parameter source: %<class>"
+      %<LibReportFatalError(errTxt)>
+  %endswitch
+%endfunction
+ 
+%with CompiledModel
+%with GlobalMemoryMap
+
+%assign mapIdxCount       = 0
+%assign dimsIdxCount      = 0
+%assign numBlockParams    = 0
+%assign numVariableParams = 0
+
+%createrecord                \
+InstanceMap {                \
+  DimensionsMap         [];  \
+  DimensionsMapComments [];  \
+  ParametersMap         [];  \
+  ParametersMapComments [];  \
+  NumBlockParams        0;   \
+  NumVariableParams     0    \
+}
+%assign im = InstanceMap
+
+%openfile ModelDotPt = "%<Name>_pt.c"
+/*
+ * %<Name>_pt.c
+ *
+%<SLibCommonHeaderInfo()>\
+ */
+
+#ifndef _PT_INFO_%<Name>_
+#define _PT_INFO_%<Name>_
+
+#include "pt_info.h"
+
+%% =============================================================================
+%% Block Parameters
+%% =============================================================================
+%if InlineParameters
+  /* Individual block tuning is not valid when inline parameters is selected. *
+   * An empty map is produced to provide a consistent interface independent   *
+   * of inlining parameters.                                                  */
+%else
+  /* Tunable block parameters */
+%endif
+
+static const %<tBlockTuningType> %<tBlockTuning>[] = {
+
+  /* blockName, parameterName,
+  * class, nRows, nCols, nDims, dimsOffset, source, dataType, numInstances,
+  * mapOffset
+  */
+  
+  %if !InlineParameters
+    %foreach sysIdx = NumSystems
+      %with System[sysIdx]
+	%foreach blkIdx = NumBlocks+NumVirtualOutportBlocks
+	  %with Block[blkIdx]
+	    %assign numParams = Parameters[0]
+	    %foreach paramIdx = numParams
+	      %assign param = Parameter[paramIdx]
+	      %if param.MemoryMapIdx[2] == -1
+		%continue
+	      %endif
+	      %assign structIdx  = param.MemoryMapIdx[0]
+	      %assign secIdx     = param.MemoryMapIdx[1]
+	      %assign dataIdx    = param.MemoryMapIdx[2]
+	      %assign section    = StructuredData[structIdx].Section[secIdx]
+	      %assign data       = section.Data[dataIdx]
+	      %assign isReadOnly = data.Permission == "ro"
+	      %%
+	      %% Skip certain kinds of data
+	      %%
+	      %if data.IsFixedPoint || section.IsComplex || isReadOnly || ...
+		param.StringType == "Computed"
+		%continue
+	      %endif
+	      %assign dtEnum = LibGetDataTypeEnumFromId(section.DataTypeIdx)
+	      %assign class  = FcnParamClass(data.Class)
+	      %if data.NumDimensions < 3
+		%assign dimsOffset = -1
+		%assign nCols = CAST("Number", data.NumCols)
+		%assign nRows = CAST("Number", data.NumRows)
+		%assign nDims = 2
+	      %else
+		%foreach dimsIdx = SIZE(data.Dimensions,1)
+		  %assign im.DimensionsMap = im.DimensionsMap + data.Dimensions[dimsIdx]
+		  %assign im.DimensionsMapComments = im.DimensionsMapComments + ...
+		    "%<CAST("Number",dimsIdxCount+dimsIdx)>: %<Name>"
+		%endforeach
+		%assign dimsOffset   = CAST("Number", dimsIdxCount)
+		%assign dimsIdxCount = dimsIdxCount + data.NumDimensions
+		%assign nCols = -1
+		%assign nRows = -1
+		%assign nDims = CAST("Number", data.NumDimensions)
+	      %endif
+	      /* %<Type> */
+	      {"%<LibMangledPathName(Name)>", "%<param.Name>",
+	        {%<class>, %<nRows>, %<nCols>, %<nDims>, %<dimsOffset>,\
+		rt_SL_PARAM, %<dtEnum>, 1, %<mapIdxCount>}
+	      },
+	      %assign im.ParametersMap = im.ParametersMap + data.BaseAddr
+	      %assign im.ParametersMapComments = im.ParametersMapComments + ...
+		"%<mapIdxCount>"
+	      %assign numBlockParams = numBlockParams + 1
+	      %assign mapIdxCount = mapIdxCount + 1
+	    %endforeach
+	  %endwith
+	%endforeach
+      %endwith
+    %endforeach
+  %endif
+  {NULL, NULL,
+    {(ParamClass)0, 0, 0, 0, 0, (ParamSource)0, 0, 0, 0}
+  }
+};
+%assign InstanceMap.NumBlockParams = numBlockParams
+
+%% ============================================================================
+%% Variable Parameters
+%%
+/* Tunable variable parameters */
+
+static const %<tVariableTuningType> %<tVariableTuning>[] = {
+
+  /* variableName,
+  * class, nRows, nCols, nDims, dimsOffset, source, dataType, numInstances,
+  * mapOffset
+  */
+  
+  %with ModelParameters
+    %foreach paramIdx = NumModelParameters
+      %assign param = ModelParameter[paramIdx]
+      %foreach instIdx = param.NumInstances
+	%assign structIdx = param.Instance[instIdx].MemoryMapIdx[0]
+	%assign secIdx    = param.Instance[instIdx].MemoryMapIdx[1]
+	%assign dataIdx   = param.Instance[instIdx].MemoryMapIdx[2]
+	%if secIdx == -1
+	  %assign data = UnstructuredData.Data[dataIdx]
+	  %assign dataTypeIdx = data.DataTypeIdx
+	  %assign isComplex   = data.IsComplex
+	%elseif structIdx == -1
+	  %assign data = CustomData[secIdx].Data[dataIdx]
+	  %assign dataTypeIdx = data.DataTypeIdx
+	  %assign isComplex   = data.IsComplex
+	%else
+	  %assign section     = StructuredData[structIdx].Section[secIdx]
+	  %assign data        = section.Data[dataIdx]
+	  %assign dataTypeIdx = section.DataTypeIdx
+	  %assign isComplex   = section.IsComplex
+	%endif
+	%%
+	%% Skip certain kinds of data
+	%%
+	%if data.IsFixedPoint || isComplex || data.Class == "other"
+	  %break
+	%endif
+	%if instIdx == 0
+	  %assign source = param.Instance[0].Source
+	  %assign numVariableParams = numVariableParams + 1
+	%elseif param.Instance[instIdx].Source != source
+	  %assign source = "multiple"
+	%endif
+	%if instIdx == 0
+	  %assign class  = FcnParamClass(data.Class)
+	  %assign dtEnum = LibGetDataTypeEnumFromId(dataTypeIdx)
+	  %assign source = FcnParamSource(source)
+	  %if data.NumDimensions < 3
+	    %assign dimsOffset = -1
+	    %assign nCols = CAST("Number", data.NumCols)
+	    %assign nRows = CAST("Number", data.NumRows)
+	    %assign nDims = 2
+	  %else
+	    %foreach dimsIdx = SIZE(data.Dimensions,1)
+	      %assign im.DimensionsMap = im.DimensionsMap + data.Dimensions[dimsIdx]
+	      %assign im.DimensionsMapComments = im.DimensionsMapComments + ...
+		"%<CAST("Number",dimsIdxCount+dimsIdx)>"
+	    %endforeach
+	    %assign dimsOffset   = CAST("Number", dimsIdxCount)
+	    %assign dimsIdxCount = dimsIdxCount + data.NumDimensions
+	    %assign nCols = -1
+	    %assign nRows = -1
+	    %assign nDims = CAST("Number", data.NumDimensions)
+	  %endif
+	  {"%<param.Name>",
+	    {%<class>, %<nRows>, %<nCols>, %<nDims>, %<dimsOffset>, \
+	    %<source>, %<dtEnum>, %<param.NumInstances>, %<mapIdxCount>}
+	  },
+	%endif
+	%assign im.ParametersMap = im.ParametersMap + data.BaseAddr
+	%assign im.ParametersMapComments = im.ParametersMapComments + ...
+	  "%<mapIdxCount>: %<param.Name>"
+	%assign mapIdxCount = mapIdxCount + 1
+      %endforeach  %% Instance
+    %endforeach  %% Parameter
+  %endwith
+  {NULL,
+    {(ParamClass)0, 0, 0, 0, 0, (ParamSource)0, 0, 0, 0}
+  }
+};
+%assign InstanceMap.NumVariableParams = numVariableParams
+
+%if !UsingMalloc
+  %assign nParams = SIZE(InstanceMap.ParametersMap,1)
+  static %<tParametersMapType> %<tParametersMap>[%<nParams>];
+  
+  %if PrefixModelToStructs
+    %assign prefix = "%<CompiledModel.Name>_"
+  %else
+    %assign prefix = ""
+  %endif
+  %assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+  %if !reqInsts.ParamsInst && !SLibPrmBufferIsEmpty("SimulinkGlobal","Instance")
+    %assign pArg = "%<tParametersType> *%<tParameters>"
+  %else
+    %assign pArg = "void"
+  %endif
+  void %<prefix>InitializeParametersMap(%<pArg>) {
+    %foreach idx = nParams
+      %<tParametersMap>[%<idx>] = %<InstanceMap.ParametersMap[idx]>;\
+      /* %<InstanceMap.ParametersMapComments[idx]> */
+    %endforeach
+  }
+
+  %if !reqInsts.ParamsInst && !SLibPrmBufferIsEmpty("SimulinkGlobal","Instance")
+    %assign pArg = tParameters
+  %else
+    %assign pArg = ""
+  %endif
+  %<LibMdlStartCustomCode("%<prefix>InitializeParametersMap(%<pArg>);\n","header")>
+  
+  %assign nDims = SIZE(InstanceMap.DimensionsMap,1)
+  static %<tDimensionsMapType> const %<tDimensionsMap>[] = {
+    %foreach idx = nDims
+      %<InstanceMap.DimensionsMap[idx]>,\
+      /* %<InstanceMap.DimensionsMapComments[idx]> */
+    %endforeach
+    %%
+    %% Need to output 1 zero if there are no parameters (otherwise
+    %% the file won't compile
+    %%
+    %if nDims == 0 
+      0 /* Dummy */
+    %endif
+  };
+%endif
+
+
+#endif  /* _PT_INFO_%<Name>_ */
+%closefile ModelDotPt
+
+%endwith %% GlobalMemoryMap
+%endwith %% CompiledModel
+
+%endif %% _PTINFO_
+
+%% [EOF] ptinfo.tlc

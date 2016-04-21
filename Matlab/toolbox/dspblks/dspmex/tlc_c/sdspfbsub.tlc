@@ -1,0 +1,138 @@
+%% $RCSfile: sdspfbsub.tlc,v $
+%% $Revision: 
+%% $Date: 
+%%
+%% Abstract: TLC Code generation for Signal Processing Blockset Forward/Backward
+%%           Substitution block.
+%%           Generates in-line and function-call code as needed.
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+
+%implements sdspfbsub "C"
+
+%% Function: BlockTypeSetup ====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspfbsub_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %assign ForB = SFcnParamSettings.ForB   %%Forward or Backward
+
+    %assign INPORT_LU  = 0
+    %assign INPORT_B   = 1
+    %assign OUTPORT_X  = 0
+
+    %%dimension of lower triangular matrix
+    %assign INPUT_DIMS_LU  = LibBlockInputSignalDimensions(INPORT_LU)
+    %assign N              = INPUT_DIMS_LU[0]
+
+    %%Dimensions of the RHS
+    %assign NUM_INP_DIMS_B = LibBlockInputSignalNumDimensions(INPORT_B)
+    %assign INPUT_DIMS_B   = LibBlockInputSignalDimensions(   INPORT_B)
+    %assign P              = (NUM_INP_DIMS_B == 2) ? INPUT_DIMS_B[1] : 1
+
+    %%Data types
+    %assign DTYPE_ID       = LibBlockInputSignalDataTypeId(INPORT_LU)
+    %assign INP_COMPLEX_LU = LibBlockInputSignalIsComplex(INPORT_LU)
+    %assign INP_COMPLEX_B  = LibBlockInputSignalIsComplex(INPORT_B)
+
+    %assign UorNU = (SFcnParamSettings.Unity == 0) ? "NU":"U"
+
+    %assign block = block + INPORT_LU + INPORT_B + OUTPORT_X + N + P
+    %assign block = block + DTYPE_ID + INP_COMPLEX_LU + INP_COMPLEX_B
+    %assign block = block + UorNU + ForB
+%endfunction %% BlockInstanceSetup
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+    %if ForB == 0
+    /* Signal Processing Blockset Forward Substitution LX = B solver
+       (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %else
+    /* Signal Processing Blockset Backward Substitution UX = B solver
+       (%<ParamSettings.FunctionName>) - %<Name> */
+    %endif
+    %assign dnam    = ["R", "C", "D", "Z"]                %% Data type
+    %assign dtype   = (DTYPE_ID == tSS_SINGLE) ? 0 : 2    %% Double or single
+    %assign dtypelb = INP_COMPLEX_LU | INP_COMPLEX_B      %% X o/p - complexity
+    %assign dLU     = dnam[dtype+INP_COMPLEX_LU]          %% L/U - type
+    %assign dB      = dnam[dtype+INP_COMPLEX_B]           %% B - type
+    %assign dLUB    = dnam[dtype+dtypelb]                 %% X o/p - type
+    %assign FB      = (ForB == 0) ? "F":"B"               %% Forward/Backward
+    %%
+    %if N == 1
+        %%Solve inline if matrix dimension is 1x1
+        %if (SFcnParamSettings.Unity == 0)
+            %<AssignDivide(block)>
+        %else
+            %<LibBlockCopyInputsToOutputs(INPORT_B, OUTPORT_X)>
+        %endif
+    %else
+        %%call run-time function since matrix dimension is not 1x1 
+        %%Create function name based on above identified types
+        MWDSP_%<FB>Sub_%<UorNU>_%<dLU>%<dB>_%<dLUB>(\
+             %<LibBlockInputSignalAddr(INPORT_LU, "", "", 0)>,\
+             %<LibBlockInputSignalAddr(INPORT_B, "", "", 0)>,\
+             %<LibBlockOutputSignalAddr(OUTPORT_X,  "", "", 0)>,\
+             %<N>,\
+             %<P>\
+            );
+    %endif
+%endfunction  %% Outputs
+
+%% Function: AssignDivide=======================================================
+%%
+%% Inline code for 1x1 matrix input with unity not checked
+%function AssignDivide(block) Output
+    %if INP_COMPLEX_LU && INP_COMPLEX_B
+        %if DTYPE_ID == tSS_SINGLE
+            CDIV32(\
+                %<LibBlockInputSignal(INPORT_B, "", "", 0)>,\
+                %<LibBlockInputSignal(INPORT_LU, "", "", 0)>,\
+                %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>\
+                );
+        %else
+            CDIV(\
+                %<LibBlockInputSignal(INPORT_B, "", "", 0)>,\
+                %<LibBlockInputSignal(INPORT_LU, "", "", 0)>,\
+                %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>\
+                );
+        %endif
+    %elseif INP_COMPLEX_LU && !INP_COMPLEX_B
+        %if DTYPE_ID == tSS_SINGLE
+            CRECIP32(\
+                    %<LibBlockInputSignal(INPORT_LU, "", "", 0)>,\
+                    %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>\
+                    );
+        %else
+            CRECIP(\
+                  %<LibBlockInputSignal(INPORT_LU, "", "", 0)>,\
+                  %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>\
+                  );
+        %endif
+        %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>.re *=\
+                    %<LibBlockInputSignal(INPORT_B, "", "", 0)>;
+        %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>.im *=\
+                    %<LibBlockInputSignal(INPORT_B, "", "", 0)>;
+    %elseif !INP_COMPLEX_LU && INP_COMPLEX_B
+        %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>.re =\
+                    %<LibBlockInputSignal(INPORT_B, "", "", 0)>.re /\
+                    %<LibBlockInputSignal(INPORT_LU, "", "", 0)>;
+        %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)>.im =\
+                    %<LibBlockInputSignal(INPORT_B, "", "", 0)>.im /\
+                    %<LibBlockInputSignal(INPORT_LU, "", "", 0)>;
+    %else
+        %<LibBlockOutputSignal(OUTPORT_X, "", "", 0)> =\
+            %<LibBlockInputSignal(INPORT_B, "", "", 0)> /\
+            %<LibBlockInputSignal(INPORT_LU, "", "", 0)>;
+    %endif
+%endfunction
+
+%% [EOF] sdspfbsub.tlc
+

@@ -1,0 +1,298 @@
+%% $RCSfile: tmdx326040_adc.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:55 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% tlc for the Target for C6711 DSK
+
+%implements tmdx326040_adc "C"
+
+
+%% Global variables (TLC variables added to CompiledModel):
+%%    tmdx326040_adc_instance
+%%       Determines whether the ADC block has appeared in the model.
+%%
+
+
+%% Include external c6000 functions ==========================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+
+
+%% Function: isNormalized ===============================================
+%% Abstract:
+%%     Determine if normalization is to be applied.
+%%     NOTE: This is more complicated than simply returning the status
+%%           of the scaling flag, since we must "ignore" the scaling
+%%           flag in certain modes.
+%%      
+%function isNormalized(block) void
+
+    %if (DataType == "INTEGER") 
+        %% Ignore the scaling flag:
+        %return 0  %% no normalization to be performed
+
+    %else
+        %% Normalization is allowed
+        %% Return true if the flag is set to normalization
+
+        %return (Scaling == "NORMALIZE")
+    %endif
+
+%endfunction %% isNormalized
+
+
+%% Function: codecIsSigned16 ===============================================
+%% Abstract:
+%%      Returns TRUE if codec data format is in 16-bit mode
+%%
+%function codecIsSigned16(block)
+
+%return (DataFormat == "LINEAR_16BIT")
+
+%endfunction %% codecIsSigned16
+
+
+%% Function: DeclareScalingFactor ===============================================
+%% Abstract:
+%%  Outputs declaration of scaling factor constants.
+%%      16 bit signed   - scaling factor = 1/32768
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockOutputSignalDataTypeName(0,"")
+        %%
+        const %<castType> ADCScaleFactor = 1.0 / 32768.0;
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+%% Function: GetNextOutput ====================================================
+%% Abstract:
+%%     Build the next output from LibBlockOutputSignal and increments
+%%     according to Stereo (1 or 2 channels) and FrameSize.
+%%      
+%function GetNextOutput(block,channel)
+    %if FrameSize > 1
+        %if (Stereo == "CODEC_MONO")
+            %assign OutputString =  "%<LibBlockOutputSignal(0,"i++","",0)>"
+        %else
+            %if (channel == "LEFT")
+                %assign OutputString =  "%<LibBlockOutputSignal(0,"i","",0)>"
+            %else
+                %assign OutputString =  "%<LibBlockOutputSignal(0,"i++ + %<FrameSize>","",0)>"
+            %endif %% channel
+        %endif
+    %else
+        %if (Stereo == "CODEC_MONO")
+            %assign OutputString =  "%<LibBlockOutputSignal(0,"","",0)>"
+        %else
+            %if (channel == "LEFT")
+                %assign OutputString =  "%<LibBlockOutputSignal(0,"0","",0)>"
+            %else
+                %assign OutputString =  "%<LibBlockOutputSignal(0,"1","",0)>"
+            %endif %% channel
+        %endif %% Stereo == "CODEC_MONO"
+    %endif %% FrameSize
+    %return OutputString
+%endfunction %% GetNextOutput
+
+
+
+%% Function: UnAlignData ======================================================
+%% Abstract:
+%%   From the codec serial port, left and right data words are always
+%%   16 bits wide and left justified in the word (i.e. ADPCM occupies
+%%   the first four bits).  Unused bits are output as zeros after the
+%%   LSB.  When the mono audio format is selected, the right channel
+%%   output is set to zero and the left channel input is sent to both
+%%   channels.  Only the 32 bit serial transfer is used, so all the
+%%   potential data formats are summarized below:
+%%   (L = left channel data, R = right channel data)
+%%   Mono   16 bits     0xLLLL0000
+%%   Stereo 16 bits     0xLLLLRRRR
+%% 
+%%   Since the CODEC always aligns data into 32-bit fields in memory,
+%%   we wish to take the "correct" portion of those 32 bits, and store
+%%   (and convert, as appropriate) it into the user-selected type
+%%   (such as double, single, etc).
+%%
+%%   Right channel is shifted left first to find sign bit, then right to sign extend.
+%%
+
+%function UnAlignData(block, AlignedDataExpression, channel) Output
+    %if (DataFormat == "LINEAR_16BIT")
+        %if (channel == "LEFT")
+            %assign UnAlignedString = "(" + AlignedDataExpression + " >> 16)"
+        %else
+            %assign UnAlignedString = "((" + AlignedDataExpression + " << 16) >> 16)"
+        %endif %% channel
+    %else 
+        %error "Unimplemented data format specified"
+    %endif
+    %return UnAlignedString
+%endfunction %%UnAlignData
+
+
+%% Function: ApplyScaling ===============================================
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%
+%%     There are two types of scaling to be done, depending on whether
+%%     the data is signed-16 or unsigned-8 bit data:
+%%
+%%              mode        output string
+%%         (1) signed-16:   "(%<inStr> * ADCScaleFactor)"
+%%             The associated scale factor variable is:
+%%                          const real_T ADCScaleFactor = 1.0 / 32768.0;
+%%
+%%         (2) unsigned-8:  "(%<inStr> - 128.0) * ADCScaleFactor"
+%%             The associated scale factor variable is:
+%%                          const real_T ADCScaleFactor = 1.0 / 128.0;
+%%
+%%     where inStr is the input variable string (or expression).
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block, inStr) void
+
+    %% Determine Data Cast
+    %assign DataCast = "(" + LibBlockOutputSignalDataTypeName(0,"") + ")"
+
+    %if isNormalized(block)
+        %if codecIsSigned16(block)
+            %assign ScaleString = "%<DataCast>%<inStr> * ADCScaleFactor"
+        %else
+            %assign ScaleString = "(%<DataCast>%<inStr> - ADCDataOffset) * ADCScaleFactor"
+        %endif
+
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaleString = "%<DataCast>%<inStr>"
+    %endif
+
+    %return ScaleString
+
+%endfunction %% ApplyScaling
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+
+    %if JustCreatedCompiledModelRecord("tmdx326040_adc_instance")
+        %error "Only one TMDX326040A ADC block is allowed in a model."
+    %endif
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start ============================================================
+%%
+%%  Initialize serial port and codec and start receiving
+%%  data into ping-pong buffers.
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%
+    %<Create_config_codec_input(block)>\
+    config_codec_input();
+    %%   
+%endfunction %% Start
+
+
+
+%% Function: Outputs ==========================================================
+%%
+%%  Read input buffer (when ready), and convert
+%%  to output format and send out.
+%%
+%function Outputs(block,system) Output
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>\
+
+    %%
+    %% Determine data alignment shifts:
+    %%
+    %assign UnscaledMonoInputExpression = UnAlignData(block, "*adcBuffPtr++", "LEFT")
+    %assign UnscaledLeftInputExpression  = UnAlignData(block, "*adcBuffPtr", "LEFT")
+    %assign UnscaledRightInputExpression = UnAlignData(block, "*adcBuffPtr++", "RIGHT")
+    %assign MonoInputExpression  = ApplyScaling(block, "%<UnscaledMonoInputExpression>")
+    %assign LeftInputExpression  = ApplyScaling(block, "%<UnscaledLeftInputExpression>")
+    %assign RightInputExpression = ApplyScaling(block, "%<UnscaledRightInputExpression>") 
+    %%
+    %% Transfer A/D data to output buffer:
+    %%
+    %if FrameSize > 1
+        int_T i = 0;
+        while(i < %<FrameSize>) {
+    %else
+    %endif
+        %%
+        %if (Stereo == "CODEC_MONO")
+            %<GetNextOutput(block, "LEFT")>  = %<MonoInputExpression>;
+        %else
+            %<GetNextOutput(block, "LEFT")>  = %<LeftInputExpression>;
+            %<GetNextOutput(block, "RIGHT")> = %<RightInputExpression>;
+        %endif
+        %%
+    %if FrameSize > 1
+    }
+    %endif 
+    %%
+    %if (LinkerCommandFile == "Full_memory_map")
+ 	    %openfile tmpBuf
+ 	    if (%<LibIsSampleHit(TID)>) {
+            clean_adc_L2Cache();
+        }
+	    %closefile tmpBuf
+	    %<LibSystemOutputCustomCode(system, tmpBuf, "trailer")>     
+    %endif
+}
+
+%endfunction %% Outputs
+
+
+%% Function: AddParamsToBlock =================================================
+%%
+%%  Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+    %assign SampleRate    = SFcnParamSettings.SampleRate
+    %assign FrameSize     = SFcnParamSettings.FrameSize
+    %assign Stereo        = SFcnParamSettings.Stereo
+    %assign DataFormat    = SFcnParamSettings.DataFormat
+    %assign DataType      = SFcnParamSettings.DataType
+    %assign Scaling       = SFcnParamSettings.Scaling
+    %%
+    %assign block = block + Stereo + FrameSize + SampleRate + DataType + Scaling \
+                  + DataFormat 
+
+    %% Make selected parameters available globally to other functions:
+    %%
+    %assign c6000_adc_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_adc_data_format
+	%%
+    %assign tmdx326040_adc_instance = 1
+    %assign ::CompiledModel = ::CompiledModel + tmdx326040_adc_instance
+    
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] tmdx326040_adc.tlc

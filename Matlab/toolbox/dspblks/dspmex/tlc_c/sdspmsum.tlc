@@ -1,0 +1,221 @@
+%% $RCSfile: sdspmsum.tlc,v $
+%% $Revision: 1.13.4.2 $ 
+%% $Date: 2004/04/12 23:09:08 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix sum
+
+%implements sdspmsum "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Columns")>
+  %<LibRenameParameter(block, P2, "Dimension")>
+  %%
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Sum (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT    = 0
+  %assign OUTPORT   = 0
+  %assign need_copy = (LibBlockInputSignalBufferDstPort(INPORT) != OUTPORT)
+  %assign contig    = IsInputPortContiguous(block, INPORT)
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT) != 0
+  %assign dtype     = cplx ? "creal_T" : "real_T"
+  %assign cols      = CAST("Number",LibBlockParameterValue(Columns,0))
+  %assign dim       = CAST("Number",LibBlockParameterValue(Dimension,0))
+  %assign dim_rows  = 1
+  %assign dim_cols  = 2
+  %assign width     = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign rows      = CAST("Number",width/cols)
+  %%
+  %if need_copy
+    %if width==1
+      %%
+      /* Scalar input */
+      %%
+      %<LibBlockOutputSignal(OUTPORT, "","",0)> = %<LibBlockInputSignal(INPORT, "","",0)>;
+      %%
+    %elseif cols ==1 ||  rows ==1
+      %%
+      %% Vector input
+      %%
+      %if (rows == 1 && dim == dim_rows) || (cols == 1 && dim == dim_cols)
+	%%
+	/* Scalar output */
+	%%      
+	%assign u    = LibBlockInputSignal(INPORT, "", "",0)
+	%assign y    = LibBlockOutputSignal(OUTPORT, "","",0)
+	%assign y_re = LibBlockOutputSignal(OUTPORT, "","","%<tRealPart>0")
+	%assign y_im = LibBlockOutputSignal(OUTPORT, "","","%<tImagPart>0")
+	%%
+	%<y> = %<u>;
+	%%
+	%assign rollVars = ["U", "Y"]
+	%assign rollRegions1 = LibClipRollRegions(RollRegions, 2, -1)
+	%roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	  block, "Roller", rollVars
+	  %if !cplx
+	    %<y_re> += %<LibBlockInputSignal(INPORT, "", lcv, sigIdx)>;
+	  %else
+	    %<y_re> += %<LibBlockInputSignal(INPORT, "", lcv, "%<tRealPart>%<sigIdx>")>;
+	    %<y_im> += %<LibBlockInputSignal(INPORT, "", lcv, "%<tImagPart>%<sigIdx>")>;
+	  %endif
+	%endroll
+      %else
+	%%
+	/* Output == Input */
+	%%
+	%assign rollVars = ["U", "Y"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, \
+	  block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	  %assign y = LibBlockOutputSignal(OUTPORT, "",lcv, sigIdx)
+	  %<y> = %<u>;
+	%endroll                  
+      %endif
+      %%      
+    %else
+      %%
+      %% Matrix input
+      %%
+      %if dim == dim_rows
+	%%%%%%%%%%%%%%%%%%%%%
+	/* Matrix row sum. */
+	%%%%%%%%%%%%%%%%%%%%%
+	%if contig
+	  {
+	    %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+	    %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	    int_T j;
+	    
+	    for (j=0; j++<%<rows>; ) {
+	      %<dtype> s = *u;
+	      int_T i;	    
+	      for (i=1; i<%<cols>; i++) {
+		%if !cplx
+		  s += u[%<rows>*i];
+		%else
+		  s.re += u[%<rows>*i].re;
+		  s.im += u[%<rows>*i].im;
+		%endif
+	      }
+	      *y++ = s;
+	      u++;
+	    }
+	  }
+	%else
+	  %% 
+	  %% Discontiguous
+	  %%
+	  /* Copy first column input output area: */      
+	  %assign rollVars = ["U"]
+	  %assign rollRegions1 = LibClipRollRegions(RollRegions, 1, rows)
+	  %roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	    block, "Roller", rollVars
+	    %assign u = LibBlockInputSignal(INPORT, "", lcv, sigIdx)
+	    %assign y = LibBlockOutputSignal(OUTPORT, "",lcv, sigIdx)
+	    %<y> = %<u>;                  
+	  %endroll
+	  {
+	    /* Add subsequent columns to output: */
+	    %assign yj    = LibBlockOutputSignal(OUTPORT, "j","", 0)
+	    %assign yj_re = LibBlockOutputSignal(OUTPORT, "j","", "%<tRealPart>0")
+	    %assign yj_im = LibBlockOutputSignal(OUTPORT, "j","", "%<tImagPart>0")
+	    int_T j = 0;
+	    %assign rollVars = ["U"]
+	    %assign rollRegions1 = LibClipRollRegions(RollRegions, rows+1, -1)
+	    %roll sigIdx = rollRegions1, lcv = RollThreshold, \
+	      block, "Roller", rollVars
+	      %assign u_re = LibBlockInputSignal(INPORT, "", lcv,"%<tRealPart>%<sigIdx>")
+	      %assign u_im = LibBlockInputSignal(INPORT, "", lcv,"%<tImagPart>%<sigIdx>")
+	      %if !cplx
+		%<yj> += %<u_re>;
+	      %else
+		%<yj_re> += %<u_re>;
+		%<yj_im> += %<u_im>;
+	      %endif
+	      if(++j > %<rows-1>) j=0;
+	    %endroll      
+	  }
+	%endif
+      %else
+	%%%%%%%%%%%%%%%%%%%%%%%
+	/* Matrix column sum */
+	%%%%%%%%%%%%%%%%%%%%%%%
+	%if contig
+	  {
+	    %<dtype> *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+	    %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+	    int_T j = %<cols>;
+	    while(j-- > 0) {
+	      %<dtype> s = *u++;
+	      int_T i  = %<rows-1>;
+	      while(i-- > 0) {
+		%if !cplx
+		  s += *u++;
+		%else
+		  s.re += u->re;
+		  s.im += (u++)->im;
+		%endif
+	      }
+	      *y++ = s;
+	    }
+	  }
+	%else
+	  %%
+	  %% Discontiguous inputs
+	  %%
+	  {	  
+	  %assign yj = LibBlockOutputSignal(OUTPORT, "j++","",0)
+	  %%
+	  int_T i = 0;
+	  int_T j = 0;
+	  %if !cplx
+	    real_T s = 0.0;
+	  %else
+	    creal_T s = {0.0, 0.0};
+	  %endif
+	  %%
+	  %assign rollVars = ["U"]
+	  %roll sigIdx = RollRegions, lcv = RollThreshold, \	  
+	    block, "Roller", rollVars
+	    %assign u_re = LibBlockInputSignal(INPORT, "", lcv,"%<tRealPart>%<sigIdx>")
+	    %assign u_im = LibBlockInputSignal(INPORT, "", lcv,"%<tImagPart>%<sigIdx>")
+	    %if !cplx
+	      s += %<u_re>;
+	    %else
+	      s.re += %<u_re>;
+	      s.im += %<u_im>;
+	    %endif
+	    if(++i == %<rows>) {
+	      %<yj> = s;  /* output the sum  */
+	      i = 0;      /* clear the count */			
+	      %if !cplx
+		s = 0.0;    /* clear the sum   */
+	      %else
+		s.re = 0.0; /* clear the sum */
+		s.im = 0.0;
+	      %endif
+	    }
+	  %endroll
+	}
+      %endif %% contig      
+    %endif %% dim
+  %endif %% matrix
+%else
+  /* Output is identical to input.  No code needed. */
+%endif  %% need_copy
+
+%endfunction
+
+%% [EOF] sdspmsum.tlc

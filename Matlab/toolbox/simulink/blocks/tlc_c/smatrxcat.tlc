@@ -1,0 +1,604 @@
+%% $RCSfile: smatrxcat.ttlc,v $
+%% File : smatrxcat.tlc generated from smatrxcat.ttlc revsion 1.6 
+%% $Date: 2002/04/10 18:18:08 $
+%%
+%% Steve Conahan
+%% Copyright 1990-2002 The MathWorks, Inc.
+%%
+%% Abstract: Matrix Concatenation
+%%
+
+%implements smatrxcat "C"
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign OUTPORT     = 0
+  %assign OUT_COMPLEX = LibBlockOutputSignalIsComplex(OUTPORT)
+  %assign OUT_DTYPE_CNAME = ""
+  %% This gives the real data type name, no matter if input is real or complex:
+  %assign OUT_DTYPE_NAME = ...
+    LibBlockOutputSignalDataTypeName(OUTPORT,"%<tRealPart>")
+  %if OUT_COMPLEX
+    %assign dTypeId = LibBlockOutputSignalDataTypeId(0)
+    %assign OUT_DTYPE_CNAME = "%<LibGetDataTypeComplexNameFromId(dTypeId)>"
+  %endif
+  %%
+  %assign HORIZONTAL = 1
+  %assign CAT_METHOD = SFcnParamSettings.CatMethod
+  %%
+  %if (CAT_METHOD == HORIZONTAL)
+    %% Number of ROWS is constant for all input and output ports
+    %assign outDims = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign CONST_HORIZROWS_OR_VERTCOLS = outDims[0]
+  %else
+    %% Number of COLUMNS is constant for all input and output ports
+    %assign numOutDims = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign outDims    = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign CONST_HORIZROWS_OR_VERTCOLS = (numOutDims == 2) ? outDims[1] : 1
+  %endif %% (CAT_METHOD == HORIZONTAL)
+  %%
+  %% If the output is complex, determine if ALL inputs are complex
+  %% (for code generation optimizations).
+  %%
+  %if OUT_COMPLEX
+    %assign realInputDetected = 0
+    %foreach inpCnt = NumDataInputPorts
+      %assign realInputDetected = ...
+        realInputDetected || ( !LibBlockInputSignalIsComplex(inpCnt) )
+    %endforeach
+  %else
+    %assign realInputDetected = 1
+  %endif %% OUT_COMPLEX
+  %%
+  %if realInputDetected
+    %assign ALL_INPUTS_COMPLEX = 0
+  %else
+    %assign ALL_INPUTS_COMPLEX = 1
+  %endif %% realInputDetected
+  %%
+  %% NOTE: The following only works for SL built-in types 
+  %%       (i.e. not for custom types)
+  %assign outDtypeId          = LibBlockOutputSignalDataTypeId(OUTPORT)
+  %%
+  %assign block = block + OUTPORT + OUT_COMPLEX + ...
+      OUT_DTYPE_NAME + OUT_DTYPE_CNAME + outDims
+  %assign block = block + HORIZONTAL + CAT_METHOD
+  %assign block = block + CONST_HORIZROWS_OR_VERTCOLS + ALL_INPUTS_COMPLEX
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+%%
+  /* 
+   * Matrix Concatenation: %<Name>
+  %if (NumDataInputPorts > 1)
+    %if (CAT_METHOD == HORIZONTAL)
+      %<GenerateHorizCatCode(block)>
+    %else
+      %<GenerateVertCatCode(block)>
+    %endif %% (CAT_METHOD == HORIZONTAL)
+  %else
+    %<GenerateCopyCode(block)>
+  %endif %% (NumDataInputPorts > 1)
+%endfunction  %% Outputs
+
+
+%% Function: GenerateCopyCode =============================================
+%%
+%function GenerateCopyCode(block) Output
+  %%
+  %% One input port - check and see if we share I/O or not
+  %%
+  %assign in_place = (LibBlockInputSignalBufferDstPort(0) == OUTPORT)
+  %%
+  %if in_place
+    %% NOTE this comment begins at the very start of the Outputs function
+    %% (i.e. "/* Matrix Concatenation...")
+    * No code required: input port and output port buffers shared.
+    */
+  %else
+    %if OUT_COMPLEX
+      %% NOTE this comment begins at the very start of the Outputs function
+      %% (i.e. "/* Matrix Concatenation...")
+      * One input, complex, data type: %<OUT_DTYPE_NAME>.
+      */
+      %assign numBytesPerInputMatrix = ...
+        "%<LibBlockInputSignalWidth(0)> * sizeof(%<OUT_DTYPE_CNAME>)"
+    %else
+      %% NOTE this comment begins at the very start of the Outputs function
+      %% (i.e. "/* Matrix Concatenation...")
+      * One input, real, data type: %<OUT_DTYPE_NAME>.
+      */
+      %assign numBytesPerInputMatrix = ...
+        "%<LibBlockInputSignalWidth(0)> * sizeof(%<OUT_DTYPE_NAME>)"
+    %endif %% OUT_COMPLEX
+    %%
+    %assign y = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign u = LibBlockInputSignalAddr(0,"","",0)
+    (void) memcpy( (byte_T *)%<y>,
+      (byte_T *)%<u>, %<numBytesPerInputMatrix> ); ...
+      /* [%<outDims[0]>x%<outDims[1]>] */
+    %%
+  %endif  %% in_place
+%endfunction  %% GenerateCopyCode
+
+    
+%% Function: GenerateHorizCatCode =============================================
+%%
+%function GenerateHorizCatCode(block) Output
+  %%
+  %% There are two cases to consider:
+  %%
+  %% Easy case (all inputs same complexity) ->
+  %%     Render a bunch of memcpy statements (no loops required).
+  %%
+  %% Mixed case (some inputs real, some inputs complex) ->
+  %%     Render a combination of either memcpy 
+  %%     statements, or loops based on input port complexity.  Worst case
+  %%     for N-1 ports real and 1 port complex is that we render
+  %%     N-1 for-loops. Must check each input complexity as we go.
+  %%
+  %if !OUT_COMPLEX || ALL_INPUTS_COMPLEX
+    %<GenHorizCatSameComplexity(block)>
+  %else
+    %<GenHorizCatDifferentComplexity(block)>
+  %endif
+%endfunction  %% GenerateHorizCatCode
+
+
+%% Function: GenerateVertCatCode ==============================================
+%%
+%function GenerateVertCatCode(block) Output
+  %%
+  %% Vertical Concatenation:
+  %%
+  %% There are two cases to consider:
+  %%
+  %% Easier case -> All inputs same complexity.
+  %% Mixed case  -> Some inputs real, some inputs complex.
+  %%
+  %if !OUT_COMPLEX || ALL_INPUTS_COMPLEX
+    %<GenVertCatSameComplexity(block)>
+  %else
+    %<GenVertCatDifferentComplexity(block)>
+  %endif
+%endfunction  %% GenerateVertCatCode
+
+
+%% Function: GenHorizCatSameComplexity ========================================
+%%
+%function GenHorizCatSameComplexity(block) Output
+  %if OUT_COMPLEX
+    %% NOTE this comment begins at the very start of the Outputs function
+    %% (i.e. "/* Matrix Concatenation...")
+    * Horizontal matrix concatenation, 
+    * %<NumDataInputPorts> inputs, complex, data type: %<OUT_DTYPE_NAME>.
+    */
+    %assign sizeOfElmt = "sizeof(%<OUT_DTYPE_CNAME>)"
+  %else
+    %% NOTE this comment begins at the very start of the Outputs function
+    %% (i.e. "/* Matrix Concatenation...")
+    * Horizontal matrix concatenation, 
+    * %<NumDataInputPorts> inputs, real, data type: %<OUT_DTYPE_NAME>.
+    */
+    %assign sizeOfElmt = "sizeof(%<OUT_DTYPE_NAME>)"
+  %endif %% OUT_COMPLEX
+  %%
+  %assign elementCount = 0
+  %assign y = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %foreach portNum = NumDataInputPorts
+    %assign numBytesPerInputMatrix = ...
+      "%<LibBlockInputSignalWidth(portNum)> * %<sizeOfElmt>"
+    %assign inDims = LibBlockInputSignalDimensions(portNum)
+    %assign colDim = LibBlockInputSignalWidth(portNum) / inDims[0]
+    %% Note: in the unoriented input case, can't use inDims[1]
+    %% to determine number of columns
+    %assign u = LibBlockInputSignalAddr(portNum, "", "",0)
+    %assign comment = "/* Input %<portNum+1>: [%<inDims[0]>x%<colDim>] */"
+    %if (elementCount > 0)
+      (void) memcpy( ((byte_T *)(%<y>)) + (%<elementCount> * %<sizeOfElmt>),
+      (byte_T *)%<u>, %<numBytesPerInputMatrix> ); %<comment>
+    %else
+      (void) memcpy( ((byte_T *)(%<y>)),
+      (byte_T *)%<u>, %<numBytesPerInputMatrix> ); %<comment>
+    %endif
+    %assign elementCount = elementCount + LibBlockInputSignalWidth(portNum)
+  %endforeach
+%endfunction %% GenHorizCatSameComplexity
+
+
+%% Function: GenHorizCatDifferentComplexity ===================================
+%%
+%function GenHorizCatDifferentComplexity(block) Output
+%% NOTE this comment begins at the very start of the Outputs function
+  %% (i.e. "/* Matrix Concatenation...")
+  * Horizontal matrix concatenation, 
+  * %<NumDataInputPorts> inputs, real and complex, data type: %<OUT_DTYPE_NAME>.
+  */
+  %assign dTypeId = LibBlockOutputSignalDataTypeId(0)
+  %assign zero = SLibGetFormattedValueFromId(dTypeId, 0)
+  %assign outElementCount = 0
+  %foreach portNum = NumDataInputPorts
+    %assign y = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign u = LibBlockInputSignalAddr(portNum, "", "",0)
+    %if LibBlockInputSignalIsComplex(portNum)
+      %%
+      %% Complex input, complex output
+      %%
+      %assign sizeOfCplxElmt = "sizeof(%<OUT_DTYPE_CNAME>)"
+      %assign numBytesPerInputMatrix = ...
+        "%<LibBlockInputSignalWidth(portNum)> * %<sizeOfCplxElmt>"
+      %assign inDims = LibBlockInputSignalDimensions(portNum)
+      %assign colDim = LibBlockInputSignalWidth(portNum) / inDims[0]
+      %%
+      %% Note: in the unoriented input case, can't use inDims[1]
+      %% to determine number of columns
+      %assign dimStr = "[%<inDims[0]>x%<colDim>]"
+      /* Input %<portNum + 1>: [%<inDims[0]>x%<dimStr>], complex */
+      %if (outElementCount > 0)
+        (void) memcpy( ((byte_T *)(%<y>)) + %<outElementCount>*%<sizeOfCplxElmt>, 
+          (byte_T *)%<u>, %<numBytesPerInputMatrix> );
+      %else
+        (void) memcpy( (byte_T *)%<y>,
+          (byte_T *)%<u>, %<numBytesPerInputMatrix> );
+      %endif
+      %%
+      %assign outElementCount = ...
+        outElementCount + LibBlockInputSignalWidth(portNum)
+      %%
+    %else
+      %%
+      %% Real input, complex output
+      %%
+      %% Note: in the unoriented input case, can't use inDims[1]
+      %% to determine number of columns
+      %assign inDims = LibBlockInputSignalDimensions(portNum)
+      %assign colDim = LibBlockInputSignalWidth(portNum) / inDims[0]
+      %assign sizeOfCplxElmt = "sizeof(%<OUT_DTYPE_CNAME>)"
+      %assign sizeOfRealElmt = "sizeof(%<OUT_DTYPE_NAME>)"
+        /* Input %<portNum + 1>: [%<inDims[0]>x%<colDim>], real */
+        {
+        %if (LibBlockInputSignalWidth(portNum) > 1)
+          int_T cnt;
+          for ( cnt = 0; cnt < %<LibBlockInputSignalWidth(portNum)>; cnt++ ) {
+          /* 
+           * Copy real input sample bytes to real part of output, 
+           * zeroize imaginary part
+           */
+          %if (outElementCount > 0)
+            (void) memcpy( ((byte_T *)(%<y>))                   ...
+              + (cnt * %<sizeOfCplxElmt>) + %<outElementCount>*%<sizeOfCplxElmt>,
+              ((byte_T *)(%<u>)) +                                   ...
+              (cnt * %<sizeOfRealElmt>), %<sizeOfRealElmt> );
+            %% NOTE: The following only works for SL built-in types
+            %% (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((char *) %<y>) ...
+                + (cnt * %<sizeOfCplxElmt>) ...
+                + %<outElementCount>*%<sizeOfCplxElmt> + %<sizeOfRealElmt>) ...
+                = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>))          ...
+                + (cnt * %<sizeOfCplxElmt>)              ...
+                + %<outElementCount>*%<sizeOfCplxElmt> + %<sizeOfRealElmt>, ...
+                0, %<sizeOfRealElmt> );
+            %endif
+          %else
+            (void) memcpy( ((byte_T *)(%<y>))   ...
+              + (cnt * %<sizeOfCplxElmt>), 
+              ((byte_T *)(%<u>))                                       ...
+              + (cnt * %<sizeOfRealElmt>), %<sizeOfRealElmt> );
+            %% NOTE: The following only works for SL built-in types
+            %% (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) ...
+                + (cnt * %<sizeOfCplxElmt>) + ...
+                   %<sizeOfRealElmt>) ...
+                = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>)) ...
+                + (cnt * %<sizeOfCplxElmt>) +  ...
+                   %<sizeOfRealElmt>, ...
+                0, %<sizeOfRealElmt> );
+            %endif
+          %endif
+          } /* end cnt */
+          %% Increment output bytes for next element
+          %assign outElementCount = ...
+            outElementCount + LibBlockInputSignalWidth(portNum)
+        %else
+          /* 
+           * Copy real input sample bytes to real part of output, 
+           * zeroize imaginary part 
+           */
+          %if (outElementCount > 0)
+            (void) memcpy( ((byte_T *)(%<y>)) + ...
+              %<outElementCount>*%<sizeOfCplxElmt>,
+              (byte_T *)%<u>, %<sizeOfRealElmt> );
+            %% NOTE: The following only works for SL built-in types
+            %% (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) ...
+                + %<outElementCount>*%<sizeOfCplxElmt> + %<sizeOfRealElmt>) ...
+                = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>))   +                    ...
+                %<outElementCount>*%<sizeOfCplxElmt> + %<sizeOfRealElmt>, ...
+                0, %<sizeOfRealElmt> );
+            %endif
+          %else
+            (void) memcpy( (byte_T *)%<y>,
+              (byte_T *)%<u>, %<sizeOfRealElmt> );
+            %% NOTE: The following only works for SL built-in types
+            %%  (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) ...
+                + %<sizeOfRealElmt>) = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>)) + %<sizeOfRealElmt>, ...
+                0, %<sizeOfRealElmt> );
+            %endif
+          %endif
+          %% Increment output bytes for next element
+          %assign outElementCount = outElementCount + 1
+        %endif %% (LibBlockInputSignalWidth(portNum) > 1)
+      }
+    %endif  %% complex vs. real input
+  %endforeach %% portNum
+%endfunction %% GenHorizCatDifferentComplexity
+
+
+%% Function: GenVertCatSameComplexity ========================================
+%%
+%function GenVertCatSameComplexity(block) Output
+  %if OUT_COMPLEX
+    %% NOTE this comment begins at the very start of the Outputs function
+    %% (i.e. "/* Matrix Concatenation...")
+    * Vertical matrix concatenation, 
+    * %<NumDataInputPorts> inputs, complex, data type: %<OUT_DTYPE_NAME>.
+    */
+    %assign numBytesPerElmt = "sizeof(%<OUT_DTYPE_CNAME>)"
+  %else
+    %% NOTE this comment begins at the very start of the Outputs function
+    %% (i.e. "/* Matrix Concatenation...")
+    * Vertical matrix concatenation, 
+    * %<NumDataInputPorts> inputs, real, data type: %<OUT_DTYPE_NAME>.
+    */
+    %assign numBytesPerElmt = "sizeof(%<OUT_DTYPE_NAME>)"
+  %endif %% OUT_COMPLEX
+  {
+  %assign elementCount = 0
+  %assign y = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+    const int_T nCols = %<CONST_HORIZROWS_OR_VERTCOLS>;
+    int_T       colNum;
+    %%
+    %% Calculate total number of bytes per output column for use below
+    %assign totNumOutCol = 0
+    %foreach portNum = NumDataInputPorts
+      %assign inDims   = LibBlockInputSignalDimensions(portNum)
+      %assign totNumOutCol = totNumOutCol + inDims[0]
+    %endforeach %% NumDataInputPorts
+    %assign totNumOutColBytes =  "%<totNumOutCol>*%<numBytesPerElmt>"
+    %%
+    for ( colNum = 0; colNum < nCols; colNum++ ) {
+    %%
+    %foreach portNum = NumDataInputPorts
+      %assign u        = LibBlockInputSignalAddr(portNum, "", "",0)
+      %assign inDims   = LibBlockInputSignalDimensions(portNum)
+      %assign colDim   = LibBlockInputSignalWidth(portNum) / inDims[0]
+      %assign colBytes = "%<inDims[0]> * %<numBytesPerElmt>"
+      %assign dimStr   = "[%<inDims[0]>x%<colDim>], %<colBytes> bytes per col"
+      %assign comment  = "/* Input %<portNum + 1>: %<dimStr> */"
+      %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+        %if (elementCount > 0)
+          (void) memcpy( ((byte_T *)(%<y>))                 ...
+         + (colNum * %<totNumOutColBytes>) + %<elementCount>*%<numBytesPerElmt>,
+            ((byte_T *)(%<u>))                                ...
+            + (colNum * %<colBytes>), %<colBytes> ); %<comment>
+        %else
+          (void) memcpy( ((byte_T *)(%<y>))  ...
+            + (colNum * %<totNumOutColBytes>),
+            ((byte_T *)(%<u>))                                ...
+            + (colNum * %<colBytes>), %<colBytes> ); %<comment>
+        %endif
+      %else
+        %if (elementCount > 0)
+          (void) memcpy( ((byte_T *)(%<y>))                 ...
+         + (colNum * %<totNumOutColBytes>) + %<elementCount>*%<numBytesPerElmt>,
+            (byte_T *)(%<u>), %<colBytes> ); %<comment>
+        %else
+          (void) memcpy( ((byte_T *)(%<y>))  ...
+            + (colNum * %<totNumOutColBytes>),
+            (byte_T *)(%<u>), %<colBytes> ); %<comment>
+        %endif
+      %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+      %assign elementCount = elementCount + inDims[0]
+    %endforeach %% input port number
+    }
+  %else
+    %foreach portNum = NumDataInputPorts
+      %assign u        = LibBlockInputSignalAddr(portNum, "", "",0)
+      %assign inDims   = LibBlockInputSignalDimensions(portNum)
+      %assign colDim   = LibBlockInputSignalWidth(portNum) / inDims[0]
+      %assign colBytes = "%<inDims[0]> * %<numBytesPerElmt>"
+      %assign dimStr   = "[%<inDims[0]>x%<colDim>], %<colBytes> bytes per col"
+      %assign comment  = "/* Input %<portNum + 1>: %<dimStr> */"
+      %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+        %if (elementCount > 0)
+         (void) memcpy( ((byte_T *)(%<y>)) + %<elementCount>*%<numBytesPerElmt>,
+          ((byte_T *)(%<u>))                                ...
+          + (colNum * %<colBytes>), %<colBytes> ); %<comment>
+        %else
+          (void) memcpy( (byte_T *)(%<y>), 
+          ((byte_T *)(%<u>))                                ...
+          + (colNum * %<colBytes>), %<colBytes> ); %<comment>
+        %endif
+      %else
+        %if (elementCount > 0)
+         (void) memcpy( ((byte_T *)(%<y>)) + %<elementCount>*%<numBytesPerElmt>,
+            (byte_T *)(%<u>), %<colBytes> ); %<comment>
+        %else
+          (void) memcpy( (byte_T *)(%<y>),
+            (byte_T *)(%<u>), %<colBytes> ); %<comment>
+        %endif
+      %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+      %assign elementCount = elementCount + inDims[0]
+    %endforeach %% input port number
+  %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+  }
+%endfunction %% GenVertCatSameComplexity
+
+
+%% Function: GenVertCatDifferentComplexity ====================================
+%%
+%function GenVertCatDifferentComplexity(block) Output
+  %% NOTE this comment begins at the very start of the Outputs function
+  %% (i.e. "/* Matrix Concatenation...")
+  * Vertical matrix concatenation, 
+  * %<NumDataInputPorts> inputs, real and complex, data type: %<OUT_DTYPE_NAME>.
+  */
+  %assign dTypeId = LibBlockOutputSignalDataTypeId(0)
+  %assign zero = SLibGetFormattedValueFromId(dTypeId, 0)
+  %assign sizeOfCplxElmt = "sizeof(%<OUT_DTYPE_CNAME>)"
+  %assign sizeOfRealElmt = "sizeof(%<OUT_DTYPE_NAME>)"
+  {
+    int_T       outputByteCount = 0;
+    %%
+    %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+      const int_T nCols = %<CONST_HORIZROWS_OR_VERTCOLS>;
+      int_T       colNum;
+      for ( colNum = 0; colNum < nCols; colNum++ ) {
+    %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+    %%
+    %assign y = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %foreach portNum = NumDataInputPorts
+      %assign u        = LibBlockInputSignalAddr(portNum, "", "",0)
+      %assign inDims   = LibBlockInputSignalDimensions(portNum)
+      %assign colDim   = LibBlockInputSignalWidth(portNum) / inDims[0]
+      %if LibBlockInputSignalIsComplex(portNum)
+        %%
+        %% Complex input, complex output
+        %%
+        %assign colBytes = "%<inDims[0]> * %<sizeOfCplxElmt>"
+        %assign dimStr = "[%<inDims[0]>x%<colDim>], complex," + ...
+                         " %<colBytes> bytes per col"
+        /* Input %<portNum + 1>: %<dimStr> */
+        %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+          (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+            ((byte_T *)(%<u>)) + (colNum * %<colBytes>), %<colBytes> );
+        %else
+          (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+            (byte_T *)%<u>, %<colBytes> );
+        %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+        %% INCREMENT BYTE COUNT FROM THE (COMPLEX) MEMCPY
+        outputByteCount += %<colBytes>;
+      %else
+        %%
+        %% Real input, complex output
+        %%
+        %assign colBytes = "%<inDims[0]> * %<sizeOfRealElmt>"
+        %if (inDims[0] > 1)
+          %assign dimStr = "[%<inDims[0]>x%<colDim>], real," + ...
+                         " %<colBytes> bytes per col"
+          /* Input %<portNum + 1>: %<dimStr> */
+          {
+            int_T cnt;                            
+            for ( cnt = 0; cnt < %<inDims[0]>; cnt++ ) {
+            /* 
+             * Copy real input sample bytes to real part of output,
+             * zeroize imaginary part
+             */
+            %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+              (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+                ((byte_T *)(%<u>)) + (colNum * %<colBytes>)              ...
+               + (cnt * %<sizeOfRealElmt>), %<sizeOfRealElmt> );
+              %% INCREMENT BYTE COUNT FROM THE REAL PART MEMCPY
+              outputByteCount += %<sizeOfRealElmt>;
+              %% NOTE: The following only works for SL built-in types
+              %% (i.e. not for custom types)
+              %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+                *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) + outputByteCount) ...
+                  = %<zero>;
+              %else
+                (void) memset( ((byte_T *)(%<y>)) + outputByteCount, ...
+                                           0, %<sizeOfRealElmt> );
+              %endif
+            %else
+              (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+                ((byte_T *)(%<u>))                                       ...
+                + (cnt * %<sizeOfRealElmt>), %<sizeOfRealElmt> );
+              %% INCREMENT BYTE COUNT FROM THE REAL PART MEMCPY
+              outputByteCount += %<sizeOfRealElmt>;
+              %% NOTE: The following only works for SL built-in types 
+              %% (i.e. not for custom types)
+              %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+                *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) + outputByteCount) ...
+                  = %<zero>;
+              %else
+                (void) memset( ((byte_T *)(%<y>)) + outputByteCount, ...
+                                           0, %<sizeOfRealElmt> );
+              %endif
+            %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+            %% INCREMENT BYTE COUNT FROM THE ZEROIZATION OF IMAG PART
+            outputByteCount += %<sizeOfRealElmt>;
+            }
+          }
+        %else
+          %assign dimStr = "[%<inDims[0]>x%<colDim>], real," + ...
+                           " %<colBytes> bytes per col"
+          /* Input %<portNum + 1>: %<dimStr>
+           * Copy real input sample bytes to real part of output,
+           * zeroize imaginary part
+           */
+          %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+             (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+         ((byte_T *)%<u>) + (colNum * %<colBytes>), %<sizeOfRealElmt> );
+            outputByteCount += %<sizeOfRealElmt>;
+            %% NOTE: The following only works for SL built-in types
+            %% (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((char *)%<y>) + outputByteCount) ...
+                = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>)) + outputByteCount, ...
+                                         0, %<sizeOfRealElmt> );
+            %endif
+          %else
+            (void) memcpy( ((byte_T *)(%<y>)) + outputByteCount,
+              (byte_T *)%<u>, %<sizeOfRealElmt> );
+            outputByteCount += %<sizeOfRealElmt>;
+            %% NOTE: The following only works for SL built-in types
+            %% (i.e. not for custom types)
+            %if ((dTypeId == tSS_DOUBLE) || (dTypeId == tSS_SINGLE))
+              *(%<OUT_DTYPE_NAME> *)(((byte_T *)(%<y>)) + outputByteCount) ...
+                = %<zero>;
+            %else
+              (void) memset( ((byte_T *)(%<y>)) + outputByteCount, ...
+                                         0, %<sizeOfRealElmt> );
+            %endif
+          %endif %% (CONST_HORIZROWS_OR_VERTCOLS > 1)
+          %% INCREMENT BYTE COUNT FROM THE ZEROIZATION OF IMAG PART
+          %% [AVOID EXTRA UNUSED LINE OF CODE FOR FINAL INCREMENT]
+          %if ((portNum+1) < NumDataInputPorts)
+            outputByteCount += %<sizeOfRealElmt>;
+          %endif
+        %endif %% (inDims[0] > 1)
+      %endif %% complex vs. real input
+    %endforeach %% input port number
+    %%
+    %if (CONST_HORIZROWS_OR_VERTCOLS > 1)
+    }
+    %endif
+  }
+%endfunction %% GenVertCatDifferentComplexity
+
+%% [EOF] smatrxcat.ttlc

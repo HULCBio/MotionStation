@@ -1,0 +1,292 @@
+%% $RCSfile: sdspstwks.tlc,v $
+%% $Revision: 1.27.4.2 $       $Date: 2004/04/12 23:09:50 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Signal Processing Blockset Signal To Workspace block target file.
+%%      For use with standard .mat file logging.
+%%
+
+%implements sdspstwks "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %<LibDefineIWork(block, "LogCount", 1)>
+  %<LibDefineIWork(block, "LogDecimation", 1)>
+  %<LibDefineIWork(block, "Extra", 3)>
+  
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%% Abstract:
+%%      If we are using the standard .mat file logging then write out
+%%      call to create the data logging variable. In addition, if the scope
+%%      is constant then we need to log the data once here.
+%%
+%function Start(block, system) Output
+  %%
+  %% If StopTime is Inf, the it does not make sense to log data
+  %% because the data will never get written to a file.  If the
+  %% StopTime is Inf, we will warn the user and not generate
+  %% the logging code for this block.
+  %% Infinity and zero both map to infinite stop time.
+  %%
+  %if ISINF(StopTime) || (StopTime==0)
+    %warning
+    %if ISINF(StopTime)
+      %warning StopTime is infinite. No data logging will occur.
+    %else
+      %warning StopTime is zero. No data logging will occur.
+    %endif
+    %warning
+  %else
+  %%
+  %if CodeFormat == "S-Function"
+    %setcommandswitch "-v1"
+    %assign fullName =  LibGetFormattedBlockPath(block)
+    %assign warnTxt = "SignalToWorkspace blocks not currently supported for " ...
+      "S-Function code format, disabling block: %<fullName>"
+    %warning RTW Warning: %<warnTxt>
+  %else
+    %if MatFileLogging != 0 && TargetType == "RT"
+      %% maxRows is Unsigned to protect against generating a large negative under linux.
+      %assign maxRows    = CAST("Unsigned",SFcnParamSettings.BUFSIZE)
+      %assign decimation = CAST("Number",SFcnParamSettings.DECIMATE)
+      %assign BuffPtrIdx = 1
+      %assign logVar     = LibBlockPWork(BuffPtrIdx, "", "", 0)
+      %assign width      = LibBlockInputSignalWidth(0)
+      %assign frame      = (SFcnParamSettings.FRAME != 0) && (SFcnParamSettings.NCHANS != width)
+      %assign ts         = LibBlockSampleTime(block)
+
+      %%
+      %if CodeFormat != "Embedded-C"
+	%assign s = RTMGetModelSS()
+      %else
+	%assign s = "%<tSimStruct>.%<tLogObject>"
+      %endif
+      %%
+      %assign name       = SFcnParamSettings.VARNAME
+      %assign nDims      = LibBlockInputSignalNumDimensions(0)
+      %assign dims       = LibBlockInputSignalDimensions(0)
+      %assign dTypeId    = LibBlockInputSignalDataTypeId(0)
+      %assign cmplx      = LibBlockInputSignalIsComplex(0)
+      %assign dTypeEnum  = LibGetDataTypeEnumFromId(dTypeId)
+      %%
+      {
+        %if nDims == 1
+	  int_T  dimensions[1] = {%<dims[0]>};
+	%else
+	  int_T  dimensions[2] = {%<dims[0]>, %<dims[1]>};
+	%endif
+	/* %<Type> Block: '%<Name>' */
+	%<SLibGenLogVarCreate(logVar, name, dTypeEnum, 0, ...
+	  cmplx, 0, width, nDims, "dimensions", maxRows, decimation, ...
+	  ts, 1)>
+	if (%<logVar> == NULL) return;
+      }
+      %%
+      %if frame
+	%<InitFrame(block, maxRows, logVar, decimation, ts, width)>
+      %endif
+    %endif
+  %endif
+  %endif
+%endfunction %% Start
+
+
+%% Function: Outputs ===========================================================
+%% Abstract:
+%%      If we are using the standard .mat file logging and the to workspace
+%%      block is not constant, then write out a call to log data. If the
+%%      sample time of the to workspace is triggered, then we log whenever we
+%%      are called, otherwise we log only in major time steps. Constant
+%%      sample are handled in the Start function.
+%%
+%function Outputs(block, system) Output
+  %%
+  %if ISINF(StopTime) || (StopTime==0)
+    %% StopTime is infinite so no data logging will happen.
+    %% Infinity and zero both map to infinite stop time.
+  %else
+    %%
+    %assign contig     = (ParamSettings.InputContiguous[0] == "yes")
+    %assign cplx       = LibBlockInputSignalIsComplex(0)
+    %if cplx
+      %assign DATA_T = "creal_T"
+    %else
+      %assign DATA_T = "real_T"
+    %endif
+    %%       
+    %if MatFileLogging != 0 && TargetType == "RT" && CodeFormat != "S-Function"
+      /* %<Type> Block: '%<Name>' */
+      %%
+      %assign width    = CAST("Number", LibDataInputPortWidth(0))
+      %assign frame    = (SFcnParamSettings.FRAME != 0) && (SFcnParamSettings.NCHANS != width)
+      %assign nchans   = CAST("Number", frame ?  SFcnParamSettings.NCHANS : width)
+      %assign chansize = CAST("Number",width / nchans)
+      %assign BuffPtrIdx = 1
+      %assign logVar   = LibBlockPWork(BuffPtrIdx, "", "", 0)
+      %assign decimation = CAST("Number", SFcnParamSettings.DECIMATE)
+      %%
+      %if !frame 
+	%<LogSamplebased(block, contig, cplx, DATA_T, width, nchans, chansize, logVar, decimation)>
+      %else    
+	%<LogFramebased(block, contig, cplx, DATA_T, width, nchans, chansize, logVar, decimation)>
+      %endif
+    %endif
+  %endif  
+  
+%endfunction %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: LogFramebased
+%function LogFramebased(block, contig, cplx, DATA_T, width, nchans, chansize, logVar, decimation) Output
+  %%
+  %% Frame-based processing, so use our own UpdateLogVar code
+  %%
+      %if !contig
+	%% Error out for now.  We can add discontig support later.
+	%<LibDiscontiguousInputError(block)>		
+      %endif
+      %%
+      %assign cnt = LibBlockIWork(LogCount, "", "", 0)
+      %assign ts  = LibBlockSampleTime(block)
+      %if ts == -2
+	%assign steps = 1
+	%assign frows = chansize
+      %else
+    %% Must add .5 to steps calculation for rounding
+	%assign steps = CAST("Number", (1 + 0.5 + (StopTime-StartTime) / ts) )
+	%assign maxRows    = CAST("Unsigned",SFcnParamSettings.BUFSIZE)
+	%if (steps > maxRows)  && (maxRows != 0) && !ISINF(maxRows) %% protect against maxrows = inf
+	  %assign steps = maxRows
+	%endif	
+	%assign frows = CAST("Number", chansize * steps / decimation)
+      %endif
+      
+      /* Don't write samples that are removed by decimation */
+      if (--%<LibBlockIWork(LogDecimation , "", "", 0)> == 0) {
+	/* Reset decimation counter: */ 
+	%<LibBlockIWork(LogDecimation , "", "", 0)> = %<decimation>;
+	{
+	  LogVar *LogVarPtr = %<logVar>;
+	  real_T *re = LogVarPtr->data.re;
+	  %if cplx
+	    real_T *im = LogVarPtr->data.im;
+	  %endif
+	  int_T r    = 0;
+	  int_T chan = 0; 	
+	  
+	  /* Log data. It will get transposed later. */	
+	  const %<DATA_T> *u = %<LibBlockInputSignalAddr(0, "", "", 0)>;
+	  const int_T   start_idx = %<cnt>*%<width>;
+	  for(chan=0; chan < %<nchans>; chan++) {
+	    for(r=0; r < %<chansize>; r++) {
+	      %if !cplx
+		re[chan + r*%<nchans> + start_idx] = *u++;
+	      %else
+		int_T idx = chan + r*%<nchans> + start_idx;
+		re[idx] = u->re;
+		im[idx] = (u++)->im;
+	      %endif
+	    }
+	  }    	  
+	  %% LogVar parameters are very important for
+	  %% decimation or wrapping the circular buffer
+	  %<cnt>++;                         /* Increment log count */
+	  LogVarPtr->rowIdx+=%<chansize>;   /* Increment row count */
+	  if(%<cnt> > %<steps-1>) {
+	    %<cnt> = 0;                     /* Reset log count     */
+	    LogVarPtr->rowIdx = 0;          /* Reset row count     */
+	    LogVarPtr->wrapped++;          
+	  }
+	}
+      }
+ 
+%endfunction %% LogFramebased
+  
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: LogSamplebased
+%function LogSamplebased(block, contig, cplx, DATA_T, width, nchans, chansize, logVar, decimation) Output  
+  %%
+  %% Not frame-based, so use regular simulink logging
+  %%
+      %if contig
+	%assign inpPtr = "%<LibBlockInputSignalAddr(0, "", "", 0)>"
+	
+	  %<SLibGenLogVarUpdate("(LogVar*)%<logVar>", inpPtr)>
+	
+      %else
+	{
+	  %assign dtype = LibBlockInputSignalDataTypeName(0, "")
+	  %% static only for DOS because it doesn't work with arrays on stack.
+	  %assign typeQualifier = ""
+	  %if EXISTS("_RT_DOS_")
+	    %assign typeQualifier = "static"
+	  %endif
+	  %<typeQualifier> %<dtype> u[%<width>];
+	  
+	  %assign rollVars = ["U"]
+	  %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign input = LibBlockInputSignal(0,"",lcv,idx)
+	    %assign rhs = LibGetIndexedElement("u", width, lcv, idx)
+	    %<rhs> = %<input>;
+	  %endroll
+		
+	  %<SLibGenLogVarUpdate("(LogVar*)%<logVar>", "u")>
+	}
+      %endif
+%endfunction %% LogSamplebased
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: InitFrame
+%function InitFrame(block, maxRows, logVar, decimation, ts, width) Output  
+  %%
+  %% Update Logvar to be the dimension required by framebased.
+  %% Allocate temporary storage for reshaping the data.
+  %%
+  %% The sample time ts can be -2, -1, 0, or a positive real number.
+  %% This means that the variable frows must have special
+  %% cases for when ts is -2.  (constant and inlined params)
+  %%	
+  %assign nchans     = CAST("Number", SFcnParamSettings.NCHANS)
+  %assign chansize   = CAST("Number", width / nchans)
+  
+  %if ts == -2
+    %assign frows = chansize
+  %else
+    %% Must add .5 to steps calculation for rounding
+	%assign steps = CAST("Number", (1 + 0.5 + (StopTime-StartTime) / ts) )
+    %if (steps > maxRows) && (maxRows != 0) && !ISINF(maxRows)  %% protect against maxrows = inf
+      %assign steps = maxRows
+    %endif	    
+    %assign frows = CAST("Number", chansize * steps / decimation)
+  %endif
+  %%
+  {
+    LogVar *LogVarPtr     = %<logVar>;
+    
+    /* Set LogVar dimensions for frame-based processing */
+    LogVarPtr->data.nRows = %<frows>;
+    LogVarPtr->data.nCols = %<nchans>;
+    
+    %<LibBlockIWork(LogCount , "", "", 0)> = 0;	
+    
+    /*
+    * Set DECI_CNT to 1 so that the first sample gets stored, regardless of
+    * the decimation value.  Otherwise, we will suffer unnecessary latency.
+    */
+    %<LibBlockIWork(LogDecimation , "", "", 0)> = 1;
+  }
+%endfunction %% InitFrame
+
+
+%% [EOF] sdspstwks.tlc
+

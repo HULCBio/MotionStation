@@ -1,0 +1,146 @@
+%% $RCSfile: stic6x_iirlat.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:41 $
+%%
+%% Copyright 2001-2003 The MathWorks, Inc.
+%%
+%% Abstract: Forward Lattice AR (All-Pole) Filter
+%%           using optimized TI C62/C64 DSPLIB fcn call
+
+%implements stic6x_iirlat "C"
+
+%include "tiblksutil.tlc"
+
+%% Function: BlockInstanceSetup ==================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %assign OUTPORT  = 0
+  %assign INPORT_X = 0
+  %assign INPORT_K = 1
+  %assign inDims   = LibBlockInputSignalDimensions(INPORT_X)
+  %assign inFrame  = LibBlockInputSignalIsFrameData(INPORT_X)
+  %assign nChans   = (inFrame) ? inDims[1] : LibBlockInputSignalWidth(INPORT_X)
+  %assign nx       = (inFrame) ? inDims[0] : 1
+  %assign block    = block + OUTPORT + INPORT_X + INPORT_K + nChans + nx
+%endfunction %%BlockInstanceSetup
+
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_ti_header(block, "dsp_iirlat")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: InitializeConditions ==============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* TI DSP C%<chipID.Value[0]> IIRLAT (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign icDims = LibBlockParameterSize(IC_RTP)
+  %assign numICs = (icDims[0] * icDims[1])
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %assign coeffDims = LibBlockParameterSize(K_RTP)
+    %assign numCoeffs = coeffDims[0] * coeffDims[1]
+  %else
+    %assign numCoeffs = LibBlockInputSignalWidth(INPORT_K)
+  %endif
+  %assign icsPerChan    = numCoeffs
+  %assign statesPerChan = icsPerChan + 1
+  %%
+  {
+    %if (numICs == 1)
+      /* Scalar IC:
+       * Fill all elements of each channel
+       * in buffer with the scalar IC element
+       */
+      int *statePtr = %<LibBlockDWorkAddr(TAP_DELAY,"","",0)>;
+      int  count    = %<nChans * statesPerChan>;
+      while (count--) {
+        *statePtr++ = %<LibBlockParameter(IC_RTP,"","",0)>;
+      }
+    %elseif (numICs == icsPerChan)
+      /* Vector ICs:
+       * Fill first %<icsPerChan> elements of each channel
+       * in buffer with same vector of ICs
+       */
+      %if (nChans > 1)
+        const int icBytesPerChan = %<icsPerChan> * sizeof(int);
+        int *statePtr            = %<LibBlockDWorkAddr(TAP_DELAY,"","",0)>;
+        int  count               = %<nChans>;
+        while (count--) {
+          memcpy(statePtr, %<LibBlockParameterAddr(IC_RTP,"","",0)>, icBytesPerChan);
+          statePtr += %<statesPerChan>;
+        }
+      %else
+        memcpy(%<LibBlockDWorkAddr(TAP_DELAY,"","",0)>, %<LibBlockParameterAddr(IC_RTP,"","",0)>, (%<icsPerChan> * sizeof(int)));
+      %endif
+    %else
+      /* Matrix ICs:
+       * Fill first %<icsPerChan> elements of each
+       * channel in buffer with a different set of ICs
+       */
+      const int icBytesPerChan = %<icsPerChan> * sizeof(int);
+      int      *icRTPptr       = %<LibBlockParameterAddr(IC_RTP,"","",0)>;
+      int      *statePtr       = %<LibBlockDWorkAddr(TAP_DELAY,"","",0)>;
+      int       count          = %<nChans>;
+      while (count--) {
+        memcpy(statePtr, icRTPptr, icBytesPerChan);
+        statePtr += %<statesPerChan>;
+        icRTPptr += %<icsPerChan>;
+      }
+    %endif %% numICs
+  }
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* TI DSP C%<chipID.Value[0]> IIRLAT (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %%
+    %% Reflection coeffs k are from RTP
+    %%
+    %assign kAddr = LibBlockParameterAddr(K_RTP,"","",0)
+    %assign kSize = LibBlockParameterSize(K_RTP)
+    %assign nk    = (kSize[0] * kSize[1])
+  %else
+    %%
+    %% Reflection coeffs k are from second input port
+    %%
+    %assign kAddr = LibBlockInputSignalAddr( INPORT_K,"","",0)
+    %assign nk    = LibBlockInputSignalWidth(INPORT_K)
+  %endif
+  %%
+  %if (nChans == 1)
+    DSP_iirlat(
+      %<LibBlockInputSignalAddr(INPORT_X,"","",0)>, %<nx>,
+      %<kAddr>, %<nk>,
+      %<LibBlockDWorkAddr(TAP_DELAY,"","",0)>,
+      %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>
+    );
+  %else
+    %%
+    %% Multiple channels
+    %%
+    {
+      short  *x = (int16_T *)(%<LibBlockInputSignalAddr(INPORT_X,"","",0)>);
+      int    *b = %<LibBlockDWorkAddr(TAP_DELAY,"","",0)>;
+      short  *r = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+      int count = %<nChans>;
+      while (count--) {
+        DSP_iirlat(x, %<nx>, (const short *)(%<kAddr>), %<nk>, b, r);
+        x += %<nx>;
+        b += %<nk+1>;
+        r += %<nx>;
+      }
+    }
+  %endif
+
+%endfunction
+
+%% [EOF] STIC6X_IIRLAT.TLC

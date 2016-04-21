@@ -1,0 +1,175 @@
+%% $RCSfile: sdspsreg.tlc,v $
+%% $Revision: 1.6.4.2 $ 
+%% $Date: 2004/04/12 23:09:43 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Shift contents of a memory register and store 
+%%           input samples into start of register.
+
+%implements sdspsreg "C"
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Shift Register (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %%
+  %assign CONTIG = IsInputPortContiguous(block,INPORT)
+  %% We do not support discontiguous inputs
+  %if (!CONTIG)
+    %<LibDiscontiguousInputError(block)>
+  %endif
+  %%
+  %assign numIC    = SIZE(SFcnParamSettings.IC, 1)
+  %assign cplx_ic  = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+  %assign dtype_ic = cplx_ic ? "creal_T" : "real_T"
+  %%
+  %assign cplx_in  = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign dtype_in = cplx_in ? "creal_T" : "real_T"
+  %assign nChans   = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign regsiz   = CAST("Number", SFcnParamSettings.RegSiz)
+  %assign reglen   = nChans * regsiz
+  %%
+    {
+      %<dtype_in> *outBuf = %<LibBlockDWorkAddr(Buff,"", "", 0)>;
+      %if (numIC <= 1) 
+        %% 
+        %% Scalar IC:
+        %%
+        %assign IC_re = (numIC == 0) ? 0.0 : %<REAL(SFcnParamSettings.IC[0])>
+        %if (cplx_in)
+          %assign IC_im = ((numIC == 0) | (!cplx_ic)) ? 0.0 : %<IMAG(SFcnParamSettings.IC[0])>
+        %endif
+        %%
+        /* Scalar IC */  
+        %if reglen > 1
+        int_T  i;
+        for (i=0; i++ < %<reglen>; ) {
+        %endif
+        %if !cplx_in
+            *outBuf++ = %<(numIC == 0) ? 0.0 : "%<IC_re>">;
+        %else
+	    outBuf->re     = %<IC_re>;
+	    (outBuf++)->im = %<IC_im>;
+        %endif
+        %if reglen > 1
+        }
+        %endif
+        %%
+      %else
+        %%
+        %% Vector and Matrix ICs
+        %%
+        %% Write out ICs in formatted, vector form
+        %if (cplx_ic)
+            %assign ic_str = ""
+            %foreach Idx = numIC-1
+                %if ((Idx != 0) & ((Idx%10) == 0))
+                    %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},\n"
+                %else
+                    %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},"
+                %endif
+            %endforeach
+            %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[numIC-1])>,%<IMAG(SFcnParamSettings.IC[numIC-1])>}"
+            const creal_T ic[%<numIC>] = {%<ic_str>};
+        %%
+        %elseif (cplx_in)
+            %assign ic_str = ""
+            %foreach Idx = numIC-1
+                %if ((Idx != 0) & ((Idx%10) == 0))
+                    %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[Idx])>,0.0},\n"
+                %else
+                    %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[Idx])>,0.0},"
+                %endif
+            %endforeach
+            %assign ic_str = ic_str + "{%<REAL(SFcnParamSettings.IC[numIC-1])>,0.0}"
+            const creal_T ic[%<numIC>] = {%<ic_str>};
+        %%
+        %else
+            %assign ic_str = ""
+            %foreach Idx = numIC-1
+                %if ((Idx != 0) & ((Idx%10) == 0))
+                    %assign ic_str = ic_str + "%<SFcnParamSettings.IC[Idx]>,\n"
+                %else
+                    %assign ic_str = ic_str + "%<SFcnParamSettings.IC[Idx]>,"
+                %endif
+            %endforeach
+            %assign ic_str = ic_str + "%<SFcnParamSettings.IC[numIC-1]>"
+            const real_T ic[%<numIC>] = {%<ic_str>};
+        %%
+        %endif
+        %%
+        %% Copy ICs to buffer:
+        %%
+        %if (numIC == regsiz)
+            /* Vector IC */
+            %if nChans != 1
+            int_T i;
+            for (i=0; i++ < %<nChans>; ) {
+            %endif
+                memcpy(outBuf, ic, %<regsiz>*sizeof(%<dtype_in>));
+                outBuf += %<regsiz>;
+            %if nChans != 1
+            }
+            %endif
+        %else
+            /* Matrix IC */
+            memcpy(outBuf, ic, %<reglen>*sizeof(%<dtype_in>));
+        %endif
+    %endif
+    }
+%endfunction %% InitializeConditions
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Shift Register(%<ParamSettings.FunctionName>) - %<Name> */
+    %%
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %%
+    %assign cplx    = (LibBlockInputSignalIsComplex(INPORT) != 0)
+    %assign dtype   = cplx ? "creal_T" : "real_T"
+    %assign nChans  = CAST("Number",LibDataInputPortWidth(INPORT))
+    %assign regsiz  = CAST("Number", SFcnParamSettings.RegSiz)
+    %assign reglen  = nChans * regsiz
+    %%
+    {
+        %<dtype> *outBuf = %<LibBlockDWorkAddr(Buff,"", "", 0)>;
+
+        /* Move ALL samples up by one */
+        %<dtype> *p0 = outBuf;
+        %<dtype> *p1 = p0 + 1;
+        int_T i;
+        for(i=0; i++ < %<reglen-1>; ) {
+            *p0++ = *p1++;
+        }
+
+        /* Place input in last element of register for each channel*/
+        {
+            %<dtype> *p0 = outBuf-1;
+	    %<dtype> *u = %<LibBlockInputSignalAddr(INPORT,"","", 0)>;
+            %if nChans != 1
+            int_T i;
+            for(i=0; i++ < %<nChans>; ) {
+            %endif
+                *(p0+=%<regsiz>) = *u++;
+            %if nChans != 1
+            }
+            %endif
+        }
+
+        
+        /* Copy contents of buffer to the output */
+        {
+            %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+            memcpy((char_T *)y, (char_T *)outBuf, %<reglen>*sizeof(%<dtype>));
+        }
+    }
+%endfunction %% Outputs
+
+
+%% [EOF] sdspsreg.tlc

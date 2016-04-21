@@ -1,0 +1,242 @@
+%%
+%% $Revision: 1.2 $ 
+%% $RCSfile: xpcbuffer.tlc,v $
+%%
+%% Abstract:
+%%      TLC file for the VxWorks Asynchronous Double Buffer Block.
+%% Author:
+%%      Jim Carrick
+%% Date:
+%%      10-15-97
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+
+%implements "xpcbuffer" "C"
+
+%%include "vxlib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%        Perform test to make sure that 2 and only 2 Double Buffer Blocks are
+%%        connected.  Generate code for .h, .prm. Only one of the pair needs to
+%%        do these.
+%function BlockInstanceSetup(block, system) void
+  %% Determine unmangled subsystem block name for error reporting.
+  %if EXISTS("SLName")
+    %assign BufferBlockName = STRING(LibUnmangledPathName(SLName))
+  %else
+    %assign BufferBlockName = STRING(LibUnmangledPathName(Name))
+  %endif
+  
+  %assign DbWrite = 0
+  %assign DbRead = 0
+
+  %if Connections.DirectDstConn[0] == "yes"
+    %% Get downstream block
+    %assign dsSysIdx = \
+      Connections.DataOutputPort[0].ConnPoint[0].DstBlockAndPortEl[0]
+    %assign dsBlkIdx = \
+      Connections.DataOutputPort[0].ConnPoint[0].DstBlockAndPortEl[1]
+    %assign DownstreamBlockRef = CompiledModel.System[dsSysIdx].Block[dsBlkIdx]
+    %if DownstreamBlockRef.Type == "S-Function"
+      %assign sfuncName = DownstreamBlockRef.ParamSettings.FunctionName
+      %if sfuncName == "xpcbuffer"
+	%% This is a valid Write Buffer
+	%assign DbWrite = 1
+	%assign DownstreamBlock = [%<dsSysIdx>, %<dsBlkIdx>]
+	%assign block = block + DownstreamBlock
+      %endif
+    %endif
+  %endif
+  %if Connections.DirectSrcConn[0] == "yes"
+    %% Get upstream block
+    %assign UpstreamBlockRef = LibSourceSignalBlock(DataInputPort.SignalSrc[0])
+    %if UpstreamBlockRef.Type == "S-Function"
+      %assign sfuncName = UpstreamBlockRef.ParamSettings.FunctionName
+      %if sfuncName == "xpcbuffer"
+	%% This is a valid Read Buffer
+	%assign DbRead = 1
+	%% Get system and block indices
+	%assign signal    = SLibGetSourceRecord(DataInputPort, 0)
+	%assign usSysIdx  = signal.SigSrc[0]
+	%assign usBlkIdx  = signal.SigSrc[2]
+	%assign UpstreamBlock = [%<usSysIdx>, %<usBlkIdx>]
+	%assign block = block + UpstreamBlock
+      %endif
+    %endif
+  %endif
+  %% Cache info in this block
+  %assign block = block + DbWrite
+  %assign block = block + DbRead
+  %% For more readable comments in generated code
+  %assign block = block + BufferBlockName
+  
+  %% Check if connections are incorrect first, as this is the simpler mistake.
+  %if (DbWrite && DbRead)  || (!DbWrite && !DbRead )  
+    %assign errTxt = "The xPC Target Double Buffer block '%<BufferBlockName>' "\
+      "is not connected correctly. It should be only used in Write/Read pairs "\
+      "with no other blocks connected between the pair."
+    %exit %<errTxt>
+  %endif
+  
+  %% Verify user used a Read side as reader and a Write side as a writer.
+  %% I.E. Want the work vectors to only appear for the Read side.
+  %assign errTxt = "The xPC Target Double Buffer block '%<BufferBlockName>' "\
+    "is not connected correctly. It should be only used in pairs with the "\
+    "Write Side driving the Read Side."
+  %if DbRead
+    %if IWork[0] != 3
+      %% Should have been 3 IWorks created by C-Mex file for Read side.
+      %exit %<errTxt>
+    %endif
+  %else
+    %% DbWrite
+    %if IWork[0] > 0
+      %exit %<errTxt>
+    %endif
+  %endif
+  
+  %% Finally, check that at least 1 block of the pair is in a function-call SS
+  %assign errTxt = "The xPC Target Double Buffer block '%<BufferBlockName>' "\
+    "is not used correctly. One or both of the pair needs to be inside "\
+    "a function-call subsystem."
+  %if system.Type != "function-call"
+    %if DbRead
+      %% DbRead
+      %% The Upstream block has to be in a function-call SS
+      %assign signal = SLibGetSourceRecord(DataInputPort, 0)            
+      %if signal.RecordType != "BlockOutput"
+	%exit Internal error, expected mapSource == "B"
+      %endif
+      %assign usSysIdx = signal.SigSrc[0]
+      %if System[usSysIdx].Type != "function-call"
+	%exit %<errTxt>
+      %endif
+    %else
+      %% DbWrite
+      %% The Downstream block has to be in a function-call SS
+      %if System[dsSysIdx].Type != "function-call"
+	%exit %<errTxt>
+      %endif
+    %endif
+  %endif
+%endfunction
+
+%function Start(block, system) Output
+  %% Cache code for the shared control variables into MdlStart 
+  %% for this double buffer pair.
+  %% Only one of pair needs to do this, so read side will do it.
+  %if DbRead
+    %assign usSysIdx  = UpstreamBlock[0]
+    %assign usBlkIdx  = UpstreamBlock[1]
+    %assign UpstreamBlockRef = CompiledModel.System[usSysIdx].Block[usBlkIdx] 
+    /* Setup variables used by: %<BufferBlockName> (Reader) and*/
+    /* %<UpstreamBlockRef.BufferBlockName> (Writer) */
+    %<LibBlockIWork(Reading,"","",0)> = -1;
+    %<LibBlockIWork(Writing,"","",0)> = -1;
+    %<LibBlockIWork(Last,"","",0)> = 0;
+    %% Use Write side BIO vector for one of the 2 buffers,
+    %% need to be in Write side block scope to access it.
+    %with CompiledModel.System[usSysIdx]
+      %with UpstreamBlockRef 
+	%assign tmpVar = "&%<LibBlockOutputSignal(0, "", "", 0)>;"
+      %endwith
+    %endwith %% CompiledModel.System[usSysIdx]
+    %<LibBlockPWork("","","",0)> = %<tmpVar>
+    %<LibBlockPWork("","","",1)> = &%<LibBlockRWork("","","",0)>;
+    
+  %endif
+%endfunction
+
+%function Outputs(block, system) Output
+  %% This code is generated for each occurrence of double buffer pairs
+  %% in the model.  At some # of pairs in a model, it may be better to
+  %% do a function call to reduce code size.
+  %if DbRead
+    %% This is the Read block
+    /* %<Type> Block: %<Name> (Reader)*/
+    {
+      %%int lockkey = intLock();
+	  _asm { cli };
+      if (%<LibBlockIWork(Writing,"","",0)> == 0) {
+	%<LibBlockIWork(Reading,"","",0)> = 1;
+      } else if (%<LibBlockIWork(Writing,"","",0)> == 1) {
+	%<LibBlockIWork(Reading,"","",0)> = 0;
+      } else {
+	%<LibBlockIWork(Reading,"","",0)> = %<LibBlockIWork(Last,"","",0)>;
+      }
+      %%intUnlock(lockkey);
+	  _asm { sti };
+      %assign tmpVar = LibBlockIWork(Reading,"","",0)
+      
+      %% Use memcpy because its fast and vector is contiguous.
+      /* Read 1 of the 2 buffers and Write to output*/
+      memcpy(&%<LibBlockOutputSignal(0, "", "", 0)>, 
+      %<LibBlockPWork("",tmpVar,"","")>,
+      %<LibDataOutputPortWidth(0)> * sizeof(real_T));
+      
+      %%lockkey = intLock();
+	  _asm { cli };
+      %<LibBlockIWork(Reading,"","",0)> = -1;
+      %%intUnlock(lockkey);
+	  _asm { sti };
+    }
+  %else
+    %% This is the Write block, but run control sections in scope 
+    %% of Read block to use it's LibBlock*Works.
+    %assign dsSysIdx  = DownstreamBlock[0]
+    %assign dsBlkIdx  = DownstreamBlock[1]
+    %assign DownstreamBlockRef = CompiledModel.System[dsSysIdx].Block[dsBlkIdx] 
+    /* %<Type> Block: %<Name> (Writer)*/
+    %with DownstreamBlockRef
+      {
+	real_T *currentBuf;
+	%%int lockkey = intLock();
+	_asm { cli };
+	
+	if (%<LibBlockIWork(Reading,"","",0)> == 0) {
+	  %<LibBlockIWork(Writing,"","",0)> = 1;
+	} else if (%<LibBlockIWork(Reading,"","",0)> == 1) {
+	  %<LibBlockIWork(Writing,"","",0)> = 0;
+	} else {
+	  %<LibBlockIWork(Writing,"","",0)> = !%<LibBlockIWork(Last,"","",0)>;
+	}
+	%%intUnlock(lockkey);
+	_asm { sti };
+
+	%% Generate code which uses PWork[IWork.Writing] of Read block
+	%assign tmpVar  = LibBlockIWork(Writing,"","",0)
+	currentBuf = (real_T *)(%<LibBlockPWork("", tmpVar, "", "")>);
+    %endwith
+	%% Use roll since input to the Write block can be discontiguous.
+	%% Since Output vector is accessed via 1 of 2 elements of the Reader
+	%% blocks PWork, use only index portion of LibBlockOutputSignal.
+	%assign rollVars = ["U"]
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %% Instead of using a rolled [index] for currentBuf, use ++ to so
+	  %% each region continues where previous left off.
+	  *currentBuf++ = %<u>;
+	%endroll
+	
+    %with DownstreamBlockRef
+	%%lockkey = intLock();
+	_asm { cli };
+	%<LibBlockIWork(Last,"","",0)> = %<LibBlockIWork(Writing,"","",0)>;
+	%<LibBlockIWork(Writing,"","",0)> = -1;
+	%%intUnlock(lockkey);
+	_asm { sti };
+    %endwith
+      }
+  %endif    
+%endfunction
+
+%% [EOF] xpcbuffer.tlc
+
+
+
+
+
+
+
+

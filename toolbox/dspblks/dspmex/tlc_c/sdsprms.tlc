@@ -1,0 +1,177 @@
+%% $RCSfile: sdsprms.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:09:37 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Find the rms value of a vector
+
+%implements sdsprms "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %<LibRenameParameter(block, P1, "Running")>
+  %<LibRenameParameter(block, P2, "Framebased")>
+  %<LibRenameParameter(block, P3, "Nchans")>
+  %<LibRenameParameter(block, P4, "ResetPort")>
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %%
+  %if running
+    /* Signal Processing Blockset Rms (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %<LibBlockDWork(Iteration,"", "", 0)> = 0.0;
+    %%
+  %endif
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Rms (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT      = 0
+  %%
+  %assign running = LibBlockParameterValue(Running,0) != 0
+  %assign cplx    = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+  %assign contig  = IsInputPortContiguous(block, INPORT_DATA)
+  %assign width   = LibDataInputPortWidth(INPORT_DATA)
+  %assign dtype   = cplx ? "creal_T" : "real_T"
+  %%
+  %if !running
+    %%
+    %% Not Running 
+    %%
+    %if width==1
+      %%
+      %% When width is 1, the rms output equals the input
+      %%
+      /* width1 */
+      %assign y = LibBlockOutputSignal(OUTPORT, "", "", 0)
+      %assign u = LibBlockInputSignal(INPORT_DATA, "", "", 0)
+      %if !cplx
+	%<y> = fabs(%<u>);
+      %else
+	CABS(%<u>, %<y>);
+      %endif
+    %else	
+      %%
+      {	 
+      real_T sx2 = 0.0;
+      %assign rollVars = ["U"]
+      %roll sigIdx = RollRegions, lcv = RollThreshold,\
+	block, "Roller", rollVars
+	%assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%if !cplx 
+	  sx2 += %<u> * %<u>;         %% REAL
+	%else
+	  sx2 += CMAGSQ(%<u>);        %% COMPLEX
+	%endif
+      %endroll
+      %<LibBlockOutputSignal(OUTPORT, "","", 0)> = sqrt(sx2 / %<width>);
+    }
+  %endif %% if width==1  
+%else
+  %%
+  %% Running
+  %%
+  %assign resetport  = LibBlockParameterValue(ResetPort,0) != 0
+  %assign framebased = LibBlockParameterValue(Framebased,0) != 0
+  %assign nchans     = framebased ? CAST("Number",LibBlockParameterValue(Nchans,0)) : width
+  %assign nsamps     = width/nchans  
+  %%
+  /* Output running rms value */
+  %if (!contig)
+    %<LibDiscontiguousInputError(block)>
+  %endif
+  %%
+  {
+    real_T *msqsum = %<LibBlockDWorkAddr(RMS, "", "", 0)>;
+    real_T *iter_cnt = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    
+    %if resetport
+      if(%<LibBlockInputSignal(INPORT_RESET,"","",0)> != 0.0) { /* Reset iteration count. */
+      *iter_cnt = 0.0;
+    }
+  %endif
+  %%
+  if(*iter_cnt == 0.0) { /* Clear the current sum. */
+  %if nchans!=1
+    int_T i = %<nchans>;
+    while(i-- > 0) {
+      *msqsum++ = 0.0;  
+    }
+    msqsum -= %<nchans>;  /* Reset the pointer */
+  %else
+    *msqsum = 0.0;
+  %endif
+  }
+  *iter_cnt += %<nsamps>;
+  %%
+  %if width ==1
+    %assign u = LibBlockInputSignal(INPORT_DATA,"","", 0)
+    %if !cplx
+      *msqsum += %<u> * %<u>;         %% REAL
+    %else
+      *msqsum += CMAGSQ(%<u>);        %% COMPLEX
+    %endif
+    %<LibBlockOutputSignal(OUTPORT,"", "", 0)> = sqrt(*msqsum / *iter_cnt);
+  %else
+    {
+      %<dtype> *u   = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+      real_T   *y   = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+      real_T    den = 1.0 / *iter_cnt;	    
+      %if nchans != 1
+	int_T   i   = %<nchans>;
+	
+	while(i-- > 0) {
+	%endif
+	%%
+	%if nsamps !=1
+	  real_T tsqsum = *msqsum;
+	  int_T  j    = %<nsamps>;
+	  
+	  while(j-- > 0) {
+	    const %<dtype> val = *u++;
+	    %if !cplx
+	    tsqsum += val * val;     %% REAL
+	  %else
+	    tsqsum += CMAGSQ(val);   %% COMPLEX
+	  %endif
+	}
+	*msqsum++ = tsqsum;
+	*y++      = sqrt(tsqsum * den);
+      %else
+	%<dtype> val = *u++;
+	%if !cplx
+	  *msqsum += val * val;      %% REAL
+	%else
+	  *msqsum += CMAGSQ(val);     %% COMPLEX
+	%endif
+	*y++ = sqrt((*msqsum++) * den);
+      %endif
+      %%
+      %if nchans != 1
+      }
+    %endif
+   }
+  %endif
+}
+%endif
+
+%endfunction
+
+%% [EOF] sdsprms.tlc
+

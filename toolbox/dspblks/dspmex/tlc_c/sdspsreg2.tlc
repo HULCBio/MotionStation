@@ -1,0 +1,171 @@
+%% $RCSfile: sdspsreg2.tlc,v $
+%% $Revision: 1.9.4.2 $ 
+%% $Date: 2004/04/12 23:09:44 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Shifts contents of a delay line and stores input 
+%% samples into start of delay line.
+
+%implements sdspsreg2 "C"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dsp_ic_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %assign block   = block + INPORT + OUTPORT
+    %%
+    %assign inputWidth         = CAST("Number",LibDataInputPortWidth(INPORT))
+    %assign isInputFrame       = LibBlockInputSignalIsFrameData(INPORT) 
+    %assign inputDims          = LibBlockInputSignalDimensions(INPORT)
+    %assign numChannels        = (isInputFrame) ? inputDims[1]: inputWidth   
+    %assign inSampsPerChannel  = (isInputFrame) ? inputDims[0] : 1
+    %%
+    %assign outputDims         = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign outSampsPerChannel = outputDims[0]
+    %assign outportNumElems    = numChannels * outSampsPerChannel
+    %assign outportIsComplex   = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+    %assign outportDTypeName   = LibBlockOutputSignalDataTypeName(OUTPORT, "%<tRealPart>")
+    %assign bytesPerElementStr = (outportIsComplex) \
+                               ? "(2 * sizeof(%<outportDTypeName>))" \
+                               : "sizeof(%<outportDTypeName>)"
+    %if outportNumElems > 1
+      %assign totalOutputBytesStr = "%<outportNumElems> * " + bytesPerElementStr
+    %else 
+      %assign totalOutputBytesStr = bytesPerElementStr
+    %endif
+    %%
+    %assign isDirectFeed = %<SFcnParamSettings.directfeedthrough>
+    %assign block = block + numChannels + inSampsPerChannel + outSampsPerChannel \
+                  + outportNumElems + bytesPerElementStr + totalOutputBytesStr + isDirectFeed
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset Delay Line (%<ParamSettings.FunctionName>) - '%<Name>' */
+%assign IC_dims        = IC.Dimensions
+%assign IC_rows        = IC_dims[0]
+%assign IC_cols        = IC_dims[1]
+%assign numICs         = IC_rows * IC_cols
+%assign outBuf_Pointer = "(byte_T *)" + LibBlockDWorkAddr(Buff, "", "", 0)
+%assign IC_Pointer     = "(const byte_T *)" + LibBlockParameterAddr(IC, "", "", 0)
+%if (numICs == 1)
+  MWDSP_CopyScalarICs(%<outBuf_Pointer>, %<IC_Pointer>, %<outportNumElems>, %<bytesPerElementStr>); /* Scalar IC */
+%elseif (numICs == outSampsPerChannel)
+  MWDSP_CopyVectorICs(%<outBuf_Pointer>, %<IC_Pointer>, %<numChannels>, (%<outSampsPerChannel> * %<bytesPerElementStr>)); /* Vector ICs */
+%elseif (numICs == outportNumElems)
+  MWDSP_CopyMatrixICs(%<outBuf_Pointer>, %<IC_Pointer>, %<outportNumElems>, %<bytesPerElementStr>); /* Matrix ICs */
+%else
+  /* ERROR!  Invalid number of ICs. */
+  %error "Number of ICs is not valid."
+%endif
+
+%endfunction %% InitializeConditions
+
+%function doUpdate(block) Output
+    %if (inSampsPerChannel == outSampsPerChannel)
+        /* Output samples per channel, M_o, is equal to input samples per channel, M_i */
+        %assign outBuf_Pointer = "(void *)" + LibBlockDWorkAddr(Buff,"", "", 0)
+        %assign u_Pointer      = "(const void *)" + LibBlockInputSignalAddr(INPORT,  "", "", 0)
+        %%
+        memcpy(%<outBuf_Pointer>, %<u_Pointer>, %<totalOutputBytesStr>);
+    %else
+    {
+        byte_T       *outBuf                = (byte_T *)(%<LibBlockDWorkAddr(Buff,"", "", 0)>);
+        const byte_T *u                     = (const byte_T *)(%<LibBlockInputSignalAddr(INPORT,  "", "", 0)>);
+        %if inSampsPerChannel > 1
+          const int_T bytesPerInputChannel  = %<inSampsPerChannel> * %<bytesPerElementStr>;
+        %else
+          const int_T bytesPerInputChannel  = %<bytesPerElementStr>;
+        %endif
+        %%
+        %if outSampsPerChannel > 1
+          const int_T bytesPerOutputChannel = %<outSampsPerChannel> * %<bytesPerElementStr>;
+        %else
+          const int_T bytesPerOutputChannel = %<bytesPerElementStr>;
+        %endif
+        %%
+        %if numChannels > 1
+          int_T numChans = %<numChannels>;
+                  
+          %if (inSampsPerChannel < outSampsPerChannel)
+            /* Output samples per channel, M_o, is more than input samples per channel, M_i */
+            /* Shift all output samples up by M_i samples */
+            memmove(outBuf, outBuf+bytesPerInputChannel, ((numChans * bytesPerOutputChannel) - bytesPerInputChannel));
+
+            /* Fill last M_i samples of each output channel with M_i input samples */
+            outBuf += bytesPerOutputChannel - bytesPerInputChannel;
+            while (numChans-- > 0) {
+                memcpy( outBuf, u, bytesPerInputChannel );
+                outBuf += bytesPerOutputChannel;
+                u      += bytesPerInputChannel;
+            }
+          %else
+            /* Input samples per channel, M_i, is more than output samples per channel, M_o */
+            /* Fill M_o output samples per channel with last M_o samples of each input channel */
+            u += bytesPerInputChannel - bytesPerOutputChannel;
+            while (numChans-- > 0) {
+                memcpy(outBuf, u, bytesPerOutputChannel);
+                outBuf += bytesPerOutputChannel;
+                u      += bytesPerInputChannel;
+            }
+          %endif
+        %else
+
+          %if (inSampsPerChannel < outSampsPerChannel)
+            /* Output samples per channel, M_o, is more than input samples per channel, M_i */
+            /* Shift all output samples up by M_i samples */
+            memmove(outBuf, outBuf+bytesPerInputChannel, (bytesPerOutputChannel - bytesPerInputChannel));
+
+            /* Fill last M_i samples of each output channel with M_i input samples */
+            outBuf += bytesPerOutputChannel - bytesPerInputChannel;
+            memcpy( outBuf, u, bytesPerInputChannel );
+          %else
+            /* Input samples per channel, M_i, is more than output samples per channel, M_o */
+            /* Fill M_o output samples per channel with last M_o samples of each input channel */
+            u += bytesPerInputChannel - bytesPerOutputChannel;
+            memcpy(outBuf, u, bytesPerOutputChannel);
+          %endif
+        %endif
+    }
+    %endif
+%endfunction %% doUpdate
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset Delay Line (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %assign outBuf_Pointer = "(const void *)" + LibBlockDWorkAddr(Buff, "", "", 0)
+    %assign y_Pointer      = "(void *)" + LibBlockOutputSignalAddr(OUTPORT,"", "", 0)
+    %%
+    %if (isDirectFeed)
+      %<doUpdate(block)>
+    %endif
+    memcpy(%<y_Pointer>, %<outBuf_Pointer>, %<totalOutputBytesStr>); /* Copy buffer to output */
+
+%endfunction %% Outputs
+
+
+%% Function: Update ===========================================================
+%%
+%function Update(block, system) Output
+/* Signal Processing Blockset Delay Line (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %if (!isDirectFeed)
+    %<doUpdate(block)>
+  %endif
+%endfunction %% Update
+
+%% [EOF] sdspsreg2.tlc

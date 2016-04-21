@@ -1,0 +1,3202 @@
+%% $RCSfile: fixptmul.tlc,v $
+%% $Revision: 1.6.4.7 $
+%% $Date: 2004/01/24 08:57:31 $
+%%
+%% This file contains tlc code for generation of fixed point multiplication
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: FixPt_SensorDT_2_BinPointDT =============================
+%%
+%% Abstract:
+%%     Given a fixed-point data type that has non-power of two slope
+%%     and/or non-zero bias, create a binary point only data type that
+%%     can be used for efficient and accurate conversion.
+%%
+%function FixPt_SensorDT_2_BinPointDT(sensorDT) void
+  %%
+  %assign niceDTS = FEVAL("fixptdtrules", ...
+    sensorDT.RequiredBits, ...
+    sensorDT.IsSigned, ...
+    sensorDT.FracSlope, ...
+    sensorDT.FixedExp, ...
+    sensorDT.Bias, ...
+    ProdTargetAllowedWordSize)
+  %%
+  %assign tempBits =  CAST("Number", niceDTS[1])
+  %assign isSign   =  CAST("Number", niceDTS[0]  )
+  %assign fixExp   =  CAST("Number",-niceDTS[2])
+  %%
+  %if tempBits > IntegerSizes.LongNumBits
+    %%
+    %<LibReportFatalError("An integer data type used in a temporary calculation required more bits than the current code generation target can hold in a long.")>
+  %endif
+  %%
+  %assign dataTypeName = LibFixPointFormDataTypeName( isSign, tempBits, fixExp)
+  %%
+  %createrecord binPointDT { ...
+    DataTypeName     dataTypeName; ...
+    IsSigned         isSign; ...
+    RequiredBits     tempBits; ...
+    ActualBits       tempBits; ...
+    FixedExp         fixExp; ...
+    FracSlope        1.0; ...
+    Bias             0.0; ...
+    NativeType       "#error x" ...
+  }
+  %%
+  %<FixPt_DefineDataType(binPointDT)>\
+  %%
+  %return binPointDT
+  %%
+%endfunction  %% FixPt_SensorDT_2_BinPointDT
+
+
+
+%% Function: FixPt_Multiply ==========================================
+%%
+%% Abstract:
+%%  Radix Only Multiplication (Single Chunk Only)
+%%
+%%  Vc = Va * Vb
+%%
+%%  Note the Stored Integers are denoted by A, B, and C
+%%
+%%  C = 2^(Ea+Eb-Ec) * A * B
+%%
+%%  The records C, A, and B must contain
+%%  all the fixed point data type and scaling fields.
+%%  They must also contain a field called "Label"
+%%  In C_Language terms cLabel must be an l-value.
+%%  aLabel and bLabel are treated as read only and
+%%  they must provide the values (stored integers) for
+%%  A and B.  Please note none of the Labels can be addresses.
+%%
+%% Synopsis:
+%%      FixPt_Multiply(C,A,B,roundMode,satMode)
+%%
+%%      C = record describing output
+%%      A = record describing input 1
+%%      B = record describing input 2
+%%      roundMode  = string specifying round to "Zero", "Nearest", etc.
+%%      satMode    = string specifying "Wrap" or "Saturate" on overflow
+%%
+%function FixPt_Multiply(cLabel,cDT,aLabel,aDT,bLabel,bDT,roundMode,satMode) Output
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %% determine if the signals are floating point
+    %%
+    %assign cIsFloat = FixPt_DataTypeIsFloat(cDT)
+    %assign aIsFloat = FixPt_DataTypeIsFloat(aDT)
+    %assign bIsFloat = FixPt_DataTypeIsFloat(bDT)
+    %%
+    %if cIsFloat || aIsFloat || bIsFloat
+        {
+            %if !FixPt_DataTypeIsSingle(cDT) || !FixPt_DataTypeIsSingle(aDT) || !FixPt_DataTypeIsSingle(bDT)
+                %%
+                %assign tempType = "real_T"
+                %%
+                %assign intermediateDT = FixPt_GetDataTypeFromIndex(0)
+            %else
+                %assign tempType = "real32_T"
+                %%
+                %assign intermediateDT = FixPt_GetDataTypeFromIndex(1)
+            %endif
+            %%
+            %assign tempLabela = "tempFloatPt1"
+            %assign tempLabelb = "tempFloatPt2"
+            %%            
+            %openfile captureConvertMul
+            %assign retVecStr_a = FixPt_Fix2Fix(tempLabela,intermediateDT,aLabel,aDT,roundMode,satMode)
+            %assign retVecStr_b = FixPt_Fix2Fix(tempLabelb,intermediateDT,bLabel,bDT,roundMode,satMode)
+            %closefile captureConvertMul
+            %%
+            %if SIZE(retVecStr_a,1) == 3
+                %%
+                %assign intermediateLabel = "(%<retVecStr_a[1]>*"
+            %else
+                %<tempType> %<tempLabela>;
+                %%
+                %assign intermediateLabel = "(%<tempLabela>*"
+            %endif
+            %%
+            %if SIZE(retVecStr_b,1) == 3
+                %%
+                %assign intermediateLabel = intermediateLabel + "%<retVecStr_b[1]>)"
+            %else
+                %<tempType> %<tempLabelb>;
+                %%
+                %assign intermediateLabel = intermediateLabel + "%<tempLabelb>)"
+            %endif
+            %%
+            %if SIZE(retVecStr_a,1) != 3 || SIZE(retVecStr_b,1) != 3
+                %%
+                %<captureConvertMul>\
+            %endif
+            %%            
+            %if cIsFloat
+                %<FixPt_Fix2FixAlwaysOutput(cLabel,cDT,intermediateLabel,intermediateDT,roundMode,satMode)>\
+            %else
+                {
+                    %assign tempLabelc = "tempFloatPt3"
+                    %<tempType> %<tempLabelc>;
+                    %<tempLabelc> = %<intermediateLabel>;
+                    %<FixPt_Fix2FixAlwaysOutput(cLabel,cDT,tempLabelc,intermediateDT,roundMode,satMode)>\
+                }
+            %endif
+        }
+        %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()  %%for float case
+        %<LibAddtoSharedUtilsIncludesVector(GSUStackBuf)>
+    %else
+        %%        
+        %% Treat Floor as if it is the easiest case
+        %%
+        %if roundMode == "Easiest"
+            %%
+            %assign roundMode = "Floor"
+            %%
+        %endif
+        %%
+        %% Check that a radix only muliplication is requested
+        %%
+        %assign nonZeroBiasFound = !ISEQUAL(aDT.Bias,0.0) || ...
+                                   !ISEQUAL(bDT.Bias,0.0) || ...
+                                   !ISEQUAL(cDT.Bias,0.0)
+        %%          
+        %if nonZeroBiasFound || ...
+            !ISEQUAL(aDT.FracSlope,1.0) || ...
+            !ISEQUAL(bDT.FracSlope,1.0) || ...
+            !ISEQUAL(cDT.FracSlope,1.0)
+          %%
+          %assign cLabel_BinPt = cLabel
+          %assign aLabel_BinPt = aLabel
+          %assign bLabel_BinPt = bLabel
+          %%
+          %assign cDT_Final = cDT
+          %assign cDT_BinPt = cDT
+          %assign aDT_BinPt = aDT
+          %assign bDT_BinPt = bDT
+          %%
+          %assign needConvertA = 0
+          %assign needConvertB = 0
+          %assign needConvertC = 0
+          %%
+          %if nonZeroBiasFound
+            %%
+            %assign needConvertA = !ISEQUAL(aDT.Bias,0.0) || !ISEQUAL(aDT.FracSlope,1.0)
+            %assign needConvertB = !ISEQUAL(bDT.Bias,0.0) || !ISEQUAL(bDT.FracSlope,1.0)
+            %assign needConvertC = !ISEQUAL(cDT.Bias,0.0) || !ISEQUAL(cDT.FracSlope,1.0)
+            %%
+            %if needConvertA
+              %%
+              %assign aDT_BinPt = FixPt_SensorDT_2_BinPointDT(aDT)
+              %%
+            %endif
+            %%
+            %if needConvertB
+              %%
+              %assign bDT_BinPt = FixPt_SensorDT_2_BinPointDT(bDT)
+              %%
+            %endif
+            %%
+            %if needConvertC
+              %%
+              %assign cDT_BinPt = FixPt_SensorDT_2_BinPointDT(cDT)
+              %%
+            %endif
+            %%
+          %else
+            %%
+            %copyrecord cDT_Final cDT
+            %copyrecord cDT_BinPt cDT
+            %copyrecord aDT_BinPt aDT
+            %copyrecord bDT_BinPt bDT
+            %%
+            %assign cDT_BinPt.FracSlope = 1.0
+            %assign aDT_BinPt.FracSlope = 1.0
+            %assign bDT_BinPt.FracSlope = 1.0
+            %%
+            %assign fracCorrection = cDT.FracSlope /( aDT.FracSlope * bDT.FracSlope )
+            %%
+            %assign slopeFixExp = FEVAL("fixptPrivate",...
+                                        "fhpBestPrecisionQuantizeParts",...
+                                        fracCorrection,...
+                                        cDT_Final.RequiredBits,...
+                                        cDT_Final.IsSigned)
+            %%
+            %assign slope  = CAST("Real",slopeFixExp[0])
+            %%
+            %assign fixExp = CAST("Number",slopeFixExp[1])
+            %%
+            %assign cDT_Final.FracSlope = slope
+            %%
+            %assign aDT_BinPt.FixedExp = aDT_BinPt.FixedExp - fixExp
+            %%
+            %assign needConvertC = !ISEQUAL(slope,1.0)
+            %%
+          %endif
+          %%
+          %assign needConvertAny = needConvertA || needConvertB || needConvertC
+          %%
+          %if needConvertAny
+            {            
+          %endif 
+          %%
+          %if needConvertA
+            %%
+            %assign aLabel_BinPt = "aTempMulNiceScaling"
+            %%
+            %<aDT_BinPt.NativeType> %<aLabel_BinPt>;
+            %%
+          %endif
+          %%
+          %if needConvertB
+            %%
+            %assign bLabel_BinPt = "bTempMulNiceScaling"
+            %%
+            %<bDT_BinPt.NativeType> %<bLabel_BinPt>;
+            %%
+          %endif
+          %%
+          %if needConvertC
+            %%
+            %assign cLabel_BinPt = "cTempMulNiceScaling"
+            %%
+            %<cDT_BinPt.NativeType> %<cLabel_BinPt>;
+            %%
+          %endif
+          %%
+          %if needConvertA
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(aLabel_BinPt,aDT_BinPt,...
+                                        aLabel,      aDT,...
+                                        roundMode,"Wrap")>\
+                                      
+            %%
+          %endif
+          %%
+          %if needConvertB
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(bLabel_BinPt,bDT_BinPt,...
+                                        bLabel,      bDT,...
+                                        roundMode,"Wrap")>\
+           
+            %%
+          %endif
+          %%
+          %% call recursively, depth should be no more than 1
+          %%
+          %<FixPt_Multiply(cLabel_BinPt,cDT_BinPt,...
+                           aLabel_BinPt,aDT_BinPt,...
+                           bLabel_BinPt,bDT_BinPt,...
+                           roundMode,satMode)>\
+          %%
+          %if needConvertC
+           
+            %<FixPt_Fix2FixAlwaysOutput(cLabel,      cDT_Final,...
+                                        cLabel_BinPt,cDT_BinPt,...
+                                        FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+          %endif
+          %%
+          %if needConvertAny
+            }
+          %endif
+          %%
+          %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+          %return ""
+          %%
+       %else
+         %%
+         %% Pure radix case, ie no messy bias or slope
+         %%
+         %% handle inlining of trivial case of multiplication by zero
+         %%   "inlining" is detected by aLabel or bLabel having TYPE = Number
+         %%
+         %if ( TYPE(aLabel) == "Number" ) || ( TYPE(aLabel) == "Unsigned" )
+           %%
+           %if aLabel == 0
+             %%
+             /* trivial product of multiplication by zero */
+             %<cLabel> = 0;
+             %%
+             %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+             %return ""
+             %%
+           %endif
+           %%
+         %endif
+         %%
+         %if ( TYPE(bLabel) == "Number" ) || ( TYPE(bLabel) == "Unsigned" )
+           %%
+           %if bLabel == 0
+             %%
+             /* trivial product of multiplication by zero */
+             %<cLabel> = 0;
+             %%
+             %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+             %return ""
+             %%
+           %endif
+           %%
+         %endif
+         %%
+         %% handle inlining of case of multiplication by a power of 2
+         %%   "inlining" is detected by aLabel or bLabel having TYPE = Number
+         %%
+         %assign isPow2Result = LibIsPow2(aLabel)
+         %%
+         %if isPow2Result[0]
+           %%
+           %% create a data type record for the product of A * B
+           %%   which is simply obtained by updating the fixed exponent for B
+           %%
+           %copyrecord cTempDT bDT
+           %%
+           %assign cTempDT.FixedExp = cTempDT.FixedExp + ...
+             aDT.FixedExp    + isPow2Result[1]
+           %%
+           %assign cTempDT.FracSlope = cTempDT.FracSlope * aDT.FracSlope                                       
+           %%
+           %% finish multiplication using conversion
+           %%
+           /*
+           * one of the multiplicands is constant and is a power of +2
+           *    Multiplicand = 2^%<aDT.FixedExp    + isPow2Result[1]>
+           * so a general multiplication is not necessary.
+           * Instead, the conversion function will carry out the multiplication.
+           * This will make use of the shift instruction rather than multiply.
+           */
+           %%
+           %<FixPt_Fix2FixAlwaysOutput(cLabel,cDT,bLabel,cTempDT,roundMode,satMode)>\
+           %%
+           %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+           %return ""
+           %%
+         %endif
+         %%
+         %assign isPow2Result = LibIsPow2(bLabel)
+         %%
+         %if isPow2Result[0]
+           %%
+           %% create a data type record for the product of A * B
+           %%   which is simply obtained by updating the fixed exponent for A
+           %%
+           %copyrecord cTempDT aDT
+           %%
+           %assign cTempDT.FixedExp = cTempDT.FixedExp + ...
+             bDT.FixedExp    + isPow2Result[1]
+           %%
+           %assign cTempDT.FracSlope = cTempDT.FracSlope * bDT.FracSlope                                       
+           %%
+           %% finish multiplication using conversion
+           %%
+           /*
+           * one of the multiplicands is constant and is a power of +2
+           *    Multiplicand = 2^%<bDT.FixedExp    + isPow2Result[1]>
+           * so a general multiplication is not necessary.
+           * Instead, the conversion function will carry out the multiplication.
+           * This will make use of the shift instruction rather than multiply.
+           */
+           %<FixPt_Fix2FixAlwaysOutput(cLabel,cDT,aLabel,cTempDT,roundMode,satMode)>\
+           %%
+           %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+           %return ""
+           %%
+         %endif
+         %%
+        %%
+        %% Multiplication is commutative so
+        %%   A * B = B * A
+        %% This fact will be exploited to reduced the number of multiplication
+        %% routines/cases that need to be generated/handled.
+        %%   This function will support the case
+        %% when A has the same or more bits than B.
+        %% If A has fewer bits it will be swapped with B.
+        %%
+        %if aDT.RequiredBits < bDT.RequiredBits
+            %assign swapAbLabel = aLabel
+            %assign aLabel = bLabel
+            %assign bLabel = swapAbLabel
+            %assign swapAbDT = aDT
+            %assign aDT = bDT
+            %assign bDT = swapAbDT
+        %endif
+        %%
+        %% Calculate the extra precision bits in the output
+        %% compared to the "natural" precision of A * B
+        %% Positive means overall shift left
+        %% Negative means overall shift right
+        %%
+        %assign rawProdFixExp = aDT.FixedExp + bDT.FixedExp
+        %assign ExPrec        = rawProdFixExp - cDT.FixedExp
+        %assign cNonSignBits  = cDT.RequiredBits-cDT.IsSigned
+        %%
+        %% Determine if ideal product can be negative
+        %%
+        %assign canHaveIdealNegProd = aDT.IsSigned || bDT.IsSigned
+        %%
+        %% make access to Long and Int number of bits easier
+        %%
+        %assign longBits = IntegerSizes.LongNumBits
+        %assign intBits  = IntegerSizes.IntNumBits
+        %%
+        %% Calculate the bits of precision in the IDEAL product
+        %%
+        %assign ProdPrecBits = aDT.RequiredBits + bDT.RequiredBits
+        %%
+        %% Create a string to represent the multiplication utility
+        %%
+            %assign utilityName = "MUL"
+            %%
+            %% identify output storage type
+            %%
+            %if cDT.IsSigned
+                %assign utilityName = utilityName + "_S"
+            %else
+                %assign utilityName = utilityName + "_U"
+            %endif
+            %assign utilityName = utilityName + STRING(cDT.RequiredBits)
+            %%
+            %% identify input 1 storage type
+            %%
+            %if aDT.IsSigned
+                %assign utilityName = utilityName + "_S"
+            %else
+                %assign utilityName = utilityName + "_U"
+            %endif
+            %assign utilityName = utilityName + STRING(aDT.RequiredBits)
+            %%
+            %% identify input 2 storage type
+            %%
+            %if bDT.IsSigned
+                %assign utilityName = utilityName + "_S"
+            %else
+                %assign utilityName = utilityName + "_U"
+            %endif
+            %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+            %%
+            %% identify amount of left shifting or right shifting
+            %% if any
+            %%
+            %if ExPrec > 0
+                %assign utilityName = utilityName + "_SL"
+                %assign utilityName = utilityName + STRING(ExPrec)
+            %elseif ExPrec < 0
+                %assign utilityName = utilityName + "_SR"
+                %assign utilityName = utilityName + STRING(-ExPrec)
+            %endif
+            %%
+            %% identify how overflows will be handled
+            %%   the default "do nothing" mode is "WRAP".
+            %%   This default mode will be
+            %%   left off the utility name for brevity.
+            %%
+            %% first, determine if saturation is relevant
+            %%   note calc validity limited to radix only cases
+            %%
+            %assign cHiExp = cDT.RequiredBits - cDT.IsSigned
+            %assign aHiExp = aDT.RequiredBits - aDT.IsSigned
+            %assign bHiExp = bDT.RequiredBits - bDT.IsSigned
+            %assign prodHiExp = aHiExp + bHiExp + ExPrec
+            %%
+	    %% assume saturation is possible
+	    %%   then change if found otherwise
+	    %%
+	    %assign overflowPossible = 1
+	    %%
+	    %if satMode == "Saturate"
+	      %assign includeSaturationCode = 1
+	    %else
+	      %assign includeSaturationCode = 0
+	    %endif
+	    %%
+	    %if !( !cDT.IsSigned && ( aDT.IsSigned || bDT.IsSigned ) )
+	      %%
+	      %% overflow is obviously possible if either input is
+	      %% signed and the output is unsigned.  If either input
+	      %% is negative the output can not represent the ideal
+	      %% product hence overflow.
+	      %%
+	      %% If we've reached this point, that obvious overflow is
+	      %% impossible.
+	      %%	    
+	      %if ( cHiExp > prodHiExp )
+		%%
+		%% The weighting of the most significant non-sign bit 
+		%% of the output is larger than the weight of the
+		%% most significant non-sign bit of the ideal
+		%% product.  Even if rounding pushs ideal value
+		%% up overflow is impossible.
+		%%
+                %assign overflowPossible = 0
+                %assign includeSaturationCode = 0
+		%%
+	      %elseif cHiExp == prodHiExp 
+		%%
+		%% The weighting of the most significant non-sign bit 
+		%% of the output is exactly equal to the weight of the
+		%% most significant non-sign bit of the ideal
+		%% product.  Overflow is possible in some situations
+		%% and is not possible in others
+		%%
+		%% overflow can only occur in the positive direction
+		%%
+		%if !( aDT.IsSigned && bDT.IsSigned )
+		  %%
+		  %% if both inputs are signed then the maximum 
+		  %% is obtained by multiplying the the two most
+		  %% negative twos' complement numbers.  The
+		  %% answer exactly equals 2^prodHiExp.  The
+		  %% outputs maximum is actually one bit less than
+		  %% that 2^cHiExp - 1
+		  %%
+		  %% if we've reached this point at least one of
+		  %% inputs is unsigned, so that overflow case does
+		  %% not occur
+		  %%
+		  %% in some of the remaining cases, overflow can
+		  %% be cause by rounding up.
+		  %%
+                  %if ExPrec >= 0 || ...
+                      roundMode == "Zero" || ...
+		      roundMode == "Floor"
+		    %%
+		    %% either rounding can't occur or rounding
+		    %% is always down and never up
+		    %%
+		    %assign overflowPossible = 0
+		    %assign includeSaturationCode = 0
+		    %%
+		  %else
+		    %%
+		    %% rounding up can occur
+		    %% whether or not this upward rounding
+		    %% can cause overflow depends on details of
+		    %% the maximum possible product
+		    %%
+                    %% Matlab code to study maximum possible product
+                    %% bpp=[];
+		    %% zm=[];
+		    %% n=16;
+		    %% for m = 1:n;
+		    %%   bp=dec2bin((2^n-1)*(2^m-1),32);
+		    %%   zm=[zm;max(n+m-find(bp=='0'))];
+		    %%   bpp=[bpp;bp];
+		    %% end
+		    %% bpp=[bpp;dec2bin(2^n,32)]                                                                                       
+		    %%
+		    %% Matlab Output
+		    %% bpp =
+		    %% 00000000000000001111111111111111
+		    %% 00000000000000101111111111111101
+		    %% 00000000000001101111111111111001
+		    %% 00000000000011101111111111110001
+		    %% 00000000000111101111111111100001
+		    %% 00000000001111101111111111000001
+		    %% 00000000011111101111111110000001
+		    %% 00000000111111101111111100000001
+		    %% 00000001111111101111111000000001
+		    %% 00000011111111101111110000000001
+		    %% 00000111111111101111100000000001
+		    %% 00001111111111101111000000000001
+		    %% 00011111111111101110000000000001
+		    %% 00111111111111101100000000000001
+		    %% 01111111111111101000000000000001
+		    %% 11111111111111100000000000000001
+		    %%
+		    %% 00000000000000010000000000000000
+                    %%
+                    %if roundMode == "Ceiling" && ...
+		        ( (aHiExp+ExPrec) >= 0 || (bHiExp+ExPrec) >= 0 )
+		      %%
+		      %% at least one bit to the left of the binary point is 
+		      %% zero, so rounding up can not cause overflow
+		      %%
+		      %assign overflowPossible = 0
+		      %assign includeSaturationCode = 0
+		      %%
+		    %elseif roundMode == "Nearest" && ...
+		        ( (aHiExp+ExPrec) >= -1 || (bHiExp+ExPrec) >= -1 )
+		      %%
+		      %% Either 
+		      %%   at least one bit to the left of the binary point is 
+		      %%   zero, so rounding up can not cause overflow
+		      %% OR
+		      %%   the bit immediately to the right of the binary point
+		      %%   is zero so rounding up on the max will not happend
+		      %%   hence no overflow
+		      %%
+		      %assign overflowPossible = 0
+		      %assign includeSaturationCode = 0
+		      %%
+		    %endif
+		  %endif     %% end ExPrec >= 0 ie no rounding up
+		%endif       %% end !( aDT.IsSigned && bDT.IsSigned )
+	      %endif         %% end ( cHiExp >= prodHiExp )
+            %endif           %% end !( !cDT.IsSigned && ( aDT.IsSigned || bDT.IsSigned ) )
+            %%
+            %if overflowPossible 
+                %assign satModeModified = satMode
+            %else
+                %assign satModeModified = "Wrap"
+            %endif      
+	    %%
+	    %if includeSaturationCode
+	      %assign utilityName = utilityName + "_SAT"
+	    %%%else
+	      %%%assign utilityName = utilityName + "_WRAP"
+	    %endif
+            %%
+            %% identify how rounding will be handled
+            %%   If the mode leads to a "do nothing" then
+            %%   the mode will be left off the utility name.
+            %%   For any combination of signed (2's complement!!!)
+            %%   or unsigned inputs, round to FLOOR is a do nothing
+            %%   mode.  If both inputs are unsigned then round to ZERO
+            %%   is identical to round to FLOOR, ie "do nothing"
+            %%        Note, there is an unresolved caveat to this.  When the
+            %%   product is formed by summing the product of smaller pieces
+            %%   there can be a difference between applying the rounding mode
+            %%   to the combined sum verses applying the rounding mode to each
+            %%   piece seperately.  FLOOR applied to each piece is "do nothing",
+            %%   but FLOOR applied to the whole is NOT "do nothing."  Current
+            %%   implementation applies FLOOR to each piece for code generation.
+            %%
+            %%   Note: rounding is relavent only if there is a shift right
+            %%
+            %assign includeRoundingCode = 0
+            %%
+            %if ExPrec < 0
+                %if roundMode == "Zero"
+                    %if aDT.IsSigned || bDT.IsSigned
+                        %assign utilityName = utilityName + "_ZERO"
+                        %%
+                        %assign includeRoundingCode = 1
+                        %%
+                    %%else
+                        %% both Unsigned so ZERO like FLOOR
+                    %endif
+                %elseif roundMode == "Nearest"
+                    %assign utilityName = utilityName + "_NEAR"
+                    %%
+                    %assign includeRoundingCode = 1
+                    %%
+                %elseif roundMode == "Ceiling"
+                    %assign utilityName = utilityName + "_CEILING"
+                    %%
+                    %assign includeRoundingCode = 1
+                    %%
+                %elseif roundMode == "Floor"
+                    %%%assign utilityName = utilityName + "_FLOOR"
+                %else
+                    %assign utilityName = utilityName + "_ROUNDERROR"
+                    %%
+                %endif
+            %else
+                %% no shifts right so NEVER round
+            %endif
+            %%
+        %%
+        %% END: Create a string to represent the multiplication utility
+        %%
+        %%
+        %% Output a "call" to the required utility
+        %%
+        %if FixPtIncludeCallComment
+            %%START_ASSERT
+	    %%
+            /* Multiply Values
+             *      Vc = Va * Vb
+             *   Stored Integer Formula
+             *      C = A * B * 2^%<ExPrec>
+             *   Type, Scale, and Identifier
+             %%
+             %if cDT.IsSigned
+                *      C   S%<cDT.RequiredBits> 2^%<cDT.FixedExp>  %<cLabel>
+             %else
+                *      C   U%<cDT.RequiredBits> 2^%<cDT.FixedExp>  %<cLabel>
+             %endif
+             %if aDT.IsSigned
+                *      A   S%<aDT.RequiredBits> 2^%<aDT.FixedExp>  %<aLabel>
+             %else
+                *      A   U%<aDT.RequiredBits> 2^%<aDT.FixedExp>  %<aLabel>
+             %endif
+             %if bDT.IsSigned
+                *      B   S%<bDT.RequiredBits> 2^%<bDT.FixedExp>  %<bLabel>
+             %else
+                *      B   U%<bDT.RequiredBits> 2^%<bDT.FixedExp>  %<bLabel>
+             %endif
+             */
+             %%END_ASSERT
+	%endif
+        %%
+        %% case of C macro "call"
+        %%
+        %if FixPtUtilType == "macro"
+            %<utilityName>(%<cLabel>,%<aLabel>,%<bLabel>);
+        %%
+        %% case of C function call
+        %%
+        %else
+	    %%START_ASSERT
+            %<utilityName>(&(%<cLabel>),%<aLabel>,%<bLabel>);
+	    %%END_ASSERT
+	%endif
+        %%
+        %% determine if the required utility has already been defined
+        %%   If it has not, then create the definition.
+        %%
+        %if !(ISFIELD(FixPtUtils,utilityName))
+            %%
+            %% register that utility is being defined
+            %%
+            %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+            %%
+            %% ISO C Unary Conversion rules convert
+            %% unsigned shorts and unsigned chars to
+            %% SIGNED ints if possible
+            %% this can cause problems when shifting right
+            %% for this reason shorts and ints are explicitly cast.
+            %%
+            %if (aDT.ActualBits < intBits) && !aDT.IsSigned
+                %assign Atag = "((unsigned)(A))"
+            %else
+                %assign Atag = "(A)"
+            %endif
+            %%
+            %if (bDT.ActualBits < intBits) && !bDT.IsSigned
+                %assign Btag = "((unsigned)(B))"
+            %else
+                %assign Btag = "(B)"
+            %endif
+            %%
+            %if FixPtUtilType == "macro"
+                %assign Ctag = "C"
+            %else
+	        %%START_ASSERT
+                %assign Ctag = "(*C)"
+                %%END_ASSERT
+	    %endif
+            %%
+            %% Get fixpt records for generic variables INSIDE this util
+            %%
+            %assign fixbLabel = "B"
+            %assign fixaLabel = "A"
+            %assign fixcLabel = Ctag
+            %%
+            %% open a buffer to hold the utility header comments
+            %%
+            %openfile utilityHeaderComment
+            %%
+            %%  Produce header comment for utility
+            %%
+    
+            /*********************************************************************
+             * Fixed Point Multiplication Utility %<utilityName>
+             *   Values
+             *      Vc = Va * Vb
+             *   Stored Integer Formula
+             *      C = A * B * 2^%<ExPrec>
+            %%
+            %% generate comments related to overflow
+            %%
+             *
+            %%
+            %% note the possibility of overflow
+            %%
+            %if ( overflowPossible )
+                %%
+                 * overflow is possible
+            %else
+                 * overflow is impossible
+            %endif
+            %%
+            %% note the product's maximum
+            %%
+            %if ( aDT.IsSigned && bDT.IsSigned )
+                 *   HiProd = 2^%<prodHiExp> = (-1*2^%<aHiExp>) * (-1*2^%<bHiExp>) * (2^%<ExPrec>)
+            %else
+	      %if aHiExp == bHiExp
+		*   HiProd = 2^%<prodHiExp> - 2^%<1+aHiExp+ExPrec> + 2^%<ExPrec>
+	      %else
+		*   HiProd = 2^%<prodHiExp> - 2^%<aHiExp+ExPrec> - 2^%<bHiExp+ExPrec> + 2^%<ExPrec>
+	      %endif
+	      *          = (2^%<aHiExp>-1) * (2^%<bHiExp>-1) * (2^%<ExPrec>)
+            %endif
+            %%
+            %% note the output C's maximum
+            %%
+             *   HiOut  = 2^%<cHiExp> - 1
+            %%
+            %% note the product's minimum
+            %%
+            %if ( aDT.IsSigned && bDT.IsSigned )
+                %if aHiExp > bHiExp
+                     *   LoProd = -1 * 2^%<prodHiExp> + 2^%<bHiExp+ExPrec>
+                     *          = (2^%<aHiExp>-1) * (-1*2^%<bHiExp>) * (2^%<ExPrec>)
+                %else
+                     *   LoProd = -1 * 2^%<prodHiExp> + 2^%<aHiExp+ExPrec>
+                     *          = (-1*2^%<aHiExp>) * (2^%<bHiExp>-1) * (2^%<ExPrec>)
+                %endif
+            %elseif ( aDT.IsSigned )
+                 *   LoProd = -1 * 2^%<prodHiExp> + 2^%<aHiExp+ExPrec>
+                 *          = (-1*2^%<aHiExp>) * (2^%<bHiExp>-1) * (2^%<ExPrec>)
+            %elseif ( bDT.IsSigned )
+                 *   LoProd = -1 * 2^%<prodHiExp> + 2^%<bHiExp+ExPrec>
+                 *          = (2^%<aHiExp>-1) * (-1*2^%<bHiExp>) * (2^%<ExPrec>)
+            %else
+                 *   LoProd = 0
+            %endif
+            %%
+            %% note the output C's minimum
+            %%
+            %if cDT.IsSigned
+                 *   LoOut  = -1 * 2^%<cHiExp>
+            %else
+                 *   LoOut  = 0
+            %endif
+            %%
+            %% note saturation/wrap status
+            %%
+            %if ( overflowPossible )
+                %%
+                %if satMode == "Saturate"
+                    * overflows will SATURATE
+                    *    code specific to overflow management is included
+                %else
+                    * overflows will WRAP (modulo 2)
+                    *    no code specific to overflow management is included
+                %endif
+            %else
+                 * so SATURATE verses WRAP is irrelevant
+                 *    no code specific to overflow management is required
+            %endif
+            %%
+            %% generate comments related to rounding
+            %%
+            *
+            %if ExPrec < 0
+                %if roundMode == "Zero"
+                    %if aDT.IsSigned || bDT.IsSigned
+                         * round to ZERO
+                         *    code specific to rounding is included
+                    %else
+                        %% both Unsigned so ZERO like FLOOR
+                         * round to ZERO  equivalent to
+                         * round to FLOOR because inputs unsigned
+                         *    no code specific to rounding is required
+                    %endif
+                %elseif roundMode == "Nearest"
+                     * round to NEAREST
+                     *    code specific to rounding is included
+                %elseif roundMode == "Ceiling"
+                     * round to CEILING
+                     *    code specific to rounding is included
+                %else  %%if roundMode == "Floor"
+                     * round to FLOOR
+                     *    no code specific to rounding is required
+                %endif
+            %else
+                %% no shifts right so NEVER round
+                * rounding irrelevant  2^%<ExPrec>  NO shifts right
+                *    no code specific to rounding is required
+            %endif
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %% open a buffer to hold the utility definition
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %openfile utilityDef
+            %%
+            %% create first line of utility macro or function
+            %%
+            %% case of C language macro
+            %if FixPtUtilType == "macro"
+                #define %<utilityName>(C,A,B)
+            %%
+            %% case of C function
+            %%   including prototype definition
+            %%
+            %else
+	        %%START_ASSERT
+                %openfile funcProto
+                void %<utilityName>( %<cDT.NativeType> *C, %<aDT.NativeType> A, %<bDT.NativeType> B);
+                %closefile funcProto
+                %selectfile utilityDef
+                void %<utilityName>( %<cDT.NativeType> *C, %<aDT.NativeType> A, %<bDT.NativeType> B)
+		%%END_ASSERT
+	    %endif
+            {
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %%
+            %% determine if producing a two chunk result is irrelavant
+            %%
+            %if ( ProdPrecBits > longBits )
+                %%
+                %% Note these conditions are conservative
+                %%
+                %% saturation
+                %%
+                %%     includeSaturationCode is already defined
+                %%
+                %% rounding
+                %%
+                %assign roundingIssues = ( ExPrec < 0 ) && ( roundMode != "Floor" )
+                %%
+                %% MS Chunk is shifted into final result
+                %%
+                %assign needMSChunk = cDT.RequiredBits > ( longBits + ExPrec )
+                %%
+                %assign getTwoChunk = includeSaturationCode || ...
+                                      roundingIssues || needMSChunk
+                %%
+            %else
+                %%
+                %assign getTwoChunk = 0
+                %%
+            %endif
+            %%
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %% new code as of 5/15/98
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %%
+            %% handle cases where more than a long is needed, ie two chunks
+            %%
+            %if ( getTwoChunk )
+                %%
+                %% all case need pHi
+                %%   some cases don't need pLo but it is a bi-product of
+                %%   computing pHi so no sense trying not to get pLo
+                %%
+                %assign uLongName = "uint%<IntegerSizes.LongNumBits>_T"
+                %%
+                %<uLongName> pHi, pLo;
+    
+                %<FixPt_TwoOutputMultiply("pHi","pLo",fixaLabel,aDT,fixbLabel,bDT)>\
+    
+                %%
+                %% drop bits from the raw product if necessary
+                %%
+                %if ExPrec < 0
+                    %%
+                    %assign numDropBits = -ExPrec
+                    %%
+                    %<FixPt_TwoULongPrecisionReduction("pHi","pLo",numDropBits,canHaveIdealNegProd,roundMode,includeSaturationCode)>
+                    %%
+                    %% update variables to agree with adjustments to raw product
+                    %%
+                    %assign rawProdFixExp = cDT.FixedExp
+                    %assign ExPrec        = 0
+                    %%
+                %endif
+                %%
+                %%  at this point it is not possible for
+                %%  the bits of pHi or pLo to hang past the right end of C
+                %%  it must be
+                %%
+                %%                   ...CCC
+                %%         hhhhhhhhllllllll
+                %%  OR
+                %%                   ...CCC
+                %%       hhhhhhhhllllllll
+                %%
+                %%
+                %% define the output max and min for saturation
+                %%
+                %assign outMax = FixPt_GetMaxStr(cDT)
+                %assign outMin = FixPt_GetMinStr(cDT)
+                %%
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %% handle case of C, & rawProd UNsigned WITH SATRUATION code
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %if !canHaveIdealNegProd && !cDT.IsSigned ...
+                    && includeSaturationCode
+                    %%
+                    %%     In the comments below
+                    %%   cccc     = C when it has less bits than a long
+                    %%   CCCCCCCC = C when it has same bits as   a long
+                    %%   llllllll = pLo
+                    %%   hhhhhhhh = pHi
+                    %%
+                    %%
+                    %% handle trivial case where all bits of rawProduct
+                    %% can cause saturation
+                    %%
+                    %%                      cccc
+                    %%                      CCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %%                    cccc
+                    %%                    CCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %if ExPrec >= cDT.RequiredBits
+                        %%
+                        /*
+                         * The product is always zero or maximum
+                         * because all bits of A*B are shifted off left end of C
+                         */
+                        %%
+                        if ( pHi || pLo )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else
+                    %%
+                    %% handle cases where
+                    %%    all of pHi and part of pLo can cause saturation
+                    %%
+                    %%   subcase 1  left shift
+                    %%                 cccc
+                    %%             CCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %%   subcase 2  no shift and C is not long
+                    %%                cccc
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %elseif ( ExPrec > 0 ) || ( cDT.RequiredBits < longBits )
+                        %%
+                        %assign satTestMax = UPowerOfTwoStr(cDT.RequiredBits-ExPrec)
+                        %%
+                        if ( pHi || ( pLo >= %<satTestMax> ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else
+                    %%
+                    %% handle cases where all of pHi can cause saturation
+                    %%
+                    %%   subcase 1  no shift and C is long
+                    %%            CCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %else
+                        %%
+                        if ( pHi )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else
+                    %endif
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %% handle case of C & rawProd SIGNED WITH SATRUATION code
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %elseif canHaveIdealNegProd && cDT.IsSigned ...
+                        && includeSaturationCode
+                    %%
+                    %%     In the comments below
+                    %%   sccc     = C when it has less bits than a long
+                    %%   sCCCCCCC = C when it has same bits as   a long
+                    %%   llllllll = pLo
+                    %%   shhhhhhh = pHi
+                    %%
+                    %%
+                    %% handle trivial case where all bits would be shifted off
+                    %% left end of C
+                    %%
+                    %%  subcase 1   total lack of overlap
+                    %%                      sccc
+                    %%     shhhhhhhllllllll
+                    %%
+                    %%  subcase 2   overlap only on C's sign bit
+                    %%                    sccc
+                    %%     shhhhhhhllllllll
+                    %%
+                    %if ExPrec >= cNonSignBits
+                        %%
+                        /* The product is always zero, maximum, or minimum
+                         * because all nonsign bits of rawProduct are shifted off left end
+                         */
+                        %%
+                        if ( ( (long)pHi > 0 ) || ( ( pHi == 0 ) && pLo ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else if ( (long)pHi < 0 )
+                        {
+                            %<Ctag> = %<outMin>;
+                        }
+                        else
+                    %%
+                    %% handle cases where
+                    %%   all of pHi and part of pLo can cause saturation
+                    %%
+                    %%   subcase 1  left shift
+                    %%                 sccc
+                    %%             sCCCCCCC
+                    %%    sshhhhhhllllllll
+                    %%
+                    %%   subcase 2  no shift
+                    %%                sccc
+                    %%            sCCCCCCC
+                    %%    sshhhhhhllllllll
+                    %%
+                    %%
+                    %else
+                        %%
+                        %% bits in llllllll left of C's nonsign bits given by
+                        %%   longBits+ExPrec-cNonSignBits
+                        %% test power longBits-(longBits+ExPrec-cNonSignBits)
+                        %%  = cNonSignBits-ExPrec
+                        %%
+                        %assign satTestMax = UPowerOfTwoStr(cNonSignBits-ExPrec)
+                        %%
+                        %assign maskBitsSet = longBits-cNonSignBits+ExPrec
+                        %assign maskTotalBits = IntegerSizes.LongNumBits
+                        %assign maskIsSigned  = 0
+                        %assign satTestMin = SetMSNBitsStr(maskBitsSet,maskTotalBits,maskIsSigned)
+                        %%
+                        if ( ( ((long)pHi) > 0 ) ||
+                             ( ( pHi == 0 ) && ( pLo >= %<satTestMax> ) ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else if ( ( ((long)pHi) < -1 ) ||
+                                 ( ( (long)pHi == -1 ) && ( pLo <= %<satTestMin> ) ) )
+                        {
+                            %<Ctag> = %<outMin>;
+                        }
+                        else
+                    %endif
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %% handle case of C Signed & rawProd UNsigned WITH SATRUATION code
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %elseif !canHaveIdealNegProd && cDT.IsSigned ...
+                    && includeSaturationCode
+                    %%
+                    %%     In the comments below
+                    %%   sccc     = C when it has less bits than a long
+                    %%   sCCCCCCC = C when it has same bits as   a long
+                    %%   llllllll = pLo
+                    %%   hhhhhhhh = pHi
+                    %%
+                    %%
+                    %% handle trivial case where all bits of rawProduct
+                    %% can cause saturation
+                    %%
+                    %%                    sccc
+                    %%                    sCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %%                   sccc
+                    %%                   sCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %if ExPrec >= cNonSignBits
+                        %%
+                        /*
+                         * The product is always zero or maximum
+                         * because all bits of raw Product are shifted left past
+                         * the non-sign bits of C
+                         */
+                        %%
+                        if ( pHi || pLo )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else
+                    %%
+                    %% handle cases where
+                    %%    all of pHi and part of pLo can cause saturation
+                    %%
+                    %%   subcase 1  left shift
+                    %%                 sccc
+                    %%             sCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %%   subcase 2  no shift
+                    %%                sccc
+                    %%            sCCCCCCC
+                    %%    hhhhhhhhllllllll
+                    %%
+                    %else
+                        %%
+                        %assign satTestMax = UPowerOfTwoStr(cNonSignBits-ExPrec)
+                        %%
+                        if ( pHi || ( pLo >= %<satTestMax> ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else
+                    %endif
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %% handle case of C UNsigned & rawProd SIGNED WITH SATRUATION code
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                %elseif canHaveIdealNegProd && !cDT.IsSigned ...
+                        && includeSaturationCode
+                    %%
+                    %%     In the comments below
+                    %%   sccc     = C when it has less bits than a long
+                    %%   sCCCCCCC = C when it has same bits as   a long
+                    %%   llllllll = pLo
+                    %%   sshhhhhh = pHi
+                    %%
+                    %%
+                    %% handle trivial case where all bits would be shifted off
+                    %% left end of C
+                    %%
+                    %%  subcase 1   gap greater than 0
+                    %%                      cccc
+                    %%     shhhhhhhllllllll
+                    %%
+                    %%  subcase 2   gap of exactly zero
+                    %%                     cccc
+                    %%     shhhhhhhllllllll
+                    %%
+                    %if ExPrec >= cDT.RequiredBits
+                        %%
+                        /* The product is always zero or maximum
+                         * because all nonsign bits of rawProduct are shifted off left end
+                         */
+                        %%
+                        if ( ( (long)pHi > 0 ) || ( ( pHi == 0 ) && pLo ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else if ( (long)pHi < 0 )
+                        {
+                            %<Ctag> = %<outMin>;
+                        }
+                        else
+                    %%
+                    %% handle cases where
+                    %%   all of pHi and part of pLo can cause saturation
+                    %%
+                    %%   subcase 1  left shift
+                    %%                 cccc
+                    %%             CCCCCCCC
+                    %%    sshhhhhhllllllll
+                    %%
+                    %%   subcase 2  no shift and C is not long
+                    %%                cccc
+                    %%    sshhhhhhllllllll
+                    %%
+                    %elseif ( ExPrec > 0 ) || ( cDT.RequiredBits < longBits )
+                        %%
+                        %% bits in llllllll left of C's nonsign bits given by
+                        %%   longBits+ExPrec-cNonSignBits
+                        %% test power longBits-(longBits+ExPrec-cNonSignBits)
+                        %%  = cNonSignBits-ExPrec
+                        %%
+                        %assign satTestMax = UPowerOfTwoStr(cNonSignBits-ExPrec)
+                        %%
+                        if ( ( ((long)pHi) > 0 ) ||
+                             ( ( pHi == 0 ) && ( pLo >= %<satTestMax> ) ) )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else if ( (long)pHi < 0 )
+                        {
+                            %<Ctag> = %<outMin>;
+                        }
+                        else
+                    %%
+                    %% handle cases where
+                    %%   only pHi can cause saturation
+                    %%
+                    %%   subcase 4  no shift and C is long
+                    %%            CCCCCCCC
+                    %%    sshhhhhhllllllll
+                    %%
+                    %else
+                        %%
+                        if  ( ((long)pHi) > 0 )
+                        {
+                            %<Ctag> = %<outMax>;
+                        }
+                        else if ( (long)pHi < 0 )
+                        {
+                            %<Ctag> = %<outMin>;
+                        }
+                        else
+                    %endif
+                %endif
+                %%
+                %% do any necessary left shifting, then assign the result to the output
+                %%
+                %if includeSaturationCode
+                {
+                    %<Ctag> = (%<cDT.NativeType>)(%<FixPt_TwoULongLogicShiftLeft("pHi","pLo",ExPrec)>);
+                    %%
+                    %% if emulating a smaller data type then force extra bits
+                    %% to sign value
+                    %%
+                    %<FixPt_EmulationSignExt(Ctag,cDT)>\
+                }
+                %else
+                    %%
+                    %<Ctag> = (%<cDT.NativeType>)(%<FixPt_TwoULongLogicShiftLeft("pHi","pLo",ExPrec)>);
+                    %%
+                    %% if emulating a smaller data type then force extra bits
+                    %% to sign value
+                    %%
+                    %<FixPt_EmulationSignExt(Ctag,cDT)>\
+                    %%
+                %endif
+            %%
+            %% handle cases where a long or an integer is sufficient,
+            %% ie don't need two chunk
+            %%
+            %else
+                %%
+                %% set up an intial guess at a data type to hold the raw product
+                %%
+                %createrecord cTempDT { ...
+                                      IsSigned         canHaveIdealNegProd; ...
+                                      ActualBits       longBits; ...
+                                      RequiredBits     longBits; ...
+                                      FixedExp         rawProdFixExp; ...
+                                      FracSlope        1; ...
+                                      Bias             0; ...
+                                      NativeType      "long" ...
+                                    }
+                %%
+                %% specialize to case where long is definitely needed
+                %%
+                %if ( ProdPrecBits > intBits )
+                    %%
+                    %if !canHaveIdealNegProd
+                        %%
+                        %assign cTempDT.NativeType = "unsigned long"
+                        %%
+                    %endif
+                %%
+                %% specialize to case where int is good enough
+                %%
+                %else
+                    %%
+                    %assign cTempDT.ActualBits   = intBits
+                    %assign cTempDT.RequiredBits = intBits
+                    %%
+                    %if canHaveIdealNegProd
+                        %%
+                        %assign cTempDT.NativeType = "int"
+                        %%
+                    %else
+                        %%
+                        %assign cTempDT.NativeType = "unsigned int"
+                        %%
+                    %endif
+                %endif
+                %%
+                %% gen code to do raw multiply
+                %%
+                %if ( aDT.IsSigned == cTempDT.IsSigned ) && ( aDT.ActualBits == cTempDT.ActualBits )
+                    %assign aTerm = "("+fixaLabel+")"
+                %else
+                    %assign aTerm = "(("+cTempDT.NativeType+")("+fixaLabel+"))"
+                %endif
+                %%
+                %if ( bDT.IsSigned == cTempDT.IsSigned ) && ( bDT.ActualBits == cTempDT.ActualBits )
+                    %assign bTerm = "("+fixbLabel+")"
+                %else
+                    %assign bTerm = "(("+cTempDT.NativeType+")("+fixbLabel+"))"
+                %endif
+                %%
+                %assign cTempResult = "(" + aTerm + " * " + bTerm + ")"
+                %%
+                %if includeSaturationCode
+                  %%
+                  %% declare variable to hold the raw product
+                  %%
+                  %assign cTempLabel = "cTemp"
+                  %%
+                  %<cTempDT.NativeType>  %<cTempLabel> = %<cTempResult>;
+                %else
+                  %assign cTempLabel = cTempResult
+                %endif
+                %%
+                %<FixPt_Fix2FixAlwaysOutput(fixcLabel,cDT,cTempLabel,cTempDT,roundMode,satModeModified)>\
+                %%
+            %endif
+            %%
+            %% finish header comment
+            %%
+            %selectfile utilityHeaderComment
+             */
+            %closefile utilityHeaderComment
+            %%
+            %% finish off utility define
+            %%
+            %selectfile utilityDef
+            }
+            %closefile utilityDef
+            %%
+            %% For the case of C macro,
+            %%    convert end of lines to backslash end of lines
+            %%    as required for multiline C macros
+            %%
+            %if FixPtUtilType == "macro"
+                %assign utilityDef = FEVAL("strrep",utilityDef,"\n"," \\\n")
+            %endif
+            %%
+            %% create utility trailer comment
+            %%
+            %openfile utilityTrailerComment
+    
+            /* end %<FixPtUtilType> %<utilityName>
+             *********************************************************************/
+            %closefile utilityTrailerComment
+            %%
+            %% cause utility define to be included in generated code
+            %%
+            %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+            %%
+            %if FixPtUtilType == "macro"                
+                %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+            %else
+	        %%START_ASSERT
+                %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+                %<LibCacheFunctionPrototype(funcProto)>\
+                %%END_ASSERT
+	    %endif
+            %%
+        %endif  %% definition of mul utility
+        %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()  %% for code gen case
+      %endif
+    %endif    
+%endfunction  %% FixPt_Multiply
+
+
+
+%% Function: FixPt_TwoOutputMultiply ==========================================
+%%
+%% Abstract:
+%%  Integer Multiplication with product represented using two unsigned longs
+%%    if the product is negative, then the outputs have the proper twos
+%%    complement form even thought they are stored in unsigned integers.
+%%    Note: casts to long will allow the compiler to see the negative nature of
+%%    these numbers.
+%%
+%%  C = A * B
+%%
+%%  FixPt_TwoOutputMultiply(ChiStr,CloStr,A,B) Output
+%%
+%%      ChiStr = string with name for MS half of output
+%%      CloStr = string with name for LS half of output
+%%      A = record describing input 1
+%%      B = record describing input 2
+%%          these records include
+%%                   Label which holds a string with variables C "name"
+%%                   DT which holds data type info struct
+%%
+%function FixPt_TwoOutputMultiply(ChiStr,CloStr,aLabel,aDT,bLabel,bDT) Output
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %<FixPt_FloatingPointNotSupported(aDT)>\
+    %<FixPt_FloatingPointNotSupported(bDT)>\
+    %%
+    %% Multiplication is commutative so
+    %%   A * B = B * A
+    %% This fact will be exploited to reduced the number of multiplication
+    %% routines/cases that need to be generated/handled.
+    %%   This function will support the case
+    %% when A has the same or more bits than B.
+    %% If A has fewer bits it will be swapped with B.
+    %%
+    %if   aDT.RequiredBits <  bDT.RequiredBits || ...
+        ( aDT.RequiredBits == bDT.RequiredBits && ...
+          !aDT.IsSigned && bDT.IsSigned ) 
+        %assign swapAbLabel = aLabel
+        %assign aLabel = bLabel
+        %assign bLabel = swapAbLabel
+        %assign swapAbDT = aDT
+        %assign aDT = bDT
+        %assign bDT = swapAbDT
+    %endif
+    %%
+    %% make access to Long number of bits easier
+    %%
+    %assign longBits = IntegerSizes.LongNumBits
+    %assign intBits  = IntegerSizes.IntNumBits
+    %%
+    %assign uLongName = "uint%<longBits>_T"
+    %assign sLongName = "int%<longBits>_T"
+    %%
+    %% Calculate the bits of precision in the IDEAL product
+    %%
+    %assign ProdPrecBits = aDT.RequiredBits + bDT.RequiredBits
+    %%
+    %% Create a string to represent the multiplication utility
+    %%
+    %assign utilityName = "mul_wide"
+    %%
+    %if aDT.RequiredBits == bDT.RequiredBits && ...
+        aDT.RequiredBits == longBits
+      %%
+      %if aDT.IsSigned
+        %%
+        %if bDT.IsSigned
+            %assign utilityName = utilityName + "_s"
+        %else
+            %assign utilityName = utilityName + "_su"
+        %endif
+      %else
+        %%
+        %if bDT.IsSigned
+            %assign utilityName = utilityName + "_us"
+        %else
+            %assign utilityName = utilityName + "_u"
+        %endif
+      %endif
+      %%
+      %assign utilityName = utilityName + STRING(longBits)
+      %%
+    %else
+      %%
+      %if aDT.RequiredBits != longBits && ...
+          bDT.RequiredBits != longBits
+        %%
+        %assign utilityName = utilityName + "_2xU" + STRING(longBits)
+        %%
+      %endif
+      %%
+      %% identify input 1 storage type
+      %%
+      %if aDT.IsSigned
+        %assign utilityName = utilityName + "_s"
+      %else
+        %assign utilityName = utilityName + "_u"
+      %endif
+      %assign utilityName = utilityName + STRING(aDT.RequiredBits)
+      %%
+      %% identify input 2 storage type
+      %%
+      %if bDT.IsSigned
+        %assign utilityName = utilityName + "_s"
+      %else
+        %assign utilityName = utilityName + "_u"
+      %endif
+      %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+    %endif
+    %%
+    %% Output a "call" to the required utility
+    %%
+    /* Multiply Integers with result stored in two ulongs */
+    %<utilityName>(%<aLabel>,%<bLabel>,&(%<ChiStr>),&(%<CloStr>));
+    %%
+    %% determine if the required utility has already been defined
+    %%   If it has not, then create the definition.
+    %%
+    %if !(ISFIELD(FixPtUtils,utilityName))
+        %%
+        %% register that utility is being defined
+        %%
+        %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+        %%
+        %% ISO C Unary Conversion rules convert
+        %% unsigned shorts and unsigned chars to
+        %% SIGNED ints if possible
+        %% this can cause problems when shifting right
+        %% for this reason shorts and ints are explicitly cast.
+        %%
+        %assign rawIn0 = "in0"
+        %assign rawIn1 = "in1"
+        %%
+        %if (aDT.ActualBits < intBits) && !aDT.IsSigned
+            %assign Atag = "((unsigned)(%<rawIn0>))"
+        %else
+            %assign Atag = rawIn0
+        %endif
+        %if (bDT.ActualBits < intBits) && !bDT.IsSigned
+            %assign Btag = "((unsigned)(%<rawIn1>))"
+        %else
+            %assign Btag = rawIn1
+        %endif
+        %assign OutBitsHi = "(*ptrOutBitsHi)"
+        %assign OutBitsLo = "(*ptrOutBitsLo)"
+        %%
+        %assign hiIn0 = "in0Hi"
+        %assign loIn0 = "in0Lo"
+        %assign hiIn1 = "in1Hi"
+        %assign loIn1 = "in1Lo"
+        %%
+        %assign absIn0 = "absIn0"
+        %assign absIn1 = "absIn1"
+        %%
+        %% open a buffer to hold the utility header comments
+        %%
+        %openfile utilityHeaderComment
+        %%
+        %%  Produce header comment for utility
+        %%
+
+        /*********************************************************************
+         * Integer Multiplication with Result Stored in Two Unsigned Longs
+         * %<utilityName>
+         *
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% open a buffer to hold the utility definition
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %openfile utilityDef
+        %%
+        %% create first line of utility macro or function
+        %%
+        %openfile funcProto
+        void %<utilityName>( %<aDT.NativeType> %<rawIn0>, %<bDT.NativeType> %<rawIn1>, %<uLongName> %<OutBitsHi>, %<uLongName> %<OutBitsLo>);
+        %closefile funcProto
+        %selectfile utilityDef
+        void %<utilityName>( %<aDT.NativeType> %<rawIn0>, %<bDT.NativeType> %<rawIn1>, %<uLongName> %<OutBitsHi>, %<uLongName> %<OutBitsLo>)
+        {
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% handle case of A & B unsigned
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %if !aDT.IsSigned && !bDT.IsSigned
+            %%
+            %% Handle case where ideal product has more bits than a long
+            %%
+            %if ( longBits < ProdPrecBits )
+                %%
+                %% Handle code specific to
+                %%  case where both A and B must be split into parts
+                %%
+                %if ( longBits < (2*bDT.RequiredBits) )
+                    %%
+                    %<uLongName> %<hiIn0>, %<loIn0>, %<loIn1>, %<hiIn1>;
+                    %<uLongName> productHiHi, productHiLo, productLoHi, productLoLo;
+                    %<uLongName> carry;
+
+                    %<hiIn0> = %<Atag> >> %<longBits/2>;
+                    %<loIn0> = %<Atag> & %<ULong_Lo_Mask>;
+
+                    %<hiIn1> = %<Btag> >> %<longBits/2>;
+                    %<loIn1> = %<Btag> & %<ULong_Lo_Mask>;
+
+                    productHiHi = %<hiIn0> * %<hiIn1>;
+                    productHiLo = %<hiIn0> * %<loIn1>;
+                    productLoHi = %<loIn0> * %<hiIn1>;
+                    productLoLo = %<loIn0> * %<loIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo>  = productLoLo + ( productLoHi << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+                    productLoLo = (%<OutBitsLo>);
+                    %<OutBitsLo> += ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + productHiHi
+                        + ( productLoHi >> %<longBits/2> )
+                        + ( productHiLo >> %<longBits/2> );
+                %%
+                %% Handle code specific to
+                %% case where only A must be split into parts
+                %%
+                %else  %%if ( longBits <  (2*bDT.RequiredBits) )
+                    %%
+                    %<uLongName> %<hiIn0>, %<loIn0>;
+                    %<uLongName> productHiLo, productLoLo;
+                    %<uLongName> carry;
+
+                    %<hiIn0> = %<Atag> >> %<longBits/2>;
+                    %<loIn0> = %<Atag> & %<ULong_Lo_Mask>;
+
+                    productHiLo = %<hiIn0> * %<Btag>;
+                    productLoLo = %<loIn0> * %<Btag>;
+
+                    carry = 0;
+                    %<OutBitsLo>  = productLoLo + ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + ( productHiLo >> %<longBits/2> );
+                %endif
+            %%
+            %% Handle cases where neither A nor B must be split into parts
+            %%
+            %else
+                %%
+                %<OutBitsLo> = ( ((%<uLongName>)(%<rawIn0>)) * ((%<uLongName>)(%<rawIn1>)) );
+                %<OutBitsHi> = 0;
+            %endif  %% end split both, A, none
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% handle case of A & B SIGNED
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %elseif aDT.IsSigned && bDT.IsSigned
+            %%
+            %% Handle case where ideal product has more bits than a long
+            %%
+            %if ( longBits < ProdPrecBits )
+                %%
+                %% Handle code specific to
+                %%  case where both A and B must be split into parts
+                %%
+                %if ( longBits < (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn0>, %<absIn1>;
+                    %<uLongName> %<hiIn0>, %<loIn0>, %<loIn1>, %<hiIn1>;
+                    %<uLongName> productHiHi, productHiLo, productLoHi, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn0> = (%<uLongName>)( ( %<rawIn0> < 0 ) ? -((%<sLongName>)(%<rawIn0>)) : %<rawIn0> );
+                    
+                    %<absIn1> = (%<uLongName>)( ( %<rawIn1> < 0 ) ? -((%<sLongName>)(%<rawIn1>)) : %<rawIn1> );
+                    
+                    negativeProduct = !( (%<rawIn0>==0) || (%<rawIn1>==0) || ((%<rawIn0>>0)==(%<rawIn1>>0)) );
+
+                    %<hiIn0> = %<absIn0> >> %<longBits/2>;
+                    %<loIn0> = %<absIn0> & %<ULong_Lo_Mask>;
+
+                    %<hiIn1> = %<absIn1> >> %<longBits/2>;
+                    %<loIn1> = %<absIn1> & %<ULong_Lo_Mask>;
+
+                    productHiHi = %<hiIn0> * %<hiIn1>;
+                    productHiLo = %<hiIn0> * %<loIn1>;
+                    productLoHi = %<loIn0> * %<hiIn1>;
+                    productLoLo = %<loIn0> * %<loIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productLoHi << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+                    productLoLo = (%<OutBitsLo>);
+                    %<OutBitsLo> += ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + productHiHi
+                        + ( productLoHi >> %<longBits/2> )
+                        + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %%
+                %% Handle code specific to
+                %% case where only A must be split into parts
+                %%
+                %else  %%if ( longBits <  (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn0>, %<absIn1>;
+                    %<uLongName> %<hiIn0>, %<loIn0>;
+                    %<uLongName> productHiLo, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn0> = (%<uLongName>)( ( %<rawIn0> < 0 ) ? -((%<sLongName>)(%<rawIn0>)) : %<rawIn0> );
+                    
+                    %<absIn1> = (%<uLongName>)( ( %<rawIn1> < 0 ) ? -((%<sLongName>)(%<rawIn1>)) : %<rawIn1> );
+                    
+                    negativeProduct = !( (%<rawIn0>==0) || (%<rawIn1>==0) || ((%<rawIn0>>0)==(%<rawIn1>>0)) );
+
+                    %<hiIn0> = %<absIn0> >> %<longBits/2>;
+                    %<loIn0> = %<absIn0> & %<ULong_Lo_Mask>;
+
+                    productHiLo = %<hiIn0> * %<absIn1>;
+                    productLoLo = %<loIn0> * %<absIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %endif
+            %%
+            %% Handle cases where neither A nor B must be split into parts
+            %%
+            %else
+                %%
+                %<OutBitsLo> = ( ((%<sLongName>)(%<rawIn0>)) * ((%<sLongName>)(%<rawIn1>)) );
+
+                if ( ((%<sLongName>)(%<OutBitsLo>)) < 0 )
+                {
+                    %<OutBitsHi> = ((%<sLongName>)(-1));
+                }
+                else
+                {
+                    %<OutBitsHi> = 0;
+                }
+            %endif  %% end split both, A, none
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% handle case of A UNsigned & B SIGNED
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %elseif !aDT.IsSigned && bDT.IsSigned
+            %%
+            %% Handle case where ideal product has more bits than a long
+            %%
+            %if ( longBits < ProdPrecBits )
+                %%
+                %% Handle code specific to
+                %%  case where both A and B must be split into parts
+                %%
+                %if ( longBits < (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn1>;
+                    %<uLongName> %<hiIn0>, %<loIn0>, %<loIn1>, %<hiIn1>;
+                    %<uLongName> productHiHi, productHiLo, productLoHi, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn1> = (%<uLongName>)( ( %<rawIn1> < 0 ) ? -((%<sLongName>)(%<rawIn1>)) : %<rawIn1> );
+                    
+                    negativeProduct = !( (%<rawIn0>==0) || (%<rawIn1>>=0) );
+
+                    %<hiIn0> = %<Atag> >> %<longBits/2>;
+                    %<loIn0> = %<Atag> & %<ULong_Lo_Mask>;
+
+                    %<hiIn1> = %<absIn1> >> %<longBits/2>;
+                    %<loIn1> = %<absIn1> & %<ULong_Lo_Mask>;
+
+                    productHiHi = %<hiIn0> * %<hiIn1>;
+                    productHiLo = %<hiIn0> * %<loIn1>;
+                    productLoHi = %<loIn0> * %<hiIn1>;
+                    productLoLo = %<loIn0> * %<loIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productLoHi << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+                    productLoLo = (%<OutBitsLo>);
+                    %<OutBitsLo> += ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + productHiHi
+                        + ( productLoHi >> %<longBits/2> )
+                        + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %%
+                %% Handle code specific to
+                %% case where only A must be split into parts
+                %%
+                %else  %%if ( longBits <  (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn1>;
+                    %<uLongName> %<hiIn0>, %<loIn0>;
+                    %<uLongName> productHiLo, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn1> = (%<uLongName>)( ( %<rawIn1> < 0 ) ? -((%<sLongName>)(%<rawIn1>)) : %<rawIn1> );
+                    
+                    negativeProduct = !( (%<rawIn0>==0) || (%<rawIn1>>=0) );
+
+                    %<hiIn0> = %<Atag> >> %<longBits/2>;
+                    %<loIn0> = %<Atag> & %<ULong_Lo_Mask>;
+
+                    productHiLo = %<hiIn0> * %<absIn1>;
+                    productLoLo = %<loIn0> * %<absIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %endif
+            %%
+            %% Handle cases where neither A nor B must be split into parts
+            %%
+            %else
+                %%
+
+                %<uLongName> %<absIn1>;
+
+                %<absIn1> = (%<uLongName>)( ( %<rawIn1> < 0 ) ? -((%<sLongName>)(%<rawIn1>)) : %<rawIn1> );
+                    
+                %<OutBitsLo> = ( ((%<uLongName>)(%<rawIn0>)) * %<absIn1> );
+
+                if ( (%<rawIn0>==0) || (%<rawIn1>>=0) )
+                {
+                    %<OutBitsHi> = 0;
+                }
+                else
+                {
+                    %<OutBitsLo> = ~(%<OutBitsLo>);
+                    (%<OutBitsLo>)++;
+                    %<OutBitsHi> = ((%<sLongName>)(-1));
+                }
+            %endif  %% end split both, A, none
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% handle case of A SIGNED & B UNsigned
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %elseif aDT.IsSigned && !bDT.IsSigned
+            %%
+            %% Handle case where ideal product has more bits than a long
+            %%
+            %if ( longBits < ProdPrecBits )
+                %%
+                %% Handle code specific to
+                %%  case where both A and B must be split into parts
+                %%
+                %if ( longBits < (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn0>;
+                    %<uLongName> %<hiIn0>, %<loIn0>, %<loIn1>, %<hiIn1>;
+                    %<uLongName> productHiHi, productHiLo, productLoHi, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn0> = (%<uLongName>)( ( %<rawIn0> < 0 ) ? -((%<sLongName>)(%<rawIn0>)) : %<rawIn0> );
+                    
+                    negativeProduct = !( (%<rawIn1>==0) || (%<rawIn0>>=0) );
+
+                    %<hiIn0> = %<absIn0> >> %<longBits/2>;
+                    %<loIn0> = %<absIn0> & %<ULong_Lo_Mask>;
+
+                    %<hiIn1> = %<Btag> >> %<longBits/2>;
+                    %<loIn1> = %<Btag> & %<ULong_Lo_Mask>;
+
+                    productHiHi = %<hiIn0> * %<hiIn1>;
+                    productHiLo = %<hiIn0> * %<loIn1>;
+                    productLoHi = %<loIn0> * %<hiIn1>;
+                    productLoLo = %<loIn0> * %<loIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productLoHi << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+                    productLoLo = (%<OutBitsLo>);
+                    %<OutBitsLo> += ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + productHiHi
+                        + ( productLoHi >> %<longBits/2> )
+                        + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %%
+                %% Handle code specific to
+                %% case where only A must be split into parts
+                %%
+                %else  %%if ( longBits <  (2*bDT.RequiredBits) )
+                    %%
+                    int negativeProduct;
+                    %<uLongName> %<absIn0>;
+                    %<uLongName> %<hiIn0>, %<loIn0>;
+                    %<uLongName> productHiLo, productLoLo;
+                    %<uLongName> carry;
+
+                    %<absIn0> = (%<uLongName>)( ( %<rawIn0> < 0 ) ? -((%<sLongName>)(%<rawIn0>)) : %<rawIn0> );
+                    
+                    negativeProduct = !( (%<rawIn1>==0) || (%<rawIn0>>=0) );
+
+                    %<hiIn0> = %<absIn0> >> %<longBits/2>;
+                    %<loIn0> = %<absIn0> & %<ULong_Lo_Mask>;
+
+                    productHiLo = %<hiIn0> * %<rawIn1>;
+                    productLoLo = %<loIn0> * %<rawIn1>;
+
+                    carry = 0;
+                    %<OutBitsLo> = productLoLo + ( productHiLo << %<longBits/2> );
+                    if ( (%<OutBitsLo>) < productLoLo )
+                    {
+                        carry++;
+                    }
+
+                    %<OutBitsHi> = carry + ( productHiLo >> %<longBits/2> );
+
+                    if (negativeProduct)
+                    {
+                        %<OutBitsHi> = ~(%<OutBitsHi>);
+                        %<OutBitsLo> = ~(%<OutBitsLo>);
+                        (%<OutBitsLo>)++;
+                        if ( !(%<OutBitsLo>) )
+                        {
+                            (%<OutBitsHi>)++;
+                        }
+                    }
+                %endif
+            %%
+            %% Handle cases where neither A nor B must be split into parts
+            %%
+            %else
+                %%
+
+                %<uLongName> %<absIn0>;
+
+                %<absIn0> = (%<uLongName>)( ( %<rawIn0> < 0 ) ? -((%<sLongName>)(%<rawIn0>)) : %<rawIn0> );
+                    
+                %<OutBitsLo> = ( ((%<uLongName>)(%<rawIn1>)) * %<absIn0> );
+
+                if ( (%<rawIn1>==0) || (%<rawIn0>>=0) )
+                {
+                    %<OutBitsHi> = 0;
+                }
+                else
+                {
+                    %<OutBitsLo> = ~(%<OutBitsLo>);
+                    (%<OutBitsLo>)++;
+                    %<OutBitsHi> = ((%<sLongName>)(-1));
+                }
+            %endif  %% end split both, A, none
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %% error for non supported cases
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %else
+            %%
+	    %%START_ASSERT
+            %openfile warningBuffer
+            Block: %<MaskBlockName>
+            Fatal Error:
+            Multiplication for this combo of data types is not supported
+            %<utilityName>
+            %closefile warningBuffer
+            %exit %<warningBuffer>
+            %%END_ASSERT
+	%endif %% cases un/signed sat/wrap
+        %%
+        %% finish header comment
+        %%
+        %selectfile utilityHeaderComment
+         */
+        %closefile utilityHeaderComment
+        %%
+        %% finish off utility define
+        %%  convert end of lines to backslash end of lines
+        %%  as required for multiline macros
+        %%
+        %selectfile utilityDef
+        }
+        %closefile utilityDef
+        %%
+        %% create utility trailer comment
+        %%
+        %openfile utilityTrailerComment
+
+        /* end function %<utilityName>
+         *********************************************************************/
+        %closefile utilityTrailerComment
+        %%
+        %% cause utility define to be included in generated code
+        %%
+        %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+        %%
+        %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+        %<LibCacheFunctionPrototype(funcProto)>\
+        %%
+    %endif  %% definition of mul utility
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction  %% FixPt_TwoOutputMultiply
+
+
+
+%% Function: FixPt_TwoULongArithShiftLeft ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Arithmatic shift left on a "double ulong"
+%%      that is comprised of two ulongs stacked end to end.  After the shifting is
+%%      completed, only the least significant of the two ulongs is returned.
+%%         The shifts are generalized in that the number of shifts can be positive,
+%%      zero, or negative.  Zero values gives no shift, and negative values give
+%%      Arithmatic shifts RIGHT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%%      Note, this function DOES check if an excessive number of
+%%      shifts right or left have been requested.  Excessive shifts
+%%      produce all zeros.
+%%
+%function FixPt_TwoULongArithShiftLeft(opHiString,opLoString,numShiftLeft) void
+    %%
+    %% create a string that holds the MS long cast to a signed long
+    %%
+    %assign signedopHiString = "((long)("+STRING(opHiString)+"))"
+    %%
+    %% define records for signedhi, hi and lo
+    %%
+    %createrecord uhiloDT { ...
+        IsSigned         0; ...
+        RequiredBits     IntegerSizes.LongNumBits; ...
+        ActualBits       IntegerSizes.LongNumBits; ...
+        NativeType       "#error x" ...
+      }
+    %createrecord shiloDT { ...
+        IsSigned         1; ...
+        RequiredBits     IntegerSizes.LongNumBits; ...
+        ActualBits       IntegerSizes.LongNumBits; ...
+        NativeType       "#error x" ...
+      }
+    %%
+    %% handle case where shifts are to the left so only Lo part can contribute
+    %%  Note there is no difference between Arith Shift Left and
+    %%     Logical Shift Left for unsigned or twos complement integers.
+    %%  The function handles the the trival case of all bits shifted off, no
+    %%  shift at all, and also the nontrivial cases.
+    %%
+    %if numShiftLeft >= 0
+        %assign resultString = LibGenLogicShiftLeft(opLoString,uhiloDT,numShiftLeft)
+    %%
+    %%  handle number of shifts that are strictly negative
+    %%     ie shifts that are really to the right
+    %%
+    %%  shift right case 1
+    %%       both lo and hi contribute to result
+    %%  note for this case, an N bit "snap shot" of the middle of the 2N
+    %%  bits is being taken.  There is no difference between a arith and logic
+    %%  shift for this case.
+    %%
+    %elseif numShiftLeft > (-IntegerSizes.LongNumBits)
+        %assign resultString = ...
+        LibGenLogicShiftLeft(opHiString,uhiloDT,IntegerSizes.LongNumBits+numShiftLeft) + ...
+        " | " + LibGenLogicShiftLeft(opLoString,uhiloDT,numShiftLeft)
+    %%
+    %%  shift right case 2
+    %%       only hi can contribute to result
+    %%  The function handles the the trival case of all bits shifted off, no
+    %%  shift at all, and also the nontrivial cases.
+    %%
+    %else
+        %assign resultString = ...
+        LibGenArithShiftLeft(signedopHiString,shiloDT,IntegerSizes.LongNumBits+numShiftLeft)
+    %endif
+    %%
+    %return resultString
+    %%
+%endfunction  %% FixPt_TwoULongArithShiftLeft
+
+
+
+%% Function: FixPt_TwoULongLogicShiftLeft ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Logic shift left on a "double ulong"
+%%      that is comprised of two ulonss stacked end to end.  After the shifting is
+%%      completed, only the least significant of the two ulongs is returned.
+%%         The shifts are generalized in that the number of shifts can be positive,
+%%      zero, or negative.  Zero values gives no shift, and negative values give
+%%      Logic shifts RIGHT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%%      Note, this function DOES check if an excessive number of
+%%      shifts right or left have been requested.  Excessive shifts right
+%%      produce all zeros, and excessive shifts left produce all sign bits.
+%%
+%function FixPt_TwoULongLogicShiftLeft(opHiString,opLoString,numShiftLeft) void
+    %%
+    %% define records for signedhi, hi and lo
+    %%
+    %createrecord uhiloDT { ...
+        IsSigned         0; ...
+        RequiredBits     IntegerSizes.LongNumBits; ...
+        ActualBits       IntegerSizes.LongNumBits; ...
+        NativeType       "#error x" ...
+      }
+    %%
+    %% handle case where shifts are to the left so only Lo part can contribute
+    %%  Note there is no difference between Arith Shift Left and
+    %%     Logical Shift Left for unsigned or twos complement integers.
+    %%  The function handles the the trival case of all bits shifted off, no
+    %%  shift at all, and also the nontrivial cases.
+    %%
+    %if numShiftLeft >= 0
+        %assign resultString = LibGenLogicShiftLeft(opLoString,uhiloDT,numShiftLeft)
+    %%
+    %%  handle number of shifts that are strictly negative
+    %%     ie shifts that are really to the right
+    %%
+    %%  shift right case 1
+    %%       both lo and hi contribute to result
+    %%  note for this case, an N bit "snap shot" of the middle of the 2N
+    %%  bits is being taken.  There is no difference between a arith and logic
+    %%  shift for this case.
+    %%
+    %elseif numShiftLeft > (-IntegerSizes.LongNumBits)
+        %assign resultString = ...
+        LibGenLogicShiftLeft(opHiString,uhiloDT,IntegerSizes.LongNumBits+numShiftLeft) + ...
+        " | " + LibGenLogicShiftLeft(opLoString,uhiloDT,numShiftLeft)
+    %%
+    %%  shift right case 2
+    %%       only hi can contribute to result
+    %%  The function handles the the trival case of all bits shifted off, no
+    %%  shift at all, and also the nontrivial cases.
+    %%
+    %else
+        %assign resultString = ...
+        LibGenLogicShiftLeft(opHiString,uhiloDT,IntegerSizes.LongNumBits+numShiftLeft)
+    %endif
+    %%
+    %return resultString
+    %%
+%endfunction  %% FixPt_TwoULongLogicShiftLeft
+
+
+
+%% Function: FixPt_TwoULongPrecisionReduction ====================================
+%%
+%%
+%function FixPt_TwoULongPrecisionReduction(ChiStr,CloStr,numDropBits,isSigned,roundMode,evalNewChi) Output
+  %%        
+  %% Treat Floor as if it is the easiest case
+  %%
+  %if roundMode == "Easiest"
+      %%
+      %assign roundMode = "Floor"
+      %%
+  %endif
+  %%
+  %% make access to Long number of bits easier
+  %%
+  %assign longBits = IntegerSizes.LongNumBits
+  %%
+  %% create a string that holds the MS long cast to a signed long
+  %%
+  %assign signedChiStr = "((long)("+STRING(ChiStr)+"))"
+  %%
+  %% define records for signedChi, Chi and Clo
+  %%
+  %createrecord uchiloDT { ...
+      IsSigned         0; ...
+      RequiredBits     longBits; ...
+      ActualBits       longBits; ...
+      NativeType       "unsigned long" ...
+    }
+  %createrecord schiloDT { ...
+      IsSigned         1; ...
+      RequiredBits     longBits; ...
+      ActualBits       longBits; ...
+      NativeType       "long" ...
+    }
+  %%
+  %% get a mask of a long with all ones
+  %%
+  %assign maskAllOnesLong = SetMSNBitsStr(longBits,longBits,0)
+  %%
+  %% no precision reduction needed
+  %%
+  %if numDropBits <= 0
+      %return
+  %endif
+  %%
+  %% the case of  Unsigned + Round to Zero is
+  %% identical to Unsigned + Round to Floor
+  %% so force use of the same code
+  %%
+  %if ( isSigned == 0 ) && ( roundMode == "Zero" )
+    %%
+    %assign roundMode = "Floor"
+    %%
+  %endif
+  %%
+  %% the method of precision reduction depends on the rounding mode
+  %% and on whether of not the number is signed
+  %%
+  %switch roundMode
+    %%
+    %% Rounding toward Floor (toward minus infinity)
+    %%
+    %case "Floor"
+      %%
+      %% Unsigned numbers & FLOOR
+      %%
+      %if isSigned == 0
+        %%
+        %% case of no overlap gives trivial output
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          %<CloStr> = 0;
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting one long off but not both
+        %%
+        %elseif numDropBits >= (longBits)
+          %%
+          %<CloStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)>;
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          %<CloStr> =  %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)>;
+          %if evalNewChi
+              %<ChiStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,-numDropBits)>;
+          %endif
+        %endif
+      %%
+      %% Signed numbers & FLOOR
+      %%
+      %else
+        %%
+        %% case of no overlap gives trivial output
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          if ( (long)(%<ChiStr>) >= 0 )
+          {
+              %<CloStr> = 0;
+              %if evalNewChi
+                  %<ChiStr> = 0;
+              %endif
+          }
+          else
+          {
+              %<CloStr> = %<maskAllOnesLong>;
+              %if evalNewChi
+                  %<ChiStr> = %<maskAllOnesLong>;
+              %endif
+          }
+        %%
+        %% case shifting one long off but not both
+        %%
+        %elseif numDropBits >= (longBits)
+          %%
+          %<CloStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,longBits-numDropBits)>;
+          %if evalNewChi
+
+              if ( (long)(%<ChiStr>) >= 0 )
+              {
+                  %<ChiStr> = 0;
+              }
+              else
+              {
+                  %<ChiStr> = %<maskAllOnesLong>;
+              }
+          %endif
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          %<CloStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)>;
+          %if evalNewChi
+              %<ChiStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,-numDropBits)>;
+          %endif
+        %endif
+        %%
+      %endif %% isSigned
+      %%
+      %break %% round floor
+    %%
+    %% Rounding toward ZERO
+    %%  (toward minus infinity for positive numbers)
+    %%  (toward plus  infinity for negative numbers)
+    %%
+    %case "Zero"
+      %%
+      %% Unsigned numbers & ZERO
+      %%
+      %if isSigned == 0
+        %%
+        %% case of no overlap gives trivial output
+        %%
+	%%START_ASSERT
+        %openfile errTxt
+          Real Time Workshop Fatal: Internal error with FixPt_TwoULongPrecisionReduction
+          in fixptmul.tlc.   Unreachable area has been reached.
+        %closefile errTxt
+        %exit %<errTxt>
+        %%END_ASSERT
+      %%
+      %% Signed numbers & ZERO
+      %%
+      %else
+        %%
+        %% case of no overlap gives trivial output
+        %%  all the negative numbers will round up to zero
+        %% and all positive numbers will round down to zero
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          %<CloStr> = 0;
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting a full long plus a few bits of the next one
+        %%
+        %elseif numDropBits > (longBits)
+          %%
+          if ( (long)(%<ChiStr>) >= 0 )
+          {
+              %<CloStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,longBits-numDropBits)>;
+              %if evalNewChi
+                  %<ChiStr> = 0;
+              %endif
+          }
+          else
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> || ( %<ChiStr> & %<SetLSNBitsStr(numDropBits-longBits,longBits,0)> ) );
+
+              %<CloStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,longBits-numDropBits)> + roundUp;
+              %if evalNewChi
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    /* carry wraps result to zero */
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting a exactly one long
+        %%
+        %elseif numDropBits == (longBits)
+          %%
+          if ( (long)(%<ChiStr>) >= 0 )
+          {
+              %<CloStr> = %<ChiStr>;
+              %if evalNewChi
+                  %<ChiStr> = 0;
+              %endif
+          }
+          else
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> != 0 );
+
+              %<CloStr> = %<ChiStr> + roundUp;
+              %if evalNewChi
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    /* carry wraps result to zero */
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          if ( (long)(%<ChiStr>) >= 0 )
+          {
+              %<CloStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)>;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,-numDropBits)>;
+              %endif
+          }
+          else
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( ( %<CloStr> & %<SetLSNBitsStr(numDropBits,longBits,0)> ) != 0 );
+
+              %<CloStr> = ( %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)> ) + roundUp;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,-numDropBits)>;
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr>++;
+                  }
+              %endif
+          }
+          %%
+        %endif
+        %%
+      %endif %% isSigned
+      %%
+      %break %% round ZERO
+    %%
+    %% Rounding toward NEAREST
+    %%
+    %case "Nearest"
+      %%
+      %% Unsigned numbers & NEAREST
+      %%
+      %if isSigned == 0
+        %%
+        %% case of greater than a two long shift
+        %%
+        %if numDropBits > (2*longBits)
+          %%
+          %<CloStr> = 0;
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case of exactly a two long shift
+        %%
+        %elseif numDropBits == (2*longBits)
+          %%
+          /* round up if LAST drop off bit is a one */
+          if ( %<ChiStr> & %<UPowerOfTwoStr(numDropBits-longBits-1)> )
+          {
+              %<CloStr> = 1;
+          }
+          else
+          {
+              %<CloStr> = 0;
+          }
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting a full long plus a few bits of the next one
+        %%
+        %elseif numDropBits > (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<ChiStr> & %<UPowerOfTwoStr(numDropBits-longBits-1)> ) != 0 );
+
+              %<CloStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> + roundUp;
+              %if evalNewChi
+
+                  /* carry from LS long to MS long is not possible */
+                  %<ChiStr> = 0;
+              %endif
+          }
+        %%
+        %% case shifting a exactly one long
+        %%
+        %elseif numDropBits == (longBits)
+          %%
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<CloStr> & %<UPowerOfTwoStr(numDropBits-1)> ) != 0 );
+
+              %<CloStr> = %<ChiStr> + roundUp;
+              %if evalNewChi
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr> = 1;
+                  }
+                  else
+                  {
+                    %<ChiStr> = 0;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<CloStr> & %<UPowerOfTwoStr(numDropBits-1)> ) != 0 );
+
+              %<CloStr> = ( %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)> ) + roundUp;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,-numDropBits)>;
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr>++;
+                  }
+              %endif
+          }
+          %%
+        %endif
+      %%
+      %% Signed numbers & NEAREST
+      %%
+      %else
+        %%
+        %% case of a two long shift or more
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          %<CloStr> = 0;
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting a full long plus a few bits of the next one
+        %%
+        %elseif numDropBits > (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<ChiStr> & %<UPowerOfTwoStr(numDropBits-longBits-1)> ) != 0 );
+
+              %<CloStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,longBits-numDropBits)> + roundUp;
+              %if evalNewChi
+
+                  /* set MS Long check according to sign and
+                   * according to any carry from LS long to MS long
+                   */
+                  if ( ( (long)(%<ChiStr>) >= 0 ) || ( roundUp && ( %<CloStr> == 0 ) ) )
+                  {
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting exactly one long
+        %%
+        %elseif numDropBits == (longBits)
+          %%
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<CloStr> & %<UPowerOfTwoStr(numDropBits-1)> ) != 0 );
+
+              %<CloStr> = %<ChiStr> + roundUp;
+              %if evalNewChi
+
+                  /* set MS Long check according to sign and
+                   * according to any carry from LS long to MS long
+                   */
+                  if ( ( (long)(%<ChiStr>) >= 0 ) || ( roundUp && ( %<CloStr> == 0 ) ) )
+                  {
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          {
+              int roundUp;
+
+              /* round up if LAST drop off bit is a one */
+              roundUp =  ( ( %<CloStr> & %<UPowerOfTwoStr(numDropBits-1)> ) != 0 );
+
+              %<CloStr> = ( %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)> ) + roundUp;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,-numDropBits)>;
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr>++;
+                  }
+              %endif
+          }
+          %%
+        %endif
+        %%
+      %endif %% isSigned
+      %%
+      %break %% round NEAREST
+    %%
+    %% Rounding toward CEILING
+    %%
+    %case "Ceiling"
+      %%
+      %% Unsigned numbers & CEILING
+      %%
+      %if isSigned == 0
+        %%
+        %% case of no overlap gives trivial output
+        %%  all the negative numbers will round up to zero
+        %% and all positive numbers will round down to zero
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          /* round up if ANY drop off bits are ones */
+          if ( %<CloStr> || %<ChiStr> )
+          {
+              %<CloStr> = 1;
+          }
+          else
+          {
+              %<CloStr> = 0;
+          }
+          %if evalNewChi
+              %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting a full long plus a few bits of the next one
+        %%
+        %elseif numDropBits > (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> || ( %<ChiStr> & %<SetLSNBitsStr(numDropBits-longBits,longBits,0)> ) );
+
+              %<CloStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> + roundUp;
+              %if evalNewChi
+
+                  /* carry from LS long to MS long is not possible */
+                  %<ChiStr> = 0;
+              %endif
+          }
+        %%
+        %% case shifting a exactly one long
+        %%
+        %elseif numDropBits == (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> != 0 );
+
+              %<CloStr> = %<ChiStr> + roundUp;
+              %if evalNewChi
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr> = 1;
+                  }
+                  else
+                  {
+                    %<ChiStr> = 0;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( ( %<CloStr> & %<SetLSNBitsStr(numDropBits,longBits,0)> ) != 0 );
+
+              %<CloStr> = ( %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)> ) + roundUp;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenLogicShiftLeft(ChiStr,uchiloDT,-numDropBits)>;
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr>++;
+                  }
+              %endif
+          }
+          %%
+        %endif
+        %%
+      %%
+      %% Signed numbers & CEILING
+      %%
+      %else
+        %%
+        %% case of no overlap gives trivial output
+        %%  all the negative numbers will round up to zero
+        %% and all positive numbers will round down to zero
+        %%
+        %if numDropBits >= (2*longBits)
+          %%
+          /* round up NON-negatives if ANY drop off bits are ones
+           * negatives will always round up to zero
+           */
+          if ( ( (long)(%<ChiStr>) >= 0 ) && ( %<CloStr> || %<ChiStr> ) )
+          {
+              %<CloStr> = 1;
+          }
+          else
+          {
+              %<CloStr> = 0;
+          }
+          %if evalNewChi
+            %<ChiStr> = 0;
+          %endif
+        %%
+        %% case shifting a full long plus a few bits of the next one
+        %%
+        %elseif numDropBits > (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> || ( %<ChiStr> & %<SetLSNBitsStr(numDropBits-longBits,longBits,0)> ) );
+
+              %<CloStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,longBits-numDropBits)> + roundUp;
+              %if evalNewChi
+
+                  /* set MS Long check according to sign and
+                   * according to any carry from LS long to MS long
+                   */
+                  if ( ( (long)(%<ChiStr>) >= 0 ) || ( roundUp && ( %<CloStr> == 0 ) ) )
+                  {
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting a exactly one long
+        %%
+        %elseif numDropBits == (longBits)
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( %<CloStr> != 0 );
+
+              %<CloStr> = %<ChiStr> + roundUp;
+              %if evalNewChi
+
+                  /* set MS Long check according to sign and
+                   * according to any carry from LS long to MS long
+                   */
+                  if ( ( (long)(%<ChiStr>) >= 0 ) || ( roundUp && ( %<CloStr> == 0 ) ) )
+                  {
+                    %<ChiStr> = 0;
+                  }
+                  else
+                  {
+                    %<ChiStr> = %<maskAllOnesLong>;
+                  }
+              %endif
+          }
+        %%
+        %% case shifting less than a full long
+        %%
+        %else
+          %%
+          {
+              int roundUp;
+
+              /* round up if any drop off bits are ones */
+              roundUp =  ( ( %<CloStr> & %<SetLSNBitsStr(numDropBits,longBits,0)> ) != 0 );
+
+              %<CloStr> = ( %<LibGenLogicShiftLeft(ChiStr,uchiloDT,longBits-numDropBits)> | %<LibGenLogicShiftLeft(CloStr,uchiloDT,-numDropBits)> ) + roundUp;
+              %if evalNewChi
+                  %<ChiStr> = %<LibGenArithShiftLeft(signedChiStr,schiloDT,-numDropBits)>;
+
+                  /* check for carry from LS long to MS long */
+                  if ( roundUp && ( %<CloStr> == 0 ) )
+                  {
+                    %<ChiStr>++;
+                  }
+              %endif
+          }
+          %%
+        %endif
+        %%
+      %endif %% isSigned
+      %%
+      %break %% round CEILING
+      %%
+    %default
+      %%
+      %% Unknown rounding type
+      %%
+      %%START_ASSERT
+      %exit Real Time Workshop Fatal: Unknown rounding mode: %<roundMode>
+      %%END_ASSERT
+  %endswitch %% roundMode
+  %%
+%endfunction  %%FixPt_TwoULongPrecisionReduction
+
+
+%% Function: FixPt_Multiply_Expr =======================================
+%%
+%function FixPt_Multiply_Expr(cDT,aLabel,aDT,bLabel,bDT) void
+  %%
+  %assign idealProdBits = aDT.RequiredBits + bDT.RequiredBits
+  %%
+  %assign bigProdBits = IntegerSizes.IntNumBits
+  %%
+  %assign fixExp = aDT.FixedExp + bDT.FixedExp
+  %%
+  %assign mustShiftRight = fixExp < cDT.FixedExp
+  %%
+  %assign isSign = aDT.IsSigned || bDT.IsSigned || cDT.IsSigned
+  %%
+  %assign fracSlope = aDT.FracSlope * bDT.FracSlope
+  %%
+  %if !ISEQUAL(aDT.Bias,0.0) || ...
+      !ISEQUAL(bDT.Bias,0.0) || ...
+      !ISEQUAL(cDT.Bias,0.0)
+      %%
+      %%START_ASSERT
+      %<LibReportFatalError("Expression folding for multiplication was attempted, but at least one term has a non-zero bias.") >
+      %%END_ASSERT
+  %endif
+  %if !FixPt_FracSlopesSame( cDT.FracSlope, fracSlope )
+    %%
+    %if FixPt_FracSlopesSame( cDT.FracSlope, 0.5*fracSlope )
+      %%
+      %assign fracSlope = 0.5*fracSlope
+      %assign fixExp = fixExp + 1
+      %%
+    %elseif FixPt_FracSlopesSame( cDT.FracSlope, 0.25*fracSlope )
+      %%
+      %assign fracSlope = 0.25*fracSlope
+      %assign fixExp = fixExp + 2
+      %%
+    %else
+      %%START_ASSERT
+      %<LibReportFatalError("Expression folding for multiplication was attempted, but mismatched slope handling required.") >
+      %%END_ASSERT
+    %endif
+  %endif
+  %% 
+  %if idealProdBits > IntegerSizes.IntNumBits
+    %%
+    %if mustShiftRight || cDT.RequiredBits > IntegerSizes.IntNumBits
+      %%
+      %% must do initial product in a long
+      %%
+      %assign bigProdBits = IntegerSizes.LongNumBits
+      %%
+      %if aDT.RequiredBits < IntegerSizes.LongNumBits
+	%%
+	%if isSign
+	  %%
+	  %assign aLabel = "((long)%<aLabel>)"
+	  %%
+	%else
+	  %%
+	  %assign aLabel = "((unsigned long)%<aLabel>)"
+	  %%
+	%endif
+	%%
+      %endif
+      %%
+      %if bDT.RequiredBits < IntegerSizes.LongNumBits
+	%%
+	%if isSign
+	  %%
+	  %assign bLabel = "((long)%<bLabel>)"
+	  %%
+	%else
+	  %%
+	  %assign bLabel = "((unsigned long)%<bLabel>)"
+	  %%
+	%endif
+	%%
+      %endif
+      %%
+    %endif
+  %elseif  aDT.RequiredBits < IntegerSizes.IntNumBits && ...
+           bDT.RequiredBits < IntegerSizes.IntNumBits && ...
+	   !isSign
+    %%
+    %assign aLabel = "((unsigned int)%<aLabel>)"
+    %assign bLabel = "((unsigned int)%<bLabel>)"
+    %%
+  %endif
+  %%
+  %assign idealProductLabel = "(%<aLabel>*%<bLabel>)"
+  %%	
+  %assign dataTypeName = LibFixPointFormDataTypeName(isSign,bigProdBits,fixExp)
+  %%
+  %createrecord idealProdDT { ...
+    DataTypeName     dataTypeName; ...
+    IsSigned         isSign; ...
+    RequiredBits     bigProdBits; ...
+    ActualBits       bigProdBits; ...
+    FixedExp         fixExp; ...
+    FracSlope        fracSlope; ...
+    Bias             0.0; ...
+    NativeType       "#error x" ...
+  }
+  %%
+  %<FixPt_DefineDataType(idealProdDT)>\
+  %%
+  %assign outExpr = FixPt_Fix2Fix_Expr(cDT,idealProductLabel,idealProdDT,"Floor","Wrap")
+  %%
+  %return outExpr
+  %%
+%endfunction %% FixPt_Multiply_Expr
+  
+  
+%% Function: FixPt_Multiply_UMinus_Expr =======================================
+%%
+%% give expression for case when muliply is optimized away by
+%% a unary minus.
+%%
+%% Main trick is to figure out if uminus occurs in an int or a long
+%%
+%function FixPt_Multiply_UMinus_Expr(cDT,aLabel,aDT,iPow2,bDT) void
+  %%
+  %% ideal product can need an extra bit because 
+  %% -1 times most negative number equals
+  %% most positive number PLUS one
+  %% assuming 2's complement as we always do
+  %%
+  %assign idealProdBits = aDT.RequiredBits + 1
+  %%
+  %assign bigProdBits = IntegerSizes.IntNumBits
+  %%
+  %assign fixExp = aDT.FixedExp + bDT.FixedExp + iPow2
+  %%
+  %assign mustShiftRight = fixExp < cDT.FixedExp
+  %%
+  %% only designed to handle case of all data type signed
+  %%
+  %assign isSign = 1
+  %%
+  %assign fracSlope = aDT.FracSlope * bDT.FracSlope
+  %%
+  %if !ISEQUAL(aDT.Bias,0.0) || ...
+      !ISEQUAL(bDT.Bias,0.0) || ...
+      !ISEQUAL(cDT.Bias,0.0)
+      %%
+      %%START_ASSERT
+      %<LibReportFatalError("Expression folding for multiplication was attempted, but at least one term has a non-zero bias.") >
+      %%END_ASSERT
+  %endif
+  %if !FixPt_FracSlopesSame( cDT.FracSlope, fracSlope )
+    %%
+    %if FixPt_FracSlopesSame( cDT.FracSlope, 0.5*fracSlope )
+      %%
+      %assign fracSlope = 0.5*fracSlope
+      %assign fixExp = fixExp + 1
+      %%
+    %elseif FixPt_FracSlopesSame( cDT.FracSlope, 0.25*fracSlope )
+      %%
+      %assign fracSlope = 0.25*fracSlope
+      %assign fixExp = fixExp + 2
+      %%
+    %else
+      %%START_ASSERT
+      %<LibReportFatalError("Expression folding for multiplication was attempted, but mismatched slope handling required.") >
+      %%END_ASSERT
+    %endif
+  %endif
+  %% 
+  %if idealProdBits > IntegerSizes.IntNumBits
+    %%
+    %if mustShiftRight || cDT.RequiredBits > IntegerSizes.IntNumBits
+      %%
+      %% must do initial product in a long
+      %%
+      %assign bigProdBits = IntegerSizes.LongNumBits
+      %%
+      %if aDT.RequiredBits < IntegerSizes.LongNumBits
+	%%
+	%assign aLabel = "((long)%<aLabel>)"
+	%%
+      %endif
+      %%
+    %endif
+  %endif
+  %%
+  %assign idealProductLabel = "(-%<aLabel>)"
+  %%	
+  %assign dataTypeName = LibFixPointFormDataTypeName(isSign,bigProdBits,fixExp)
+  %%
+  %createrecord idealProdDT { ...
+    DataTypeName     dataTypeName; ...
+    IsSigned         isSign; ...
+    RequiredBits     bigProdBits; ...
+    ActualBits       bigProdBits; ...
+    FixedExp         fixExp; ...
+    FracSlope        fracSlope; ...
+    Bias             0.0; ...
+    NativeType       "#error x" ...
+  }
+  %%
+  %<FixPt_DefineDataType(idealProdDT)>\
+  %%
+  %assign outExpr = FixPt_Fix2Fix_Expr(cDT,idealProductLabel,idealProdDT,"Floor","Wrap")
+  %%
+  %return outExpr
+  %%
+%endfunction %% FixPt_Multiply_UMinus_Expr
+  
+  
+%% [EOF] fixptmul.tlc

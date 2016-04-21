@@ -1,0 +1,396 @@
+%% $RCSfile: sfcnlib.tlc,v $
+%% $Revision: 1.33.4.7 $
+%% $Date: 2004/04/14 23:48:52 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%
+%selectfile NULL_FILE
+
+%if EXISTS("_SFCNLIB_") == 0
+%assign _SFCNLIB_ = 1
+
+%include "sfcnutil.tlc"
+%include "prm_sfcntunable.tlc"
+
+%% Function: LibLocalSDeclaration =============================================
+%% Abstract:
+%%
+%function LibLocalSDeclaration(usingStatic) void
+%endfunction
+
+
+%% Function: LibLocalSRegistration ============================================
+%% Abstract:
+%%
+%function LibLocalSRegistration(usingStatic) void
+  %openfile tmpBuffer
+  %%
+  %% "Local SimStruct" cached in SimStruct's user data
+  %%
+  /* Local SimStruct for RTW generated S-Function */
+  %if usingStatic
+    static LocalS slS;
+    LocalS *lS = &slS;
+  %else
+    LocalS *lS = (LocalS *) malloc(sizeof(LocalS));
+
+    %<RTMChkMemAndReturnIfErr("lS")>;
+    (void)memset((char *) lS, 0, sizeof(LocalS));
+  %endif  
+  ssSetUserData(%<tSimStruct>, lS);
+  %%
+  %% Local block I/O
+  %%
+  %if !LibBlockIOStructIsEmpty()
+    
+    /* block I/O */
+    {
+      %assign varName = "b"
+      %if usingStatic
+	static %<tBlockIOType> sfcnB;
+	void *%<varName> = (real_T *) &sfcnB;
+      %else
+	void *%<varName> = malloc(sizeof(%<tBlockIOType>));
+
+	%<RTMChkMemAndReturnIfErr(varName)>;
+      %endif
+      
+      ssSetLocalBlockIO(%<tSimStruct>, %<varName>);
+      %<SLibInitBlockIO(usingStatic, varName)>\
+    }
+  %endif
+  %%
+  %% Invariant Block Outputs
+  %%
+  %if !LibConstBlockIOStructIsEmpty()
+
+    _ssSetConstBlockIO(%<tSimStruct>, &%<tInvariantSignals>);
+  %endif
+
+  %%
+  %% Parameters
+  %%
+  %if !LibParametersStructIsEmpty()
+    
+    /* model parameters */
+    ssSetLocalDefaultParam(%<tSimStruct>, (real_T *) &%<tDefaultParameters>);
+  %endif
+  %%
+  %% NonContDerivSig
+  %%
+  %if SolverType == "VariableStep" && ...
+    SolverResetInfo.NumNonContDerivSignals > 0
+    %assign dU = "nonContDerivSigCache"
+    
+    {
+      %assign varName = "pNonContDerivSig"
+      %if usingStatic
+	static %<dU> nonContDerivSigs;
+	void *%<varName> = (void *) &nonContDerivSigs;
+      %else
+	void *%<varName> = (void *)malloc(sizeof(%<dU>));
+
+	%<RTMChkMemAndReturnIfErr(varName)>;
+      %endif
+      (void)memset((char *) %<varName>, 0, sizeof(%<dU>));       
+      
+      ssSetLocalNonContDerivSig(%<tSimStruct>, %<varName>);
+    }
+  %endif
+  %%
+  %% Previous zero-crossing states
+  %%
+  %if !LibPrevZCStatesStructIsEmpty()
+    
+    /* previous zero-crossing states */
+    {
+      int_T i;
+      %if usingStatic
+	static %<tPrevZCStateType> %<tPrevZCState>;
+	ZCSigState *zc = (ZCSigState *) &%<tPrevZCState>;
+      %else
+	ZCSigState *zc = (ZCSigState *) malloc(sizeof(%<tPrevZCStateType>));
+
+	%<RTMChkMemAndReturnIfErr("zc")>;
+      %endif
+      _ssSetPrevZCSigState(%<tSimStruct>, zc);
+      for(i = 0; i < %<NumZCEvents>; i++) {
+	zc[i] = UNINITIALIZED_ZCSIG;
+      }
+    }
+  %endif
+  
+  %%
+  %% Model mapping info for ParameterTuning
+  %%
+  %<SLibDumpModelMappingInfo()>
+
+  %%
+  %% Checksums
+  %%
+  /* model checksums */
+  ssSetChecksumVal(%<tSimStruct>, 0, %<ModelChecksum[0]>);
+  ssSetChecksumVal(%<tSimStruct>, 1, %<ModelChecksum[1]>);
+  ssSetChecksumVal(%<tSimStruct>, 2, %<ModelChecksum[2]>);
+  ssSetChecksumVal(%<tSimStruct>, 3, %<ModelChecksum[3]>);
+  
+  %closefile tmpBuffer
+  
+  %return tmpBuffer
+  
+%endfunction
+
+%function FcnContextErr(curContext, generatedContext) Output
+  ssSetErrorStatus(%<tSimStruct>, "This Real-Time Workshop generated " ...
+    "S-function cannot be used in a simulation with " ...
+    "%<curContext> " ...
+    "because this S-function was created from a model with " ...
+    "%<generatedContext>. " ...
+    "See the Solver page of the simulation parameters dialog.");
+%endfunction
+
+%% Function: LibDumpSfunTargetChecks ===========================================
+%% Abstract: 
+%%   Generate checks in mdlStart for S-function target
+%%
+%function LibDumpSfunTargetChecks() Output
+  %assign nonFinitesBuffer = SLibGetSFcnNonFinite()
+
+  %%
+  /* instance underlying S-Function data */
+  #if defined(RT_MALLOC) || defined(MATLAB_MEX_FILE)
+  #  if defined(MATLAB_MEX_FILE)
+  %<nonFinitesBuffer>\
+  
+  %if SolverType == "FixedStep"
+    %if LibIsContinuous(0)
+      %% Make sure this s-function isn't used in a variable-step model
+      /* Check for invalid switching between solver types */
+      if (ssIsVariableStepSolver(%<tSimStruct>)) {
+	%<FcnContextErr("a solver type of variable-step", ...
+	  "solver type of fixed-step and it has continuous time blocks")>
+	return;
+      }
+    %endif
+    %if (FixedStepOpts.SolverMode == "SingleTasking") && (NumSynchronousSampleTimes > 1)
+      %% Building s-function as SingleTasking so check that
+      %% MultiTasking mode is not later used in a simulation.
+      if (ssGetSolverMode(%<tSimStruct>) == SOLVER_MODE_MULTITASKING) {
+	%<FcnContextErr("solver mode set to auto or multitasking", ...
+	  "solver mode set to singletasking")>
+	return;
+      }
+    %endif
+    %if (FixedStepOpts.DoRTWSFcnTID01EQCheck)
+      %assign fs = FixedStepOpts.FixedStep
+      if (fabs(ssGetFixedStepSize(%<tSimStruct>) - %<fs>) > mxGetEps()*100*%<fs>) {
+	%<FcnContextErr("the current fixed step size", ...
+	  "a fixed step size of %<FixedStepOpts.FixedStep> and had both \"\n" ...
+	  "\"continuous blocks and discrete blocks running at this rate")>
+	return;
+      }
+    %endif
+  %else
+    %if LibIsContinuous(0)
+      %% Make sure this s-function isn't used in a fixed-step model
+      /* Check for invalid switching between solver types */
+      if (!ssIsVariableStepSolver(%<tSimStruct>)) {
+	%<FcnContextErr("a solver type of fixed-step", ...
+	  "solver type of variable-step solver and it has continuous time blocks")>
+	return;
+      }
+    %endif
+  %endif
+  
+  #  endif
+  
+  %<OrigName>_malloc(%<tSimStruct>);
+  if( ssGetErrorStatus(%<tSimStruct>) != NULL ) {
+    return;
+  }
+  #endif
+  
+%endfunction %% LibDumpSfunTargetChecks
+
+
+%% Function: SLibGetBodyCheckParamsFcnCache ====================================
+%% Abstract:
+%%   Get the mdlCheckParameters for the S-function Code format. 
+%%   We do not currently retrieve this from a cache. We simply generate
+%%   it when asked.
+%%
+%function SLibGetBodyCheckParamsFcnCache(rootSys) Output
+  %with ModelParameters
+    %if InlineParameters && NumParameters > 0
+      %assign S = tSimStruct
+      #define MDL_CHECK_PARAMETERS
+      #if defined(MDL_CHECK_PARAMETERS) && defined(MATLAB_MEX_FILE)
+      static void mdlCheckParameters(SimStruct *%<S>)
+      {
+	%assign prmCount = 0
+	%foreach prmIdx = NumParameters
+	  %assign mdlPrm = Parameter[prmIdx]
+	  %if mdlPrm.StorageClass == "Auto_SFCN" && mdlPrm.Tunable == "yes"
+	    %<SLibGenSFcnParamChecks(mdlPrm, prmCount)>
+	    %assign prmCount = prmCount + 1
+	  %endif %%  mdlPrm.StorageClass == "Auto_SFCN" && mdlPrm.Tunable == "yes"    
+	%endforeach %% prmIdx = NumParameters
+      }
+      #endif /* MDL_CHECK_PARAMETERS */
+    %endif
+  %endwith
+%endfunction %% SLibGetBodyCheckParamsFcnCache
+
+
+%% Function: SLibSetSfcnExternProtos ==========================================
+%% Abstract: 
+%%   Dump extern function prototype declarations
+%%
+%function SLibSetSfcnExternProtos(OrigName, opFile) void
+  %openfile tmpBuf
+  #if defined(RT_MALLOC) || defined(MATLAB_MEX_FILE)
+  extern void *%<OrigName>_malloc(SimStruct *%<tSimStruct>);
+  #endif
+
+  #if defined (MATLAB_MEX_FILE)
+  extern void * utMalloc(size_t);
+  extern void   utFree(void *);
+  #endif
+  %closefile tmpBuf
+  %<SLibSetModelFileAttribute(opFile, "ExternFcns", tmpBuf)>
+%endfunction %% SLibSetSfcnExternProtos
+
+
+%% Function: SLibSfcnWideInit ==================================================
+%% Abstract:
+%%   sfcnwide.tlc remnant.  Performs s-function target specific code to 
+%%   register child s-functions, SID, and MID registrations.
+%%
+%function SLibSfcnWideInit() void
+
+%% Temporarily switch global TLC variables
+%%
+
+%assign save_UsingMalloc              = UsingMalloc
+%assign save_tSimStruct               = tSimStruct
+%assign save_tChildSimStruct          = tChildSimStruct
+%assign save_tConstBlockIOStruct      = tConstBlockIOStruct
+
+%assign CompiledModel.tSimStruct          = tChildSimStruct
+%assign CompiledModel.tConstBlockIOStruct = "rtC(%<tChildSimStruct>)"
+%assign CompiledModel.tChildSimStruct     = "childS"
+%assign CompiledModel.UsingMalloc         = 0
+
+%% ==========================================================================
+%% Cache static registration code for model_sid.h
+%%
+
+%<LibCacheChildSFunctionRegistration(tChildSimStruct, OrigName)>
+%<LibCacheBlockInstanceData()>
+
+%% SID S-function registration
+%openfile SIDSFunctionRegistration
+%<LibDumpSFunctionRegistration()>\
+%closefile SIDSFunctionRegistration
+
+%<LibAddToCompiledModel("SIDSFunctionRegistration", SIDSFunctionRegistration)>
+
+%% SID block instance data
+%openfile SIDBlockInstanceData
+%<LibDumpBlockInstanceData()>\
+%closefile SIDBlockInstanceData
+
+%<LibAddToCompiledModel("SIDBlockInstanceData", SIDBlockInstanceData)>  
+
+%% Setup counter used to track tunable parameters for the generated s-function
+%assign SfcnParamIdx = 0
+%assign CompiledModel.ModelParameters = ModelParameters + SfcnParamIdx
+
+%% ============================================================================
+%% Cache structure definitions prior to model registration.  Note that
+%% the instance should be cached prior to the definition to properly
+%% handle non-finites values.  For example, when inlining parameters the
+%% individual parameters are declared "const" unless they are non-finite.
+%% Whether a parameter is non-finite is determined while caching the
+%% parameter structure instance.
+%%
+%<SLibCacheDataBuffers()>
+
+%% SID local SimStuct declaration
+%<LibAddToCompiledModel("SIDLocalSDeclarations", LibLocalSDeclaration(1))> 
+
+%% SID local SimStruct registration
+%<LibAddToCompiledModel("SIDLocalSRegistration", LibLocalSRegistration(1))>
+
+%% ==========================================================================
+%% Cache malloc registration code for model_mid.h
+%%
+
+%assign CompiledModel.UsingMalloc = 1
+
+%<LibCacheChildSFunctionRegistration(tChildSimStruct, OrigName)>
+%<LibCacheBlockInstanceData()>
+
+%% MID S-function registration
+%openfile MIDSFunctionRegistration
+%<LibDumpSFunctionRegistration()>\
+%closefile MIDSFunctionRegistration
+
+%<LibAddToCompiledModel("MIDSFunctionRegistration", MIDSFunctionRegistration)>
+
+%% MID block instance data
+%openfile MIDBlockInstanceData
+%<LibDumpBlockInstanceData()>\
+%closefile MIDBlockInstanceData
+
+%<LibAddToCompiledModel("MIDBlockInstanceData", MIDBlockInstanceData)>  
+
+%% MID local SimStuct declaration
+%<LibAddToCompiledModel("MIDLocalSDeclarations", LibLocalSDeclaration(0))> 
+
+%% MID local SimStruct registration
+%<LibAddToCompiledModel("MIDLocalSRegistration", LibLocalSRegistration(0))>
+
+%% ==========================================================================
+%% Restore global TLC variables
+%%
+
+%assign CompiledModel.UsingMalloc         = save_UsingMalloc
+%assign CompiledModel.tSimStruct          = save_tSimStruct
+%assign CompiledModel.tChildSimStruct     = save_tChildSimStruct
+%assign CompiledModel.tConstBlockIOStruct = save_tConstBlockIOStruct
+
+%endfunction %% SLibSfcnWideInit
+
+
+%% Function: SLibSfcnParams ====================================================
+%% Abstract:
+%%   sfcnwide.tlc remnant:
+%%   Create Tunable Parameters for the S-function Target in global ML workspace
+%%   Used by build procedure(rtw_c) to create the S-function block.
+%%
+%function SLibSfcnParams() void
+  %matlab evalin("base","clear global rtwsfcn_%<OrigName>")
+  %with ModelParameters
+    %if InlineParameters && (NumParameters > 0)
+      %matlab evalin("base","global rtwsfcn_%<OrigName>")
+      %assign wroteVar = 0
+      %foreach prmIdx = NumParameters
+	%assign mdlPrm = Parameter[prmIdx]
+	%if mdlPrm.StorageClass == "Auto_SFCN" && mdlPrm.Tunable == "yes"
+	  %assign wroteVar = 1
+	  %<SLibCacheNameAndValueStrForSFcnParam(OrigName, prmIdx)>
+	%endif
+      %endforeach
+      %if wroteVar == 0
+	%matlab evalin("base","clear global rtwsfcn_%<OrigName>")
+      %endif
+    %endif
+  %endwith
+%endfunction %% SLibSfcnParams
+
+%endif %% _SFCNLIB_
+
+%% [EOF] sfcnlib.tlc

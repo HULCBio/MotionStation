@@ -1,0 +1,337 @@
+%% $RCSfile: c6416dsk_dac.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:14 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% part of the Target for C6000
+
+%implements c6416dsk_dac "C"
+
+
+%% Include external c6000 functions ============================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+%include "c6000_satmpy.tlc"
+
+
+%% Function: isNormalized ======================================================
+%%
+%% Abstract:
+%%  Determine if normalization is to be applied.
+%%  NOTE: This is more complicated than simply returning the status
+%%        of the scaling flag, since we must "ignore" the scaling
+%%        flag in certain modes.
+%function isNormalized(block) void
+
+    %if (inputIsInteger)
+        %% Ignore the scaling flag:
+        %return 0  %% no normalization to be performed
+
+    %else
+        %% Normalization is allowed
+        %% Return true if the flag is set to normalization
+
+        %return (Scaling == "NORMALIZE")
+    %endif
+
+%endfunction %% isNormalized
+
+
+%% Function: DeclareScalingFactor ==============================================
+%%
+%% Abstract:
+%%  Outputs declarations of scaling constants when necessary.
+%%  Scaling is:  When the DAC input signal is floating-point, the user 
+%%        chooses whether the data should be interpreted as Normalized 
+%%        or Integer Value, affecting how the floating-point numbers are
+%%        communicated to the DAC unit itself (which uses integers).
+%%        Normalized:  float signal wire is -1 to +1, scaled to the correct 
+%%        integer range by the block; we do a float multiply.  
+%%        Integer value:  float signal is "flints" from -32768 to +32767, 
+%%        with no scaling required of the block.  A simple typecast suffices.
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockInputSignalDataTypeName(0,"")
+        %%
+        %if (DataFormat == "16BIT")
+            const %<castType> DACScaleFactor = 32768.0;
+        %elseif (DataFormat == "20BIT")
+            const %<castType> DACScaleFactor = 524288.0;
+        %elseif (DataFormat == "24BIT")
+            const %<castType> DACScaleFactor = 8388608.0;
+        %elseif (DataFormat == "32BIT")
+            const %<castType> DACScaleFactor = 2147483648.0;
+        %endif
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+%% Function: IsIntegerType ======================================================
+%%
+%% Abstract:
+%%     Return 1 if the data type ID is an integer
+%%     Return 0 otherwise
+%%
+%function IsIntegerType(dType) void
+
+    %switch(dType)
+        %case tSS_INT8
+        %case tSS_INT16
+        %case tSS_INT32
+        %case tSS_UINT8
+        %case tSS_UINT16
+        %case tSS_UINT32
+          %assign isInt = 1
+          %break
+
+        %default
+          %assign isInt = 0
+          %break
+
+    %endswitch
+
+    %return isInt
+
+%endfunction %% IsIntegerType
+
+
+%% Function: ApplyScaling ======================================================
+%%
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%
+%% output string
+%% "(%<UnscaledExpression> * DACScaleFactor)"
+%%  The associated scale factor variable is:
+%%  const real_T DACScaleFactor = 32768.0;   (for 16 bit mode)
+%%
+%%     where UnscaledExpression represents an unscaled block input signal.
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block,UnscaledExpression) void
+
+    %if codecIsSigned16(block)
+        %assign dt = "int16_T"
+    %else
+        %assign dt = "int32_T"
+    %endif
+    %if isNormalized(block)
+        %assign ScaledString = "(%<dt>)(%<UnscaledExpression> * DACScaleFactor)"
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaledString = "(%<dt>)%<UnscaledExpression>"
+    %endif
+
+    %return ScaledString
+
+%endfunction %% ApplyScaling
+
+
+%% Function: getLimit  ===================================================
+%%
+%% Abstract:  Get limit of the appropriate data type, for saturation
+%% comparison.  opt is "min" or "max".
+%%
+%function getLimit(block,opt) void
+
+%if IsIntegerType(LibBlockInputSignalDataTypeId(0)) 
+    %return getMinMax(block,opt)
+%else %% Input is Float
+    %if (Scaling == "NORMALIZE")
+        %% Compute double-prec float version of eps for this integer format.  
+        %% (We do not need to compute this in single-prec for single-prec port
+        %% type, because the C down-cast will accomplish the same thing.)
+        %assign thisEps = ( 1.0 / CAST("Real", -getMinMax(block,"min")) )
+        %assign thisMax = 1.0 - thisEps
+        %return (opt == "min") ? -1.0 : thisMax
+        %%
+        %% %if (DataFormat == "16BIT")
+        %%     %return (opt == "min") ? -1.0 : 32767.0 / 32768.0
+        %% %elseif (DataFormat == "20BIT")
+        %%     %return (opt == "min") ? -1.0 : 524287.0 / 524288.0
+        %% %elseif (DataFormat == "24BIT")
+        %%     %return (opt == "min") ? -1.0 : 8388607.0 / 8388608.0
+        %% %elseif (DataFormat == "32BIT")
+        %%     %return (opt == "min") ? -1.0 : 2147483647.0 / 2147483648.0
+        %% %endif
+    %else
+        %return CAST("Real", getMinMax(block,opt))
+        %%
+        %% %if (DataFormat == "16BIT")
+        %%     %return (opt == "min") ? -32768.0 : 32767.0
+        %% %elseif (DataFormat == "20BIT")
+        %%     %return (opt == "min") ? -524288.0 : 524287.0
+        %% %elseif (DataFormat == "24BIT")
+        %%     %return (opt == "min") ? -8388608.0 : 8388607.0
+        %% %elseif (DataFormat == "32BIT")
+        %%     %return (opt == "min") ? -2147483648.0 : 2147483647.0
+        %% %endif
+    %endif
+%endif
+    
+%endfunction %% getLimit
+
+
+
+%% Function: getMinMax  ===============================================
+%%
+%% Abstract:  Get the integer min or max 
+%% corresponding to the codec word length.
+%% For saturation assignment.  opt is "min" or "max".
+%%
+%function getMinMax(block,opt) void
+
+    %if (DataFormat == "16BIT")
+        %return (opt == "min") ? -32768 : 32767
+    %elseif (DataFormat == "20BIT")
+        %return (opt == "min") ? -524288 : 524287
+    %elseif (DataFormat == "24BIT")
+        %return (opt == "min") ? -8388608 : 8388607
+    %elseif (DataFormat == "32BIT")
+        %return (opt == "min") ? -2147483648 : 2147483647
+    %endif
+    
+%endfunction %% getMinMax
+
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+
+    %if !JustCreatedCompiledModelRecord("aic23_dac_instance")
+        %error "Only one DAC block is allowed in a model."
+    %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%%
+%%  Create automatic D/A (initialize ping pong buffers)
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%
+    %<Create_config_codec_output(block)>\
+    config_codec_output();
+    %%
+%endfunction %% Start
+
+%% Function: Outputs ===========================================================
+%%
+%%  Read input buffer (when ready), convert to output format and send out.
+%%
+%function Outputs(block,system) Output
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>\
+
+    %if (FrameSize > 1)
+        %assign unscaledExprL = LibBlockInputSignal(0,"i","",0)
+        %assign unscaledExprR = LibBlockInputSignal(0,"i + %<FrameSize>","",0)
+        int_T i;
+        for(i = 0; i < %<FrameSize>; i++) {
+    %else
+        %assign unscaledExprL = LibBlockInputSignal(0,"0","",0)
+        %assign unscaledExprR = LibBlockInputSignal(0,"1","",0)
+    %endif
+    /* Left */
+    %if (OverflowMode == "SATURATE")
+        if( %<unscaledExprL> > %<getLimit(block,"max")> ) 
+            *dacBuffPtr = %<getMinMax(block,"max")>;
+        else if ( %<unscaledExprL> < %<getLimit(block,"min")> ) 
+            *dacBuffPtr = %<getMinMax(block,"min")>;
+        else 
+    %endif     
+    %% The following line is the "else" clause of the saturation
+    %% conditional.  If no saturation, the same code stands on its own.
+    *dacBuffPtr = %<ApplyScaling(block,unscaledExprL)>;
+    /* Right */
+    %if (Stereo == "CODEC_STEREO")
+        %if (OverflowMode == "SATURATE")
+            if( %<unscaledExprR> > %<getLimit(block,"max")> ) 
+                *(dacBuffPtr+1) = %<getMinMax(block,"max")>;
+            else if ( %<unscaledExprR> < %<getLimit(block,"min")> ) 
+                *(dacBuffPtr+1) = %<getMinMax(block,"min")>;
+            else 
+        %endif
+        *(dacBuffPtr+1) = %<ApplyScaling(block,unscaledExprR)>;
+    %else  %% Mono:
+        *(dacBuffPtr+1) = *dacBuffPtr;  /* Copy same word to RHS for mono mode. */
+    %endif  %% Stereo
+    dacBuffPtr += 2;
+    %if (FrameSize > 1)
+        }
+    %endif
+    %%
+    %if (LinkerCommandFile == "Full_memory_map")
+ 	    %openfile tmpBuf
+ 	    if (%<LibIsSampleHit(TID)>) { 	    
+            flush_dac_L2Cache();
+        }
+	    %closefile tmpBuf
+	    %<LibSystemOutputCustomCode(system, tmpBuf, "trailer")>     
+    %endif    
+
+}
+%endfunction %% Outputs
+
+
+%% Function: AddParamsToBlock ==================================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+
+    %assign numDims        = LibBlockInputSignalNumDimensions(0)
+    %assign dims           = LibBlockInputSignalDimensions(0)
+    %assign cols           = (numDims == 2) ? dims[1] : 1
+    %assign rows           = dims[0]
+    %assign FrameSize      = rows
+
+    %assign Stereo         = SFcnParamSettings.Stereo
+    %assign DacAtten       = SFcnParamSettings.DacAtten
+    %assign DataFormat     = SFcnParamSettings.DataFormat
+    %assign Scaling        = SFcnParamSettings.Scaling
+    %assign SampleRate     = SFcnParamSettings.SampleRate
+    %assign OverflowMode   = SFcnParamSettings.OverflowMode
+
+    %assign DataTypeID     = LibBlockInputSignalDataTypeId(0)
+    %assign inputIsInteger = IsIntegerType(DataTypeID)
+
+    %assign block = block + Stereo + DacAtten + DataFormat + SampleRate \
+                  + FrameSize + Scaling + OverflowMode + DataTypeID \
+                  + inputIsInteger
+
+    %% Make selected parameters available globally to other functions:
+    %%
+    %assign c6000_codec_dac_atten = DacAtten
+    %assign ::CompiledModel = ::CompiledModel + c6000_codec_dac_atten
+    %%
+    %assign c6000_dac_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_dac_data_format
+
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] 

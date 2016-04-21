@@ -1,0 +1,184 @@
+%% ============================================================================
+%% File : ertextmode.tlc
+%% $Revision: 1.1.6.2 $
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_ERT_EXTMODE_") == 0
+%assign _ERT_EXTMODE_ = 1
+
+%% Function: SLibErtGenExtModeCode ======================================
+%% Abstract:
+%%   Generate extModeHead and extModeTrailer, and cache code
+%%   When GenerateGRTWrapper is true
+%% returns empty code because grt_main() 
+%% will call ext mode interface function.
+%%
+%function SLibErtGenExtModeCode(buffsRec, isRateGrouping) void
+  %assign ::BlockFcn = "Output"
+  
+  %if GenerateGRTWrapper
+    %addtorecord buffsRec ExtModeHeader ""
+    %if RootSystemIsSingleRate || !isRateGrouping
+      %addtorecord buffsRec ExtModeTrailer ""
+    %else
+      %foreach tidIdx = NumSynchronousSampleTimes
+	%addtorecord buffsRec ExtModeTrailer%<tidIdx> ""
+      %endforeach
+    %endif
+    %return
+  %endif
+
+  %openfile extModeHeader
+  %if ExtMode == 1 
+    %%
+    %if RootSystemIsSingleRate
+     {
+	boolean_T rtmStopReq = false;
+	rtExtModePauseIfNeeded(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+
+	if (%<RTMGetStopRequested()> == true) {
+	  %<RTMSetErrStat("\"Simulation finished\"")>;
+	  return;
+	}
+      }
+    %else
+      %<FcnGenerateTidGuardOpenCode(0)>
+      boolean_T rtmStopReq = false;
+      rtExtModePauseIfNeeded(%<RTMGet("RTWExtModeInfo")>, ...
+	%<NumSynchronousSampleTimes>, ...
+	&rtmStopReq);
+      if (rtmStopReq) {
+	%<RTMSetStopRequested("true")>;
+      }
+      
+      if (%<RTMGetStopRequested()> == true) {
+	%<RTMSetErrStat("\"Simulation finished\"")>;
+	return;
+      }
+      %<FcnGenerateTidGuardCloseCode(0)>	
+    %endif
+  %endif
+  %closefile extModeHeader
+  %addtorecord buffsRec ExtModeHeader extModeHeader
+
+  %assign ::BlockFcn = "RootUpdate"
+  %if ExtMode == 1 
+    %if RootSystemIsSingleRate
+      %openfile extModeTrailer
+      
+      /* external mode */
+      {
+	boolean_T rtmStopReq = false;
+	rtExtModeOneStep(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+      }
+      rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+      rtExtModeUpload(0,%<RTMGetTaskTimeForTID(0)>);
+      %closefile extModeTrailer
+      %addtorecord buffsRec ExtModeTrailer extModeTrailer
+    %else
+      %if !isRateGrouping
+	%openfile extModeTrailer
+      
+	/* external mode */
+	%<FcnGenerateTidGuardOpenCode(0)>
+	boolean_T rtmStopReq = false;
+	rtExtModeOneStep(%<RTMGet("RTWExtModeInfo")>, ...
+	  %<NumSynchronousSampleTimes>, ...
+	  &rtmStopReq);
+	if (rtmStopReq) {
+	  %<RTMSetStopRequested("true")>;
+	}
+	rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+	%<FcnGenerateTidGuardCloseCode(0)>
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %assign subRateIdx = tidIdx
+	  %<FcnGenerateTidGuardOpenCode(subRateIdx)>
+	  rtExtModeUpload(%<subRateIdx>, ...
+	    %<RTMGetTaskTimeForTID(subRateIdx)>);
+	  %<FcnGenerateTidGuardCloseCode(subRateIdx)>
+	%endforeach
+	%closefile extModeTrailer
+	%addtorecord buffsRec ExtModeTrailer extModeTrailer
+      %else
+	%openfile extModeTrailer0
+       
+	/* external mode */
+	{
+	  boolean_T rtmStopReq = false;
+	  rtExtModeOneStep(%<RTMGet("RTWExtModeInfo")>, ...
+	    %<NumSynchronousSampleTimes>, ...
+	    &rtmStopReq);
+	  if (rtmStopReq) {
+	    %<RTMSetStopRequested("true")>;
+	  }
+	  rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+	}
+	rtExtModeUploadCheckTrigger(%<NumSynchronousSampleTimes>);
+	%closefile extModeTrailer0
+	%foreach tidIdx = NumSynchronousSampleTimes
+	  %assign subRateIdx = tidIdx
+	  %openfile tmpBuff
+	  %if tidIdx == 0
+	    %<extModeTrailer0>
+	  %endif
+	  rtExtModeUpload(%<subRateIdx>, %<RTMGetTaskTimeForTID(subRateIdx)>);
+	  %closefile tmpBuff
+	  %addtorecord buffsRec ExtModeTrailer%<tidIdx> tmpBuff
+	%endforeach
+      %endif
+    %endif
+  %endif
+%endfunction  %% SLibErtGenExtModeCode
+
+%% Function: SLibGenERTExtModeInit =============================================
+%% Abstract:
+%%   Generate initialization code for external mode. 
+%%   When GenerateGRTWrapper is true
+%% returns empty code because grt_main() 
+%% will call ext mode interface function.
+%%
+%function SLibGenERTExtModeInit() void
+  %if GenerateGRTWrapper
+    %return ""
+  %endif
+  
+  %openfile extModeInitBuf
+  /* External mode */
+  %if !PurelyIntegerCode
+    rtERTExtModeSetTFinal(&%<RTMGet("TFinal")>);
+  %else
+    rtERTExtModeSetTFinal(rteiGetPtrTFinalTicks(%<RTMGet("RTWExtModeInfo")>));
+  %endif
+  rtExtModeCheckInit(%<NumSynchronousSampleTimes>);
+  {
+    boolean_T rtmStopReq = false;
+    rtExtModeWaitForStartPkt(%<RTMGet("RTWExtModeInfo")>, ...
+      %<NumSynchronousSampleTimes>, ...
+      &rtmStopReq);
+    if (rtmStopReq) {
+      %<RTMSetStopRequested("true")>;
+    }
+  }
+  
+  (void)printf("\n** starting the model **\n");
+  %closefile extModeInitBuf
+  
+  %return extModeInitBuf
+
+%endfunction %% SLibGenERTExtModeInit
+
+
+%endif %% _ERT_EXTMODE_
+
+%% [EOF] ertextmode.tlc

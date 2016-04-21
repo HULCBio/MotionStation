@@ -1,0 +1,893 @@
+%% $RCSfile: integrat.tlc,v $
+%% $Revision: 1.53.4.4 $ 
+%% $Date: 2004/04/14 23:46:19 $
+%%
+%% Pete Szpak
+%% November 7, 1996
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Integrator block target file
+
+%implements "Integrator" "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: FcnExternalResetPortIndex ========================================
+%% Abstract:
+%%      Function to return the reset port index
+%%
+%%      Returns 1 (port index) if reset port present
+%%      Returns 0 if reset port is not present
+%%
+%function FcnExternalResetPortIndex()
+  %if ParamSettings.ExternalReset != "none"
+    /% the reset port is always 1 %/
+    %return 1
+  %else
+    /% the reset port is not present %/
+    %return 0
+  %endif
+%endfunction
+
+
+%% Function: FcnExternalICPortIndex ===========================================
+%% Abstract:
+%%      Function to return the IC port index
+%%
+%%      Returns the port index 1 or 2 if the IC port is present, where
+%%      the value of index depends on the existance of a reset port
+%%
+%%      Returns 0 if the IC port is not present
+%%
+%function FcnExternalICPortIndex()
+  %if ParamSettings.InitialConditionSource != "internal"
+    /% the IC port is present %/
+    %return 1 + FcnExternalResetPortIndex()
+  %else
+    /% the IC port is not present %/
+    %return 0
+  %endif
+%endfunction
+
+
+%% Function: FcnIntegratorComment =============================================
+%% Abstract:
+%% Function to return main comment for block
+%%
+%function FcnIntegratorComment()
+  %if ParamSettings.LimitOutput == "on"
+    %assign limitLabel = "Limited "
+  %else
+    %assign limitLabel = ""
+  %endif
+
+  %if ParamSettings.ShowSaturationPort == "on"
+    %assign satLabel = " (w/ Saturation Port)"
+  %else
+    %assign satLabel = ""
+  %endif
+
+  %return "%<limitLabel>%<Type>%<satLabel> Block: %<Name>"
+%endfunction
+
+
+%% Function: Start ==============================================================
+%% Abstract:
+%%   Start code
+%%
+%function Start(block, system) Output
+  %if ParamSettings.InitialConditionSource == "internal"
+      %% internal ic
+      %%
+      %% If the output signal is accessible in this (mdlStart)
+      %% function, then initialize the output also to the IC.
+      %%
+    %if LibBlockOutputSignalIsInBlockIO(0)
+      /* %<FcnIntegratorComment()> */
+      %assign yAddr  = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign icAddr = LibBlockParameterAddr(InitialCondition, "", "", 0)
+      %assign dType  = LibBlockOutputSignalDataTypeName(0, "")
+      %assign nBytes = "%<LibBlockOutputSignalWidth(0)> * sizeof(%<dType>)"
+      (void)memcpy(%<yAddr>, %<icAddr>, %<nBytes>);
+    %endif
+  %endif
+%endfunction
+
+%% Function: PrevZCStateSignalDataType =========================================
+%% Abstract:
+%%   Returns the data type id for the signal related to the previous zero
+%%   crossing state.
+%function PrevZCStateSignalDataType(block,system) void
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  %return LibBlockInputSignalDataTypeId(resetPortIdx)
+%endfunction
+
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%      InitialConditions
+%%
+%function InitializeConditions(block, system) Output
+  /* %<FcnIntegratorComment()> */
+  %assign ncStates = ContStates[0]
+  %if ParamSettings.InitialConditionSource == "internal"
+    %% internal ic
+    %assign rollRegions = [0:%<ncStates-1>]
+    %assign rollVars = ["Xc", "<param>/InitialCondition"]
+    %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %<LibBlockContinuousState("", lcv, sigIdx)> \
+      = %<LibBlockParameter(InitialCondition, "", lcv, sigIdx)>;
+    %endroll
+    %%
+    %% If the output signal is accessible in this (mdlStart)
+    %% function, then initialize the output also to the IC.
+    %%
+    %% Set block state change if state port exists
+    %if ( EXISTS("_RSIM_") || ...
+	  CodeFormat == "S-Function" || ...
+          IsModelReferenceForASimstructBasedTarget() ) && ParamSettings.ShowStatePort == "on"
+      if (!(%<LibIsFirstInitCond()>)) {
+        %<RTMSetBlkStateChange()>;
+      }
+    %endif
+  %else
+    %% external ic
+    if (%<LibIsFirstInitCond()>) {
+      %foreach sigIdx = ncStates
+	%assign externalX0 = ParamSettings.ExternalX0[sigIdx]
+	%<LibBlockContinuousState("", "", sigIdx)> = ...
+	  %<CAST("Real", externalX0)>;
+      %endforeach
+    }
+    %<LibBlockIWork(IcNeedsLoading, "", "", 0)> = 1;
+  %endif
+  
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Outputs
+%%
+%function Outputs(block, system) Output
+    %assign ncStates     = ContStates[0]
+    %assign icPortIdx    = FcnExternalICPortIndex()
+    %assign resetPortIdx = FcnExternalResetPortIndex()
+    %assign needsReset   = ( EXISTS("_RSIM_") || ...
+	                     CodeFormat == "S-Function" || ...
+                             IsModelReferenceForASimstructBasedTarget() )
+    %if resetPortIdx != 0
+      %if icPortIdx != 0
+	%assign orInit = "|| %<LibBlockIWork(IcNeedsLoading, "", "", 0)>"
+      %else
+	%assign orInit = ""
+      %endif
+      %%
+      %% Setup correct zc function to call based on data type of control
+      %%
+      %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+	%case tSS_BOOLEAN
+	  %assign zcFcn = tBZCFcn
+	  %break
+	%case tSS_DOUBLE
+	  %assign zcFcn = tRZCFcn
+	  %break
+	  %%START_ASSERT
+	%default
+	  %assign dtName = LibBlockInputSignalDataTypeName(resetPortIdx, "")
+	  %assign errTxt = "Data type %<dtName> not supportted."
+	  %<LibBlockReportFatalError(block, errTxt)>
+	  %break
+	  %%END_ASSERT
+      %endswitch    
+      %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+      if (%<RTMIs("MajorTimeStep")>) {
+	ZCEventType zcEvent;
+	%if needsReset
+	  boolean_T   resetIntg = FALSE;
+	%endif
+	
+	/* evaluate zero-crossings */
+	%if resetPortWidth == 1
+	  %%
+	  %% port width is 1, so reset all states
+	  %%
+	  %assign inputSig    = LibBlockInputSignal(resetPortIdx, "", "", 0)
+	  %assign zcDirection = LibConvertZCDirection(ZCEvent.Direction)
+	  %assign prevZCState = LibBlockPrevZCState("", "", 0)
+	  %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+	    %case tSS_BOOLEAN
+	      zcEvent = \
+	      (%<SLibBooleanTriggerTest(zcDirection, inputSig, prevZCState, 1)>);
+	      %assign setZCStr = "%<prevZCState> = (ZCSigState) %<inputSig>;\n"
+	      %break
+	    %case tSS_DOUBLE
+	      %assign setZCStr = ""
+	      zcEvent = %<zcFcn>(%<zcDirection>, &%<prevZCState>, %<inputSig>);
+	      %break
+	  %endswitch
+	  %if ParamSettings.ExternalReset != "level"
+	    %<setZCStr>\
+	    if (zcEvent%<orInit>) {
+	  %else
+	    %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE
+	      %assign rstComparison = " != 0.0"
+	    %else
+	      %assign rstComparison = ""
+	    %endif
+	    %<setZCStr>
+	    if( zcEvent || %<inputSig>%<rstComparison>%<orInit>) {
+	  %endif
+	  %if needsReset
+	    resetIntg = TRUE;
+	  %endif
+	  %if icPortIdx == 0
+	    %% internal ic
+	    %assign rollRegions = [0:%<ncStates-1>]
+	    %assign rollVars = ["Xc", "<param>/InitialCondition"]
+	    %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	      %<LibBlockContinuousState("", lcv, sigIdx)> \
+	      = %<LibBlockParameter(InitialCondition, "", lcv, sigIdx)>;
+	    %endroll
+	  %else
+	    %% external ic
+	    %if EXISTS("DataInputPort[%<icPortIdx>].RollRegions")
+	      %if DataInputPort[icPortIdx].Width == LibBlockOutputSignalWidth(0)
+		%assign rollRegions = DataInputPort[icPortIdx].RollRegions
+	      %else
+		%assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	      %endif
+	    %else
+	      %assign rollRegions = RollRegions
+	    %endif
+	    %assign rollVars = ["Xc", "u%<icPortIdx>"]
+	    %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	      %<LibBlockContinuousState("", lcv, sigIdx)> \
+	      = %<LibBlockInputSignal(icPortIdx, "", lcv, sigIdx)>;
+	    %endroll
+	  %endif
+	  } %% ssIsMajorTimeStep
+
+	%else
+	  %%
+	  %% port width is > 1, so reset states individually
+	  %%
+	  %% The zcDirection is the same for all elements
+	  %assign zcDirection = ...
+	    LibConvertZCDirection(ZCEvent[0].Direction)
+	  %if icPortIdx == 0
+	    %assign rollVars = ["PZC", "Xc", "u%<resetPortIdx>", ...
+	      "<param>/InitialCondition"]
+	    %if EXISTS("DataInputPort[%<resetPortIdx>].RollRegions")
+	      %if DataInputPort[resetPortIdx].Width == LibBlockOutputSignalWidth(0)
+		%assign rollRegions = DataInputPort[resetPortIdx].RollRegions
+	      %else
+		%assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	      %endif
+	    %else
+	      %assign rollRegions = RollRegions
+	    %endif
+	  %else
+	    %assign rollVars = ["PZC", "Xc", "u%<resetPortIdx>", ...
+	      "u%<icPortIdx>"]
+	    %assign rollRegions = RollRegions
+	  %endif
+	  %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign inputSig = LibBlockInputSignal(resetPortIdx, "", lcv, sigIdx)
+	    %assign prevZCState = LibBlockPrevZCState("", lcv, sigIdx)
+	    %switch LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) 
+	      %case tSS_BOOLEAN
+		zcEvent = \
+		(%<SLibBooleanTriggerTest(zcDirection, inputSig, prevZCState, 1)>);
+		%assign setZCStr = "%<prevZCState> = (ZCSigState) %<inputSig>;\n"
+		%break
+	      %case tSS_DOUBLE
+		%assign setZCStr = ""
+		zcEvent = %<zcFcn>(%<zcDirection>, &%<prevZCState>, %<inputSig>);
+		%break
+	    %endswitch
+	    %if ParamSettings.ExternalReset != "level"
+	      %<setZCStr>\
+	      if( zcEvent%<orInit>) {
+	    %else
+	      %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE
+		%assign rstComparison = " != 0.0"
+	      %else
+		%assign rstComparison = ""
+	      %endif
+	      %<setZCStr>\
+	      if( zcEvent || %<inputSig>%<rstComparison>%<orInit>) {
+	    %endif
+	      %if needsReset
+		resetIntg = TRUE;
+	      %endif
+	      %if icPortIdx == 0
+		%% internal ic
+		%assign ic = LibBlockParameter(InitialCondition, "", lcv, sigIdx)
+	      %else
+		%% external ic
+		%assign ic = LibBlockInputSignal(icPortIdx, "", lcv, sigIdx)
+	      %endif
+	      %<LibBlockContinuousState("", lcv, sigIdx)> = %<ic>;
+	    }
+	  %endroll
+	%endif
+	%% For Accelerator/RTW S-Function/RSIM, need to reset solver and set block
+	%% state change
+	%if needsReset
+	  if (resetIntg) {
+            %<RTMSetSolverNeedsReset()>;
+	    %if ParamSettings.ShowStatePort == "on"
+              %<RTMSetBlkStateChange()>;
+	    %endif
+	  }
+	%endif
+
+        %if icPortIdx != 0
+          %<LibBlockIWork(IcNeedsLoading, "", "", 0)> = 0;
+	%endif
+      } %% ssIsMajorTimeStep
+    %elseif icPortIdx != 0
+      if (%<LibBlockIWork(IcNeedsLoading, "", "", 0)>) {
+	%if EXISTS("DataInputPort[%<icPortIdx>].RollRegions")
+	  %if DataInputPort[icPortIdx].Width == LibBlockOutputSignalWidth(0)
+	    %assign rollRegions = DataInputPort[icPortIdx].RollRegions
+	  %else
+	    %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	  %endif
+	%else
+	  %assign rollRegions = RollRegions
+	%endif
+	%assign rollVars = ["Xc", "u%<icPortIdx>"]
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", ...
+	  rollVars
+	  %<LibBlockContinuousState("", lcv, sigIdx)> \
+	  = %<LibBlockInputSignal(icPortIdx, "", lcv, sigIdx)>;
+	%endroll
+	%<LibBlockIWork(IcNeedsLoading, "", "", 0)> = 0;
+	%% Set block state change if state port exists
+	%if needsReset && ParamSettings.ShowStatePort == "on"
+          %<RTMSetBlkStateChange()>;
+	%endif
+      }
+    %endif
+    %%
+    %% limit states and set saturation if necessary
+    %%
+    %if NumNonsampledZCs > 0
+      if (%<RTMIs("MajorTimeStep")>) {
+    %endif
+    %if ParamSettings.LimitOutput == "on"
+      %assign rollRegions = [0:%<ncStates-1>]
+      %if ParamSettings.ShowSaturationPort == "on"
+	%assign rollVars = ["Xc", "<param>/UpperSaturationLimit", ...
+	"<param>/LowerSaturationLimit","y1"]
+      %else
+	%assign rollVars = ["Xc", "<param>/UpperSaturationLimit", ...
+	"<param>/LowerSaturationLimit"]
+      %endif
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign ul = LibBlockParameter(UpperSaturationLimit, "", lcv, sigIdx)
+	%assign ll = LibBlockParameter(LowerSaturationLimit, "", lcv, sigIdx)
+	%assign x  = LibBlockContinuousState("", lcv, sigIdx)
+	%if ParamSettings.ShowSaturationPort == "on"
+	  %assign ySat = LibBlockOutputSignal(1, "", lcv, sigIdx)
+	%endif
+	if (%<x> >= %<ul> ) {
+	  %% For Accelerator/RTW S-Function/RSIM, need to reset solver and set block
+	  %% state change
+	  %if needsReset && NumNonsampledZCs == 0
+	    if (%<x> != %<ul>) {
+	      %<x> = %<ul>;	      
+              %<RTMSetSolverNeedsReset()>;
+	      %if ParamSettings.ShowStatePort == "on"
+                %<RTMSetBlkStateChange()>;
+	      %endif
+	    }
+	  %else
+	    %<x> = %<ul>;
+	  %endif
+	  %if ParamSettings.ShowSaturationPort == "on"
+	    %<ySat> = 1.0;
+	  %endif
+	} else if (%<x> <= %<ll> ) {
+	  %% For Accelerator/RTW S-Function/RSIM, need to reset solver and set block
+	  %% state change
+	  %if needsReset && NumNonsampledZCs == 0
+	    if (%<x> != %<ll>) {
+	      %<x> = %<ll>;	      
+              %<RTMSetSolverNeedsReset()>;
+	      %if ParamSettings.ShowStatePort == "on"
+                %<RTMSetBlkStateChange()>;
+	      %endif
+	    }
+	  %else
+	    %<x> = %<ll>;
+	  %endif
+	  %if ParamSettings.ShowSaturationPort == "on"
+	    %<ySat> = -1.0;
+	  %endif
+	}
+	%if ParamSettings.ShowSaturationPort == "on"
+	  else {
+	    %<ySat> = 0.0;
+	  }
+	%endif
+      %endroll
+    %elseif ParamSettings.ShowSaturationPort == "on"
+      %assign rollRegions = [0:%<ncStates-1>]
+      %assign rollVars = ["y1"]
+      %roll xidx = rollRegions, xlcv = RollThreshold, block, "Roller", rollVars
+	%assign ySat  = LibBlockOutputSignal(1, "", xlcv, xidx)
+	%<ySat> = 0.0;
+      %endroll
+    %endif
+    %if NumNonsampledZCs > 0
+      }
+    %endif
+    %%
+    %% output
+    %%
+    %assign rollRegions = [0:%<ncStates-1>]
+    %assign rollVars = ["y0", "Xc"]
+    %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %<LibBlockOutputSignal(0, "", lcv, sigIdx)> \
+      = %<LibBlockContinuousState("", lcv, sigIdx)>;
+    %endroll
+    
+%endfunction %% Outputs
+
+
+%% Function: Update ============================================================
+%% Abstract:
+%%      For variable-step when integrator has modes.  This occurs
+%%      with limited integrator and zc finding enabled.
+%%
+%function Update(block, system) Output
+  %if ModeVector[0] > 0
+    /* %<FcnIntegratorComment()> */
+    {
+      enum {INTG_NORMAL, INTG_LEAVING_UPPER_SAT, INTG_LEAVING_LOWER_SAT,
+      INTG_UPPER_SAT, INTG_LOWER_SAT };
+
+      %assign rollVars = ["u0", "Mode", "Xc", ...
+	"<param>/UpperSaturationLimit", "<param>/LowerSaturationLimit"]
+      %if EXISTS("DataInputPort[0].RollRegions")
+	%if DataInputPort[0].Width == LibBlockOutputSignalWidth(0)
+	  %assign rollRegions = DataInputPort[0].RollRegions
+	%else
+	  %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%endif
+      %else
+	%assign rollRegions = RollRegions
+      %endif
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%assign ul = LibBlockParameter(UpperSaturationLimit, "", lcv, sigIdx)
+	%assign ll = LibBlockParameter(LowerSaturationLimit, "", lcv, sigIdx)
+	%assign u  = LibBlockInputSignal(0, "", lcv, sigIdx)
+	%assign x  = LibBlockContinuousState("", lcv, sigIdx)
+	%assign m  = LibBlockMode("", lcv, sigIdx)
+	if (%<x> == %<ul>) {
+	  switch(%<m>) {
+	    case INTG_UPPER_SAT:
+	      if (%<u> < 0.0) {
+                %<RTMSetSolverNeedsReset()>;
+		%<m> = INTG_LEAVING_UPPER_SAT;
+	      }
+	    break;
+	    case INTG_LEAVING_UPPER_SAT:
+	      if (%<u> >= 0.0) {
+		%<m> = INTG_UPPER_SAT;
+                %<RTMSetSolverNeedsReset()>;
+	      }
+	    break;
+	    default:
+              %<RTMSetSolverNeedsReset()>;
+	      if (%<u> < 0.0) {
+		%<m> = INTG_LEAVING_UPPER_SAT;
+	      } else {
+		%<m> = INTG_UPPER_SAT;
+	      }
+	    break;
+	  }
+	} else if (%<x> == %<ll>) {
+	  switch(%<m>) {
+	    case INTG_LOWER_SAT:
+	      if (%<u> > 0.0) {
+                %<RTMSetSolverNeedsReset()>;
+		%<m> = INTG_LEAVING_LOWER_SAT;
+	      }
+	    break;
+	    case INTG_LEAVING_LOWER_SAT:
+	      if (%<u> <= 0.0) {
+		%<m> = INTG_LOWER_SAT;
+                %<RTMSetSolverNeedsReset()>;
+	      }
+	    break;
+	    default:
+              %<RTMSetSolverNeedsReset()>;
+	      if (%<u> > 0.0) {
+		%<m> = INTG_LEAVING_LOWER_SAT;
+	      } else {
+		%<m> = INTG_LOWER_SAT;
+	      }
+	    break;
+	  }
+	} else {
+	  %<m> = INTG_NORMAL;
+	}
+      %endroll
+    }
+    
+  %endif
+%endfunction
+
+%% Function: Derivatives ======================================================
+%% Abstract:
+%%      Derivatives
+%%
+%function Derivatives(block, system) Output
+  %assign ncStates     = ContStates[0]
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  %assign stateOffset  = ContStates[2]
+  %if resetPortIdx != 0
+    %assign resetPortWidth = DataInputPort[resetPortIdx].Width
+  %else
+    %assign resetPortWidth = 0
+  %endif
+  /* %<FcnIntegratorComment()> */
+  {
+    %if NumNonsampledZCs > 0 && ParamSettings.LimitOutput == "on"
+      enum {INTG_NORMAL, INTG_LEAVING_UPPER_SAT, INTG_LEAVING_LOWER_SAT,
+      INTG_UPPER_SAT, INTG_LOWER_SAT };
+    %endif
+    %if ParamSettings.LimitOutput == "on"
+      %%
+      %% limited integrator
+      %%
+      %if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	%if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE
+	  %assign resetNot         = ""
+	  %assign resetComparison  = "== 0.0 && ("
+	  %assign resetComparison2 = "== 0.0"
+	%else
+	  %assign resetNot         = "!"
+	  %assign resetComparison  = " && ("
+	  %assign resetComparison2 = ""
+	%endif
+	%assign resetEnd  = ")"
+	%assign resetText = " or level reset is active"
+      %else
+	%assign resetNot         = ""
+	%assign resetComparison  = ""
+	%assign resetComparison2 = ""
+	%assign resetEnd         = ""
+	%assign resetText        = ""
+      %endif
+      %if NumNonsampledZCs > 0
+	
+	%% variable-step with zc finding
+	%if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	  %assign rollVars = ["u0", "u%<resetPortIdx>", "Mode","xdot","xdis"]
+	  %% This may include an external IC input port region unnecessarily
+	  %% but not that common
+	  %assign rollRegions = RollRegions
+	%else
+	  %assign rollVars = ["u0", "Mode","xdot","xdis"]
+	  %if EXISTS("DataInputPort[0].RollRegions")
+	    %if DataInputPort[0].Width == LibBlockOutputSignalWidth(0)
+	      %assign rollRegions = DataInputPort[0].RollRegions
+	    %else
+	      %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	    %endif
+	  %else
+	    %assign rollRegions = RollRegions
+	  %endif
+	%endif
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %assign m = LibBlockMode("", lcv, sigIdx)
+	  %if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	    %assign resetSig = LibBlockInputSignal(resetPortIdx, "", lcv, sigIdx)
+	  %else
+	    %assign resetSig = ""
+	  %endif
+	  if (%<resetNot>%<resetSig>%<resetComparison>(%<m> != INTG_UPPER_SAT) 
+	    && (%<m> != INTG_LOWER_SAT)%<resetEnd> ) {
+	      %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = %<u>;
+	    %<LibBlockContStateDisabled("",lcv,sigIdx)> = FALSE;
+	  } else {
+	    /* in saturation%<resetText> */
+	    %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = 0.0;
+	    %% For now, only disable for saturation, not reset.
+	    if ((%<m> == INTG_UPPER_SAT) || (%<m> == INTG_LOWER_SAT)) {
+	      %<LibBlockContStateDisabled("",lcv,sigIdx)> = TRUE;
+	    }
+	  }
+	%endroll
+      %else
+	%% fixed-step or zc finding disabled
+	boolean_T lsat;
+	boolean_T usat;
+	
+	%if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	  %assign rollVars = ["u0", "Xc", "xdot","u%<resetPortIdx>", ...
+	    "<param>/UpperSaturationLimit", "<param>/LowerSaturationLimit"]
+	  %% This may include an external IC input port region unnecessarily
+	  %% but not that common
+	  %assign rollRegions = RollRegions
+	%else
+	  %assign rollVars = ["u0", "Xc", "xdot",...
+	    "<param>/UpperSaturationLimit", "<param>/LowerSaturationLimit"]
+	  %if EXISTS("DataInputPort[0].RollRegions")
+	    %if DataInputPort[0].Width == LibBlockOutputSignalWidth(0)
+	      %assign rollRegions = DataInputPort[0].RollRegions
+	    %else
+	      %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	    %endif
+	  %else
+	    %assign rollRegions = RollRegions
+	  %endif
+	%endif
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	    %assign resetSig = LibBlockInputSignal(resetPortIdx, "", lcv, sigIdx)
+	  %else
+	    %assign resetSig = ""
+	  %endif
+	  %assign u  = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %assign X  = LibBlockContinuousState("", lcv, sigIdx)
+	  %assign ul = LibBlockParameter(UpperSaturationLimit, "", lcv, sigIdx)
+	  %assign ll = LibBlockParameter(LowerSaturationLimit, "", lcv, sigIdx)
+	  
+	  lsat = ( %<X> <= %<ll> );
+	  usat = ( %<X> >= %<ul> );
+
+	  if (%<resetNot>%<resetSig>%<resetComparison>(!lsat && !usat) || 
+	  (lsat && (%<u> > 0)) || 
+	  (usat && (%<u> < 0))%<resetEnd> ) {
+	    %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = %<u>;
+	  } else {
+	    /* in saturation%<resetText> */
+	    %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = 0.0;
+	  } 
+	%endroll
+      %endif
+    %else
+      
+      %%
+      %% integrator without limits
+      %%
+      %if resetPortWidth != 0 && ParamSettings.ExternalReset == "level"
+	%if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE
+	  %assign resetNot        = ""
+	  %assign resetComparison = "== 0.0"
+	%else
+	  %assign resetNot        = "!"
+	  %assign resetComparison = ""
+	%endif
+	%assign rollVars = ["u0", "u%<resetPortIdx>","xdot"]
+	%% This may include an external IC input port region unnecessarily
+	%% but not that common
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign resetSig  = LibBlockInputSignal(resetPortIdx, "", lcv, sigIdx)
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  if (%<resetNot>%<resetSig>%<resetComparison>) {
+	    %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = %<u>;
+	  } else {
+	    /* level reset is active*/
+	    %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = 0.0;
+	  }
+	%endroll
+      %else
+	%assign rollVars = ["u0","xdot"]
+	%if EXISTS("DataInputPort[0].RollRegions")
+	  %if DataInputPort[0].Width == LibBlockOutputSignalWidth(0)
+	    %assign rollRegions = DataInputPort[0].RollRegions
+	  %else
+	    %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	  %endif
+	%else
+	  %assign rollRegions = RollRegions
+	%endif
+	%roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+            %<LibBlockContinuousStateDerivative("",lcv,sigIdx)> = %<u>;
+	%endroll
+      %endif
+    %endif
+  }
+
+%endfunction
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      Update zero crossings for reset input and/or limited integrator
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<FcnIntegratorComment()> */
+  %assign resetPortIdx = FcnExternalResetPortIndex()
+  %if (resetPortIdx != 0) 
+    %assign resetWidth = LibBlockInputSignalWidth(resetPortIdx)
+  %else
+    %assign resetWidth = 0
+  %endif
+  %if NonsampledZC[0].MapIdx < resetWidth
+    %if LibBlockInputSignalAliasedThruDataTypeId(resetPortIdx) == tSS_DOUBLE
+      %assign caststr = "(real_T) "
+    %else
+      %% This won't get hit because in RTW ZCFcn never called to
+      %% determine zcEvents, block does zcEvents in OutputsFcn.
+      %assign caststr = ""
+    %endif
+    /* zero crossings for reset port*/
+    %if ParamSettings.ResetInputContiguous == "yes"
+      %% reset input is contiguous, do run-time loop
+      %% ZC indices are always contiguous for this case
+      %assign rollVars = ["u%<resetPortIdx>", "NSZC"]
+      %if EXISTS("DataInputPort[resetPortIdx].RollRegions")
+	%if DataInputPort[resetPortIdx].Width == LibBlockOutputSignalWidth(0)
+	  %assign rollRegions = DataInputPort[resetPortIdx].RollRegions
+	%else
+	  %assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	%endif
+      %else
+	%assign rollRegions = RollRegions
+      %endif
+      %roll sigIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%<LibBlockNonSampledZC("",lcv,sigIdx)> = \
+	%<caststr>%<LibBlockInputSignal(resetPortIdx, "", lcv, sigIdx)>;
+      %endroll
+      %assign nextIdx = resetWidth
+    %else
+      %% reset input is not contiguous, do each element separately
+      %foreach idx = NumNonsampledZCs
+	%if NonsampledZC[idx].MapIdx < resetWidth
+	  %<LibBlockNonSampledZC("","",idx)> = %<caststr>\
+	  %<LibBlockInputSignal(resetPortIdx, "", "", NonsampledZC[idx].MapIdx)>;
+	%else
+	  %assign nextIdx = idx
+	  %break
+	%endif
+      %endforeach
+    %endif
+  %else
+    %assign nextIdx = 0
+  %endif
+  %if ParamSettings.LimitOutput == "on"
+    %if resetWidth != 0 %% add a space
+      
+    %endif
+    {
+     enum {INTG_NORMAL, INTG_LEAVING_UPPER_SAT, INTG_LEAVING_LOWER_SAT,
+     INTG_UPPER_SAT, INTG_LOWER_SAT };
+    
+     /* zero crossings for limited integrator */
+    %% zcs for continuous states are contiguous
+    %assign ncStates = ContStates[0]
+    %assign rollVars = ["NSZC", "Xc", ...
+      "<param>/UpperSaturationLimit", "<param>/LowerSaturationLimit", "Mode"]
+    %assign rollRegions = [0:%<ncStates-1>]
+    %roll xIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign ul = LibBlockParameter(UpperSaturationLimit, "", lcv, xIdx)
+      %assign ll = LibBlockParameter(LowerSaturationLimit, "", lcv, xIdx)
+      %assign x  = LibBlockContinuousState("", lcv, xIdx)
+      %assign m  = LibBlockMode("", lcv, xIdx)
+      %if lcv != "" %%rolling
+	%assign zcu = ...
+	  LibBlockNonSampledZC("","(2 * %<lcv>) + %<nextIdx>", xIdx)
+	%assign zcl = ...
+	  LibBlockNonSampledZC("","(2 * %<lcv>) + %<nextIdx + 1>", xIdx)
+      %else
+	%assign zcu = ...
+	  LibBlockNonSampledZC("",lcv, (2*xIdx) + nextIdx)
+	%assign zcl = ...
+	  LibBlockNonSampledZC("",lcv, (2*xIdx) + nextIdx + 1)
+      %endif
+      if (%<m> == INTG_LEAVING_UPPER_SAT &&
+          %<x> >= %<ul>) {
+	%<zcu> = 0.0;
+      } else {
+	%<zcu> = %<x> - %<ul>;
+      }
+      if (%<m> == INTG_LEAVING_LOWER_SAT &&
+          %<x> <= %<ll>) {
+	%<zcl> = 0.0;
+      } else {
+	%<zcl> = %<x> - %<ll>;
+      }
+    %endroll
+    %assign nextIdx = nextIdx + 2*ncStates
+    %% See if zero crossoings exists for input
+    %if nextIdx < NumNonsampledZCs
+      %assign signalWidth = LibBlockInputSignalWidth(0)
+      
+      /* zero crossings for input of limited integrator */
+      {
+	%if (signalWidth == 1)
+	  boolean_T anyStateSaturated = FALSE;
+	  
+	  %assign ncStates = ContStates[0]
+	  %assign rollVars = ["M"]
+	  %assign rollRegions = [0:%<ncStates-1>]
+	  %roll xIdx = rollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %assign m = LibBlockMode("", lcv, xIdx)
+	    if ((%<m> == INTG_UPPER_SAT) ||
+	    (%<m> == INTG_LOWER_SAT)) {
+	      anyStateSaturated = TRUE;
+	      %if lcv != "" %%rolling
+		break;
+	      %endif
+	    }
+	  %endroll
+	  if (anyStateSaturated) {
+	    %<LibBlockNonSampledZC("", "", nextIdx)> = \
+	    %<LibBlockInputSignal(0, "", "", 0)>;
+	  } else {
+	    %<LibBlockNonSampledZC("", "", nextIdx)> = 0.0;
+	  }
+	%else %% wide input
+	  
+	  %if ParamSettings.InputContiguous == "yes"
+	    %% Input is contiguous, do run-time loop
+	    %% ZC indices are always contiguous for this case
+	    %assign rollVars = ["u0", "NSZC", "Mode"]
+	    %if EXISTS("DataInputPort[0].RollRegions")
+	      %if DataInputPort[0].Width == LibBlockOutputSignalWidth(0)
+		%assign rollRegions = DataInputPort[0].RollRegions
+	      %else
+		%assign rollRegions = [0:%<LibBlockOutputSignalWidth(0)-1>]
+	      %endif
+	    %else
+	      %assign rollRegions = RollRegions
+	    %endif
+	    %roll sigIdx = rollRegions,lcv = RollThreshold, block, "Roller", rollVars
+	      %assign m = LibBlockMode("", lcv, sigIdx)
+	      %if lcv == ""
+		%assign ucvExpr = ""
+		%assign lcvExpr = lcv
+		%assign idxExpr = sigIdx + nextIdx
+	      %else
+		%assign ucvExpr = ""
+		%assign lcvExpr = "%<lcv> + %<nextIdx>"
+		%assign idxExpr = sigIdx + nextIdx
+	      %endif
+	      if ((%<m> == INTG_UPPER_SAT) ||
+	      (%<m> == INTG_LOWER_SAT)) {
+		%<LibBlockNonSampledZC(ucvExpr, lcvExpr, idxExpr)> \
+		= %<LibBlockInputSignal(0, "", lcv, sigIdx)>;
+	      } else {
+		%<LibBlockNonSampledZC(ucvExpr, lcvExpr, idxExpr)> \
+		= 0.0;
+	      }
+	    %endroll
+	  %else
+	    %% Input is not contiguous, do each element separately
+	    %foreach idx = (NumNonsampledZCs - nextIdx)
+	      %assign zcIndex = NonsampledZC[idx + nextIdx].MapIdx
+	      %assign zcIndex = zcIndex - resetWidth - (2 * ncStates)
+	      %assign m = LibBlockMode("", "", zcIndex)
+	      if ((%<m> == INTG_UPPER_SAT) ||
+	      (%<m> == INTG_LOWER_SAT)) {
+		%<LibBlockNonSampledZC("","",idx + nextIdx)> \
+		= %<LibBlockInputSignal(0, "", "", zcIndex)>;
+	      } else {
+		%<LibBlockNonSampledZC("","",idx + nextIdx)> = 0.0;
+	      }
+	    %endforeach
+	  %endif
+	%endif
+      }
+    %endif
+    }
+  %endif
+    
+%endfunction
+
+%% [EOF] integrat.tlc

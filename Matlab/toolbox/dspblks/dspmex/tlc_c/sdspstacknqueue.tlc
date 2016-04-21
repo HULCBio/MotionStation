@@ -1,0 +1,384 @@
+%% $RCSfile: sdspstacknqueue.tlc,v $
+%% $Revision:
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspbuffers.cpp
+%%           Used for the Stack and Queue blocks
+
+%implements "sdspstacknqueue" "C"
+
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ===================================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Get all fixed settings into block
+%%
+%function BlockInstanceSetup(block, system) void
+  %%whether dynamic allocation or not - boolean
+  %assign dynamic = (SFcnParamSettings.PushFull == 1)
+  %if UsingMalloc != 1 && dynamic
+    %%Not possible to do dynamic allocation without malloc
+    %<LibBlockReportError(block,"Cannot use Dynamic reallocation in a non malloc target.")>
+  %endif
+  
+  %assign block = block + dynamic
+
+  %%
+  %% Mandatory I/O port indices
+  %%
+  %assign DATAIN_PORT = 0
+  %assign PUSH_PORT   = 1
+  %assign POP_PORT    = 2
+  %assign CLR_PORT    = 3
+  %assign OUTPORTDATA = 0
+  %assign FCNID       = SFcnParamSettings.FcnId
+  %assign STACK       = 0
+  %assign QUEUE       = 1
+
+  %assign block = block + DATAIN_PORT  + PUSH_PORT    + POP_PORT     +\
+                          CLR_PORT     + OUTPORTDATA  + FCNID        +\
+                          STACK        + QUEUE
+  
+  %assign width = LibBlockInputSignalWidth(0)     %%width of input
+  %assign starwidth = (width > 1) ? "*%<width>" : ""    %%avoid mult by 1
+  %assign cplx  = LibBlockInputSignalIsComplex(0) %%input data complexity
+
+  %%sizeof(inputdata)
+  %assign sig_datatype    = LibBlockInputSignalDataTypeName(DATAIN_PORT,"")
+  %assign bytesPerElemStr = "sizeof(%<sig_datatype>)"
+
+  %assign ClrPort = SFcnParamSettings.ClearInport           %%clear port exist?
+
+  %assign block = block + width + starwidth + cplx + sig_datatype +\
+                  bytesPerElemStr + ClrPort
+
+  %%find and fill optional outport numbers and their existence
+  %assign emptyport = SFcnParamSettings.EmptyOutport        %%empty port exist?
+  %assign fullport  = SFcnParamSettings.FullOutport         %%full port exist?
+  %assign numport   = SFcnParamSettings.NumEntriesOutport   %%num elems port?
+  %assign block     = block + emptyport + fullport + numport
+
+  %assign outportnum = 1
+  %if (emptyport)
+    %assign emptyportnum = outportnum
+    %assign block        = block + emptyportnum
+    %assign outportnum   = outportnum+1
+  %endif
+  %if (fullport)
+    %assign fullportnum = outportnum
+    %assign block       = block + fullportnum
+    %assign outportnum  = outportnum+1
+  %endif
+  %if (numport)
+    %assign numportnum = outportnum
+    %assign block      = block + numportnum
+  %endif
+
+  %<EventPortHandlerInstanceSetup(block)>
+  %%find dwork index for eph states
+  %if EventPortRequiresState(block)
+      %assign pushephstate = EPH0PrevState
+      %assign popephstate  = EPH1PrevState
+      %if (ClrPort)
+        %assign clrephstate = EPH2PrevState
+      %else
+        %assign clrephstate = 0
+      %endif
+  %else
+      %assign pushephstate = 0
+      %assign popephstate  = 0
+      %assign clrephstate  = 0
+  %endif
+  %assign block = block + pushephstate + popephstate + clrephstate
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%% Abstract:
+%%      Initialize event port handlers
+%%      Allocate memory in case dynamic memory allocation is selected
+%%      Clear the buffer and output if needed
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset %<BlockName(FCNID)> (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %<InitializeEventPortPrevStateCache(block, pushephstate)>  \
+  %<InitializeEventPortPrevStateCache(block, popephstate)>   \
+  %if ClrPort
+    %<InitializeEventPortPrevStateCache(block, clrephstate)> \
+  %endif
+  %%Initialize Buffer indices
+  %if (LibGetSFcnTIDType(0) != "constant")
+  {
+    const int_T numbytes = %<bytesPerElemStr>%<starwidth>;
+    %%Initialize memory if dynamically allocated
+    %if %<dynamic>
+      %<LibBlockDWork(Depth, "", "", 0)> = %<SFcnParamSettings.Depth>;
+      %<LibBlockDWork(BufferPtr, "", "", 0)> =\
+            malloc(%<LibBlockDWork(Depth, "", "", 0)>*numbytes);
+    %endif
+    %<Buffers(block, "CLEAR")> \
+  }
+  %endif
+%endfunction
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset %<BlockName(FCNID)> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+   %%all the following assign statements cant be in blockinstancesetup because
+   %%it wont work if dwork is referred only there
+   %%Get dwork variables into block structure
+   %if (dynamic)
+     %assign depth = LibBlockDWork(Depth, "", "", 0) %%current capacity changes in case of dynamic
+     %assign bufferptr = LibBlockDWork(BufferPtr, "", "", 0)  %%ptr to buffer
+     %%In the case of dynamic this dwork is already a pointer
+     %assign bufferptrcast = "((%<sig_datatype>*)%<bufferptr>)"
+     %%bufferptrcast needed when we do pointer arithmetic
+     %%because in dynamic allocation bufferptr will be void *
+   %else
+     %assign depth = SFcnParamSettings.Depth         %%current capacity of buffer
+     %assign bufferptr = LibBlockDWorkAddr(BufferPtr, "", "", 0)  %%ptr to buffer
+     %assign bufferptrcast = bufferptr   %%no type casting needed
+   %endif
+  %assign block = block + bufferptr + bufferptrcast + depth
+  %%dwork to store top of stack or queue indices
+  %if (FCNID == STACK)
+    %assign StackTop = LibBlockDWork(StackTopIdx, "", "", 0)
+    %assign block    = block + StackTop
+  %else
+    %assign QueueFront = LibBlockDWork(QueueFrontIdx, "", "", 0)
+    %assign QueueBack  = LibBlockDWork(QueueBackIdx, "", "", 0)
+    %assign NumElems   = LibBlockDWork(NumElements, "", "", 0) %%num elems in Q
+    %assign block      = block + QueueFront + QueueBack + NumElems
+  %endif
+  %%
+  %%
+  const int_T numbytes = %<bytesPerElemStr>%<starwidth>;
+  %if ClrPort
+    if (%<CheckEventPort(block, CLR_PORT, clrephstate)>) /* CLEAR */
+    {
+      %<Buffers(block, "CLEAR")>
+    }
+  %endif
+  if (%<CheckEventPort(block, PUSH_PORT, pushephstate)>)  /* PUSH */
+  {
+      %<Buffers(block, "PUSH")>   \
+  }
+  if (%<CheckEventPort(block, POP_PORT, popephstate)>)   /* POP */
+  {
+      %<Buffers(block, "POP")>   \
+  }
+  %<EmptyBuf(block)> \
+  %<FullBuf(block)>  \
+  %<NumBuf(block)>   \
+}
+%endfunction %% Outputs
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: BlockName   ======================================================
+%%
+%function BlockName(fcnid)
+  %switch (fcnid)
+    %case STACK
+      %assign blocknamestr = "Stack"
+      %break
+    %case QUEUE
+      %assign blocknamestr = "Queue"
+      %break
+  %endswitch
+  %return blocknamestr
+%endfunction  %% BlockName   
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Buffers   ========================================================
+%%
+%% Generate code according to the event passed
+%function Buffers(block, message) Output
+  %switch (message)
+    %case "CLEAR"
+      %<Clear(block)>
+      %break
+    %case "PUSH"
+      %if dynamic   %%either do dynamic memory allocation
+          if (%<NumBufEntries(block)> == %<depth>)  /* if %<BlockName(FCNID)> is full */
+          {
+              %<MemAlloc(block)>
+          }
+          %<Push(block)>
+      %else
+          if (%<NumBufEntries(block)> != %<depth>)
+          {
+              %<Push(block)>
+          }
+      %endif
+      %break
+    %case "POP"
+      %<Pop(block)>
+      %break
+  %endswitch
+%endfunction  %% Buffers
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Clear   ==========================================================
+%%
+%% Create code for clear event
+%% Set indices to zero. Set output to zero if clear on reset is selected
+%function Clear(block) Output
+    %if (FCNID == STACK)
+      %<LibBlockDWork(StackTopIdx, "", "", 0)> = 0;
+    %else
+      %<LibBlockDWork(QueueFrontIdx, "", "", 0)> =\
+      %<LibBlockDWork(QueueBackIdx, "", "", 0)>  =\
+      %<LibBlockDWork(NumElements, "", "", 0)> = 0;
+    %endif
+    %%if clear on reset is selected we need to set output to zero when
+    %%clear is set
+    if (%<LibBlockParameter(ClearOnReset, "", "", 0)>)  %%Clear on reset
+        memset(%<LibBlockOutputSignalAddr(0, "", "", 0)>, 0, numbytes); \
+            /* Set output values to zero */
+%endfunction  %% Clear
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: MemAlloc   =======================================================
+%%
+%% Create code for dynamic memory allocation
+%function MemAlloc(block) Output
+    /*Allocate more memory since %<BlockName(FCNID)> has become full */
+    %if (FCNID == STACK)
+      %<bufferptr> = realloc(%<bufferptr>, 2*numbytes*%<depth>);
+      %<depth> *= 2;       /* Capacity has doubled */
+    %else
+      void *newbuffer = malloc(2*numbytes*%<depth>);
+      memcpy(newbuffer, %<bufferptrcast>+%<QueueFront>%<starwidth>, \
+                  (%<depth>-%<QueueFront>)*numbytes);
+      memcpy(((%<sig_datatype>*)newbuffer)+(%<depth>-%<QueueFront>), %<bufferptr>, \
+                  %<QueueFront>*numbytes);
+      free(%<bufferptr>);
+      %<bufferptr>  = newbuffer;
+      %<QueueBack>  = %<depth>;
+      %<QueueFront> = 0;
+      %<depth> *= 2;      /* Capacity has doubled */
+    %endif
+%endfunction  %% MemAlloc
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Push   ===========================================================
+%%
+%% Create code for Push event
+%function Push(block) Output
+   %%copy input elements into the buffer
+   %if (FCNID == STACK)
+     memcpy(%<bufferptrcast>+%<StackTop>%<starwidth>,\
+                %<LibBlockInputSignalAddr(0, "", "", 0)>, numbytes);
+     %<StackTop> ++;
+   %else
+     memcpy(%<bufferptrcast>+(%<QueueBack> % %<depth>)%<starwidth>,\
+                %<LibBlockInputSignalAddr(0, "", "", 0)>, numbytes);
+     %<QueueBack>++;
+     %<NumElems>++;
+   %endif
+%endfunction  %% Push
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Pop   ============================================================
+%%
+%% Create code for pop event
+%function Pop(block) Output
+  %if (FCNID == STACK)
+    if (%<StackTop>)
+    {
+      %<StackTop> --;
+      memcpy(%<LibBlockOutputSignalAddr(0, "", "", 0)>, \
+                %<bufferptrcast>+%<StackTop>%<starwidth>, numbytes);
+    }
+  %else
+    if (%<NumElems>)
+    {
+      memcpy(%<LibBlockOutputSignalAddr(0, "", "", 0)>,\
+                %<bufferptrcast>+%<QueueFront>%<starwidth>, numbytes);
+      %<NumElems> --;
+      if ((%<QueueFront> + 1) == %<depth>)
+      {
+        %<QueueFront> = 0;
+        %<QueueBack> %= %<depth>;
+      }
+      else %<QueueFront> ++;
+    }
+  %endif
+%endfunction  %% Pop
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: EmptyBuf   =======================================================
+%%
+%% Create code for setting output of isempty port
+%function EmptyBuf(block) Output
+    %if (emptyport)  %%if port exists
+        %<LibBlockOutputSignal(emptyportnum, "", "", 0)> = \
+            (%<LibBlockOutputSignalDataTypeName(emptyportnum,"")>)\
+                                    (%<NumBufEntries(block)> == 0);
+    %endif
+%endfunction  %% EmptyBuf
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: FullBuf   ========================================================
+%%
+%% Create code for setting output of isfull port
+%function FullBuf(block) Output
+    %if (fullport)
+        %if (!dynamic)   %%if port exists and not dynamic allocation
+            %<LibBlockOutputSignal(fullportnum, "", "", 0)> =    \
+                (%<LibBlockOutputSignalDataTypeName(fullportnum,"")>)\
+                    (%<NumBufEntries(block)> == %<depth>);
+        %else
+            %<LibBlockOutputSignal(fullportnum, "", "", 0)> = 0;
+        %endif
+    %endif
+%endfunction  %% FullBuf
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: NumBuf   =========================================================
+%%
+%% Create code for setting output of number of elements port
+%function NumBuf(block) Output
+    %if (numport)   %%if port exists
+        %<LibBlockOutputSignal(numportnum, "", "", 0)> = \
+            (%<LibBlockOutputSignalDataTypeName(numportnum,"")>)\
+                                       %<NumBufEntries(block)>;
+    %endif
+%endfunction  %% NumBuf
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: NumBufEntries  ====================================================
+%%
+%% Create code for number of elements in the buffer currently
+%function NumBufEntries(block)
+  %if (FCNID == STACK)
+    %return StackTop
+  %else
+    %return NumElems
+  %endif
+%endfunction  %% NumBufEntries
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Function: Terminate  ====================================================
+%%
+%% Clean up allocated memory
+%function Terminate(block, system) Output
+  %%free memory if dynamically allocated
+  %if %<dynamic>
+    free(%<LibBlockDWork(BufferPtr, "", "", 0)>); %%<bufferptr> wont work here
+  %endif
+%endfunction    %%Terminate
+
+%% [EOF] sdspstacknqueue.tlc
+

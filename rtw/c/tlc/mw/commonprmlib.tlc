@@ -1,0 +1,1470 @@
+%% ============================================================================
+%% File : commonprmlib.tlc
+%%
+%% Abstract:
+%%   This system file produces the structure instances.
+%%
+%% $Revision: 1.1.8.14 $
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% ============================================================================
+%selectfile NULL_FILE
+
+%if EXISTS("_COMMONPRMLIB_") == 0
+%assign _COMMONPRMLIB_ = 1
+
+%realformat "CONCISE"
+
+%% ============================================================================
+%% Create global cache variables to hold each structure instance
+%% ============================================================================
+
+%<LibAddToCompiledModel("BlockIOInstance", 0)>
+%<LibAddToCompiledModel("ConstBlockIOInstance", 0)>
+%<LibAddToCompiledModel("ExportedGlobalSignalsInstance", 0)>
+%<LibAddToCompiledModel("ExportedGlobalDWorkInstance", 0)>
+%<LibAddToCompiledModel("ContStatesInstance", 0)>
+%<LibAddToCompiledModel("SolverMatricesInstance", 0)>
+%<LibAddToCompiledModel("DWorkInstance", 0)>
+%<LibAddToCompiledModel("PrevZCStatesInstance", 0)>
+%<LibAddToCompiledModel("ExternalInputsInstance", 0)>
+%<LibAddToCompiledModel("ExternalOutputsInstance", 0)>
+
+%% Function: LibCacheModelStructureInstance ===================================
+%% Abstract:
+%%   This function creates the guts of each structure instance.  It should
+%%   be called after all code is generated, and just prior to final model
+%%   registration.
+%%
+%function LibCacheModelStructureInstance() void
+  %<LibCacheBlockIOInstance()>
+  %<LibCacheConstBlockIOInstance()>
+  %<LibCacheExportedGlobalSignalsInstance()>
+  %<LibCacheExportedGlobalDWorkInstance()>
+  %<LibCacheContStatesInstance()>     %% may not be used
+  %<LibCacheSolverMatricesInstance()>     %% may not be used
+  %if CodeFormat != "S-Function" || Accelerator
+    %<LibCacheDWorkInstance()>
+  %endif
+  %<LibCachePrevZCStatesInstance()>
+  %<LibCacheExternalInputsInstance()>
+  %<LibCacheExternalOutputsInstance()>
+  %<LibAddToCompiledModel("AccessedSimStructVarsForNonFinites", ...
+    LibDeclareAllAccessedSimStructVars())>
+%endfunction
+
+
+%% Function FcnGenerateNonFiniteParamValue =====================================
+%% Abstract:
+%%   Generates the string for a non-finite parameter element initialization
+%%   and places it in the non-finite assignment buffer.
+%%
+%%   Notes:
+%%     Assumes block is in scope
+%%
+%function FcnGenerateNonFiniteParamValue(mdlParam, ridx, cidx) void
+  %assign pName     = mdlParam.Identifier
+  %assign lvalue    = mdlParam.Value
+  %assign dTypeId   = mdlParam.DataTypeIdx
+  %assign complex   = mdlParam.ComplexSignal
+  %assign dTypeName = LibGetDataTypeNameFromId(dTypeId)
+
+  %% Real Part
+  %%
+  %% parameter has already been included in rtP so we don't need
+  %% to worry about that part of LibBlockMatrixParameter;  Also, that implies
+  %% that the parameter must have storage class auto so we don't need to worry
+  %% about that.
+  %assign rval = ...
+    SLibParameterValue(lvalue, dTypeId, complex, ridx,"%<tRealPart>%<cidx>")
+  %assign nRows = SIZE(lvalue, 0)
+  %assign nCols = SIZE(lvalue, 1)
+  %assign indexStr = SLibGet2DArrayIndexer(0, nRows, "", "", ridx, ...
+    nCols, "", "", cidx)
+
+  %assign lhs = FcnAccessModelParameter(mdlParam, indexStr)
+  %if (complex)
+    %assign accessor = ".%<tRealPart>"
+  %else
+    %assign accessor = ""
+  %endif
+  %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_SINGLE
+    %assign tmpStr = "%<lhs>%<accessor> = (%<dTypeName>)%<rval>;\n"
+  %else
+    %assign tmpStr = "%<lhs>%<accessor> = %<rval>;\n"
+  %endif
+  %<LibCacheNonFiniteAssignment(tmpStr)>
+  
+  %% Imaginary Part
+  
+  %if complex
+    
+    %% parameter has already been included in rtP so we don't need
+    %% to worry about that part of LibBlockMatrixParameter;  Also, that implies
+    %% that the parameter must have storage class auto so we don't need to worry
+    %% about that.
+    %assign ival = ...
+      SLibParameterValue(lvalue, dTypeId, complex, ridx,"%<tImagPart>%<cidx>")
+    %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_SINGLE
+      %assign tmpStr = "%<lhs>.%<tImagPart> = (%<dTypeName>)%<ival>;\n"
+    %else
+      %assign tmpStr = "%<lhs>.%<tImagPart> = %<ival>;\n"
+    %endif
+    %<LibCacheNonFiniteAssignment(tmpStr)>
+
+  %endif
+
+  %return 1
+%endfunction %% FcnGenerateNonFiniteParamValue
+
+
+%% Function: SLibGenMacroStrForModelPrm ========================================
+%% Abstract:
+%%   Generate the macro string for an Model Parameter
+%%
+%function SLibGenMacroStrForModelPrm(mdlParam, indices, complex, reim, ...
+  accessType) void
+  
+  %assign value    = mdlParam.Value
+  %assign isScalar = (SIZE(value, 0) == 1) && (SIZE(value, 1) == 1)
+  
+  %assign macroStr = ""
+  %if complex
+    %if reim == tRealPart
+      %assign macroStr = "_RE"
+    %elseif reim == tImagPart
+      %assign macroStr = "_IM"
+    %else
+      %assign errTxt = "Unhandled case in SLibGenMacroStrForModelPrm"
+      %<LibBlockReportFatalError([], errTxt)>
+    %endif
+  %else
+    %assign macroStr = ""
+  %endif
+  
+  %if !isScalar
+    %if accessType == "Vector"
+      %assign pIdx   = indices[0]
+      %assign macroStr = "_EL_%<pIdx>%<macroStr>"
+    %else
+      %assign rIdx = indices[0]
+      %assign cIdx = indices[1]
+      %assign macroStr = "_R_%<rIdx>_C_%<cIdx>%<macroStr>"
+    %endif
+  %endif
+  %assign macroStr = "%<tConstPrms>_%<mdlParam.Identifier>%<macroStr>"
+  
+  %return macroStr
+%endfunction %% SLibGenMacroStrForModelPrm
+
+
+%% Function: FcnGetModelVectPrmVal =============================================
+%% Abstract:
+%%   Get the indexed value of the specified vector model parameter
+%%
+%function FcnGetModelVectPrmVal(mdlParam, pIdx, complex, reim) void
+  %assign value  = mdlParam.Value
+  %assign dTypeId   = mdlParam.DataTypeIdx
+  %if LibIsBuiltInDataType(LibGetDataTypeStorageIdFromId(dTypeId))
+    %% Get the value
+    %if complex
+      %if reim == tRealPart
+	%assign pValue = REAL(value[pIdx])
+      %elseif reim == tImagPart
+	%assign pValue = IMAG(value[pIdx])
+      %else
+	%assign errTxt = "Unhandled case in FcnGetModelVectPrmVal"
+	%<LibBlockReportFatalError([], errTxt)>
+      %endif
+    %else
+      %assign pValue = value[pIdx]
+    %endif
+    
+    %% Inform the code generator of any non-finites, etc.
+    %<LibCheckValue(0, pValue)>
+    
+    %assign dTypeId = mdlParam.DataTypeIdx
+    %% Return the actual value with the appropriate data type cast.
+    %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_DOUBLE 
+      %% backward compatibility for C only
+      %assign theVal = CAST("Real", pValue)
+    %else
+      %assign theVal = SLibGetFormattedValueFromId(dTypeId, pValue)
+    %endif
+  %else
+    %assert value == [0.0]
+    %assign theVal = LibGetGroundValueFromId(dTypeId)
+  %endif
+  %return theVal
+%endfunction
+
+
+%% Function: FcnGetModelMatrixPrmVal ===========================================
+%% Abstract:
+%%   Get the indexed value of the specified matrix model parameter
+%%
+%function FcnGetModelMatrixPrmVal(mdlParam, ridx, cidx, complex, reim) void
+  %assign value  = mdlParam.Value
+  
+  %% Determine size
+  %assign nRows = SIZE(value, 0)
+  %assign nCols = SIZE(value, 1)
+
+  %% gracefully handle vectors as 1xN matrices
+  %if TYPE(mdlParam.Value) != "Matrix"
+     %if ridx != 0 && cidx != 0
+      %<LibReportError("Cannot have row and col idx greater than 0 for vector")>
+    %endif
+    %assign value = value[(ridx == 0) ? cidx : ridx]
+  %else
+    %assign value = value[ridx][cidx]
+  %endif
+  
+  %% Get the value
+  %if complex
+    %if reim == tRealPart
+      %assign pValue = REAL(value )
+    %elseif reim == tImagPart
+      %assign pValue = IMAG(value )
+    %else
+      %assign errTxt = "Invalid input argument (%<complex>). "
+      "Expecting either %<tRealPart> or %<tImagPart>."
+      %<LibBlockReportFatalError([], errTxt)>
+    %endif
+  %else
+    %assign pValue = value
+  %endif
+    
+  %% Inform the code generator of any non-finites, etc.
+  %<LibCheckValue(0, pValue)>
+  
+  %assign dtype = mdlParam.DataTypeIdx
+  %if LibGetDataTypeIdAliasedThruToFromId(dtype) == tSS_DOUBLE 
+    %% backward compatibility for C only
+    %return CAST("Real", pValue)
+  %else
+    %assign answer = SLibGetFormattedValueFromId(dtype, pValue)
+    %return (pValue < 0) ? "(%<answer>)" : answer
+  %endif
+%endfunction
+
+
+%% Function: SLibGenModelConstPrmMacroAccess ===================================
+%% Abstract:
+%%   Generate an access based on the fact that a macro will be generated for 
+%%   the given model parameter
+%%
+%function SLibGenModelConstPrmMacroAccess(mdlParam, indices, complex, reim, ...
+  accessType) void
+  
+  %assign macroStr = SLibGenMacroStrForModelPrm(mdlParam, indices, complex, ...
+    reim, accessType)
+  
+  %% Get the value to inform code gen of non-finites. Throw away value for now
+  %if accessType == "Matrix"
+    %assign theVal = FcnGetModelMatrixPrmVal(mdlParam, indices[0], ...
+      indices[1], complex, reim)
+  %else
+    %assign theVal = FcnGetModelVectPrmVal(mdlParam, indices[0], complex, reim)
+  %endif
+  
+  %if SLibGenMacroForPrm(mdlParam)
+    %if accessType == "Matrix" && !ISFIELD(mdlParam, "MacroAccessAsMatrix")
+      %addtorecord mdlParam MacroAccessAsMatrix 1
+    %endif
+    
+    %if accessType == "Vector" && !ISFIELD(mdlParam, "MacroAccessAsVector")
+      %addtorecord mdlParam MacroAccessAsVector 1
+    %endif
+    %return macroStr  
+  %else
+    %return theVal
+  %endif
+%endfunction %% SLibGenModelConstPrmMacroAccess
+
+
+%% Function: SLibGenConstRTPForPrm ============================================
+%% Abstract:
+%%   Tells if a model parameter should be a const RTP
+%%
+%function SLibGenConstRTPForPrm(mdlParam) void
+  %if mdlParam.InConstSection
+    %assert (mdlParam.Tunable == "no")
+    %assert (!mdlParam.InConstWithInitSection)
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+
+%% Function: SLibGenConstPrmWithInit ==========================================
+%% Abstract:
+%%   Tells if a model parameter should be a const RTP
+%%
+%function SLibGenConstPrmWithInit(mdlParam) void
+  %if mdlParam.InConstWithInitSection
+    %assert (mdlParam.Tunable == "no")
+    %assert (!mdlParam.InConstSection)
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+
+%% Function: SLibGenMacroForPrm ================================================
+%% Abstract:
+%%   Tells if a model parameter should have an associated macro
+%%
+%function SLibGenMacroForPrm(mdlParam) void
+  %assign retVal = (SLibGenConstRTPForPrm(mdlParam) && ...
+                    InlinedPrmAccess == "Macros")
+  %return retVal
+%endfunction
+
+
+%% Function: SLibChildScopeValues ===============================================
+%% Abstract:
+%%    This functions inlines or scopes initialization values of systems
+%%    hierarchical child systems. It is called by a function that generates
+%%    the initialization values for the parent system.
+%%
+%% Arguments:
+%%       sysIdx - parent system index
+%%    structPtr - index into the Model%<StructType> vector, that points
+%%                to the first element of a system instance parameter
+%%                vector (simliar to first-instance index but also for
+%%                second and greater instance of a system)
+%%       struct - structure type (eg. "Parameters")
+%%
+%function SLibChildScopeValues(sysIdx, structPtr, struct)
+  %assign childSystemValues = ""
+  %assign numElements = 0
+  %assign res = ["", 0, 0]
+  %assign comma = ""
+  %openfile childSystemValues
+  %foreach childIdx = System[sysIdx].NumChildSystems
+    %if struct == "Parameters"
+      %assign chIdx = System[sysIdx].ChildPrmStructs[childIdx]
+    %else
+      %assign chIdx = System[sysIdx].ChildSystems[childIdx]
+    %endif
+    %% Is first memory instance ? And not a reduced subsystem
+    %if chIdx[1] == 0 && chIdx[3] > -1
+      %assign blk      = System[chIdx[2]].Block[chIdx[3]]
+      %assign childSys = System[blk.CallSiteInfo.SystemIdx]
+      %assign inlRes   = FcnScope%<struct>(childSys.SystemIdx, structPtr)
+      %assign blkName  = LibGetBlockName(blk)
+      %if inlRes[1] > 0
+	%if !SLibSystemHasOwnDataScope(childSys)
+	  %<comma>%<inlRes[0]>
+	  %assign comma = " ,\n"
+	%elseif childSys.Has%<struct>Arg
+	  %<comma>  /* Start of %<blkName> */ {
+	    %<inlRes[0]> 
+	  }
+	  /* End of %<blkName> */ \
+	  %assign comma = " ,\n"
+	%endif
+	%assign numElements = numElements + inlRes[1]
+      %endif
+      %assign structPtr = inlRes[2]
+    %endif %% chIdx[1] == 0
+  %endforeach
+  %closefile childSystemValues
+
+  %if numElements > 0
+    %assign res[0] = "%<childSystemValues>"
+    %assign res[1] = %<numElements>
+  %endif
+  %assign res[2] = %<structPtr>
+  %return res
+%endfunction %% SLibChildScopeValues
+
+
+%% Function: SlibOmitParameter ==================================================
+%% Abstract:
+%%    For an Embedded-Code optimization, omit unaccessed parameters when
+%%    not generating an s-function, and parameters are inlined (don't do
+%%    when not inlined since we only access the parameters of the first
+%%    instance of a reused subsystem
+%%
+%function SLibOmitParameter(prm) void
+  %return InlineParameters && ...
+    CodeFormat == "Embedded-C" && ...
+    !GenerateErtSFunction && !IsModelReferenceSimTarget() && ...
+    !prm.WasAccessedAsVariable
+%endfunction
+
+
+%% Function: SLibGetFormattedPrmValue =============================================
+%% Abstract:
+%%      Returns the formatted initialization value with an optional comment
+%%      for a given model parameter record
+%%
+%function SLibGetFormattedPrmValue(mdlParam, vectorComment) void
+  %assign valueString = ""
+  %openfile valueString
+  %%
+  %% generate parameters using built-in function
+  %% for [1x1] or (1), use scalar
+  %% for [1xn] or [nx1], use (n)
+  %% perform fixups for boolean params
+  %%
+  %assign prmVal = LibPrepParameter(mdlParam)
+  %assign dTypeId   = mdlParam.DataTypeIdx
+  %if LibIsBuiltInDataType(LibGetDataTypeStorageIdFromId(dTypeId))
+    %assign prmNonFiniteIndices = GENERATE_FORMATTED_VALUE(prmVal, vectorComment)
+    %if prmNonFiniteIndices[0][0] >= 0
+      %%
+      %% Handle nonfinites:
+      %%   defined only for Real or Real32
+      %foreach idx = SIZE(prmNonFiniteIndices,0)
+	%assign ret = FcnGenerateNonFiniteParamValue(mdlParam, ...
+	  prmNonFiniteIndices[idx][0], prmNonFiniteIndices[idx][1])
+      %endforeach
+    %endif
+  %else
+    %assert prmVal == 0.0
+    %<LibGetGroundInitFromId(dTypeId)>
+  %endif
+  %closefile valueString
+  %return valueString
+%endfunction %% SLibGetFormattedPrmValue
+
+
+%% Function: GetParameterComment ===============================================
+%% Abstract:
+%%      Returns the comment string for a given model parameter record
+%%
+%function GetParameterComment(mdlParam) void
+  %assign prmName = ""
+  %assign numRefs = SIZE(mdlParam.ReferencedBy, 0)
+  %foreach refIdx = numRefs
+    %assign blkName = SLibGrBlockName(mdlParam.GraphicalRef[refIdx])
+    %if refIdx == 0
+      %assign prmName = " " + mdlParam.Identifier + " : '" + blkName + "'"
+    %else
+      %assign prmName = prmName + "\n*   '" + blkName + "'"
+    %endif
+    %if refIdx > 0 && refIdx == (numRefs-1)
+      %assign prmName = prmName + "\n"
+    %endif
+  %endforeach
+  %return prmName
+%endfunction
+
+
+%% Function: LibParameterInstanceInitStr ======================================
+%% Abstract:
+%%   Generates the initialization string for a parameter instance
+%%
+%function LibParameterInstanceInitStr(mdlParam) void
+  
+  %assign comments = SLibCommentParameterInstances() && ...
+    mdlParam.StorageClass != "Custom"
+  %openfile initStr
+  %%
+  %%
+  %% generate parameters using built-in function
+  %% for [1x1] or (1), use scalar
+  %% for [1xn] or [nx1], use (n)
+  %% perform fixups for boolean params
+  %%
+  %assign prmName = comments==0 ? "" : "%<mdlParam.Identifier>"
+  %assign prmClass = TYPE(mdlParam.Value)
+  %assign prmVal  = LibPrepParameter(mdlParam)
+  %assign dTypeId   = mdlParam.DataTypeIdx
+  %if LibIsBuiltInDataType(LibGetDataTypeStorageIdFromId(dTypeId))
+    %assign prmNonFiniteIndices = GENERATE_FORMATTED_VALUE(prmVal, prmName)
+    %if prmNonFiniteIndices[0][0] >= 0
+      %%
+      %% Handle nonfinites:
+      %%   defined only for Real or Real32
+      %foreach idx = SIZE(prmNonFiniteIndices,0)
+	%assign ret = FcnGenerateNonFiniteParamValue(mdlParam, ...
+	  prmNonFiniteIndices[idx][0], prmNonFiniteIndices[idx][1])
+      %endforeach
+    %endif
+  %else 
+    %assert prmVal == 0.0
+    %<LibGetGroundInitFromId(dTypeId)>
+  %endif
+  %closefile initStr
+  %return initStr
+%endfunction
+
+%% Function: SLibCommentParameterInstances =====================================
+%% Abstract:
+%%   Return whether or not to generate comments for parameter instances
+%%
+%function SLibCommentParameterInstances() void
+  %assign comments = 0
+  %if CompiledModel.ForceParamTrailComments || ...
+    CompiledModel.NumBlockParams < 1000
+    %assign comments = 1
+  %endif
+  %return comments
+%endfunction
+
+%% Function: LibCacheBlockIOInstance ==========================================
+%% Abstract:
+%%   Caches the BlockIO instance.
+%%
+%function LibCacheBlockIOInstance() void
+  %if !IsModelReferenceTarget() && BlockOutputs.NumSignalsInBlockIO > 0
+    %% there's definitely something in the BlockIO structure so instantiate it.
+    %openfile buffer
+    %<SLibAddPreStructDeclarePragma(tBlockIO)>\
+    %<tBlockIOType> %<tBlockIO>;
+    %<SLibAddPostStructDeclarePragma(tBlockIO)>\    
+    %closefile buffer
+    %assign ::CompiledModel.BlockIOInstance = buffer
+  %else
+    %assign ::CompiledModel.BlockIOInstance = ""
+  %endif
+%endfunction  %% LibCacheBlockIOInstance
+
+
+%% Function: SLibWriteOutInstForSignalRec =====================================
+%% Abstract:
+%%   Determine whether to write out instantiation code for a specific signal. 
+%%
+%% For model reference, we do not write out instantiation code for
+%% root-level inputs/outputs (they are instantiated by the top model).
+%%
+%function SLibWriteOutInstForSignalRec(record) void
+  %assign retVal = TLC_FALSE
+  
+  %% Check assumptions
+  %assign rootSystem = CompiledModel.System[NumSystems-1]
+  %assign reqInsts = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+  %assert(reqInsts.ExpGlobalSigsInst)
+  %assert ((record.RecordType == "BlockOutput") || ...
+           (record.RecordType == "ExternalInput"))
+
+  %% For model reference, we do not write out instantiation code for
+  %% root-level inputs/outputs (they are instantiated by the top model).
+  %if (IsModelReferenceTarget())
+    %if ((record.RecordType == "BlockOutput") && ...
+         (record.DrivesModelRefRootOutport == "no"))
+      %assign retVal = TLC_TRUE
+    %endif
+  %else
+    %assign retVal = TLC_TRUE
+  %endif
+  
+  %return retVal
+  
+%endfunction
+
+%% Function: LibCacheExportedGlobalSignalsInstance =============================
+%% Abstract:
+%%   Caches the exported global signals.
+%%
+%function LibCacheExportedGlobalSignalsInstance() void
+  %if CompiledModel.NumExportedGlobalSignals > 0
+    %openfile buffer
+    %% root inports
+    %if (ExternalInputs.NumExportedGlobalSignals > 0)
+      %foreach idx = ExternalInputs.NumExternalInputs
+	%assign ei = ExternalInputs.ExternalInput[idx]
+	%if ((ei.StorageClass == "ExportedGlobal") && ...
+	     (SLibWriteOutInstForSignalRec(ei)))
+	  %with ei
+            %assign descStr = SLibGetDescriptionForData(ei)
+            %assign descStr = ISEMPTY(descStr) ? "" : "\n* " + descStr + "\n"
+
+            %assign comment  = "/* '%<ei.BlockName>'%<descStr> */"
+	    %assign dataType = SLibGetRecordDataTypeName(ei, "")
+	    %assign optWidth = LibOptionalVectorWidth(Width)
+	    %<ei.StorageTypeQualifier> %<dataType> ...
+	      %<Identifier>%<optWidth>; %<comment>
+	  %endwith
+	%endif
+      %endforeach
+    %endif
+    %% block io
+    %if BlockOutputs.NumExportedGlobalSignals > 0
+      %foreach boIdx = BlockOutputs.NumExternalBlockOutputs
+	%assign bo = BlockOutputs.ExternalBlockOutput[boIdx]
+	%% - Write out instantiation lines for ExportedGlobal signals.
+	%% - Exclude those signals that drive model reference root outports
+	%%   because memory for these will be allocated by the top model.
+	%if ((bo.StorageClass == "ExportedGlobal") && ...
+	     (SLibWriteOutInstForSignalRec(bo)))
+	  %with bo
+	    %if !ISEMPTY(SigSrc)
+              %assign blkName = SLibGrBlockName(GrSrc)
+            %else
+	      %assign blkName = "Multiple Blocks"
+	    %endif
+
+            %assign descStr = SLibGetDescriptionForData(bo)
+            %assign descStr = ISEMPTY(descStr) ? "" : "\n* " + descStr + "\n"
+
+	    %assign comment  = "/* '%<blkName>'%<descStr> */"
+	    %assign dataType = SLibGetRecordDataTypeName(bo, "")
+	    %assign optWidth = LibOptionalVectorWidth(Width)
+            %<bo.StorageTypeQualifier> %<dataType> ...
+   	    %<Identifier>%<optWidth>; %<comment>
+	  %endwith
+	%endif
+      %endforeach
+    %endif
+    %closefile buffer
+    %assign ::CompiledModel.ExportedGlobalSignalsInstance = buffer
+  %else
+    %assign ::CompiledModel.ExportedGlobalSignalsInstance = ""
+  %endif
+%endfunction  %% LibCacheExportedGlobalSignalsInstance
+
+
+%% Function: FcnGenerateBlockDWorkExternalDeclaration =======================
+%% Abstract:
+%%   Generate the declaration of an external dwork for a block
+%%
+%function FcnGenerateBlockDWorkExternalDeclaration(dwRec) Output
+  %with dwRec
+
+    %assign descStr = SLibGetDescriptionForData(dwRec)
+    %assign descStr = ISEMPTY(descStr) ? "" : "\n* " + descStr + "\n"
+    
+    %assign comment  = "/* %<LibBlockDWorkOwnerComment(dwRec)>%<descStr> */"
+    %if LibHasCustomStorage(dwRec)
+      %<LibReportError("Custom dwork should be defined elsewhere")>
+    %else
+      %assign dataType = SLibGetRecordDataTypeName(dwRec, "")
+      %assign star = (dwRec.StorageClass == "ImportedExternPointer") ? ...
+	"*" : ""
+      %assign optWidth = (dwRec.StorageClass == "ImportedExternPointer") ? ...
+	"" : LibOptionalVectorWidth(dwRec.Width)
+      %assign typeQualifier = dwRec.StorageTypeQualifier
+      %assign identifier    = dwRec.Identifier
+      %<typeQualifier> %<dataType> %<star>%<identifier>%<optWidth>; %<comment>
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: LibCacheExportedGlobalDWorkInstance ===============================
+%% Abstract:
+%%   Caches the exported global DWork.
+%%
+%function LibCacheExportedGlobalDWorkInstance() void
+  %if CompiledModel.NumExportedGlobalDWork > 0
+    %assign numDWorks = CompiledModel.DWorks.NumDWorks
+
+    %openfile buffer
+    %foreach dwIdx = numDWorks
+      %selectfile buffer
+      %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+      %if dwRec.StorageClass == "ExportedGlobal"
+	%<FcnGenerateBlockDWorkExternalDeclaration(dwRec)>
+      %endif
+    %endforeach
+    %closefile buffer
+    %assign ::CompiledModel.ExportedGlobalDWorkInstance = buffer
+  %else
+    %assign ::CompiledModel.ExportedGlobalDWorkInstance = ""
+  %endif
+%endfunction  %% LibCacheExportedGlobalDWorkInstance
+
+
+%% Function: FcnProcessConstBlockIOElement =====================================
+%% Abstract:
+%%   Local function used in building the constant block I/O setup.
+%%
+%function FcnProcessConstBlockIOElement(bo, initValue, idx) void
+
+  %assign rval = REAL(initValue)
+  %if !ISFINITE(rval)
+    %assign dTypeId   = SLibGetRecordDataTypeId(bo)
+    %assign baseSysIdx = GetBaseSystemIdx()
+    %assign identiPath = FcnGetConstBlockIOPath(bo.SigSrc[0], ...
+      bo.SigSrc[1], baseSysIdx)
+    %if bo.Width > 1
+      %assign sigIndexer = SLibGet1DArrayIndexer(bo.Width, "", "",  idx)
+    %else
+      %assign sigIndexer = ""
+    %endif
+    %if SLibGetRecordIsComplex(bo)
+      %assign str = identiPath + bo.Identifier + sigIndexer + "." + tRealPart
+    %else
+      %assign str = identiPath + bo.Identifier + sigIndexer
+    %endif
+    
+    %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_SINGLE
+      %assign dTypeName = SLibGetRecordDataTypeName(bo,tRealPart)
+      %assign str = str + " = (%<dTypeName>)%<rval>;\n"
+    %else
+      %assign str = str + " = %<rval>;\n"
+    %endif
+    %<LibCacheNonFiniteAssignment(str)>\
+    %<LibNeedRealNonFinite(rval)>\
+    %assign rval = 0.0
+    %if bo.DoNotConstify == 0
+      %% We could make this an error condition based on a user preference.
+      %% This indicates that a signal is a non-finite value that can't be 
+      %% made constant.  See g126733.
+      %assign bo.DoNotConstify = 1
+    %endif
+  %endif
+
+  %assign rval = SLibGetFormattedValue(bo, rval)
+  %assign answer = rval %% assume
+  
+  %if SLibGetRecordIsComplex(bo)
+    %assign ival = IMAG(initValue)
+    %if !ISFINITE(ival)
+      %assign dTypeId   = SLibGetRecordDataTypeId(bo)
+      %assign baseSysIdx = GetBaseSystemIdx()
+      %assign identiPath = FcnGetConstBlockIOPath(bo.SigSrc[0], ...
+	bo.SigSrc[1], baseSysIdx)
+      %if bo.Width > 1
+	%assign sigIndexer = SLibGet1DArrayIndexer(bo.Width, "", "",  idx)
+      %else
+	%assign sigIndexer = ""
+      %endif
+
+      %assign str = identiPath + bo.Identifier + sigIndexer + "." + tImagPart
+      
+      %if LibGetDataTypeIdAliasedThruToFromId(dTypeId) == tSS_SINGLE
+	%assign dTypeName = SLibGetRecordDataTypeName(bo,tRealPart)
+	%assign str = str + " = (%<dTypeName>)%<ival>;\n"
+      %else
+	%assign str = str + " = %<ival>;\n"
+      %endif
+      %<LibCacheNonFiniteAssignment(str)>\
+      %<LibNeedRealNonFinite(ival)>\
+      %assign ival = 0.0
+      %if bo.DoNotConstify == 0
+	%assign bo.DoNotConstify = 1 %% ???
+      %endif
+    %endif
+    
+    %assign ival = SLibGetFormattedValue(bo, ival)
+    
+    %assign answer = "{%<rval>, %<ival>}"
+  %endif
+  
+  %return answer
+  
+%endfunction %% FcnProcessConstBlockIOElement
+
+
+%% Function: FcnScopeConstBlockOutputs =========================================
+%% Abstract:
+%%    This function generates a systems non-inlined parameter initialization.
+%%    This function also calls SLibChildScopeValues to inline any child-system
+%%    structure initialization.
+%%
+%% Arguments:
+%%        sysIdx - index for the system to generate initialization
+%%     mdlPrmPtr - index into the ModelParametes vector, that points
+%%                 to the first element of a system instance parameter
+%%                 vector (simliar to first-instance index but also for
+%%                 second and greater instance of a system)
+%%
+%function FcnScopeConstBlockIO(sysIdx, mdlBoPtr) void
+  %assign      boBuff = ""
+  %assign       boArg = System[sysIdx].Interface.ConstBlockIOArgDef
+  %assign bGenerateComments = SLibCommentParameterInstances()
+  %assign numElements = 0
+  %assign       comma = ""
+  %assign     comment = ""
+  %assign         res = ["", 0, 0]
+  
+  %openfile boBuff
+  %if boArg.NumFlatFields > 0
+    %with CompiledModel.BlockOutputs
+      %%
+      %foreach boIdx = boArg.NumFlatFields
+	%assign bo = ConstBlockOutput[mdlBoPtr+boIdx]
+	%%
+	%% If padder is active, all fields are forced to be in the
+	%% const prm structure. This is because the padding 
+	%% has already been computed in Simulink assuming that all 
+	%% fields are going to be in the structure.
+	%%
+	%if bo.RequiredInConstBlockIO == 1 || ...
+	  CompiledModel.PadderActive
+	  %assign    sigWidth = bo.Width
+	  %assign numElements = numElements + sigWidth
+	  %with bo
+	    %if bGenerateComments
+	      %assign comment = "/* %<SLibGrBlockName(GrSrc)> */"
+	    %endif
+	    %assign initValues = ISEMPTY(InitialValue)? CustomInitialValue : ...
+	                                                InitialValue
+            %assign initWidth = SIZE(initValues,1)
+	    %%
+	    %if sigWidth > 1
+	      %<comma> { \
+	      %foreach idx = sigWidth
+		%assign suffix = (idx == sigWidth-1) ? "" : ","
+		%assign initIdx = (initWidth == 1) ? 0 : idx
+		%assign initValue = initValues[initIdx]
+		%if ISEQUAL(TYPE(initValue),"String")
+		  %<initValue>%<suffix> \
+		%else
+		  %<FcnProcessConstBlockIOElement(bo,initValue,idx)>%<suffix> \
+		%endif
+	      %endforeach
+	       }  \
+	    %else
+	      %assign initValue = initValues[0]
+	      %if ISEQUAL(TYPE(initValue),"String")
+		%assign initStr = initValue
+	      %else
+		%assign initStr = FcnProcessConstBlockIOElement(bo,initValue,0)
+	      %endif
+	      %<comma>  %<initStr> \
+	    %endif
+	    %assign comma = ", %<comment>\n"
+	    %if bo.Padding != 0 
+	      %if bo.Padding == 1
+		%<comma> 'a' \
+	      %else
+		%assign padInit = ""
+		%foreach loopIdx = bo.Padding
+		  %assign padInit = padInit +"a"
+		%endforeach
+		%<comma> "%<padInit>" \
+		%% Add initialization for padding char
+	      %endif	    
+	    %endif
+	  %endwith %% bo
+	%endif %% bo.RequiredInConstBlockIO
+      %endforeach 
+    %endwith
+  %endif
+  %assign childValues = SLibChildScopeValues(sysIdx, ...
+    mdlBoPtr+boArg.NumFlatFields, "ConstBlockIO")
+  %assign numElements = numElements + childValues[1]
+  %if childValues[1] > 0
+    %<comma>%<childValues[0]> \
+  %else
+    %<comment> \
+  %endif
+  %closefile boBuff
+  
+  %if numElements > 0
+    %assign res[0] = "%<boBuff>"
+    %assign res[1] = numElements
+  %endif
+  %assign res[2] = childValues[2]
+  %return res
+%endfunction
+
+
+%% Function: LibCacheConstBlockIOInstance ======================================
+%% Abstract:
+%%   Caches the ConstBlockIO instance, and since all its fields are invariant
+%%   it is initialized at this time.
+%%
+%function LibCacheConstBlockIOInstance() void
+  %if BlockOutputs.NumSignalsInConstBlockIO > 0
+    %assign rootSys = GetBaseSystemIdx()
+    %assign res = FcnScopeConstBlockIO(rootSys, 0)
+    %assign ::CompiledModel.ConstBlockIOInstance = res[0]
+  %else
+    %assign ::CompiledModel.ConstBlockIOInstance = ""
+  %endif
+%endfunction  %% LibConstCacheBlockIOInstance
+
+
+%% Function: LibCacheContStatesInstance =======================================
+%% Abstract:
+%%   Caches the continuous States instance.
+%%
+%function LibCacheContStatesInstance() void
+  %if NumContStates > 0
+    %openfile buffer
+    %<tContStateType> %<tContState>;
+    %closefile buffer
+    %assign ::CompiledModel.ContStatesInstance = buffer
+  %else
+    %assign ::CompiledModel.ContStatesInstance = ""
+  %endif
+%endfunction  %% LibCacheContStatesInstance
+
+
+tcwtcw
+%% Function: LibCacheSolverMatricesInstance ===================================
+%% Abstract:
+%%   Caches required solver matrices instance
+%%
+%function LibCacheSolverMatricesInstance() void
+  %if NumContStates > 0
+    %openfile buffer
+    %if (CodeFormat == "Embedded-C")
+      %if ISEQUAL(Solver, "ode3")
+
+        /* A and B matrices used by ODE3 fixed-step solver */
+        static const real_T rt_ODE3_A[3] = {
+            1.0/2.0, 3.0/4.0, 1.0
+        };
+        static const real_T rt_ODE3_B[3][3] = {
+            { 1.0/2.0,     0.0,     0.0 },
+            {     0.0, 3.0/4.0,     0.0 },
+            { 2.0/9.0, 1.0/3.0, 4.0/9.0 }
+        };
+      %elseif ISEQUAL(Solver, "ode5")
+
+        /* A and B matrices used by ODE5 fixed-step solver */
+        static const real_T rt_ODE5_A[6] = {
+            1.0/5.0, 3.0/10.0, 4.0/5.0, 8.0/9.0, 1.0, 1.0
+        };
+        static const real_T rt_ODE5_B[6][6] = {
+            {1.0/5.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+            {3.0/40.0, 9.0/40.0, 0.0, 0.0, 0.0, 0.0},
+            {44.0/45.0, -56.0/15.0, 32.0/9.0, 0.0, 0.0, 0.0},
+      {19372.0/6561.0, -25360.0/2187.0, 64448.0/6561.0, -212.0/729.0, 0.0, 0.0},
+      {9017.0/3168.0,-355.0/33.0,46732.0/5247.0,49.0/176.0,-5103.0/18656.0,0.0},
+      {35.0/384.0, 0.0, 500.0/1113.0, 125.0/192.0, -2187.0/6784.0, 11.0/84.0}
+        };
+      %elseif ISEQUAL(Solver, "ode14x")
+
+        /* N vector used by ODE14x fixed-step solver */
+        static int_T rt_ODE14x_N[4] = {12, 8, 6, 4};
+
+      %endif
+    %endif
+    %closefile buffer
+    %assign ::CompiledModel.SolverMatricesInstance = buffer
+  %else
+    %assign ::CompiledModel.SolverMatricesInstance = ""
+  %endif
+%endfunction  %% LibCacheSolverMatricesInstance
+
+
+%% Function: LibCacheDWorkInstance ============================================
+%% Abstract:
+%%   Caches the States instance.
+%%
+%function LibCacheDWorkInstance() void
+  %if CompiledModel.NumNonExternalDWork > 0
+    %openfile buffer
+    %<SLibAddPreStructDeclarePragma(tDWork)>\    
+    %<tDWorkType> %<tDWork>;
+    %<SLibAddPostStructDeclarePragma(tDWork)>\    
+    %closefile buffer
+    %assign ::CompiledModel.DWorkInstance = buffer
+  %else
+    %assign ::CompiledModel.DWorkInstance = ""
+  %endif
+%endfunction  %% LibCacheDWorkInstance
+
+
+%% Function: LibCachePrevZCStatesInstance =====================================
+%% Abstract:
+%%   Caches the States instance.
+%%
+%function LibCachePrevZCStatesInstance() void
+  %if NumZCEvents > 0
+    %openfile buffer
+    %<tPrevZCStateType> %<tPrevZCState>;
+    %closefile buffer
+    %assign ::CompiledModel.PrevZCStatesInstance = buffer
+  %else
+    %assign ::CompiledModel.PrevZCStatesInstance = ""
+  %endif
+%endfunction  %% LibCachePrevZCStatesInstance
+
+
+%% Function: LibCacheExternalInputsInstance ===================================
+%% Abstract:
+%%   Caches the States instance.
+%%
+%function LibCacheExternalInputsInstance() void
+  %if ExternalInputs.NumAutoSignals > 0
+    %openfile buffer
+    %<SLibAddPreStructDeclarePragma(tInput)>\
+    %<tInputType> %<tInput>;
+    %<SLibAddPostStructDeclarePragma(tInput)>\
+    %closefile buffer
+    %assign ::CompiledModel.ExternalInputsInstance = buffer
+  %else
+    %assign ::CompiledModel.ExternalInputsInstance = ""
+  %endif
+%endfunction  %% LibCacheExternalInputsInstance
+
+
+%% Function: LibCacheExternalOutputsInstance ==================================
+%% Abstract:
+%%   Caches the States instance.
+%%
+%function LibCacheExternalOutputsInstance() void
+  %if NumModelOutputs > 0
+    %assign modelOutputsInRootOutportVector = 0
+    %foreach idx = ExternalOutputs.NumExternalOutputs
+      %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+      %assign sysIdx       = extOut.Block[0]
+      %assign blkIdx       = extOut.Block[1]
+      %assign outportBlock = System[sysIdx].Block[blkIdx]
+      %if !SLibExternalOutputIsVirtual(outportBlock)
+        %assign modelOutputsInRootOutportVector = ...
+	  modelOutputsInRootOutportVector + 1
+      %endif
+    %endforeach
+    %if modelOutputsInRootOutportVector > 0
+      %openfile buffer
+      %<SLibAddPreStructDeclarePragma(tOutput)>\
+      %<tOutputType> %<tOutput>;
+      %<SLibAddPostStructDeclarePragma(tOutput)>\
+      %closefile buffer
+      %assign ::CompiledModel.ExternalOutputsInstance = buffer
+    %else
+      %assign ::CompiledModel.ExternalOutputsInstance = ""
+    %endif
+  %else
+    %assign ::CompiledModel.ExternalOutputsInstance = ""
+  %endif
+%endfunction  %% LibCacheExternalOutputsInstance
+
+
+%% Function: SLibGenModelPrmDefnComment ========================================
+%% Abstract:
+%%   Generate the comment for a model parameter.
+%%
+%function SLibGenModelPrmDefnComment(mdlParam) void
+  %assign pName = mdlParam.Identifier
+  %assign numLocations = SIZE(mdlParam.ReferencedBy, 0)
+  
+  %assign sysIdx = mdlParam.ReferencedBy[0][0]
+  %assign blkIdx = mdlParam.ReferencedBy[0][2]
+  %assign prmIdx = mdlParam.ReferencedBy[0][3]
+  %assign blockX = System[sysIdx].Block[blkIdx]
+  
+  %assign customStr = ""
+  
+  %if blockX.Type != "SubSystem"
+    %assign paramX = blockX.Parameter[prmIdx]
+  
+    %switch paramX.StringType
+      %case "Variable"
+	%if mdlParam.Transformed == "yes"
+	  %assign typeStr = "Variable: %<pName> (Transformed)\n"
+	%else
+	  %assign typeStr = "Variable: %<pName>\n"
+	%endif
+	%break
+      %case "Expression"
+	%assign typeStr = "Expression: %<paramX.String>\n"
+	%break
+      %default
+	%assign typeStr = "Computed Parameter: %<paramX.Name>\n"
+	%break
+    %endswitch
+    
+    %if ISFIELD(paramX,"DefSideComment")
+      %assign customStr = "* Comment: %<paramX.DefSideComment>\n"
+    %endif
+  %else
+    %assign typeStr = "Mask variable: %<pName>\n"    
+  %endif
+
+  %if numLocations > 1
+    %assign blkList = ""
+    %foreach idx = numLocations
+      %assign blkName = SLibGrBlockName(mdlParam.GraphicalRef[idx])
+      %assign blkList = blkList + "* '%<blkName>'\n"
+    %endforeach
+    %assign referencedByStr = " * Referenced by blocks:\n" ...
+      " %<STRING(blkList)>"
+  %else
+    %assign blkName = SLibGrBlockName(mdlParam.GraphicalRef[0])
+    %assign referencedByStr = "* '%<blkName>'\n"
+  %endif
+
+  %assign descStr = SLibGetDescriptionForData(mdlParam)
+  %assign descStr = ISEMPTY(descStr) ? "" : "* " + descStr + "\n"
+
+  %assign comment = ...
+    "/* %<STRING(typeStr)>" ...
+    " %<STRING(customStr)>" ...
+    " %<referencedByStr>" ...
+    "%<STRING(descStr)>" ...
+    " */"
+
+  %return comment
+%endfunction %% SLibGenModelPrmDefnComment
+
+
+%% Function: SLibGenModelParamDefn ============================================
+%% Abstract:
+%%   Generates a parameter declaration for placement in model parameter
+%%   structure, rtP.  Also works for declaration of imported, exported, or
+%%   custom parameters.
+%%   
+%%   The function uses all information from the ModelParameters table
+%%   instead of referencing back to the block parameter.
+%%
+%%   Arguments:
+%%        mdlParam - A Parameter record from the ModelParameters table
+%%
+%%   Returns:
+%%        A string declaring the given parameter e.g.
+%%        real_T a;                /* Comments */
+%%        int8_T myGain_Gain[10];  /* Comments */
+%%
+%function SLibGenModelParamDefn(mdlParam) void
+  %% parameter name
+  %assign pName = mdlParam.Identifier
+
+  %% ignore empty parameters
+  %assign value = mdlParam.Value
+  %if ISEMPTY(value)
+    %return ""
+  %endif
+  
+  %% size
+  %assign nRows = SIZE(value, 0)
+  %assign nCols = SIZE(value, 1)
+  %% Safely ignore matrices of the form [[]; [];]
+  %if nRows < 1 || nCols < 1
+    %return ""
+  %endif
+    
+  %if nRows > 1 && nCols > 1  
+    %assign optWidth = "[%<nRows*nCols>]"
+  %elseif nRows > 1                  %% Column Vector
+    %assign optWidth = "[%<nRows>]"
+  %elseif nCols > 1                  %% Row Vector
+    %assign optWidth = "[%<nCols>]"
+  %else                              %% Scalar
+    %assign optWidth = ""
+  %endif
+  
+  %if LibHasCustomStorage(mdlParam)
+    %return LibCustomData(mdlParam,"declare",optWidth,"")
+  %endif
+
+  %% data type
+  %assign dataType = SLibGetRecordDataTypeName(mdlParam, "")
+
+  %% side comment
+  %assign comment = SLibGenModelPrmDefnComment(mdlParam)
+  
+  %% storage class
+  %switch mdlParam.StorageClass
+    %case "Auto"
+    %case "Auto_SFCN"
+      %if SLibAreSimulinkGlobalParamsUnstructured()
+	%assign pName     = FcnGetAutoParamIdentifier(mdlParam)
+	%assign externStr = "extern"
+      %else
+	%assign externStr = ""
+      %endif
+      %assign star = ""
+      %break
+    %case "ExportedGlobal"
+    %case "ImportedExtern"
+      %assign externStr = "extern"
+      %assign star = ""
+      %break
+    %case "ImportedExternPointer"
+      %assign externStr = "extern"
+      %assign star = "*"
+      %assign optWidth = ""
+      %break
+    %case "Custom"
+      %assign errTxt = "Should not get here; should have exited local fcn above"
+      %<LibReportFatalError(errTxt)>
+    %default
+      %assign errTxt = "Unknown storage class: %<mdlParam.StorageClass>"
+      %<LibReportFatalError(errTxt)>
+  %endswitch
+  
+  %% type qualifier
+  %assign tq = mdlParam.TypeQualifier
+  
+  %% declaration string
+  %assign retStr = ...
+    "%<externStr> %<tq> %<dataType> %<star>%<pName>%<optWidth>;"...
+    "%<STRING(comment)>\n"
+  %return retStr
+  
+%endfunction %% SLibGenModelParamDefn
+
+
+%% Function: SLibGenUnstrModelParamInstance ===================================
+%% Abstract:
+%%   Generates the code for instantiating exported unstructured parameters.
+%%   
+%%   The function uses all information from the ModelParameters table
+%%   instead of referencing back to the block parameter.
+%%
+%%   Arguments:
+%%        mdlParam - A Parameter record from the ModelParameters table
+%%
+%%   Returns:
+%%        A string instantiating the given parameter e.g.
+%%        real_T Kp = 5.0;          /* Comments */
+%%
+%function SLibGenUnstrModelParamInstance(mdlParam) void
+
+  %if (mdlParam.StorageClass == "ExportedGlobal")
+    %assign pName = mdlParam.Identifier
+  %elseif ((mdlParam.StorageClass == "Auto") && ...
+           (SLibAreSimulinkGlobalParamsUnstructured()))
+    %assign pName = FcnGetAutoParamIdentifier(mdlParam)
+  %else
+    %assign errTxt = "SLibGenUnstrModelParamInstance only supports " + ...
+      "exported unstructured parameters."
+    %<LibReportFatalError(errTxt)>
+  %endif
+  
+  %if ISEMPTY(mdlParam.Value)
+    %return ""
+  %endif
+    
+  %% Initialization string
+  %assign initStr = LibParameterInstanceInitStr(mdlParam)
+
+  %if !WHITE_SPACE(initStr)
+    %% Size
+    %assign nRows    = SIZE(mdlParam.Value, 0)
+    %assign nCols    = SIZE(mdlParam.Value, 1)
+    %assign optWidth = LibOptionalMatrixWidth(nRows, nCols)
+    
+    %% Data type
+    %assign complex = mdlParam.ComplexSignal
+    %if (complex)
+      %assign dataType = LibGetDataTypeComplexNameFromId(mdlParam.DataTypeIdx)
+    %else
+      %assign dataType = LibGetDataTypeNameFromId(mdlParam.DataTypeIdx)
+    %endif
+    
+    %% type qualifier
+    %assign tq = mdlParam.TypeQualifier
+    
+    %% side comment
+    %assign comment = SLibGenModelPrmDefnComment(mdlParam)
+    %return "%<tq> %<dataType> %<pName>%<optWidth> = %<initStr>; %<comment> \n" 
+  %else
+    %return ""
+  %endif
+%endfunction %% FcnGenUnstrModelParamInstance
+
+
+%% Function: LibDWorkInstanceIsEmpty ==========================================
+%% Abstract:
+%%   Determine if the DWork instance cache is empty
+%%
+%function LibDWorkInstanceIsEmpty() void
+  %<LibTrapCacheAssert(DWorkInstance)>
+  %return WHITE_SPACE(DWorkInstance)
+%endfunction
+
+
+%% Function: LibDumpDWorkInstance =============================================
+%% Abstract:
+%%   Place the DWork instance cache in the output stream.
+%%
+%function LibDumpDWorkInstance() Output
+  %<LibTrapCacheAssert(DWorkInstance)>\
+  %<DWorkInstance>\
+  %<SLibResetTLCGlobal("DWorkInstance")>\
+%endfunction
+
+
+%% Function: LibPrevZCStatesInstanceIsEmpty ===================================
+%% Abstract:
+%%   Determine if the previous zc states instance cache is empty
+%%
+%function LibPrevZCStatesInstanceIsEmpty() void
+  %<LibTrapCacheAssert(PrevZCStatesInstance)>
+  %return WHITE_SPACE(PrevZCStatesInstance)
+%endfunction
+
+
+%% Function: LibDumpPrevZCStatesInstance ======================================
+%% Abstract:
+%%   Place the ZCStates instance cache in the output stream.
+%%
+%function LibDumpPrevZCStatesInstance() Output
+  %<LibTrapCacheAssert(PrevZCStatesInstance)>\
+  %<PrevZCStatesInstance>\
+  %<SLibResetTLCGlobal("PrevZCStatesInstance")>\
+%endfunction
+
+
+%% Function: LibExternalInputsInstanceIsEmpty =================================
+%% Abstract:
+%%   Determine if the external inputs instance cache is empty
+%%
+%function LibExternalInputsInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ExternalInputsInstance)>
+  %return WHITE_SPACE(ExternalInputsInstance)
+%endfunction
+
+
+%% Function: LibDumpExternalInputsInstance ====================================
+%% Abstract:
+%%   Place the external inputs instance cache in the output stream.
+%%
+%function LibDumpExternalInputsInstance() Output
+  %<LibTrapCacheAssert(ExternalInputsInstance)>\
+  %<ExternalInputsInstance>\
+  %<SLibResetTLCGlobal("ExternalInputsInstance")>\
+%endfunction
+
+
+%% Function: LibExternalOutputsInstanceIsEmpty ================================
+%% Abstract:
+%%   Determine if the external outputs instance cache is empty
+%%
+%function LibExternalOutputsInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ExternalOutputsInstance)>
+  %return WHITE_SPACE(ExternalOutputsInstance)
+%endfunction
+
+
+%% Function: LibDumpExternalOutputsInstance ===================================
+%% Abstract:
+%%   Place the external outputs instance cache in the output stream.
+%%
+%function LibDumpExternalOutputsInstance() Output
+  %<LibTrapCacheAssert(ExternalOutputsInstance)>\
+  %<ExternalOutputsInstance>\
+  %<SLibResetTLCGlobal("ExternalOutputsInstance")>\
+%endfunction
+
+
+%% Function: LibContStatesInstanceIsEmpty =====================================
+%% Abstract:
+%%   Determine if the continuous states instance cache is empty
+%%
+%function LibContStatesInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ContStatesInstance)>
+  %return WHITE_SPACE(ContStatesInstance)
+%endfunction
+
+
+%% Function: LibDumpContStatesInstance ========================================
+%% Abstract:
+%%   Place the continuous states instance cache in the output stream.
+%%
+%function LibDumpContStatesInstance() Output
+  %<LibTrapCacheAssert(ContStatesInstance)>\
+  %<ContStatesInstance>\
+  %<SLibResetTLCGlobal("ContStatesInstance")>\
+%endfunction
+
+
+%% Function: LibSolverMatricesInstanceIsEmpty =================================
+%% Abstract:
+%%   Determine if the solver matrices instance cache is empty
+%%
+%function LibSolverMatricesInstanceIsEmpty() void
+  %<LibTrapCacheAssert(SolverMatricesInstance)>
+  %return WHITE_SPACE(SolverMatricesInstance)
+%endfunction
+
+
+%% Function: LibDumpSolverMatricesInstance ====================================
+%% Abstract:
+%%   Place the solver matrices instance cache in the output stream.
+%%
+%function LibDumpSolverMatricesInstance() Output
+  %<LibTrapCacheAssert(SolverMatricesInstance)>\
+  %<SolverMatricesInstance>\
+  %<SLibResetTLCGlobal("SolverMatricesInstance")>\
+%endfunction
+
+
+%% Function: LibBlockIOInstanceIsEmpty ========================================
+%% Abstract:
+%%   Determine if the block I/O instance instance cache is empty
+%%
+%function LibBlockIOInstanceIsEmpty() void
+  %<LibTrapCacheAssert(BlockIOInstance)>
+  %assign num =  BlockOutputs.NumSignalsInBlockIO - ...
+    BlockOutputs.NumModelReferenceRootOutput 
+  %assert( num >= 0)
+  %return (num == 0)
+%endfunction
+
+
+%% Function: LibDumpBlockIOInstance ===========================================
+%% Abstract:
+%%   Place the block I/O instance cache in the output stream.
+%%
+%function LibDumpBlockIOInstance() Output
+  %<LibTrapCacheAssert(BlockIOInstance)>\
+  %<BlockIOInstance>\
+  %<SLibResetTLCGlobal("BlockIOInstance")>\
+%endfunction
+
+
+%% Function: LibConstBlockIOInstanceIsEmpty ====================================
+%% Abstract:
+%%   Determine if the const block I/O instance instance cache is empty
+%%
+%function LibConstBlockIOInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ConstBlockIOInstance)>
+  %return WHITE_SPACE(ConstBlockIOInstance)
+%endfunction
+
+
+%% Function: LibDumpConstBlockIOInstance =======================================
+%% Abstract:
+%%   Place the const block I/O instance cache in the output stream.
+%%
+%function LibDumpConstBlockIOInstance() Output
+  %<LibTrapCacheAssert(ConstBlockIOInstance)>\
+  %<ConstBlockIOInstance>\
+  %<SLibResetTLCGlobal("ConstBlockIOInstance")>\
+%endfunction
+
+
+%% Function: LibExportedGlobalSignalsInstanceIsEmpty ===========================
+%% Abstract:
+%%   Determine if the exported global signals instance instance cache is empty
+%%
+%function LibExportedGlobalSignalsInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ExportedGlobalSignalsInstance)>
+  %return WHITE_SPACE(ExportedGlobalSignalsInstance)
+%endfunction
+
+
+%% Function: LibDumpExportedGlobalSignalsInstance ==============================
+%% Abstract:
+%%   Place the exported global signals instance cache in the output stream.
+%%
+%function LibDumpExportedGlobalSignalsInstance() Output
+  %<LibTrapCacheAssert(ExportedGlobalSignalsInstance)>\
+  %<ExportedGlobalSignalsInstance>\
+
+  %<SLibResetTLCGlobal("ExportedGlobalSignalsInstance")>\
+%endfunction
+
+
+%% Function: LibExportedGlobalDWorkInstanceIsEmpty ===========================
+%% Abstract:
+%%   Determine if the exported global dwork instance instance cache is empty
+%%
+%function LibExportedGlobalDWorkInstanceIsEmpty() void
+  %<LibTrapCacheAssert(ExportedGlobalDWorkInstance)>
+  %return WHITE_SPACE(ExportedGlobalDWorkInstance)
+%endfunction
+
+
+%% Function: LibDumpExportedGlobalDWorkInstance ==============================
+%% Abstract:
+%%   Place the exported global dwork instance cache in the output stream.
+%%
+%function LibDumpExportedGlobalDWorkInstance() Output
+  %<LibTrapCacheAssert(ExportedGlobalDWorkInstance)>\
+  %<ExportedGlobalDWorkInstance>\
+
+  %<SLibResetTLCGlobal("ExportedGlobalDWorkInstance")>\
+%endfunction
+
+
+%endif %% _COMMONPRMLIB_
+
+%% [EOF] commonprmlib.tlc

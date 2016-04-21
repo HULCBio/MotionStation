@@ -1,0 +1,344 @@
+%% $RCSfile: sffis.tlc,v $
+%% $Revision: 1.6 $
+%% $Date: 2001/11/13 15:09:19 $
+%%
+%% Murali Yeddanapudi, 14-Nov-1997
+%% Copyright 1994-2000 The MathWorks, Inc. All Rights Reserved
+%%
+%% Abstract:
+%%      Target file for the Level 2 S-function sffis.c
+
+%implements "sffis" "C"
+
+
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibDefinePWork(block, "FISPointer", 1)>
+  %if !EXISTS("FLT_sffis")
+    %assign ::FLT_sffis = 1
+    %openfile buffer
+    #include "rt_fuzzy.h"
+
+    extern void fisAssignMfPointer(FIS *fis);
+    extern void fisCheckDataStructure(FIS *fis);
+    extern void fisAssignFunctionPointer(FIS *fis);
+    extern IO   *fisBuildIoList(int_T node_n, int_T *mf_n);
+    extern void fisComputeOutputMfValueArray(FIS *fis, int numofpoints);
+    extern char **fisCreateMatrix(int row_n, int col_n, int element_size);
+    extern void fisFreeFisNode(FIS *fis);
+    extern void fisEvaluate(FIS *fis, int numofpoints);
+    %closefile buffer
+    %<LibCacheIncludes(buffer)>
+  %endif
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+
+%% Function: Start ============================================================
+%% Abstract:
+%%
+%function Start(block, system) Output
+  /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+  {
+    FIS  *fis;
+
+    if ( (fis = (FIS *)calloc(1, sizeof(FIS))) == NULL ) {
+      %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+      return;
+    }
+    %assign fis = block.SFcnFIS
+    %with fis
+    %%
+    %assign numOfPoints = 101
+    %%
+    %if EXISTS("name")
+      (void)strcpy(fis->name, "%<name>");
+    %endif
+    %%
+    %assign fisType = ""
+    %if EXISTS("type")
+      (void)strcpy(fis->type, "%<type>");
+      %assign fisType = type
+    %endif
+    %%
+    %if EXISTS("andMethod")
+      (void)strcpy(fis->andMethod, "%<andMethod>");
+    %endif
+    %%
+    %if EXISTS("orMethod")
+      (void)strcpy(fis->orMethod, "%<orMethod>");
+    %endif
+    %if EXISTS("defuzzMethod")
+      (void)strcpy(fis->defuzzMethod, "%<defuzzMethod>");
+    %endif
+    %if EXISTS("impMethod")
+      (void)strcpy(fis->impMethod, "%<impMethod>");
+    %endif
+    %if EXISTS("aggMethod")
+      (void)strcpy(fis->aggMethod, "%<aggMethod>");
+    %endif
+
+    %%
+    %% Parse and setup the input record
+    %%
+    %assign ninputs = 0
+    %if EXISTS("input")
+    {
+      IO    *io_list;
+      int_T *in_mf_n;
+      int_T i;
+
+      %assign ninputs = SIZE(input,1)
+      if ( (in_mf_n = (int_T *)calloc(%<ninputs>, sizeof(int_T))) == NULL ) {
+	%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	return;
+      }
+      %foreach idx = ninputs
+        %assign nmf = 0
+        %with input[idx]
+	%if EXISTS("mf")
+          %assign nmf = SIZE(mf,1)
+        %endif
+        %endwith
+        in_mf_n[%<idx>] = %<nmf>;
+      %endforeach
+      io_list = fisBuildIoList(%<ninputs>, in_mf_n);
+      free(in_mf_n);
+
+      fis->in_n = %<ninputs>;
+      if ( (fis->input = (IO **)calloc(%<ninputs>, sizeof(IO *))) == NULL ) {
+	%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	return;
+      }
+      for (i=0; i< %<ninputs>; i++) {
+        fis->input[i] = io_list+i;
+      }
+
+      %foreach idx = ninputs
+        %with input[idx]
+	  (void) strcpy(fis->input[%<idx>]->name,"%<name>");
+	  fis->input[%<idx>]->bound[0] = %<range[0]>;
+	  fis->input[%<idx>]->bound[1] = %<range[1]>;
+	  %if EXISTS("mf")
+	    %assign nmf = SIZE(mf,1)
+	    fis->input[%<idx>]->mf_n = %<nmf>;
+	    %foreach jdx = nmf
+	      (void) strcpy(fis->input[%<idx>]->mf[%<jdx>]->label, "%<mf[jdx].name>");
+	      (void) strcpy(fis->input[%<idx>]->mf[%<jdx>]->type, "%<mf[jdx].type>");
+              %assign paramSize = SIZE(mf[jdx].params, 1)
+			  fis->input[%<idx>]->mf[%<jdx>]->params = (real_T *)calloc(%<paramSize>, sizeof(real_T));
+              if (fis->input[%<idx>]->mf[%<jdx>]->params == NULL) {
+	             %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	             return;
+                }
+	          %foreach pdx = paramSize
+			     fis->input[%<idx>]->mf[%<jdx>]->params[%<pdx>] = %<mf[jdx].params[pdx]>;
+	          %endforeach
+	    %endforeach
+	  %endif
+        %endwith
+
+      %endforeach
+    }
+    %endif
+
+    %%
+    %% Parse and setup the output record
+    %%
+    %assign noutputs = 0
+    %if EXISTS("output")
+    {
+      IO    *io_list;
+      int_T *out_mf_n;
+      int_T i;
+
+      %assign noutputs = SIZE(output,1)
+      if ((out_mf_n = (int_T *)calloc(%<noutputs>, sizeof(int_T))) == NULL) {
+	%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	return;
+      }
+      %foreach idx = noutputs
+        %assign nmf = 0
+        %with output[idx]
+	%if EXISTS("mf")
+          %assign nmf = SIZE(mf,1)
+        %endif
+        %endwith
+        out_mf_n[%<idx>] = %<nmf>;
+      %endforeach
+      io_list = fisBuildIoList(%<noutputs>, out_mf_n);
+      free(out_mf_n);
+
+      fis->out_n = %<noutputs>;
+      if ( (fis->output = (IO **)calloc(%<noutputs>, sizeof(IO *))) == NULL ) {
+	%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	return;
+      }
+      for (i=0; i< %<noutputs>; i++) {
+        fis->output[i] = io_list+i;
+      }
+
+      %foreach idx = noutputs
+        %with output[idx]
+	  (void) strcpy(fis->output[%<idx>]->name,"%<name>");
+	  fis->output[%<idx>]->bound[0] = %<range[0]>;
+	  fis->output[%<idx>]->bound[1] = %<range[1]>;
+	  %if EXISTS("mf")
+	    %assign nmf = SIZE(mf,1)
+	    fis->output[%<idx>]->mf_n = %<nmf>;
+	    %foreach jdx = nmf
+	      (void) strcpy(fis->output[%<idx>]->mf[%<jdx>]->label, "%<mf[jdx].name>");
+	      (void) strcpy(fis->output[%<idx>]->mf[%<jdx>]->type, "%<mf[jdx].type>");
+              %assign paramSize = SIZE(mf[jdx].params, 1)
+              %%
+              %if LibIsEqual(fisType, "mamdani")
+                fis->output[%<idx>]->mf[%<jdx>]->value_array = (real_T *)calloc(%<numOfPoints>, sizeof(real_T));
+                if (fis->output[%<idx>]->mf[%<jdx>]->value_array == NULL) {
+					%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+					return;
+                }
+			  %endif
+			  %if LibIsEqual(fisType, "sugeno") && LibIsEqual(mf[jdx].type, "constant")
+				fis->output[%<idx>]->mf[%<jdx>]->params = (real_T *)calloc(%<ninputs+1>, sizeof(real_T));
+				if (fis->output[%<idx>]->mf[%<jdx>]->params == NULL) {
+					%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+					return;
+                }
+				for (i = 0; i< %<ninputs>; i++) {
+                    fis->output[%<idx>]->mf[%<jdx>]->params[i] = 0;
+                }
+                fis->output[%<idx>]->mf[%<jdx>]->params[%<ninputs>] = %<mf[jdx].params[0]>;
+              %else
+				fis->output[%<idx>]->mf[%<jdx>]->params = (real_T *)calloc(%<paramSize>, sizeof(real_T));
+				if (fis->output[%<idx>]->mf[%<jdx>]->params == NULL) {
+					%<RTMSetErrStat("\"Memory Allocation Error\"")>;
+					return;
+                }
+ 	            %foreach pdx = paramSize
+				   fis->output[%<idx>]->mf[%<jdx>]->params[%<pdx>] = %<mf[jdx].params[pdx]>;
+	            %endforeach
+              %endif
+              %%
+	    %endforeach %% jdx = nmf
+	  %endif
+        %endwith
+
+      %endforeach
+
+      %%
+      %% Parse and setup the Rules Record
+      %%
+      %assign nrules = 0
+      %if EXISTS("rule")
+	%assign nrules = SIZE(rule,1)
+	fis->rule_n = %<nrules>;
+	fis->rule_list = (int_T **) fisCreateMatrix(%<nrules>, fis->in_n + fis->out_n, sizeof(int_T));
+	if ( (fis->rule_weight = (real_T *)calloc(%<nrules>,sizeof(real_T))) == NULL ) {
+	  %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	  return;
+	}
+	if ( (fis->and_or = (int_T *)calloc(%<nrules>,sizeof(int_T))) == NULL ) {
+	  %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	  return;
+	}
+
+	%foreach idx = nrules
+	  %foreach jdx = ninputs
+	    fis->rule_list[%<idx>][%<jdx>] = %<CAST("Number",rule[idx].antecedent[jdx])>;
+	  %endforeach
+	  %foreach jdx = noutputs
+	    fis->rule_list[%<idx>][%<ninputs+jdx>] = %<CAST("Number",rule[idx].consequent[jdx])>;
+	  %endforeach
+	  fis->rule_weight[%<idx>] = %<rule[idx].weight[0]>;
+	  fis->and_or[%<idx>]      = %<CAST("Number",rule[idx].connection[0])>;
+	%endforeach
+
+	fisAssignMfPointer(fis);
+	fisAssignFunctionPointer(fis);
+
+	if ( (fis->firing_strength = (real_T *)calloc(%<nrules>, sizeof(real_T))) == NULL ) {
+	  %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	  return;
+	}
+	if ( (fis->rule_output = (real_T *)calloc(%<nrules>, sizeof(real_T))) == NULL ) {
+	  %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	  return;
+	}
+	if ( (fis->mfs_of_rule = (real_T *)calloc(%<ninputs>, sizeof(real_T))) == NULL ) {
+	  %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	  return;
+	}
+
+	%if LibIsEqual(fisType, "mamdani")
+	  fis->BigOutMfMatrix = (real_T *) calloc(%<nrules*numOfPoints>, sizeof(real_T));
+	  if (fis->BigOutMfMatrix == NULL) {
+	    %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	    return;
+	  }
+	  fis->BigWeightMatrix = (real_T *) calloc(%<nrules*numOfPoints>, sizeof(real_T));
+	  if (fis->BigWeightMatrix == NULL) {
+	    %<RTMSetErrStat("\"Memory Allocation Error\"")>;
+	    return;
+	  }
+    	  for (i = 0; i < %<noutputs>; i++) {
+	    fisComputeOutputMfValueArray(fis, %<numOfPoints>);
+	  }
+	%endif
+	fisCheckDataStructure(fis);
+      %endif
+    }
+    %endif
+    %endwith %% fis
+    fis->next = NULL;
+    %<LibBlockPWork(FISPointer, "", "", 0)> = fis;
+  }
+%endfunction %% Start
+
+
+
+%% Function: mdlOutputs =======================================================
+%% Abstract:
+%%
+%%
+%function Outputs(block, system) Output
+  /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+  {
+    FIS *fis = %<LibBlockPWork(FISPointer, "", "", 0)>;
+
+    %% Copy over the input
+    %assign ninputs = LibDataInputPortWidth(0)
+    %foreach idx = ninputs
+      fis->input[%<idx>]->value = %<LibBlockInputSignal(0, "", "", idx)>;
+    %endforeach
+
+    %% Compute the output
+    fisEvaluate(fis, 101);
+
+    %assign noutputs = LibDataOutputPortWidth(0)
+    %foreach idx = noutputs
+     %<LibBlockOutputSignal(0, "", "", idx)>  = fis->output[%<idx>]->value;
+    %endforeach
+  }
+%endfunction
+
+
+
+%% Function: Terminate ========================================================
+%% Abstract:
+%%
+%function Terminate(block, system) Output
+  /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+  {
+    FIS *fis = %<LibBlockPWork(FISPointer, "", "", 0)>;
+    fisFreeFisNode(fis);
+
+  }
+
+%endfunction %% Terminate
+
+
+%% EOF: sffis.tlc

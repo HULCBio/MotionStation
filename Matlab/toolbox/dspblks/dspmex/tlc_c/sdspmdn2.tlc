@@ -1,0 +1,295 @@
+%% $RCSfile: sdspmdn2.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:08:59 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Output the median value of an input vector
+
+%implements sdspmdn2 "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockTypeSetup ================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspsrt_rt")>
+
+%endfunction  %%BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+%%
+%% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% I/O port data types
+    %assign inDT  = FixPt_GetInputDataType(0)
+    %assign isFixPt = !FixPt_DataTypeIsFloat(inDT)
+    %assign block = block + isFixPt
+    %%
+    %assign INPORT_DATA  = 0
+    %assign OUTPORT_DATA = 0
+    %assign QuickSort = 1
+    %assign InsertionSort = 2
+    %%
+    %assign dtype    = LibBlockInputSignalDataTypeName(INPORT_DATA,"")
+    %assign dtype_real = LibBlockInputSignalDataTypeName(INPORT_DATA,"%<tRealPart>")
+    %assign inSingle = ((dtype == "real32_T") || (dtype == "creal32_T")) ? 1 : 0
+    %assign cplx     = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+    %assign width       = LibBlockInputSignalWidth(INPORT_DATA)
+    %assign numDims     = LibBlockInputSignalNumDimensions(INPORT_DATA)
+    %assign dims        = LibBlockInputSignalDimensions(INPORT_DATA)  
+    %assign sortAlgorithm = CAST("Number",SFcnParamSettings.Sort_Type)
+    %%
+    %assign isFullMatrix = LibBlockInputSignalIsFullMatrix(INPORT_DATA)
+    %assign frame        = LibBlockInputSignalIsFrameData(INPORT_DATA)
+    %assign nChans       = (frame || isFullMatrix) ? dims[1] : 1
+    %assign nSamps       = (frame || isFullMatrix) ? dims[0] : width
+    %assign nSampsMinusOne = nSamps - 1
+    %assign midIdx         = nSampsMinusOne / 2
+    %assign midIdxMinusOne = midIdx - 1
+    %assign nSampsDivTwo   = nSamps / 2
+    %assign nSampsDivTwoMinusOne = nSampsDivTwo - 1
+    %%
+    %if (isFixPt)
+        %assign outDT  = FixPt_GetOutputDataType(0)
+        %assign accDT  = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+        %assign prodDT = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+        %assign block  = block + inDT + outDT + accDT + prodDT
+    %endif
+    %assign block = block + INPORT_DATA + OUTPORT_DATA  + dtype  + dtype_real  ... 
+                        + inSingle + cplx + nChans + nSamps + nSampsMinusOne ...
+                        + midIdx + midIdxMinusOne + nSampsDivTwo ...
+                        + nSampsDivTwoMinusOne + sortAlgorithm ...
+                        + QuickSort + InsertionSort
+%%
+%endfunction %% BlockInstanceSetup
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* DSP Blockset Sort (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  {
+	uint32_T *index = %<LibBlockDWorkAddr(Index,"","",0)>;
+    int32_T j;
+	for (j=0; j < %<nSamps>; j++) {
+		*index++ = j;
+	}
+  }
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+{
+    /* DSP Blockset Median (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %if (isFixPt)
+        %createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                                  overflowMode FixPtSaturationMode}
+        %assign inLabel = LibBlockInputSignal(INPORT_DATA, "uIdx", "","0")
+        %createrecord inRec { label     inLabel; ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+        %assign outLabel = LibBlockOutputSignal(OUTPORT_DATA, "yIdx", "","0")
+        %createrecord outRec { label    outLabel; ...
+                              dTypeRec  outDT; ...
+                              isComplex cplx }
+        %createrecord prodRec { label     "prod"; ...
+                                dTypeRec  prodDT; ...
+                                isComplex 0 }
+    %endif
+    %%
+    %if (!isFixPt)
+        %assign strDType = inSingle ? "R" : "D"
+    %elseif (isFixPt && cplx)
+        %if (accDT.Name == "int8_T")   
+            %assign strDType = "S08"
+        %elseif (accDT.Name == "uint8_T")  
+            %assign strDType = "U08"
+        %elseif (accDT.Name == "int16_T")  
+            %assign strDType = "S16"
+        %elseif (accDT.Name == "uint16_T") 
+            %assign strDType = "U16"
+        %elseif (accDT.Name == "int32_T")  
+            %assign strDType = "S32"
+        %elseif (accDT.Name == "uint32_T") 
+            %assign strDType = "U32"
+        %else
+            %error "Code generation not supported for input data type."
+        %endif
+    %else
+        %if (dtype_real == "int8_T")   
+            %assign strDType = "S08"
+        %elseif (dtype_real == "uint8_T")  
+            %assign strDType = "U08"
+        %elseif (dtype_real == "int16_T")  
+            %assign strDType = "S16"
+        %elseif (dtype_real == "uint16_T") 
+            %assign strDType = "U16"
+        %elseif (dtype_real == "int32_T")  
+            %assign strDType = "S32"
+        %elseif (dtype_real == "uint32_T") 
+            %assign strDType = "U32"
+        %else
+            %error "Code generation not supported for accumulator data type."
+        %endif
+    %endif
+    %%
+    %%
+    %if nSamps > 1
+    %%
+        const %<dtype>*u = %<LibBlockInputSignalAddr(INPORT_DATA,"","", 0)>;
+        %if (!isFixPt)
+            %<dtype> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA, "","", 0)>;
+        %endif
+        uint32_T *index = %<LibBlockDWorkAddr(Index,"","",0)>;
+        %%
+        %if (nChans > 1)
+        int_T i;
+        for(i=0; i<%<nChans>; i++) {
+        %endif
+        %%
+        %if cplx
+            %<calculateMagSq(block)>
+            %if (sortAlgorithm == QuickSort)
+                MWDSP_Sort_Qk_Idx_%<strDType>(magSqVal, index, 0, %<nSampsMinusOne>);
+            %else
+                MWDSP_Sort_Ins_Idx_%<strDType>(magSqVal, index, %<nSamps>);
+            %endif
+        %else
+            %if (sortAlgorithm == QuickSort)
+                MWDSP_Sort_Qk_Idx_%<strDType>(u, index, 0, %<nSampsMinusOne>);
+            %else
+                MWDSP_Sort_Ins_Idx_%<strDType>(u, index, %<nSamps>);
+            %endif
+        %endif
+        %%
+        %<outputResult(block)>\
+        %%
+        %if (nChans > 1)
+	        u += %<nSamps>;
+        }
+        %endif
+        %%
+    %else   
+        %%
+        %% single sample optimization : copy input to output
+        %%
+        %<LibBlockCopyInputsToOutputs(INPORT_DATA, OUTPORT_DATA)>\
+        %%
+    %endif
+}
+%endfunction
+
+%% Function: calculateMagSq ===============================================
+%%
+%function calculateMagSq(block) Output
+%%
+    %if (isFixPt)
+        %createrecord rndSatRec {roundingMode FixPtRoundingMode; ...
+                                 overflowMode FixPtSaturationMode}
+        %%assign accLabel = LibBlockDWork(Sort_In,"k","",0)
+        %createrecord accRec    {label "magSqVal[k]"; dTypeRec accDT;  isComplex 0}
+        %createrecord prodRec   {label "prod";   dTypeRec prodDT; isComplex 0}
+        %createrecord inRealRec {label "u->re";  dTypeRec inDT;   isComplex 0}
+        %createrecord inImagRec {label "u->im";  dTypeRec inDT;   isComplex 0}
+        %%
+        %<prodDT.Name> prod;
+        %<accDT.Name> *magSqVal = %<LibBlockDWorkAddr(Sort_In,"","",0)>;
+        int_T k;
+        for (k=0; k<%<nSamps>; k++) {
+          %<FixptMAC(accRec, "=",  prodRec, inRealRec, inRealRec, rndSatRec)>
+          %<FixptMAC(accRec, "+=", prodRec, inImagRec, inImagRec, rndSatRec)> 
+          u++;         
+        }
+        u -= %<nSamps>;
+    %else
+        %<dtype_real> *magSqVal = %<LibBlockDWorkAddr(Sort_In,"","",0)>;
+        int_T j;
+        for (j=0; j<%<nSamps>; j++) {
+            magSqVal[j] = CMAGSQ(u[j]);
+        }
+    %endif
+%%
+%endfunction
+
+%% Function: outputResult ==========================================================
+%%
+%function outputResult(block) Output
+%% 
+{        
+    %if (isFixPt)
+        %createrecord rndSatRec { roundingMode FixPtRoundingMode; ...
+                                  overflowMode FixPtSaturationMode}
+        %assign inLabel = LibBlockInputSignal(INPORT_DATA, "uidx", "","0")
+        %createrecord inRec { label     inLabel; ...
+                              dTypeRec  inDT; ...
+                              isComplex cplx }
+        %if nChans > 1
+            %assign outLabel = LibBlockOutputSignal(OUTPORT_DATA, "i", "","0")
+            %assign uIdxChanStr = "i*%<nSamps> +"
+        %else
+            %assign outLabel = LibBlockOutputSignal(OUTPORT_DATA, "0", "","0")
+            %assign uIdxChanStr = ""
+        %endif
+        %createrecord outRec { label     outLabel; ...
+                               dTypeRec  outDT; ...
+                               isComplex cplx }
+        %%
+        %if (nSamps % 2 == 0)
+            %% Even number of Samples
+            %createrecord accRec { label     "acc"; ...
+                                   dTypeRec  accDT; ...
+                                   isComplex cplx }
+            %if (cplx)
+                %<accDT.ComplexName> %<accRec.label>;
+            %else
+                %<accDT.Name> %<accRec.label>;
+            %endif
+            int_T uidx = %<uIdxChanStr> index[%<nSampsDivTwoMinusOne>];
+            %<DSPFixptLibEquals(accRec, inRec, rndSatRec)>\
+            uidx = %<uIdxChanStr> index[%<nSampsDivTwo>];
+            %<DSPFixptLibPlusEquals(accRec, inRec, rndSatRec)>\
+            %copyrecord accDT2 accDT
+            %assign accDT2.FixedExp = %<accDT.FixedExp - 1>
+            %if (cplx)
+                %<FixPt_Fix2FixAlwaysOutput("acc.re", accDT, "acc.re", accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+                %<FixPt_Fix2FixAlwaysOutput("acc.im", accDT, "acc.im", accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+            %else
+                %<FixPt_Fix2FixAlwaysOutput("acc", accDT, "acc", accDT2, FixPtRoundingMode, FixPtSaturationMode)>\
+            %endif    
+            %<DSPFixptLibEquals(outRec, accRec, rndSatRec)>\
+        %else
+            %% Odd number of Samples
+            int_T uidx = %<uIdxChanStr> index[%<midIdx>];
+            %<DSPFixptLibEquals(outRec, inRec, rndSatRec)>\
+        %endif
+%%
+    %else   %%Floating-point code
+%% 
+    	%if (nSamps % 2 == 0) 
+            %assign strF = inSingle ? "F" : ""
+	        %if !cplx
+	            *y++ = 0.5%<strF> * (u[index[%<nSampsDivTwoMinusOne>]] + u[index[%<nSampsDivTwo>]]);
+	        %else
+	            const %<dtype> *u0 = &u[index[%<nSampsDivTwoMinusOne>]];
+	            const %<dtype> *u1 = &u[index[%<nSampsDivTwo>]];
+	            y->re     = 0.5%<strF> * (u0->re + u1->re);
+	            (y++)->im = 0.5%<strF> * (u0->im + u1->im);
+	        %endif
+        %else
+	        *y++ = u[index[%<midIdx>]];
+        %endif
+	%endif
+}
+%%
+%endfunction
+
+%% [EOF] sdspmdn2.tlc

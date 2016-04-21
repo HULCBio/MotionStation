@@ -1,0 +1,828 @@
+%% $RCSfile: fixptlook_search.tlc,v $
+%% $Revision: 1.1.6.5 $
+%% $Date: 2004/04/14 23:47:19 $
+%%
+%% This file contains tlc code for generation of fixed point
+%% lookup tables
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: FixPt_IndexSearchTrivial ==========================
+%%
+%function FixPt_IndexSearchTrivial(...
+           xLabel,xDT,...
+           xBreakPointInfo) void
+  %%
+  %if !xBreakPointInfo.evenlySpaced || !ISEQUAL(xBreakPointInfo.spacingValue,1)
+    %%
+    %%START_ASSERT
+    %<LibReportFatalError("Must have trivial spacing.")>
+    %%END_ASSERT
+  %endif
+  %%  
+  %% determine the appropriate size for an unsigned type
+  %%
+  %assign unsignType = utilUnsignedTypeFromDT(xDT)
+  %%
+  %% determine if check for less than smallest point in table is
+  %% needed.
+  %%
+  %assign hiCheckNeeded = FixPt_GreaterThanPossible(xDT,xBreakPointInfo.valueHi)
+  %assign loCheckNeeded = FixPt_LessThanPossible(   xDT,xBreakPointInfo.valueLo)
+  %%
+  %assign baseIndexExpr = "((%<unsignType>)(%<xLabel>%<xBreakPointInfo.zeroAdjustStr>))"
+  %%
+  %if loCheckNeeded
+    %%
+    %if hiCheckNeeded
+      %%
+      %assign indexExpr = "( (%<xLabel><=%<xBreakPointInfo.valueLo>) ? 0U : ( (%<xLabel>>=%<xBreakPointInfo.valueHi>) ? (%<xBreakPointInfo.indexHi>) : %<baseIndexExpr> ) )"
+    %else
+      %assign indexExpr = "( (%<xLabel><=%<xBreakPointInfo.valueLo>) ? 0U : %<baseIndexExpr> )"
+    %endif
+  %else
+    %%
+    %if hiCheckNeeded
+      %assign indexExpr = "( (%<xLabel>>=%<xBreakPointInfo.valueHi>) ? (%<xBreakPointInfo.indexHi>) : %<baseIndexExpr> )"
+    %else
+      %assign indexExpr = baseIndexExpr
+    %endif
+  %endif    
+  %%
+  %return indexExpr
+  %%
+%endfunction %% FixPt_IndexSearchTrivial
+
+    
+%% Function: FixPt_IndexSearchEven ==========================================
+%%
+%% Abstract:  Generate code for finding the indices corresponding to
+%%            the position of an input within a lookup table input vector
+%%
+%%
+%function FixPt_IndexSearchEven(...
+           iLeftLabel,iRghtLabel,...
+           u0Label, u0DT, u0BreakPointInfo,...
+           searchType) Output
+    %%
+    %% determine the appropriate size for an unsigned type
+    %%
+    %assign unsignType = utilUnsignedTypeFromDT(u0DT)
+    %%
+    %% is trivial case?
+    %%
+    %assign spacingIsOne = ISEQUAL(u0BreakPointInfo.spacingValue,1)
+    %%
+    %if spacingIsOne && !FixPt_DataTypeIsFloat(u0DT)
+      %assign completelyTrivialCase = 1
+    %else
+      %assign completelyTrivialCase = 0
+    %endif
+    %%
+    %% determine if check for less than smallest point in table is
+    %% needed.
+    %%
+    %assign hiCheckNeeded = FixPt_GreaterThanPossible(u0DT,u0BreakPointInfo.valueHi)
+    %assign loCheckNeeded = FixPt_LessThanPossible(   u0DT,u0BreakPointInfo.valueLo)
+    %%
+    /* Find the location of current input value in the data table.
+    %if !loCheckNeeded
+     *
+     * Based on the data type of the input, it is impossible for the
+     * search value to be less than the smallest point in the table.
+    %endif
+    %if !hiCheckNeeded
+     *
+     * Based on the data type of the input, it is impossible for the
+     * search value to be greater than the largest point in the table.
+    %endif
+     */
+    %if loCheckNeeded
+      
+        if ( %<u0Label> <= %<u0BreakPointInfo.valueLo> )
+        {
+            /* Less than or equal to the smallest point in the table.
+             */
+            %if ( iLeftLabel != "" )
+                %<iLeftLabel> = 0;
+            %endif
+            %%
+            %if ( iRghtLabel != "" )
+                %<iRghtLabel> = 0;
+            %endif
+        }
+    %endif
+    %if hiCheckNeeded
+        %if loCheckNeeded
+            else\
+        %endif
+        if ( %<u0Label> >= %<u0BreakPointInfo.valueHi> )
+        {
+            /* Greater than or equal to the largest point in the table. */
+            %if ( iLeftLabel != "" )
+                %<iLeftLabel> = %<u0BreakPointInfo.indexHi>;
+            %endif
+            %%
+            %if ( iRghtLabel != "" )
+                %<iRghtLabel> = %<u0BreakPointInfo.indexHi>;
+            %endif
+        }
+    %endif
+    %if loCheckNeeded || hiCheckNeeded
+        else
+    %endif
+    %%
+    %if ( searchType == "Below" ) || ( searchType == "Near" )
+        {
+            %if spacingIsOne
+                %%
+                %<iLeftLabel> = (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> );
+                %%
+            %elseif u0BreakPointInfo.spacingIsPow2
+                %%
+                %% use shift for fast power of 2 division
+                %%
+                /* The table is inlined with even spacing 2^%<u0BreakPointInfo.spacingPow2Exp>.
+                 * The index is found by a %<u0BreakPointInfo.spacingPow2Exp> bit shift right. */
+                %<iLeftLabel> = (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) >> %<u0BreakPointInfo.spacingPow2Exp>;
+            %else
+                %%
+                %% use standard division for non power of 2 cases
+                %%
+                /* The table is inlined and evenly spaced.
+                 * The index is found directly by use of division.
+                 */
+                %if FixPt_DataTypeIsFloat(u0DT)
+                    %<iLeftLabel> = (%<unsignType>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) / %<u0BreakPointInfo.spacingValue>);
+                %else
+                    %<iLeftLabel> = (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) / %<u0BreakPointInfo.spacingValue>;
+                %endif
+            %endif
+            %%
+            %if completelyTrivialCase
+                  %%
+                  %% for a delta of 1, an exact match is always possible
+                  %% so iRght and iLeft are equal
+                  %%
+                  %if ( iRghtLabel != "" )
+                      %<iRghtLabel> = %<iLeftLabel>;
+                  %endif
+            %else        
+              %if ( iRghtLabel != "" )
+                  %<iRghtLabel> = %<iLeftLabel> + 1;
+              %endif
+              %%
+              %% complete the to nearest search
+              %%   put the result in the iLeftLabel
+              %%
+              %if searchType == "Near"
+                  %%
+                  %if u0BreakPointInfo.spacingIsPow2 && !FixPt_DataTypeIsFloat(u0DT)
+                      %%
+  
+                      /* Adjust the index, if necessary, so that it always
+                       * gives the data point nearest the current input value.
+                       * It is necessary to round up iff the last bit shifted
+                       * off was a one.
+                       */
+                      %% fast power of 2 division
+                      %%
+                      %assign mask = PowerOfTwoStr(u0BreakPointInfo.spacingPow2Exp-1,0)
+                      %%
+                      %<iLeftLabel> += ((%<unsignType>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) & %<mask> )) != 0;
+                  %else
+                      %%
+                      %assign unsignTypeU = utilFloatOrUnsignedTypeFromDT(u0DT)
+                      %%
+  
+                      /* Adjust the index, if necessary, so that it always
+                       * gives the data point nearest the current input value.
+                       * It is necessary to round up iff the remainder is greater
+                       * than or equal to half the data spacing.
+                       *     ( spacing / 2 ) <= remainder
+                       * To avoid both division and multiplication and issues of
+                       * rounding and overflow, this test is rearranged.
+                       *     ( spacing - remainder ) <= remainder
+                       */
+                      {
+                          %<unsignTypeU> remainder;
+  
+                          %%
+                          %% standard division for non power of 2 cases
+                          %%
+                          %if FixPt_DataTypeIsFloat(u0DT)
+                              remainder = (%<unsignTypeU>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) - %<u0BreakPointInfo.spacingValue>*%<iLeftLabel>);
+                          %else
+                              remainder = (%<unsignTypeU>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) % %<u0BreakPointInfo.spacingValue>;
+                          %endif
+  
+                          if ( ( %<u0BreakPointInfo.spacingValue> - remainder ) <= remainder )
+                          {
+                              %<iLeftLabel>++;
+                          }
+                      }
+                  %endif
+              %endif
+            %endif
+        }
+    %%
+    %% iLeft is NOT needed outside current scope,
+    %% so by assumption iRght IS needed outside current scope
+    %%
+    %else   %% if searchType == "Above"
+        {
+            %if spacingIsOne
+                %<iRghtLabel> = (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> );
+                %if FixPt_DataTypeIsFloat(u0DT)
+                    %<iRghtLabel> += (%<unsignType>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) != (%<iRghtLabel>));
+                %endif
+            %elseif u0BreakPointInfo.spacingIsPow2 && !FixPt_DataTypeIsFloat(u0DT)
+                %%
+                /* The table is inlined with even spacing 2^%<u0BreakPointInfo.spacingPow2Exp>.
+                 * The index is found by a %<u0BreakPointInfo.spacingPow2Exp> bit shift right.
+                 * If any of the %<u0BreakPointInfo.spacingPow2Exp> bits shifted off are not zero, then rounded up. */
+                %%
+                %% use shift for fast power of 2 division
+                %%
+                %if FixPt_DataTypeIsFloat(u0DT)
+                    %%
+                    %assign xMaskBits = "#error can't use Mask with floating point"
+                    %%
+                %elseif u0DT.RequiredBits <= IntegerSizes.IntNumBits
+                    %%
+                    %assign xMaskBits = IntegerSizes.IntNumBits
+                    %%
+                %else
+                    %%
+                    %assign xMaskBits = IntegerSizes.LongNumBits
+                    %%
+                %endif
+                %%
+                %assign mask = SetLSNBitsStr(u0BreakPointInfo.spacingPow2Exp,xMaskBits,0)
+                %%
+                %<iRghtLabel>  =   (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) >> %<u0BreakPointInfo.spacingPow2Exp>;
+                %<iRghtLabel> += (((%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) & %<mask>) != 0 );
+            %else
+                /* The table is inlined and evenly spaced.
+                 * The index is found directly by use of division.
+                 * If the remainder is not zero, then rounded up.
+                 */
+                %%
+                %% use standard division for non power of 2 cases
+                %%
+                %if FixPt_DataTypeIsFloat(u0DT)
+                    %<iRghtLabel>  = (%<unsignType>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) / %<u0BreakPointInfo.spacingValue>);
+                    %<iRghtLabel> += (%<unsignType>)(( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) != (%<u0BreakPointInfo.spacingValue>*%<iRghtLabel>));
+                %else
+                    %<iRghtLabel>  =   (%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) / %<u0BreakPointInfo.spacingValue>;
+                    %<iRghtLabel> += (((%<unsignType>)( %<u0Label>%<u0BreakPointInfo.zeroAdjustStr> ) % %<u0BreakPointInfo.spacingValue>) != 0 );
+                %endif
+            %endif
+            %%
+            %if ( iLeftLabel != "" )
+              %if completelyTrivialCase
+                %%
+                %% for a delta of 1, an exact match is always possible
+                %% so iRght and iLeft are equal
+                %%
+                %<iLeftLabel> = %<iRghtLabel>;
+              %else
+                %<iLeftLabel> = %<iRghtLabel> - 1;
+              %endif
+            %endif
+        }
+    %endif
+    %%
+%endfunction  %% FixPt_IndexSearchEven
+
+
+
+%% Function: FixPt_IndexSearch ==========================================
+%%
+%% Abstract:  Generate code for finding the indices corresponding to
+%%            the position of an input within a lookup table input vector
+%%
+%% Synopsis:
+%%
+%%
+%function FixPt_IndexSearch(iLeftLabel,iRghtLabel,...
+                             u0Label,u0DT,...
+                             u0Data,u0DataDT,...
+                             u0DataBreakPointInfo,u0DataCategory,...
+                             searchType) Output
+    %%
+    %<FixPt_IndexSearchProperUseCheck(iLeftLabel,iRghtLabel,u0DT,u0DataDT,searchType)>\
+    %%
+    %% handle case of evenly spaced data
+    %%
+    %if u0DataBreakPointInfo.evenlySpaced
+      %%
+      %assign u0BreakPointInfo = FixPt_BreakPointInfoCast(u0DataBreakPointInfo,u0DataDT,u0DT)
+      %%
+      %<FixPt_IndexSearchEven(iLeftLabel,iRghtLabel,...
+                             u0Label, u0DT, u0BreakPointInfo,...
+                             searchType)>\
+    %%
+    %% data is not inlined and/or not evenly spaced
+    %% so a binary search will be used
+    %%
+    %else
+        %%
+        %%  get high limit
+        %%
+        %assign iHi = FixPt_HelperVarHiIndex(u0Data, u0DataCategory)
+        %%
+        %<FixPt_IndexSearch_New(iLeftLabel,iRghtLabel,...
+                             u0Label,u0DT,...
+                             u0Data,u0DataDT,...
+                             u0DataBreakPointInfo,u0DataCategory,...
+                             iHi,...
+                             searchType)>
+    %endif
+%endfunction  %% FixPt_IndexSearch
+        
+
+
+%% Function: FixPt_IndexSearchUneven ======================================
+%%
+%% Abstract:  Generate code for finding the indices corresponding to
+%%            the position of an input within a lookup table input vector
+%%
+%%
+%function FixPt_IndexSearchUneven(...
+            iLeftLabel,iRghtLabel,...
+            u0Label, u0DT,...
+            u0DataAddrLabel,  u0DataDT,...
+            iHi,...
+            searchType) Output
+    %%
+    %<LibPushEmptyStackSharedUtils()>\
+    %<FixPt_IndexSearchProperUseCheck(iLeftLabel,iRghtLabel,u0DT,u0DataDT,searchType)>\
+    %%
+    %%  get high limit
+    %%
+    %assign loCheckRelop = "<="
+    %assign hiCheckRelop = ">="
+    %assign loCheckComment = "or equal to "
+    %assign hiCheckComment = "or equal to "
+    %%
+    %% For binary search, FixPtUtilType == "macro"
+    %% is currently being overridden, ie it is desired to always
+    %% make the binary search utility into a function.
+    %%
+    %assign FixPtBinarySearchUseMacros = 0
+    %%
+    %% Create a string to represent the utility
+    %%
+    %assign utilityName = "BINARYSEARCH"
+    %%
+    %% identify current INPUT storage type
+    %%
+    %assign utilityName = FixPt_UtilityNameAppendDTPair(utilityName,u0DT,u0DataDT)
+    %%
+    %% identify search type
+    %%
+    %if ( searchType != "Below" )
+      %assign utilityName = utilityName + "_" + STRING(searchType)
+    %endif
+    %%
+    %if iLeftLabel != ""
+      %if iRghtLabel != ""
+        %%
+        %% Lets define having both iLeft and iRght as the standard
+        %% For simplicity leave qualifier off the name for the
+        %% standard case.
+        %%
+        %% %assign utilityName = utilityName + "_iLR"
+      %else
+        %assign utilityName = utilityName + "_iL"
+      %endif
+    %else
+      %if iRghtLabel != ""
+        %assign utilityName = utilityName + "_iR"
+      %else
+        %%START_ASSERT
+        %<LibReportFatalError("FixPt_IndexSearch_New used improperly.  Neither a left index nor a right index was specified.")>
+        %%END_ASSERT
+      %endif
+    %endif
+    %%
+    %% END: Create a string to represent the search utility
+    %%
+    %%
+    %% case of C macro "call"
+    %%
+    %if FixPtBinarySearchUseMacros
+      %%START_ASSERT
+      %%  The default is to use functions
+      %%
+      %if iLeftLabel != "" && iRghtLabel != ""
+        %<utilityName>( %<iLeftLabel>, %<iRghtLabel>, %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %elseif iLeftLabel != ""
+        %<utilityName>( %<iLeftLabel>, %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %else
+        %<utilityName>( %<iRghtLabel>, %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %endif
+      %%END_ASSERT
+      %%
+      %% case of C function call
+      %%
+    %else
+      %if iLeftLabel != "" && iRghtLabel != ""
+        %<utilityName>( &(%<iLeftLabel>), &(%<iRghtLabel>), %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %elseif iLeftLabel != ""
+        %<utilityName>( &(%<iLeftLabel>), %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %else
+        %<utilityName>( &(%<iRghtLabel>), %<u0Label>, %<u0DataAddrLabel>, %<iHi>);
+      %endif
+    %endif
+    %%
+    %% determine if the required utility has already been defined
+    %%   If it has not, then create the definition.
+    %%
+    %if !(ISFIELD(FixPtUtils,utilityName))
+      %%
+      %% register that utility is being defined
+      %%
+      %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+      %%
+      %% open a buffer to hold the utility header comments
+      %%
+      %openfile utilityHeaderComment
+      %%
+      %%  Produce header comment for utility
+      %%
+      
+      /*********************************************************************
+      * Fixed-Point Binary Search Utility %<utilityName>
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      %% open a buffer to hold the utility definition
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      %openfile utilityDef
+      %assign local_iLeftLabel = "iLeft"
+      %assign local_iRghtLabel = "iRght"
+      %assign local_u0Label     = "u"
+      %assign local_pDataLabel = "pData"
+      %assign local_iHiLabel   = "iHi"
+      %%
+      %% create first line of utility macro or function
+      %%
+      %% case of C language macro
+      %% force use of function
+      %if FixPtBinarySearchUseMacros
+        %%START_ASSERT
+        %%  The default is to use functions
+        %%
+        %if iLeftLabel != "" && iRghtLabel != ""
+          #define %<utilityName>( %<local_iLeftLabel>, %<local_iRghtLabel>, %<local_u0Label>, %<local_pDataLabel>, %<local_iHiLabel>)
+        %elseif iLeftLabel != ""
+          #define %<utilityName>( %<local_iLeftLabel>, %<local_u0Label>, %<local_pDataLabel>, %<local_iHiLabel>)
+        %else
+          #define %<utilityName>( %<local_iRghtLabel>, %<local_u0Label>, %<local_pDataLabel>, %<local_iHiLabel>)
+        %endif
+        %%
+        %% protect use of macro arguments with parantheses
+        %%
+        %assign local_iLeftLabel = "("+local_iLeftLabel+")"
+        %assign local_iRghtLabel = "("+local_iRghtLabel+")"
+        %assign local_u0Label     = "("+local_u0Label    +")"
+        %assign local_pDataLabel = "("+local_pDataLabel+")"
+        %assign local_iHiLabel   = "("+local_iHiLabel  +")"
+        %%END_ASSERT
+        %%
+        %% case of C function
+        %%   including prototype definition
+        %%
+      %else
+        %if iLeftLabel != "" && iRghtLabel != ""
+          %assign local_iLeftLabel = "*p"+local_iLeftLabel
+          %assign local_iRghtLabel = "*p"+local_iRghtLabel
+          %assign funcDecRoot = "void %<utilityName>( unsigned int %<local_iLeftLabel>, unsigned int %<local_iRghtLabel>, %<u0DT.NativeType> %<local_u0Label>, const %<u0DataDT.NativeType> *%<local_pDataLabel>, unsigned int %<local_iHiLabel>)"
+        %elseif iLeftLabel != ""
+          %assign local_iLeftLabel = "*p"+local_iLeftLabel
+          %assign funcDecRoot = "void %<utilityName>( unsigned int %<local_iLeftLabel>, %<u0DT.NativeType> %<local_u0Label>, const %<u0DataDT.NativeType> *%<local_pDataLabel>, unsigned int %<local_iHiLabel>)"
+        %else
+          %assign local_iRghtLabel = "*p"+local_iRghtLabel
+          %assign funcDecRoot = "void %<utilityName>( unsigned int %<local_iRghtLabel>, %<u0DT.NativeType> %<local_u0Label>, const %<u0DataDT.NativeType> *%<local_pDataLabel>, unsigned int %<local_iHiLabel>)"
+        %endif
+        %openfile funcProto
+        %<funcDecRoot>;
+        %closefile funcProto
+        %%
+        %selectfile utilityDef 
+        %<funcDecRoot>
+      %endif
+      {
+        %%
+        %% locally declare left index if necessary
+        %%
+        %if iLeftLabel == ""
+          %%
+          unsigned int %<local_iLeftLabel>;
+        %endif
+        %%
+        %% locally declare right index if necessary
+        %%
+        %if iRghtLabel == ""
+          %%
+          unsigned int %<local_iRghtLabel>;
+        %endif
+        %%
+        %% if the data types are not the same then cast the input to the
+        %% data type of the data.  The c-code for the sfunction
+        %% has restricted the data types and scaling such that
+        %%   frac slopes are equal
+        %%   biases are equal
+        %%   isSigned are equal
+        %%   input has precions greater than or equal to data
+        %%   input has range greater than or equal to data
+        %%     these imply input has a greater or equal number of bits
+        %%
+        %if !FixPt_DataTypesSame(u0DT,u0DataDT)
+          %assign dataTypesDifferent = 1
+          %assign uCastLabel = "uCast"
+          %<u0DataDT.NativeType> %<uCastLabel>;
+          
+          /* cast current input to the data type/scaling of the table data */
+          %%
+          %if ( searchType == "Below" ) || ( searchType == "Near" )
+            %<FixPt_Fix2FixAlwaysOutput(uCastLabel,u0DataDT,local_u0Label,u0DT,"Floor","Saturate")>\
+            %% the search value was casting with round to floor,
+            %% having this value equal the minimum table value
+            %% does not mean the original input equals the min
+            %% table value, hence interpolation or other steps
+            %% may still apply.
+            %assign loCheckRelop = "<"
+            %assign loCheckComment = ""
+          %else
+            %<FixPt_Fix2FixAlwaysOutput(uCastLabel,u0DataDT,local_u0Label,u0DT,"Ceiling","Saturate")>\
+            %% the search value was casting with round to ceiling,
+            %% having this value equal the maximum table value
+            %% does not mean the original input equals the max
+            %% table value, hence interpolation or other steps
+            %% may still apply.
+            %assign hiCheckRelop = ">"
+            %assign hiCheckComment = ""
+          %endif
+          
+        %else
+          %assign dataTypesDifferent = 0
+          %assign uCastLabel = local_u0Label
+        %endif
+        %%
+        %% do search
+        %%
+        /* Find the location of current input value in the data table. */
+        %<local_iLeftLabel> = 0;
+        %<local_iRghtLabel> = %<local_iHiLabel>;
+        
+        if ( %<uCastLabel> %<loCheckRelop> %<local_pDataLabel>[0] )
+        {
+          /* Less than %<loCheckComment>the smallest point in the table. */
+          %<local_iRghtLabel> = 0;
+        }
+        else if ( %<uCastLabel> %<hiCheckRelop> %<local_pDataLabel>[%<local_iHiLabel>] )
+        {
+          /* Greater than %<hiCheckComment>the largest point in the table. */
+          %<local_iLeftLabel> = %<local_iHiLabel>;
+        }
+        else
+        {
+          unsigned int i;
+          
+          /* Do a binary search. */
+          while ( ( %<local_iRghtLabel> - %<local_iLeftLabel> ) > 1 )
+          {
+            /* Get the average of the left and right indices using to Floor rounding. */
+            i = (%<local_iLeftLabel> + %<local_iRghtLabel>) >> 1;
+            
+            %%
+            /* Move either the right index or the left index so that */
+            %%
+            %if ( searchType == "Below" ) || ( searchType == "Near" )
+              %%
+              %% do search to find indices such that
+              %%
+              %%    XDATA[iLeft] <= XCur < XDATA[iRght]
+              %%
+              %% for the in-range cases, ie   strict inequality on RIGHT
+              %%
+              /*  LeftDataPoint <= CurrentValue < RightDataPoint */
+              if ( %<uCastLabel> < %<local_pDataLabel>[i] )
+              %%
+            %else  %% if searchType == "Above"
+              %%
+              %% do search to find indices such that
+              %%
+              %%    XDATA[iLeft] < XCur <= XDATA[iRght]
+              %%
+              %% for the in range cases, ie   strict inequality on LEFT
+              %%
+              /*  LeftDataPoint < CurrentValue <= RightDataPoint */
+              if ( %<uCastLabel> <= %<local_pDataLabel>[i] )
+              %%
+            %endif
+            {
+              %<local_iRghtLabel> = i;
+            }
+            else
+            {
+              %<local_iLeftLabel> = i;
+            }
+          }
+          
+          %%
+          %% complete the to nearest search
+          %%   put the result in the iLeftLabel
+          %%
+          %if searchType == "Near"
+            %%
+            %% determine the appropriate size for an unsigned type
+            %%
+            %assign unsignTypeU = utilFloatOrUnsignedTypeFromDT(u0DT)
+            %%
+            
+            /* Adjust the left index, if necessary, so that it always gives */
+            /* the index of the data point nearest the current input value. */
+            {
+              %<unsignTypeU> diffLeft, diffRght;
+              
+              %if dataTypesDifferent
+                %%
+                /* cast the table data points to the data type/scaling of the input */
+                %<FixPt_Fix2FixAlwaysOutput("diffLeft",u0DT,local_pDataLabel+"["+local_iLeftLabel+"]",u0DataDT,"Floor","Saturate")>\
+                %<FixPt_Fix2FixAlwaysOutput("diffRght",u0DT,local_pDataLabel+"["+local_iRghtLabel+"]",u0DataDT,"Floor","Saturate")>\
+                
+                diffLeft = %<local_u0Label> - diffLeft;
+                diffRght = diffRght - %<local_u0Label>;
+              %else
+                diffLeft = %<local_u0Label> - %<local_pDataLabel>[%<local_iLeftLabel>];
+                diffRght = %<local_pDataLabel>[%<local_iRghtLabel>] - %<local_u0Label>;
+              %endif
+              
+              if ( diffRght <= diffLeft )
+              {
+                %<local_iLeftLabel> = %<local_iRghtLabel>;
+              }
+            }
+          %endif
+        }
+        %%
+        %% finish header comment
+        %%
+        %selectfile utilityHeaderComment
+        */
+        %closefile utilityHeaderComment
+        %%
+        %% finish off utility define
+        %%
+        %selectfile utilityDef
+      }
+      %closefile utilityDef
+      %%
+      %% For the case of C macro,
+      %%    convert end of lines to backslash end of lines
+      %%    as required for multiline C macros
+      %%
+      %% force use of function
+      %if FixPtBinarySearchUseMacros
+        %%START_ASSERT
+        %%  The default is to use functions
+        %%
+        %assign utilityDef = FEVAL("strrep",utilityDef,"\n"," \\\n")
+        %%END_ASSERT
+      %endif
+      %%
+      %% create utility trailer comment
+      %%
+      %openfile utilityTrailerComment
+      
+      /* end %<FixPtUtilType> %<utilityName>
+      *********************************************************************/
+      %closefile utilityTrailerComment
+      %%
+      %% cause utility define to be included in generated code
+      %%
+      %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+      %%
+      %% force use of function
+      %if FixPtBinarySearchUseMacros
+        %%START_ASSERT
+        %%  The default is to use functions
+        %%        
+        %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+        %%END_ASSERT
+      %else
+        %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+        %<LibCacheFunctionPrototype(funcProto)>\
+      %endif
+      %%
+    %endif  %% definition of searc utility
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction  %% FixPt_IndexSearchUneven
+
+
+
+%% Function: FixPt_IndexSearch_New ==========================================
+%%
+%% Abstract:  Generate code for finding the indices corresponding to
+%%            the position of an input within a lookup table input vector
+%%
+%% Synopsis:
+%%
+%%
+%function FixPt_IndexSearch_New(iLeftLabel,iRghtLabel,...
+                             u0Label,u0DT,...
+                             u0Data,u0DataDT,...
+                             u0DataBreakPointInfo,u0DataCategory,...
+                             iHi,...
+                             searchType) Output
+    %%
+    %<FixPt_IndexSearchProperUseCheck(iLeftLabel,iRghtLabel,u0DT,u0DataDT,searchType)>\
+    %%
+    %% handle case of evenly spaced data
+    %%
+    %if u0DataBreakPointInfo.evenlySpaced
+      %%
+      %%START_ASSERT
+      %%  Currently all callers of this function trap this case
+      %%
+      %assign u0BreakPointInfo = FixPt_BreakPointInfoCast(u0DataBreakPointInfo,u0DataDT,u0DT)
+      %%
+      %<FixPt_IndexSearchEven(iLeftLabel,iRghtLabel,...
+        u0Label, u0DT, u0BreakPointInfo,...
+        searchType)>\
+      %%END_ASSERT
+      %%
+    %else
+      %%
+      %assign u0DataAddrLabel = FixPt_HelperGetRValuePtr("","",0,"",u0Data,u0DataCategory)
+      %%
+      %<FixPt_IndexSearchUneven(...
+        iLeftLabel,iRghtLabel,...
+        u0Label, u0DT,...
+        u0DataAddrLabel,  u0DataDT, ...
+        iHi,...
+        searchType)>\
+      %%
+    %endif
+%endfunction  %% FixPt_IndexSearch_New
+
+
+
+%% Function: FixPt_IndexSearchEvenExtra ====================================
+%%
+%function FixPt_IndexSearchEvenExtra(...
+           iLeftLabel, ...
+           iRghtLabel,...
+           uLabel, ...
+           uDT, ...
+           uLoLabel, ...
+           idxMaxLabel, ...
+           uMinusLeftLabel, ...
+           dtTypeForUMinusLeft, ...
+           dtTypeForIndex, ...
+           spacingLabel, ...
+           spacingPow2Exp, ...
+           searchMethod) Output           
+  %%
+  if ( %<uLabel> <= %<uLoLabel> )
+  {
+    %<uMinusLeftLabel> = 0;
+    %<iLeftLabel> = 0;
+    %<iRghtLabel> = 0;
+  }
+  else
+  {
+    %<uMinusLeftLabel> = (%<dtTypeForUMinusLeft>)(%<uLabel> - %<uLoLabel>);      
+    %if searchMethod == searchPow2
+      %%
+      %<iLeftLabel> = (%<dtTypeForIndex>)(%<uMinusLeftLabel>) >> %<spacingPow2Exp>;
+    %else
+      %<iLeftLabel> = (%<dtTypeForIndex>)( %<uMinusLeftLabel> / %<spacingLabel> );
+    %endif
+    if ( %<iLeftLabel> >= %<idxMaxLabel> )
+    {
+      %<uMinusLeftLabel> = 0;
+      %<iLeftLabel> = %<idxMaxLabel>;
+      %<iRghtLabel> = %<idxMaxLabel>;
+    }
+    else
+    {
+      %if searchMethod == searchPow2
+        %%
+        %assign mask = SetLSNBitsStr(spacingPow2Exp,uDT.ActualBits,0)
+        %%
+        %<uMinusLeftLabel> &= %<mask>;
+      %else
+        %<uMinusLeftLabel> = %<uMinusLeftLabel> - %<iLeftLabel> * %<spacingLabel>;
+      %endif
+      %<iRghtLabel> = %<iLeftLabel> + 1;          
+    }
+  }
+  %%
+%endfunction  %% FixPt_IndexSearchEvenExtra
+
+
+

@@ -1,0 +1,696 @@
+%% 
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Tom Weis, 12-Dec-2000
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: If block target file
+
+%implements If "C"
+
+%include "iflib.tlc"
+
+%% Function: BlockInstanceSetup ================================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+%% Function: Start ============================================================
+%% Abstract:
+%%      Initialize DWork 'ActiveSubsystem' to indicate that no if subsystem
+%%      is currently active.
+%%
+%function Start(block, system) Output
+  %if NumDWork > 0
+  /* %<Type> Block: %<Name> */
+  %<LibBlockDWork(ActiveSubsystem, "", "", 0)> = -1;
+  %endif
+%endfunction %% Start
+
+
+%% Function: FcnSystemToRun ===================================================
+%% Abstract:
+%%      Return the system to generate code for. 
+%%
+%function FcnSystemToRun(blockToCall) void
+  %assign ssIdx = CompiledModel. ...
+      System[blockToCall[0]].Block[blockToCall[1]].ParamSettings.SystemIdx 
+  %assign callSiteIdx = CompiledModel. ...
+      System[blockToCall[0]].Block[blockToCall[1]].CallSiteIdx
+%return [%<ssIdx>, %<callSiteIdx>]
+%endfunction %% FcnSystemToRun
+
+
+%% Function: FcnOutput ========================================================
+%% Abstract:
+%%      Generate Output code for specified if subsystem.  If the specified
+%%      outport (ifPortIdx) is not connected (ie BlockToCall != "Vector"),
+%%      generate a comment stating that the condition is not connected to
+%%      any action subsystem.
+%%
+%function FcnOutput(ifPortIdx, block, system) Output
+  %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+  %if TYPE(blockToCall) == "Vector"
+    %assign ssIdx = FcnSystemToRun(blockToCall)
+    %assign ss = CompiledModel.System[ssIdx[0]]
+    %assign callSiteIdx = ssIdx[1]
+    %assert ss.CurrentTID == -1
+    %assign ss.CurrentTID = ...
+      LibAsynchronousTriggeredTID(system.CurrentTID) ? ...
+      system.CurrentTID : ""
+    %if !LibSystemFcnIsEmptyForTID(ss, "Output")
+      %<LibGenSystemFcnCall(ss, "Output", callSiteIdx)>\
+    %endif
+    %assign ss.CurrentTID = -1
+  %else
+    /* condition not connected to any action subsystem */
+  %endif
+%endfunction %% FcnOutput
+
+
+%% Function: FcnOutputFormA ===================================================
+%% Abstract:
+%%      Generate "FormA" Output code, see abstract in Output function for more
+%%      details.
+%%
+%function FcnOutputFormA(block, system) Output
+    %% Process "if" condition
+    %assign ifPortIdx = 0
+    %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+    %assign needMajorTimeStepGuard = (block.ParamSettings.MinorStepGuard=="yes")
+    %if needMajorTimeStepGuard
+      if (%<RTMIs("MajorTimeStep")>) {
+    %endif  
+    if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+      %<FcnOutput(ifPortIdx, block, system)>\
+    %%
+    %% Process any "Elseif" condition(s)
+    %foreach eiIdx=NumElseIfs
+      %assign ifPortIdx = ifPortIdx + 1
+      %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+      } else if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+        %<FcnOutput(ifPortIdx, block, system)>\
+    %endforeach %% Elseif(s)
+    %%
+    %% Process "} else {" condition (if exists)
+    %if ElsePort
+      %assign ifPortIdx = ifPortIdx + 1
+      } else {
+      %<FcnOutput(ifPortIdx, block, system)>\
+    %endif
+    }
+    %if needMajorTimeStepGuard
+      }
+    %endif
+%endfunction %% FcnOutputFormA
+
+
+%% Function: FcnBecomingDisabled ===============================================
+%% Abstract:
+%%   Generates the becoming disabled code for if action subsystems
+%%
+%function FcnBecomingDisabled(slBlock,ss, callSiteIdx) void
+    %openfile tmpBecomingDisabledBuffer
+    %if SolverType == "VariableStep"
+      %<RTMSetSolverNeedsReset()>;
+       %<SLibSetStatesDisabled(slBlock,ss,"TRUE")>
+    %endif
+    %if !LibSystemFcnIsEmpty(ss, "Disable")
+      %<LibGenSystemFcnCall(ss, "Disable", callSiteIdx)>\
+    %endif
+    %closefile tmpBecomingDisabledBuffer
+    %return tmpBecomingDisabledBuffer
+%endfunction %% FcnBecomingDisabled
+
+
+%% Function: FcnBecomingEnabled ================================================
+%% Abstract:
+%%   Generates the becoming enabled code for if action subsystems
+%%
+%function FcnBecomingEnabled(slBlock,ss, callSiteIdx) void
+    %openfile tmpBecomingEnabledBuffer
+    %if SolverType == "VariableStep"
+      %<SLibSetStatesDisabled(slBlock,ss,"FALSE")>
+    %endif
+    %if ParamSettings.StatesWhenEnabling == "reset"
+      %if !LibSystemFcnIsEmpty(ss, "Initialize")
+        /* protect against calling initialize function twice at startup */
+        if (!(%<LibIsFirstInitCond()>)) {
+        %if SolverType == "VariableStep"
+          %<RTMSetSolverNeedsReset()>;
+        %endif
+        %<LibGenSystemFcnCall(ss, "Initialize", callSiteIdx)>
+        }
+      %endif
+    %endif
+    %if !LibSystemFcnIsEmpty(ss, "Enable")
+      %<LibGenSystemFcnCall(ss, "Enable", callSiteIdx)>\
+    %endif
+    %closefile tmpBecomingEnabledBuffer
+    %return tmpBecomingEnabledBuffer
+%endfunction %% FcnBecomingEnabled
+
+
+%% Function: FcnIfDisabled ====================================================
+%% Abstract:
+%%      Generate buffer which contains Disable code for specified if 
+%%      subsystem.  If the specified outport (ifPortIdx) is not connected
+%%      (ie BlockToCall != "Vector"), no code is generated.
+%%
+%function FcnIfDisabled(ifPortIdx, block, system) void
+  %assign tmpDisabledBuffer = ""
+  %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+  %if TYPE(blockToCall) == "Vector"
+    %assign slBlock = CompiledModel.System[blockToCall[0]].Block[blockToCall[1]]
+    %assign ssIdx = FcnSystemToRun(blockToCall)
+    %assign ss = CompiledModel.System[ssIdx[0]]
+    %assign callSiteIdx = ssIdx[1]
+    %assign offsetStr = ""
+    %if SolverType == "VariableStep"
+      %assign ncStates = slBlock.ParamSettings.SystemContStates[0]
+      %assign disableOffset = ...
+        slBlock.ParamSettings.SystemContStates[1]
+      %if disableOffset > 0
+        %assign offsetStr = " + %<disableOffset>"
+      %endif
+    %else
+      %assign ncStates = 0
+    %endif
+    %% becoming disabled
+    %with slBlock
+      %assign tmpDisabledBuffer = ...
+        FcnBecomingDisabled(slBlock,ss, callSiteIdx)
+    %endwith
+  %endif
+  %return tmpDisabledBuffer
+%endfunction %% FcnIfDisabled
+
+
+%% Function: FcnDisableFormBC =================================================
+%% Abstract:
+%%      Generate Disable code for all if subsystems.  No code is generated
+%%      if no If subsystems have disable functions.  Otherwise, the following
+%%      code is generated:
+%%      
+%%      One subsystem has disable code, use 'if' construct:
+%%
+%%          if ((rtPrevAction != rtAction) && \
+%%              (rtPrevAction == %<ifPortIdx>)) {
+%%             disable code for subsystem;
+%%          }
+%%
+%%      Two or more subsystems have disable code, use 'switch' construct:
+%%          if (rtPrevAction != rtAction) {
+%%            switch (rtPrevAction) {
+%%              case 0:
+%%                disable code for case 0;
+%%                break;
+%%              ...
+%%              case N:
+%%                disable code for case N;
+%%                break;
+%%              default:
+%%                break;
+%%            }
+%%          }
+%%
+%%
+%function FcnDisableFormBC(block, system) Output
+    %assign numCases = 0
+    %openfile tmpDisableCaseBuffer
+    %openfile tmpDisableIfBuffer
+    %foreach ifPortIdx=NumDataOutputPorts
+        %assign tmpDisableCase = FcnIfDisabled(ifPortIdx, block, system)
+        %if tmpDisableCase != ""
+          %if numCases == 0
+            %selectfile tmpDisableIfBuffer
+            if ((rtPrevAction != rtAction) && \
+                (rtPrevAction == %<ifPortIdx>)) {
+              %<tmpDisableCase>\
+            }
+          %endif
+          %assign numCases = numCases + 1 
+          %selectfile tmpDisableCaseBuffer
+          case %<ifPortIdx>:
+            %<tmpDisableCase>\
+            break;
+      %endif
+    %endforeach
+    %closefile tmpDisableCaseBuffer
+    %closefile tmpDisableIfBuffer
+    %if numCases > 0
+      /* Disable the previously true ifaction subsystem */
+      %if numCases == 1
+        %<tmpDisableIfBuffer>\
+      %else
+        if (rtPrevAction != rtAction) {
+          switch (rtPrevAction) {
+            %<tmpDisableCaseBuffer>\
+            default:
+              break;
+          }
+        }
+      %endif
+    %endif
+%endfunction %% FcnDisableFormBC
+
+
+%% Function: FcnEnableAndOutput ================================================
+%% Abstract:
+%%   Generates the becoming enabled and output code for if action subsystems
+%%
+%function FcnEnableAndOutput(ifPortIdx, block, system) Output
+  %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+  %if TYPE(blockToCall) == "Vector"
+    %assign slBlock = CompiledModel.System[blockToCall[0]].Block[blockToCall[1]]
+    %assign ssIdx = FcnSystemToRun(blockToCall)
+    %assign ss = CompiledModel.System[ssIdx[0]]
+    %assign callSiteIdx = ssIdx[1]
+    %openfile tmpEnableBuffer
+      %assign offsetStr = ""
+      %if SolverType == "VariableStep"
+        %assign ncStates = slBlock.ParamSettings.SystemContStates[0]
+        %assign disableOffset = ...
+          slBlock.ParamSettings.SystemContStates[1]
+        %if disableOffset > 0
+          %assign offsetStr = " + %<disableOffset>"
+        %endif
+      %else
+        %assign ncStates = 0
+      %endif
+      %% becoming enabled
+      %with slBlock
+        %<FcnBecomingEnabled(slBlock,ss, callSiteIdx)>\
+      %endwith
+    %closefile tmpEnableBuffer
+    %if !WHITE_SPACE(tmpEnableBuffer)
+      if (rtPrevAction != rtAction) {
+        %<tmpEnableBuffer>\
+      }
+    %endif
+
+    %assert ss.CurrentTID == -1
+    %assign ss.CurrentTID = ...
+      LibAsynchronousTriggeredTID(system.CurrentTID) ? ...
+      system.CurrentTID : ""
+    %if !LibSystemFcnIsEmptyForTID(ss, "Output")
+      %<LibGenSystemFcnCall(ss, "Output", callSiteIdx)>\
+    %endif
+    %assign ss.CurrentTID = -1 
+  %endif
+%endfunction %% FcnEnableAndOutput
+
+
+%% Function: FcnOutputFormB ===================================================
+%% Abstract:
+%%      Generate "FormB" Output code, see abstract in Output function for more
+%%      details.
+%%
+%function FcnOutputFormB(block, system) Output
+    %% Process "if" condition
+    %assign ifPortIdx = 0
+    %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+    if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+      rtAction = %<ifPortIdx>;
+      %<FcnEnableAndOutput(ifPortIdx, block, system)>\
+    %%
+    %% Process any "Elseif" condition(s)
+    %foreach eiIdx=NumElseIfs
+      %assign ifPortIdx = ifPortIdx + 1
+      %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+      } else if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+        rtAction = %<ifPortIdx>;
+        %<FcnEnableAndOutput(ifPortIdx, block, system)>\
+    %endforeach %% Elseif(s)
+    %%
+    %% Process "} else {" condition (if exists)
+    %if ElsePort
+      %assign ifPortIdx = ifPortIdx + 1
+      } else {
+      rtAction = %<ifPortIdx>;
+      %<FcnEnableAndOutput(ifPortIdx, block, system)>\
+    %endif
+    }
+    %<LibBlockDWork(ActiveSubsystem, "", "", 0)> = rtAction;
+    %<FcnDisableFormBC(block, system)>\
+%endfunction %% FcnOutputFormB
+
+
+%% Function: FcnOutputFormC ===================================================
+%% Abstract:
+%%      Generate "FormC" Output code, see abstract in Output function for more
+%%      details.
+%%
+%function FcnOutputFormC(block, system) Output
+  %assign needMajorTimeStepGuard = (block.ParamSettings.MinorStepGuard == "yes")
+    %if needMajorTimeStepGuard
+      if (%<RTMIs("MajorTimeStep")>) {
+    %endif
+    %% Process "if" condition
+    %assign ifPortIdx = 0
+    %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+    if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+      rtAction = %<ifPortIdx>;
+    %%
+    %% Process any "Elseif" condition(s)
+    %foreach eiIdx=NumElseIfs
+      %assign ifPortIdx = ifPortIdx + 1
+      %assign comment = "/* %<IfActionInfo[ifPortIdx].IfExpresssion> */"
+      } else if (%<IfInputExpression(ifPortIdx, block, system)>) { %<comment>
+        rtAction = %<ifPortIdx>;
+    %endforeach %% Elseif(s)
+    %%
+    %% Process "} else {" condition (if exists)
+    %if ElsePort
+      %assign ifPortIdx = ifPortIdx + 1
+      } else {
+      rtAction = %<ifPortIdx>;
+    %endif
+    }
+    %<LibBlockDWork(ActiveSubsystem, "", "", 0)> = rtAction;
+    %if needMajorTimeStepGuard
+      } else {
+        rtAction = %<LibBlockDWork(ActiveSubsystem, "", "", 0)>;
+      }
+    %endif
+    %%
+    %% Perform enable/output code based on rtAction
+    %assign numCases = 0
+    %openfile tmpEnableOutCaseBuffer
+    %openfile tmpEnableOutIfBuffer
+    %foreach ifPortIdx=NumDataOutputPorts
+      %openfile tmpEnableOutCase
+        %<FcnEnableAndOutput(ifPortIdx, block, system)>\
+      %closefile tmpEnableOutCase
+      %if !WHITE_SPACE(tmpEnableOutCase)
+        %if numCases == 0
+          %selectfile tmpEnableOutIfBuffer
+          if (rtAction == %<ifPortIdx>) {
+            %<tmpEnableOutCase>\
+          }
+        %endif
+        %assign numCases = numCases + 1
+        %selectfile tmpEnableOutCaseBuffer
+        case %<ifPortIdx>:
+          %<tmpEnableOutCase>\
+          break;
+      %endif
+    %endforeach
+    %closefile tmpEnableOutCaseBuffer
+    %closefile tmpEnableOutIfBuffer
+    %if numCases > 0
+      %if numCases == 1
+        %<tmpEnableOutIfBuffer>\
+      %else
+        switch (rtAction) {
+          %<tmpEnableOutCaseBuffer>\
+          default:
+          break;
+        }
+      %endif
+    %endif
+    %<FcnDisableFormBC(block, system)>\
+%endfunction %% FcnOutputFormC
+
+
+%% Function: FcnDefinePrevAction ===============================================
+%% Abstract:
+%%   Defines rtPrevAction variable if required.  Specifically, if we are
+%%   using a Variable-Step solver or if any of the Action systems called
+%%   by the If block had a {EnableFcn, DisableFcn}.
+%%
+%function FcnDefinePrevAction(block, system) Output
+  %if SolverType == "VariableStep"
+    %assign needPrevAction = 1
+  %else
+    %assign needPrevAction = 0
+    %foreach ifPortIdx=NumDataOutputPorts
+      %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+      %if TYPE(blockToCall) == "Vector"
+        %assign ssIdx = FcnSystemToRun(blockToCall)
+        %assign ss = CompiledModel.System[ssIdx[0]]
+        %if ISFIELD(ss, "EnableFcn") || ISFIELD(ss, "DisableFcn")
+          %assign needPrevAction = 1
+          %break
+        %endif
+      %endif
+    %endforeach
+  %endif
+  %if needPrevAction
+    int8_T rtPrevAction = %<LibBlockDWork(ActiveSubsystem, "", "", 0)>;
+  %endif
+%endfunction %% FcnDefinePrevAction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%
+%%      Generate one of three Output code formats:
+%%
+%%      FormA (minimalist)
+%%        Do reduced if->} else if->} else { code
+%%        Form of choice when there are no minor time steps and no functions
+%%        which required DWork history {enable, disable, update, derivatives,
+%%        ZeroCrossings} functions.
+%%     
+%%        if (condA) {
+%%          condA;
+%%        } else if (condB) {
+%%          condB;
+%%        } else {
+%%          condElse;
+%%        END
+%%
+%%        Note: with FormA, the DWork 'ActiveSubsystem' is set to inactive in
+%%        MdlStart, but is never used or maintained thereafter.
+%%
+%%      FormB (intermediate)
+%%        Do reduced if->} else if->} else { code with bookkeeping of DWork 
+%%        'ActiveSubsystem'.
+%%        Form of choice when there are no minor time steps and there are either
+%%        enable, disable, or update functions.
+%%     
+%%        if (condA) {
+%%          condA; // Enable, Output, and DWork bookkeeping
+%%        } else if (condB) {
+%%          condB; // Enable, Output, and DWork bookkeeping
+%%        } else {
+%%          condElse; // Enable, Output, and DWork bookkeeping
+%%        END
+%%        Disable code // single disabled subsystem use 'if',
+%%                     // multiple disabled subsystems use 'switch'
+%%      
+%%      FormC (general case)
+%%        Use if->} else if->} else { to determine which if condition to execute
+%%        Then use Switch statement to call enable/output
+%%        Disable code // single disabled subsystem use 'if',
+%%                     // multiple disabled subsystems use 'switch'
+%%
+%function Outputs(block, system) Output
+  %if NumDWork == 0
+    %<FcnOutputFormA(block, system)>\
+  %else
+    %assign needMajorTimeStepGuard = ...
+        (block.ParamSettings.MinorStepGuard == "yes")
+    {
+      %<FcnDefinePrevAction(block, system)>\
+      int8_T rtAction     = -1;
+    \
+      %if !needMajorTimeStepGuard
+        %<FcnOutputFormB(block, system)>\
+      %else
+        %<FcnOutputFormC(block, system)>\
+      %endif
+    }
+  %endif
+  
+%endfunction %% Outputs
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      Generate update code for if action subsystems.
+%%
+%function Update(block, system) Output
+  %assign numCases = 0
+  %openfile tmpUpdateCaseBuffer
+  %openfile tmpUpdateIfBuffer
+  %foreach ifPortIdx=NumDataOutputPorts
+    %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+    %if TYPE(blockToCall) == "Vector"
+        %assign ssIdx = FcnSystemToRun(blockToCall)
+        %assign ss = CompiledModel.System[ssIdx[0]]
+        %assign callSiteIdx = ssIdx[1]
+	%assert ss.CurrentTID == -1
+	%assign ss.CurrentTID = ...
+	  LibAsynchronousTriggeredTID(system.CurrentTID) ? ...
+	  system.CurrentTID : ""
+        %openfile tmpUpdateCase
+          %if !LibSystemFcnIsEmptyForTID(ss,"Update")
+            %<LibGenSystemFcnCall(ss, "Update", callSiteIdx)>\
+          %endif
+        %closefile tmpUpdateCase
+	%assign ss.CurrentTID = -1
+        %if !WHITE_SPACE(tmpUpdateCase)
+          %if numCases == 0
+            %selectfile tmpUpdateIfBuffer
+            %assign dWork = LibBlockDWork(ActiveSubsystem, "", "", 0)
+            if (%<dWork> == %<ifPortIdx>) {
+              %<tmpUpdateCase>\
+            }
+          %endif
+          %assign numCases = numCases + 1
+          %selectfile tmpUpdateCaseBuffer
+          case %<ifPortIdx>:
+            %<tmpUpdateCase>\
+            break;
+        %endif
+    %endif
+  %endforeach
+  %closefile tmpUpdateCaseBuffer
+  %closefile tmpUpdateIfBuffer
+  %if numCases > 0
+    /* %<Type> Block: %<Name> */
+    %if numCases == 1
+      %<tmpUpdateIfBuffer>\
+    %else
+      switch (%<LibBlockDWork(ActiveSubsystem, "", "", 0)>) {
+        %<tmpUpdateCaseBuffer>\
+        default:
+        break;
+      }
+    %endif
+  %endif
+%endfunction %% Update
+
+
+%% Function: Derivatives ======================================================
+%% Abstract:
+%%      Generate derivatives code for if action subsystems.
+%%
+%function Derivatives(block, system) Output
+  %assign needDxAndI = 0
+  %openfile tmpZero
+  %openfile tmpCases
+    %foreach ifPortIdx=NumDataOutputPorts
+      %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+      %if TYPE(blockToCall) == "Vector"
+        %assign slBlock = ...
+            CompiledModel.System[blockToCall[0]].Block[blockToCall[1]]
+        %assign ssIdx = FcnSystemToRun(blockToCall)
+        %assign ss = CompiledModel.System[ssIdx[0]]
+        %assign callSiteIdx = ssIdx[1]
+	%assign ncStates = slBlock.ParamSettings.SystemContStates[0]
+	%if ncStates>1
+	  %assign needDxAndI = 1
+	%endif
+        %if !LibSystemFcnIsEmpty(ss,"Derivative")
+          %selectfile tmpCases
+          case %<ifPortIdx>:
+            %<LibGenSystemFcnCall(ss, "Derivative", callSiteIdx)>
+            break;
+	            %% Zero out derivatives for all if subsystems
+        %selectfile tmpZero
+	%<SLibZeroOutDerivativesForSystem(slBlock,system)>
+        %endif
+      %endif
+    %endforeach
+  %closefile tmpCases
+  %closefile tmpZero
+  %openfile tmpBuffer
+    %if tmpZero != ""
+      { 
+         %if needDxAndI
+	  int_T i;
+	  real_T * dx;
+	%endif
+         %<tmpZero>\
+      }
+    %endif
+    %if tmpCases != ""
+      if (%<LibBlockDWork(ActiveSubsystem, "", "", 0)> >= 0) {
+        switch (%<LibBlockDWork(ActiveSubsystem, "", "", 0)>) {
+          %<tmpCases>\
+          default:
+            break;
+        }
+      }
+    %endif
+  %closefile tmpBuffer
+  %if tmpBuffer != ""
+    /* %<Type> Block: %<Name> */
+    %<tmpBuffer>\
+  %endif
+%endfunction %% Derivatives
+
+
+
+%% Function: ZeroCrossings =====================================================
+%% Abstract:
+%%      Perform zero crossing detection for If block input expressions.
+%%      Zero zero crossings for all connected if action subsystems, then 
+%%      perform zero crossings detection for the currently active if 
+%%      action subsystem.
+%%
+%function ZeroCrossings(block, system) Output
+  /* %<Type> Block: %<Name> */
+  %%
+  %% First, set Zero-Crossings associated with If block control inputs
+  %if NumNonsampledZCs > 0
+    %foreach zcIdx=NumNonsampledZCs
+      %assign zcIndex = NonsampledZC[zcIdx].MapIdx
+        %<LibBlockNonSampledZC("","",zcIndex)> = 0.0;
+    %endforeach
+    %if TrueZCs != 0
+      %assign openIf = "if ("
+      %foreach zcIdx=NumNonsampledZCs
+        %assign zcIndex = NonsampledZC[zcIdx].MapIdx
+        %assign zcExpression = "%<IfInputExpression(zcIdx, block, system)>"
+        %<openIf>%<zcExpression>) {
+          %<LibBlockNonSampledZC("","",zcIndex)> = 1.0;
+        %assign openIf = "} else if ("
+      %endforeach
+      }
+    %endif
+  %endif
+  %%
+  %% Second, set Zero-Crossings associated with if-elseif-else subsystems
+  %foreach ifPortIdx=NumDataOutputPorts
+    %assign blockToCall = IfActionInfo[ifPortIdx].BlockToCall
+    %if TYPE(blockToCall) == "Vector"
+      %assign slBlock = ...
+          CompiledModel.System[blockToCall[0]].Block[blockToCall[1]]
+      %assign ssIdx = FcnSystemToRun(blockToCall)
+      %assign ss = CompiledModel.System[ssIdx[0]]
+      %assign callSiteIdx = ssIdx[1]
+      %assign numNonsampledZCs = slBlock.ParamSettings.NumNonsampledZCs 
+      %if numNonsampledZCs > 0
+        /* %<slBlock.Type> Block: %<slBlock.Name> */
+	{
+	  /* zero zero crossings to prevent detection while disabled */
+        %<SLibZeroOutZeroCrossingsForSystem(slBlock, system)>
+	}
+      %endif %% numNonSampledZCs
+      %%
+      %% Third, call active subsystem's zero crossing function
+      %if ISFIELD(ss, "ZeroCrossingFcn")
+        %if LibSystemFcnIsEmpty(ss,"ZeroCrossing")
+          %%START_ASSERT
+          %assign errTxt = "Empty ZeroCrossing function but ZCFcn expected."
+          %<LibBlockReportFatalError(block, errTxt)>
+          %%END_ASSERT
+        %endif
+        if (%<LibBlockDWork(ActiveSubsystem, "", "", 0)> == %<ifPortIdx>) {
+          %<LibGenSystemFcnCall(ss, "ZeroCrossing", callSiteIdx)>
+        }
+
+      %endif
+    %endif %% "Vector"
+  %endforeach
+  %%
+%endfunction %% ZeroCrossings
+
+%% [EOF] if.tlc

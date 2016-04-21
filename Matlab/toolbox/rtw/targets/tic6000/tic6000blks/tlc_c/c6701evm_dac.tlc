@@ -1,0 +1,604 @@
+%% $RCSfile: c6701evm_dac.tlc,v $
+%% $Revision: 1.1.6.2 $
+%% $Date: 2004/04/08 21:01:00 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% part of the Target for C6701 EVM
+
+%implements c6701evm_dac "C"
+
+
+%% Include external c6000 functions ============================================
+%%
+%include "c6000_mcbsp.tlc"
+%include "c6000_dma.tlc"
+%include "c6000_codec.tlc"
+%include "c6000_periphs.tlc"
+%include "c6000_satmpy.tlc"
+
+
+%% Function: isNormalized ======================================================
+%%
+%% Abstract:
+%%  Determine if normalization is to be applied.
+%%  NOTE: This is more complicated than simply returning the status
+%%        of the scaling flag, since we must "ignore" the scaling
+%%        flag in certain modes.
+%%      
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                          Allow Normalization                               %%
+%%----------------------------------------------------------------------------%%
+%%                       %%                  Block Input Data Type            %%
+%%                       %%---------------------------------------------------%%
+%%                       %% single     %% 16 bit signed     %% 8 bit signed   %%
+%%     Data Type         %% double     %% (int16)           %% (uint8)        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  16 bit linear        %%    Yes     %%         No        %%       No       %%
+%%-----------------------%%------------%%-------------------%%----------------%%
+%%  8 bit linear         %%            %%                   %%                %%
+%%  a-law                %%    Yes     %%         No        %%       No       %%
+%%  u-law                %%            %%                   %%                %%
+%%-----------------------%%------------%%-------------------%%----------------%%
+%%  ADPCM                %%    No      %%         No        %%       No       %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function isNormalized(block) void
+
+    %if (inputIsInteger) || (DataFormat == "ADPCM_4BIT_IMA")
+        %% Ignore the scaling flag:
+        %return 0  %% no normalization to be performed
+
+    %else
+        %% Normalization is allowed
+        %% Return true if the flag is set to normalization
+
+        %return (Scaling == "NORMALIZE")
+    %endif
+
+%endfunction %% isNormalized
+
+
+%% Function: codecIsSigned16 ===================================================
+%%
+%% Abstract:
+%%      Returns TRUE if codec data format is in 16-bit mode
+%%
+%function codecIsSigned16(block)
+
+%return (DataFormat == "LINEAR_16BIT")
+
+%endfunction %% codecIsSigned16
+
+
+%% Function: DeclareScalingFactor ==============================================
+%%
+%% Abstract:
+%%  Outputs declarations of scaling constants when necessary.
+%%
+%function DeclareScalingFactor(block) Output
+    %%
+    %if isNormalized(block)
+        %%
+        %assign castType = LibBlockInputSignalDataTypeName(0,"")
+        %%
+        %if codecIsSigned16(block)
+            const %<castType> DACScaleFactor = 32768.0;
+        %else
+            const %<castType> DACScaleFactor = 128.0;
+            const int32_T DACDataOffset = 128;
+        %endif
+    %endif
+    %%
+%endfunction %% DeclareScalingFactor
+
+
+%% Function: IsIntegerType ======================================================
+%%
+%% Abstract:
+%%     Return 1 if the data type ID is an integer
+%%     Return 0 otherwise
+%%
+%function IsIntegerType(dType) void
+
+    %switch(dType)
+        %case tSS_INT8
+        %case tSS_INT16
+        %case tSS_INT32
+        %case tSS_UINT8
+        %case tSS_UINT16
+        %case tSS_UINT32
+          %assign isInt = 1
+          %break
+
+        %default
+          %assign isInt = 0
+          %break
+
+    %endswitch
+
+    %return isInt
+
+%endfunction %% IsIntegerType
+
+
+%% Function: DeclareSaturateParameters =========================================
+%%
+%%  Outputs declaration of saturation parameters when necessary.  The following
+%%  chart describeds the rules applied when saturation is selected.
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%           Overflow Rules and limits when applying saturation               %%
+%%----------------------------------------------------------------------------%%
+%%                       %%                  Block Input Data Type            %%
+%%                       %%---------------------------------------------------%%
+%%                       %% single     %% 16 bit signed     %% 8 bit signed   %%
+%%     Data Type         %% double     %% (int16)           %% (uint8)        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  16 bit linear        %%            %%                   %%                %%
+%%    - Normalized       %% +/- 1.0    %% n/a               %% n/a            %%
+%%    - Integer Value    %% +/- 32768  %% ignore            %% error in cmex  %%
+%%-----------------------%%------------%%-------------------%%----------------%%
+%%  8 bit linear         %%            %%                   %%                %%
+%%  a-law                %%            %%                   %%                %%
+%%  u-law                %%            %%                   %%                %%
+%%    - Normalized       %% +/- 1.0    %% n/a               %% n/a            %%
+%%    - Integer Value    %% 0.0-255.0  %% 255 (upper only)  %% ignore         %%
+%%-----------------------%%------------%%-------------------%%----------------%%
+%%  ADPCM                %%            %%                   %%                %%
+%%   %% Normalized       %% n/a        %% n/a               %%  n/a           %%
+%%   %% Integer Value    %% 0.0-15.0   %% 15 (upper only)   %% 15 (upper only)%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function DeclareSaturateParameters(block) Output
+    %if (OverflowMode == "WRAP") || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "LINEAR_8BIT")) || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "A_LAW_8BIT"))  || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "MU_LAW_8BIT")) || \
+        ((DataTypeID == tSS_INT16) && (DataFormat == "LINEAR_16BIT"))
+        %%
+        %% Output Nothing
+        %%
+    %else
+        %% Saturation case
+        %%
+        %% Determine the Upper and Lower Saturation Limits of the
+        %% block input signal.  For efficiency, the limits should be
+        %% of the same type and normalization as the input signal.
+        %%
+        %% Note: In the case of unsigned integers, only the upper limits
+        %% need to be checked for saturation (since lower limits = 0).
+        %%
+        %% %assign inputIsInteger = IsIntegerType(LibBlockInputSignalDataTypeId(0))
+        %%
+        %% Generate saturation limits as const variables:
+        %%
+        %if isNormalized(block)
+            %assign SaturateUpperLimit = "1.0"
+            %assign SaturateLowerLimit = "-1.0"
+        %else
+            %if (DataFormat == "LINEAR_16BIT")
+                %if (inputIsInteger)
+                    %assign SaturateUpperLimit = "32767"
+                    %assign SaturateLowerLimit = "-32768"
+                %else
+                    %assign SaturateUpperLimit = "32767.0"
+                    %assign SaturateLowerLimit = "-32768.0"
+                %endif %%inputIsInteger
+            %elseif (DataFormat == "LINEAR_8BIT") || \
+                    (DataFormat == "A_LAW_8BIT")  || \
+                    (DataFormat == "MU_LAW_8BIT")
+                %if (inputIsInteger)
+                    %assign SaturateUpperLimit = "255"
+                %else
+                    %assign SaturateUpperLimit = "255.0"
+                    %assign SaturateLowerLimit = "0.0"
+                %endif %%inputIsInteger
+            %elseif (DataFormat == "ADPCM_4BIT_IMA")
+                %if (inputIsInteger)
+                    %assign SaturateUpperLimit = "15"
+                %else
+                    %assign SaturateUpperLimit = "15.0"
+                    %assign SaturateLowerLimit = "0.0"
+                %endif %%inputIsInteger
+            %endif %% DataFormat
+        %endif %% isNormalized
+        %%
+        %% Determine the upper and lower saturated output constants
+        %% This is determined by the selected data format.
+        %%
+        %if (DataFormat == "LINEAR_16BIT")
+            %assign SaturateUpperOutputLeft  = "0x7FFF0000"
+            %assign SaturateUpperOutputRight = "0x00007FFF"
+            %assign SaturateUpperBound = "0x00007FFF"
+            %assign block = block + SaturateUpperBound
+            %if (!inputIsInteger)
+                %assign SaturateLowerOutputLeft  = "0x80000000"
+                %assign SaturateLowerOutputRight = "0x00008000"
+                %assign SaturateLowerBound = "0xffff8000"
+                %assign block = block + SaturateLowerBound
+            %endif %%inputIsInteger
+        %elseif (DataFormat == "LINEAR_8BIT") || \
+                (DataFormat == "A_LAW_8BIT")  || \
+                (DataFormat == "MU_LAW_8BIT")
+            %assign SaturateUpperOutputLeft  = "0xFF000000"
+            %assign SaturateUpperOutputRight = "0x0000FF00"
+            %if (!inputIsInteger)
+                %assign SaturateLowerOutputLeft  = "0x00000000"
+                %assign SaturateLowerOutputRight = "0x00000000"
+            %endif %%inputIsInteger
+        %elseif (DataFormat == "ADPCM_4BIT_IMA")
+            %assign SaturateUpperOutputLeft  = "0x0000F000"
+            %assign SaturateUpperOutputRight = "0xF0000000"
+            %if (!inputIsInteger)
+                %assign SaturateLowerOutputLeft  = "0x00000000"
+                %assign SaturateLowerOutputRight = "0x00000000"
+            %endif %%inputIsInteger
+        %endif %% DataFormat
+        %%
+        %assign castType = LibBlockInputSignalDataTypeName(0,"")
+        %%                    
+        %%
+        %% Declare the upper (and lower) saturation limits and constants
+        %%
+        const %<castType> SaturateUpperLimit = %<SaturateUpperLimit>;
+        %if (!inputIsInteger)
+            const %<castType> SaturateLowerLimit = %<SaturateLowerLimit>;
+        %endif
+        %%
+        %if (DataFormat != "LINEAR_16BIT")
+        %%
+        const int32_T SaturateUpperOutputLeft = %<SaturateUpperOutputLeft>;
+        %if (!inputIsInteger)
+            const int32_T SaturateLowerOutputLeft = %<SaturateLowerOutputLeft>;
+        %endif
+        %if Stereo == "CODEC_STEREO"
+            const int32_T SaturateUpperOutputRight = %<SaturateUpperOutputRight>;
+            %if (!inputIsInteger)
+                const int32_T SaturateLowerOutputRight = %<SaturateLowerOutputRight>;
+            %endif
+        %endif
+        %%
+        %endif
+    %%
+    %endif %% OverflowMode
+    %%
+%endfunction %% DeclareSaturateParameters
+
+
+%% Function: GetNextInput ======================================================
+%%
+%% Abstract:
+%%     Extracts the next input from LibBlockInputSignal and increments
+%%     according to Stereo (1 or 2 channels) and FrameSize.
+%%      
+%function GetNextInput(block,channel) void
+
+    %if FrameSize > 1
+        %if (Stereo == "CODEC_MONO")
+            %assign InputExpression =  "%<LibBlockInputSignal(0,"i++","",0)>"
+        %else
+            %if (channel == "LEFT")
+                %assign InputExpression =  "%<LibBlockInputSignal(0,"i","",0)>"
+            %else
+                %assign InputExpression =  "%<LibBlockInputSignal(0,"i++ + %<FrameSize>","",0)>"
+            %endif %% channel
+        %endif %% Stereo == "CODEC_MONO"
+    %else
+        %if (Stereo == "CODEC_MONO")
+            %assign InputExpression =  "%<LibBlockInputSignal(0,"","",0)>"
+        %else
+            %if (channel == "LEFT")
+                %assign InputExpression =  "%<LibBlockInputSignal(0,"0","",0)>"
+            %else
+                %assign InputExpression =  "%<LibBlockInputSignal(0,"1","",0)>"
+            %endif %% channel
+        %endif %% Stereo == "CODEC_MONO"
+
+    %endif %% FrameSize
+
+    %return InputExpression
+
+%endfunction %% GetNextInput
+
+
+%% Function: ApplyScaling ======================================================
+%%
+%% Abstract:
+%%     Formats the input data string as necessary to apply scaling
+%%     for floating point output.  NOTE: Data does *not* have to be
+%%     scaled for floating point output, it is simply a user option.
+%%
+%%     There are two types of scaling to be done, depending on whether
+%%     the inherited data is signed-16 or unsigned-8 bit data:
+%%
+%%              mode        output string
+%%         (1) signed-16:   "(%<UnscaledExpression> * DACScaleFactor)"
+%%             The associated scale factor variable is:
+%%                          const real_T DACScaleFactor = 32768.0;
+%%
+%%         (2) unsigned-8:  "(%<UnscaledExpression> * DACScaleFactor) + DACDataOffset)"
+%%             The associated scale factor variable is:
+%%                          const real_T DACScaleFactor = 128.0;
+%%                          const real_T DACScaleOffset = 128
+%%
+%%     where UnscaledExpression represents an unscaled block input signal.
+%%
+%%     NOTE: You must call the associated DeclareScalingFactor() function
+%%           which sets up the scale factor.
+%%
+%function ApplyScaling(block,UnscaledExpression) void
+
+    %if isNormalized(block)
+        %if codecIsSigned16(block)
+            %assign ScaledString = "(int32_T)(%<UnscaledExpression> * DACScaleFactor)"
+        %else
+            %assign ScaledString = "((int32_T)(%<UnscaledExpression> * DACScaleFactor) + DACDataOffset)"
+        %endif
+    %else
+        %% Nothing to do - return input directly:
+        %assign ScaledString = "(int32_T)%<UnscaledExpression>"
+    %endif
+
+    %return ScaledString
+
+%endfunction %% ApplyScaling
+
+
+%% Function: ApplyDataAlignment ================================================
+%%
+%% Abstract:
+%%  Writing to the codec serial port, left and right data words are always
+%%  16 bits wide and left justified in the word (i.e. ADPCM occupies
+%%  the first four bits).  Unused bits are output as zeros after the
+%%  LSB.  When the mono audio format is selected, the right channel
+%%  output is set to zero and the left channel output is sent to both
+%%  channels.  Only the 32 bit serial transfer is used, so all the
+%%  potential data formats are summarized below:
+%%  (L = left channel data, R = right channel data)
+%%  Mono   16 bits     0xLLLL0000
+%%  Stereo 16 bits     0xLLLLRRRR
+%%  Mono    8 bits     0xLL000000
+%%  Stereo  8 bits     0xLL00RR00
+%%  Mono    4 bits     0x0000L000
+%%  Stereo  4 bits     0xR000L000
+%%
+%%  Note the "switch" that takes place in the 4 bit mode.  This is only
+%%  true for the output.
+%% 
+%%  Since the CODEC always aligns data into 32-bit fields in memory,
+%%  we wish to take the reformat the data to fit the correct pattern
+%%  (and convert, as appropriate) it into the user-selected format
+%%  (such as double, single, etc).
+%%  Since only one of these blocks is permitted in the model,
+%%  we can use static variable to retain block state.
+%%
+%function ApplyDataAlignment(block,UnalignedExpression,channel) void
+
+    %if (DataFormat == "LINEAR_16BIT")
+        %if (channel == "LEFT")
+            %assign AlignedExpression = UnalignedExpression + " << 16"
+        %else
+            %assign AlignedExpression = "(" + UnalignedExpression + ") & 0x0000FFFF"
+        %endif %% channel
+
+    %elseif (DataFormat == "LINEAR_8BIT") || \
+            (DataFormat == "A_LAW_8BIT")  || \
+            (DataFormat == "MU_LAW_8BIT")
+        %if (channel == "LEFT")
+            %assign AlignedExpression = UnalignedExpression + " << 24"
+        %else
+            %assign AlignedExpression = "(" + UnalignedExpression + " << 8)"
+        %endif %% channel
+
+    %elseif (DataFormat == "ADPCM_4BIT_IMA")
+        %if (channel == "LEFT")
+            %assign AlignedExpression = "(" + UnalignedExpression + " << 12)"
+        %else
+            %assign AlignedExpression = UnalignedExpression + " << 28"
+        %endif %% channel
+
+    %else 
+        %error "Unimplemented data format specified"
+    %endif
+
+    %return AlignedExpression
+
+%endfunction %%ApplyDataAlignment
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+
+    %if !JustCreatedCompiledModelRecord("c6701evm_dac_instance")
+        %error "Only one C6701EVM codec DAC block is allowed in a model."
+    %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%%
+%%  Create automatic D/A (initialize ping pong buffers)
+%%
+%function Start(block,system) Output
+    %%
+    %<CheckCodecFormats(block)>
+    %%
+    %% Render #includes, #defines, and globals
+    %<AddUtilDefinesToModelH(block)>
+    %<ConfigPeripherals(block)>
+    %%
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %%
+    %<Create_config_codec_output(block)>\
+    config_codec_output();
+    %%
+%endfunction %% Start
+
+
+
+%% Function: Outputs ===========================================================
+%%
+%%  Read input buffer (when ready), convert to output format and send out.
+%%
+%function Outputs(block,system) Output
+/* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+{
+    %<DeclareScalingFactor(block)>\
+    %<DeclareSaturateParameters(block)>\
+
+    %%
+    %if FrameSize > 1
+        int_T i = 0;
+        while(i < %<FrameSize>) {
+    %endif
+    %%
+    %%
+    %assign UnscaledLeftOutputExpression  = "%<GetNextInput(block, "LEFT" )>"
+    %assign UnscaledRightOutputExpression = "%<GetNextInput(block, "RIGHT")>"
+    %%
+    %if (OverflowMode == "WRAP")                                     || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "LINEAR_8BIT")) || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "A_LAW_8BIT"))  || \
+        ((DataTypeID == tSS_UINT8) && (DataFormat == "MU_LAW_8BIT")) || \
+        ((DataTypeID == tSS_INT16) && (DataFormat == "LINEAR_16BIT"))
+        %%
+        %% Build Output Expression for Left and Right Channels without checking for
+        %% Saturation on Overflow.  (Note:  In the case where saturation on
+        %% overflow is selected, AND an Integer data type is selected where
+        %% the data type matches the corresponding codec data format, saturation
+        %% checking is ignored, because it is meaningless).
+        %%
+        %assign UnalignedLeftOutputExpression  = "%<ApplyScaling(block, "%<UnscaledLeftOutputExpression>" )>"
+        %assign UnalignedRightOutputExpression = "%<ApplyScaling(block, "%<UnscaledRightOutputExpression>")>"
+        %assign LeftOutputExpression  = "%<ApplyDataAlignment(block, "%<UnalignedLeftOutputExpression> ", "LEFT" )>"
+        %assign RightOutputExpression = "%<ApplyDataAlignment(block, "%<UnalignedRightOutputExpression>", "RIGHT")>"
+        %%
+        %if (Stereo == "CODEC_MONO")
+            *dacBuffPtr++ = %<LeftOutputExpression>;
+        %else
+            *dacBuffPtr   = %<LeftOutputExpression>;
+            *dacBuffPtr++ |= %<RightOutputExpression>;
+        %endif
+    %else
+        %%
+        %% Build Output Expressions for Left and Right Channels.
+        %%
+        %assign UnalignedLeftOutputExpression  = "%<ApplyScaling(block, "sample")>"
+        %assign UnalignedRightOutputExpression = "%<ApplyScaling(block, "sample")>"
+        %assign LeftOutputExpression  = "%<ApplyDataAlignment(block, "%<UnalignedLeftOutputExpression> ", "LEFT" )>"
+        %assign RightOutputExpression = "%<ApplyDataAlignment(block, "%<UnalignedRightOutputExpression>", "RIGHT")>"
+        %%
+        %assign declType = LibBlockInputSignalDataTypeName(0,"")
+        %%
+        %if (Stereo == "CODEC_MONO")
+            %if (DataFormat == "LINEAR_16BIT")
+                 %<declType> sample = %<GetNextInput(block,"LEFT")>; /* get next sample */
+                        
+                %if isNormalized(block)
+                    %<create_sat_mpyMono(block, SaturateUpperBound, SaturateLowerBound)>\
+                    *dacBuffPtr++ = sat_mpy (sample, DACScaleFactor, SaturateUpperLimit, SaturateLowerLimit);   
+                %else
+                    %<create_sat_mpyMonoInt(block, SaturateUpperBound, SaturateLowerBound)>\                
+                    *dacBuffPtr++ = sat_mpy (sample, SaturateUpperLimit, SaturateLowerLimit);                
+                %endif
+            %else
+                %<declType> sample = %<GetNextInput(block,"LEFT")>; /* get next sample */
+                %%
+                %% Saturation check - If unsigned, there is no need to check on lower limit
+                %%
+                /* check for saturation */
+                if (sample >= SaturateUpperLimit) *dacBuffPtr++ = SaturateUpperOutputLeft;
+                %if (!inputIsInteger)
+                    else if (sample <= SaturateLowerLimit) *dacBuffPtr++ = SaturateLowerOutputLeft;
+                %endif
+                else *dacBuffPtr++ = %<LeftOutputExpression>;
+            %endif
+        %else
+            %if (DataFormat == "LINEAR_16BIT")
+                /* get next left and right channel samples */
+                %<declType> sample1 = %<GetNextInput(block,"LEFT")>;
+                %<declType> sample2 = %<GetNextInput(block,"RIGHT")>;
+                
+                %if isNormalized(block)
+                    %<create_sat_mpyStereo(block, SaturateUpperBound, SaturateLowerBound)>\
+                    *dacBuffPtr++ = sat_mpy (sample1, DACScaleFactor, SaturateUpperLimit, SaturateLowerLimit, sample2);
+                %else
+                    %<create_sat_mpyStereoInt(block, SaturateUpperBound, SaturateLowerBound)>\
+                    *dacBuffPtr++ = sat_mpy (sample1, SaturateUpperLimit, SaturateLowerLimit, sample2);     
+                %endif
+            %else            
+                int32_T tmp1;
+                
+                /* get left channel sample */
+                %<declType> sample = %<GetNextInput(block,"LEFT")>;
+                
+                /* check for left channel saturation */           
+                if (sample >= SaturateUpperLimit) tmp1 = SaturateUpperOutputLeft;
+                %if (!inputIsInteger)
+                    else if (sample <= SaturateLowerLimit) tmp1 = SaturateLowerOutputLeft;
+                %endif %% inputIsInteger
+                else tmp1 = %<LeftOutputExpression>;
+                    
+                 /* get right channel sample */
+                sample = %<GetNextInput(block,"RIGHT")>;
+
+                /* check for right channel saturation */  
+                if (sample >= SaturateUpperLimit) tmp1 |= SaturateUpperOutputRight;
+                %if (!inputIsInteger)
+                else if (sample <= SaturateLowerLimit) tmp1 |= SaturateLowerOutputRight;
+                %endif %% inputIsInteger
+                else tmp1 |= %<RightOutputExpression>;
+                
+                *dacBuffPtr++ = tmp1;
+            %endif
+        %endif %% Stereo
+    %endif %% OverflowMode
+    %%
+    %if FrameSize > 1
+        }
+    %endif %% FrameSize
+}
+%endfunction %% Outputs
+
+
+%% Function: AddParamsToBlock ==================================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+
+    %assign numDims        = LibBlockInputSignalNumDimensions(0)
+    %assign dims           = LibBlockInputSignalDimensions(0)
+    %assign cols           = (numDims == 2) ? dims[1] : 1
+    %assign rows           = dims[0]
+    %assign FrameSize      = rows
+
+    %assign Stereo         = SFcnParamSettings.Stereo
+    %assign DacAtten       = SFcnParamSettings.DacAtten
+    %assign DataFormat     = SFcnParamSettings.DataFormat
+    %assign Scaling        = SFcnParamSettings.Scaling
+    %assign SampleRate     = SFcnParamSettings.SampleRate
+    %assign OverflowMode   = SFcnParamSettings.OverflowMode
+
+    %assign DataTypeID     = LibBlockInputSignalDataTypeId(0)
+    %assign inputIsInteger = IsIntegerType(DataTypeID)
+
+    %assign block = block + Stereo + DacAtten + DataFormat + SampleRate \
+                  + FrameSize + Scaling + OverflowMode + DataTypeID \
+                  + inputIsInteger
+
+    %% Make selected parameters available globally to other functions:
+    %%
+    %assign c6000_codec_dac_atten = DacAtten
+    %assign ::CompiledModel = ::CompiledModel + c6000_codec_dac_atten
+    %%
+    %assign c6000_dac_data_format = DataFormat
+    %assign ::CompiledModel = ::CompiledModel + c6000_dac_data_format
+
+%endfunction  %% AddParamsToBlock
+
+%% [EOF] c6701evm_dac.tlc

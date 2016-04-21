@@ -1,0 +1,1289 @@
+%% $RCSfile: c6000_codec.tlc,v $
+%% $Revision: 1.1.6.1 $
+%% $Date: 2004/01/22 18:32:03 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+%% part of the Target for TI C6000 DSP
+
+%if !EXISTS("C6000_CODEC_TLC")
+%assign C6000_CODEC_TLC = 1
+
+%include "c6000_cpld.tlc"
+%include "c6000_util.tlc"
+
+%%  These helper functions may only be called after all the
+%%  BlockInstanceSetup functions have run.  That is, the functions
+%%  should only be called during mdlStart or later.
+
+
+
+%% ==========================================================================
+%% Function CheckCodecFormats
+
+%function CheckCodecFormats(block) void
+
+    %assign DEFAULT_FORMAT = "-1"
+
+    %if EXISTS("::CompiledModel.c6000_dac_data_format")
+        %assign dac_format = ::CompiledModel.c6000_dac_data_format
+    %else
+        %assign dac_format = DEFAULT_FORMAT
+    %endif
+
+    %if EXISTS("::CompiledModel.c6000_adc_data_format")
+        %assign adc_format = ::CompiledModel.c6000_adc_data_format
+    %else
+        %assign adc_format = DEFAULT_FORMAT
+    %endif
+
+    %if (dac_format != DEFAULT_FORMAT) && \
+        (adc_format != DEFAULT_FORMAT) && (dac_format != adc_format)
+  	    %% Both D/A and A/D are present and formats do not match
+  	    %error Codec blocks' Word Length parameters must match.
+    %endif
+    
+%endfunction %% CheckCodecFormats
+
+
+
+%% ==========================================================================
+%% Function: getCodecSourceGain 
+
+%function getCodecSourceGain(block) void
+
+	%if EXISTS("c6000_codec_source_gain")
+	    %if BoardType=="C6701EVM"
+            %assign dblGain = %<c6000_codec_source_gain> / 1.5
+        %elseif BoardType=="C6711DSK"
+            %assign dblGain = 25 + %<c6000_codec_source_gain> / 1.5
+        %elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+            %assign dblGain = 25 + %<c6000_codec_source_gain> / 1.5
+        %endif	
+	%else
+        %assign dblGain = 0.0
+	%endif
+	
+	%assign gainIdx = CAST("Number", dblGain)
+	%return gainIdx
+
+%endfunction %% getCodecSourceGain
+
+
+
+%% ==========================================================================
+%% Function: getCodecDacAtten 
+
+%function getCodecDacAtten(block) void
+
+	%if EXISTS("c6000_codec_dac_atten")
+	    %if BoardType=="C6701EVM"
+            %assign dblDacAtten = %<c6000_codec_dac_atten> / 1.5
+        %elseif BoardType=="C6711DSK"
+            %assign dblDacAtten = 4 * ( 25 - %<c6000_codec_dac_atten> / 1.5 )
+        %elseif BoardType=="C6416DSK"  || BoardType=="C6713DSK"
+            %assign dblDacAtten = 4 * ( 25 - %<c6000_codec_dac_atten> / 1.5 )
+        %endif
+	%else
+        %assign dblDacAtten = 0.0
+	%endif
+	
+	%assign dacAttenIdx = CAST("Number", dblDacAtten)
+	%return dacAttenIdx
+
+%endfunction %% getCodecDacAtten
+
+
+
+%% ==========================================================================
+%% Function: getCodecMonoMixAtten 
+
+%function getCodecMonoMixAtten(block) void
+
+	%if EXISTS("c6000_codec_mono_mix_atten")
+        %assign dblMonoMix = %<c6000_codec_mono_mix_atten> / 3.0
+	%else
+        %assign dblMonoMix = 0.0
+	%endif
+	
+	%assign monoMixIdx = CAST("Number", dblMonoMix)
+	%return monoMixIdx
+
+%endfunction %% getCodecMonoMixAtten
+
+
+
+%% ==========================================================================
+%% Function: getCodecLinGain 
+
+%function getCodecLinGain(block) void
+
+	%if EXISTS("c6000_codec_lin_gain")
+        %assign dblLinGain = %<c6000_codec_lin_gain> / 1.5 + 8.0
+	%else
+        %assign dblLinGain = 8.0
+	%endif
+	
+	%assign linGainIdx = CAST("Number", dblLinGain)
+	%return linGainIdx
+
+%endfunction %% getCodecLinGain
+
+
+
+%% ==========================================================================
+%% Function: getCodecAux1Gain 
+
+%function getCodecAux1Gain(block) void
+
+	%if EXISTS("c6000_codec_aux1_gain")
+        %assign dblAux1Gain = %<c6000_codec_aux1_gain> / 1.5 + 8.0
+	%else
+        %assign dblAux1Gain = 8.0
+	%endif
+	
+	%assign aux1GainIdx = CAST("Number", dblAux1Gain)
+	%return aux1GainIdx
+
+%endfunction %% getCodecAux1Gain
+
+
+
+%% ==========================================================================
+%% Function: getCodecAux2Gain
+
+%function getCodecAux2Gain(block) void
+
+    %if EXISTS("c6000_codec_aux2_gain")
+        %assign dblAux2Gain = %<c6000_codec_aux2_gain> / 1.5 + 8.0
+    %else
+        %assign dblAux2Gain = 8.0
+    %endif
+
+    %assign aux2GainIdx = CAST("Number", dblAux2Gain)
+    %return aux2GainIdx
+
+%endfunction %% getCodecAux2Gain
+
+
+
+%% ==========================================================================
+%% Function renderCodecDefinesC6711
+%% Abstract: 
+%%      This function adds TMS320c6711 codec's constants to board header file 
+
+%function renderCodecDefinesC6711(block) void
+
+%openfile buff
+
+%% map gains to appropriate masks
+%%
+%assign codec_source_gain = getCodecSourceGain(block)
+%assign codec_dac_atten   = getCodecDacAtten(block)
+%%
+#define CODEC_VOICE_MUTE    0x30
+#define CODEC_ADC_GAIN      %<codec_source_gain>
+
+#define CODEC_MIC_GAIN_ON   0x40
+#define CODEC_MIC_GAIN_OFF  0x00
+
+#define CODEC_SPK_ON        0x02	
+#define CODEC_SPK_MUTE      0x00
+#define CODEC_DAC_ATTN      %<codec_dac_atten>
+
+%closefile buff
+%return buff
+%endfunction %% renderCodecDefinesC6711
+
+%% ==========================================================================
+%% Function renderCodecDefinesAIC23
+%% Abstract: 
+%%      This function adds AIC23 codec's constants to board header file 
+
+%function renderCodecDefinesAIC23(block) void
+
+%openfile buff
+
+%% map gains to appropriate masks
+%%
+%assign codec_source_gain = getCodecSourceGain(block)
+%assign codec_dac_atten   = getCodecDacAtten(block)
+%%
+
+/* Codec register fields:  
+ *  Left-shift bit codes and field values
+ *  (See AIC23 data sheet)                   */
+
+#define AIC23_R0_LRS             8
+#define AIC23_R0_LIM             7
+#define AIC23_R0_LIV             0
+
+#define AIC23_R1_RLS             8
+#define AIC23_R1_RIM             7
+#define AIC23_R1_RIV             0
+
+// Registers 2 & 3 don't depend on model and will be set wholesale
+
+#define AIC23_R4_STA             6
+#define AIC23_R4_STE             5
+#define AIC23_R4_DAC             4
+#define AIC23_R4_BYP             3
+#define AIC23_R4_INSEL           2
+#define AIC23_R4_INSEL_LINE    0x0
+#define AIC23_R4_INSEL_MIC     0x1
+#define AIC23_R4_MICM            1
+#define AIC23_R4_MICB            0
+
+// Registers 5 & 6 don't depend on model and will be set wholesale
+
+#define AIC23_R7_MS              6
+#define AIC23_R7_MS_SLAVE      0x0
+#define AIC23_R7_MS_MASTER     0x1
+#define AIC23_R7_LRSWAP          5
+#define AIC23_R7_LRP             4
+#define AIC23_R7_IWL             2
+#define AIC23_R7_IWL_16BIT     0x0
+#define AIC23_R7_IWL_20BIT     0x1
+#define AIC23_R7_IWL_24BIT     0x2
+#define AIC23_R7_IWL_32BIT     0x3
+#define AIC23_R7_FOR             0
+#define AIC23_R7_FOR_MSBRIGHT  0x0
+#define AIC23_R7_FOR_MSBLEFT   0x1
+#define AIC23_R7_FOR_I2S       0x2
+#define AIC23_R7_FOR_DSP       0x3
+
+// Register 8 is set wholesale via codes below
+#define AIC23_R8_8KHZ         0x0D
+#define AIC23_R8_32KHZ        0x19
+#define AIC23_R8_44_1KHZ      0x23 
+#define AIC23_R8_48KHZ        0x01
+#define AIC23_R8_96KHZ        0x1D
+
+// Registers 9 & 10 don't depend on model and will be set wholesale
+
+#define AIC23_RESET             15
+
+#define MASK(value, bit_offset) (value<<bit_offset)
+
+%closefile buff
+%return buff
+%endfunction %% renderCodecDefinesAIC23
+
+
+%% ==========================================================================
+%% Function: renderConfigCodecFunctionC6711 
+%% Abstract: 
+%%      This function adds definition of ConfigCodec function for TMS320c6711 
+
+%function renderConfigCodecFunctionC6711(block) void
+%openfile buff
+
+/* Function: Read_Codec_Control ----------------------------------------
+ *
+ * Abstract:
+ *      This function reads Control Word from Codec	
+ */
+ 
+unsigned int Read_Codec_Control(unsigned int Register)
+{
+	unsigned int Register_temp = 0;
+	
+	Register_temp = ( ((Register & 0x001F) << 8) | 0x2000);
+
+	mcbsp0_write(0);
+	mcbsp0_read ( );
+	mcbsp0_write(1);
+	mcbsp0_read ( );
+	mcbsp0_write(Register_temp);
+	Register_temp = mcbsp0_read ( );
+	mcbsp0_write(0);
+	mcbsp0_read ( );
+
+	return Register_temp;
+}
+
+
+
+/* Function: Write_Codec_Control ---------------------------------------
+ *
+ * Abstract:
+ *      This function writes Control Word from Codec	
+ */
+ 
+void Write_Codec_Control(unsigned int Register, unsigned int Data)
+{
+	unsigned int Register_temp = 0;
+	
+	Register_temp = ( (Register & 0x001F) << 8) | (Data & 0x00ff);
+
+	mcbsp0_write(0);
+	mcbsp0_read ( );
+	mcbsp0_write(1);
+	mcbsp0_read ( );
+	mcbsp0_write(Register_temp);
+	mcbsp0_read ( );
+	mcbsp0_write(0);
+	mcbsp0_read ( );
+}
+
+
+
+/* Function: codec_error -----------------------------------------------
+ *
+ * Abstract:
+ *      This function traps Codec Errors		
+ */
+
+void codec_error (int id)
+{
+	/* Codec Initialization Error - Exit and Reset DSK */
+	//for (;;);						/* loop forever */
+}
+
+
+
+/* Function: config_codec ----------------------------------------------
+ *
+ * Abstract: 
+ *      This function initally configures the codec
+ */
+ 
+void config_codec(void)
+{
+	unsigned int temp_variable;
+	
+	/* Performs Voice Channel Initialisation of TLC320AD535 Codec	*/
+	/* AD535 has 2 serial port channels - Data, Voice				*/
+	/* Data  Channel Controlled by Registers 1,2	(Reg 0 = NOP)	*/
+	/* Voice Channel Controlled by Registers 3,4,5,6				*/
+	/* Only Voice channel used on DSK 6211							*/
+	
+	/* Set-Up Register 0 (NOP) - Dummy Read/Write Codec */
+	Write_Codec_Control(0, 0);
+	temp_variable = Read_Codec_Control(0);
+	
+	/* Set-Up Register 1 / 2   - Only Used by Data Serial Port -NA	*/
+	
+	/* Set-Up Register 3       - S/W Reset + Power Down + No loop / gain=0dB */
+	Write_Codec_Control(3, 0x00C6);		// + With    Reset
+	Write_Codec_Control(3, 0x0006);		// + Without Reset
+	temp_variable = Read_Codec_Control(3);
+	if ( (temp_variable & 0x00ff) != 0x0006) 
+        codec_error(3);
+	
+	/* Set-Up Register 4       - Voice ADC gain = 0dB */
+	Write_Codec_Control(4, 0x0040);
+	temp_variable = Read_Codec_Control(4);
+	if ( (temp_variable & 0x00ff) != 0x0040) 
+        codec_error(4);
+	
+	/* Set-Up Register 5       - Spkr L/R gain = 0dB */
+	Write_Codec_Control(5, 0x0002);
+	temp_variable = Read_Codec_Control(5);
+	if ( (temp_variable & 0x00fe) != 0x0002) 
+        codec_error(5);
+	
+	/* Set-Up Register 6       - Handset gain  = 0dB */
+	Write_Codec_Control(6, 0x0000);
+	temp_variable = Read_Codec_Control(6);
+	if ( (temp_variable & 0x0080) != 0x0000) 
+        codec_error(6);
+	
+	/* Set-Up Register - (NOP)		*/
+	Write_Codec_Control(0, 0);
+	temp_variable = Read_Codec_Control(0);
+}
+
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecFunctionC6711
+
+
+%% ==========================================================================
+%% Function: renderConfigCodecFunctionAIC23 
+%% Abstract: 
+%%      This function adds definition of ConfigCodec function for 
+%%      AIC23 on C6416DSK/C6713DSK
+
+%function renderConfigCodecFunctionAIC23(block) void
+%openfile buff
+
+/* Function: Write_Codec_Control ---------------------------------------
+ *
+ * Abstract:
+ *      This function writes Control Word to Codec via McBSP
+ */
+ 
+static void Write_Codec_Control(unsigned short Register, unsigned short Data)
+{
+    volatile unsigned int i;
+    /* Mask off lower 9 bits */
+    Data &= 0x1ff;
+    
+    /* Wait for XRDY signal before writing data to DXR */
+    while (!MCBSP_xrdy(hMcbspCtrl));
+    for(i=0; i<1000; i++);  // Extra wait required if using internal mem on C6416
+    
+    /* Write 16 bit data value to DXR */
+    MCBSP_write(hMcbspCtrl, (Register << 9) | Data);
+}
+
+
+/* Function: config_codec ----------------------------------------------
+ *
+ * Abstract: 
+ *      This function initally configures the codec registers
+ */
+ 
+void config_codec(void)
+{
+    unsigned short regVal = 0;
+
+    /*  Reset the AIC23  */ 
+    Write_Codec_Control(AIC23_RESET, 0);
+
+%if EXISTS("::CompiledModel.aic23_adc_instance")  
+    /* 0 AIC23_LEFTINVOL  Left line input channel volume */ 
+    /*   LIV=0dB, LIM=NotMuted, LRS=Off  */
+    Write_Codec_Control(0, 0x0017);
+
+    /* 1 AIC23_RIGHTINVOL Right line input channel volume */
+    /*   RIV=0dB, RIM=NotMuted, RLS=Off  */
+    Write_Codec_Control(1, 0x0017);
+
+%endif
+
+%if EXISTS("::CompiledModel.aic23_dac_instance") 
+    /* 2 AIC23_LEFTHPVOL  Left channel headphone volume */
+    /*   LRS=On, LZC=On, LHV=0dB  */
+    Write_Codec_Control(2, 0x01f9);
+
+    /* 3 AIC23_RIGHTHPVOL Right channel headphone volume */ 
+    /*   RLS=On, RZC=On, RHV=0dB  */
+    Write_Codec_Control(3, 0x01f9);
+
+%endif
+
+    /* 4 AIC23_ANAPATH    Analog audio path control */
+    /*   STA=Don'tCare, STE=Off, DAC=On, BYP=Off, INSEL=Mic/Line, 
+         MICM=On/Off, MICB=On/Off   */
+    %if EXISTS("::CompiledModel.aic23_adc_instance") 
+        %if c6000_AdcSource == "CODEC_LINE_INPUT"
+             %assign InselVal = "AIC23_R4_INSEL_LINE"
+        %else
+             %assign InselVal = "AIC23_R4_INSEL_MIC"
+        %endif
+        %if c6000_MicGain == "CODEC_MIC_GAIN_OFF"
+             %assign MicBoostVal = "0x0"
+        %else
+             %assign MicBoostVal = "0x1"
+        %endif
+    %else
+        %assign InselVal = "AIC23_R4_INSEL_LINE"
+        %assign MicBoostVal = "0x0"
+    %endif
+    %if EXISTS("::CompiledModel.aic23_dac_instance") 
+        %assign dacOnOff = "0x1"
+    %else 
+        %assign dacOnOff = "0x0"
+    %endif
+    regVal = MASK(0x0 , AIC23_R4_STA   ) |
+             MASK(0x0 , AIC23_R4_STE   ) |
+             MASK(%<dacOnOff> , AIC23_R4_DAC   ) |
+             MASK(0x0 , AIC23_R4_BYP   ) |
+             MASK(%<InselVal> , AIC23_R4_INSEL ) |
+             MASK(0x0 , AIC23_R4_MICM  ) |
+             MASK(%<MicBoostVal> , AIC23_R4_MICB );
+    Write_Codec_Control(4, regVal);
+
+    /* 5 AIC23_DIGPATH    Digital audio path control */     
+    /*   DACM=Off, DEEMP=Off, ADCHP=Off  */
+    Write_Codec_Control(5, 0x0000);
+
+    /* 6 AIC23_POWERDOWN  Power down control */             
+    /*   [All modules ON]    */
+    Write_Codec_Control(6, 0x0000);
+
+    /* 7 AIC23_DIGIF      Digital audio interface format */ 
+    /*   MS=Master, LRSWAP=Off, LRP=FirstBCLK, IWL=16Bit/?, FOR=DSP  */
+    %assign IwlVal = "AIC23_R7_IWL_" + DataFormat
+    regVal = MASK(AIC23_R7_MS_MASTER, AIC23_R7_MS     ) |
+             MASK(               0x0, AIC23_R7_LRSWAP ) |
+             MASK(               0x0, AIC23_R7_LRP    ) |
+             MASK(         %<IwlVal>, AIC23_R7_IWL    ) |
+             MASK(  AIC23_R7_FOR_DSP, AIC23_R7_FOR    );
+    Write_Codec_Control(7, regVal);
+
+    /* 8 AIC23_SAMPLERATE Sample rate control */
+    %% tlc variable SampleRate is determined by the ADC block mask
+    %% (if there is an ADC block) and/or computed by the DAC block s-function
+    %% (if there is a DAC block).  
+    %if SampleRate=="CODEC_FS_8000"
+      Write_Codec_Control(8, AIC23_R8_8KHZ);
+    %elseif SampleRate=="CODEC_FS_32000"
+      Write_Codec_Control(8, AIC23_R8_32KHZ);
+    %elseif SampleRate=="CODEC_FS_44100"
+      Write_Codec_Control(8, AIC23_R8_44_1KHZ);
+    %elseif SampleRate=="CODEC_FS_48000"
+      Write_Codec_Control(8, AIC23_R8_48KHZ);
+    %elseif SampleRate=="CODEC_FS_96000"
+      Write_Codec_Control(8, AIC23_R8_96KHZ);
+    %endif
+
+    /* 9 AIC23_DIGACT     Digital interface activation */   
+    /*  ACT=On  */
+    Write_Codec_Control(9, 0x0001);
+
+}
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecFunctionAIC23
+
+
+
+%% ==========================================================================
+%% Function: renderConfigCodecFunctionTMDX326040 
+%% Abstract: 
+%%      This function adds definition of ConfigCodec function for TI TMDX326040 
+
+%function renderConfigCodecFunctionTMDX326040(block) void
+%openfile buff
+
+/* Function: config_codec ----------------------------------------------
+ *
+ * Abstract: 
+ *      This function initally configures the codec
+ */
+ 
+void config_codec(void)
+{
+  ; /* no codec specific initialization needed */
+}
+
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecFunctionTMDX326040
+
+
+
+%% ==========================================================================
+%% Function renderCodecDefinesC6701
+%% Abstract: 
+%%      This function adds TMS320c6701 codec's constants to board header file
+
+%function renderCodecDefinesC6701(block) void
+
+%<AddCpldDefinesToModelH(block)>
+%<AddUtilDefinesToModelH(block)>
+
+%openfile buff
+
+/* Codec header ------------------------------------------------------------ */
+/* see the Crystal CS4231A Codec data sheet for technical specifications     */
+
+/* codec base address */
+%if ("%<C6x_Memory_Map>" == "map0")
+    #define CODEC_ADDR                  0x01320000    /* map 0 */
+%else
+    #define CODEC_ADDR                  0x01720000    /* map 1 */
+%endif
+
+/* codec direct registers */
+#define CODEC_INDEX  *(volatile unsigned int *)(CODEC_ADDR)
+#define CODEC_IDATA  *(volatile unsigned int *)(CODEC_ADDR+0x04)
+#define CODEC_STATUS *(volatile unsigned int *)(CODEC_ADDR+0x08)
+#define CODEC_PIO    *(volatile unsigned int *)(CODEC_ADDR+0x0C)
+
+/* codec indirect registers */
+#define CODEC_LEFT_ADC_IN_CTRL           0
+#define CODEC_RIGHT_ADC_IN_CTRL          1
+#define CODEC_LEFT_AUX1_IN_CTRL          2
+#define CODEC_RIGHT_AUX1_IN_CTRL         3
+#define CODEC_LEFT_AUX2_IN_CTRL          4
+#define CODEC_RIGHT_AUX2_IN_CTRL         5
+#define CODEC_LEFT_DAC_OUT_CTRL          6
+#define CODEC_RIGHT_DAC_OUT_CTRL         7
+#define CODEC_FS_PBACK_DATA_FMT          8
+#define CODEC_INTFC_CONFIG               9
+#define CODEC_PIN_CTRL                  10
+#define CODEC_ERR_STATUS_INIT           11
+#define CODEC_MODE_ID                   12
+#define CODEC_LBACK_CTRL                13
+#define CODEC_PBACK_UPPER_BASE_CNT      14
+#define CODEC_PBACK_LOWER_BASE_CNT      15
+#define CODEC_ALT_FEATURE_EN1           16
+#define CODEC_ALT_FEATURE_EN2           17
+#define CODEC_LEFT_LINE_IN_CTRL         18
+#define CODEC_RIGHT_LINE_IN_CTRL        19
+#define CODEC_TIMER_LOW_BASE            20
+#define CODEC_TIMER_HIGH_BASE           21
+#define CODEC_ALT_FEATURE_EN3           23
+#define CODEC_ALT_FEATURE_STAT          24
+#define CODEC_VER_CHIPID                25
+#define CODEC_MONO_IO_CTRL              26
+#define CODEC_CAPTURE_DATA_FMT          28
+#define CODEC_CAPTURE_UPPER_BASE_CNT    30
+#define CODEC_CAPTURE_LOWER_BASE_CNT    31
+
+/* register bit locations */
+
+/* INDEX address register bits (R0)                                            */
+#define CODEC_R0_IA                     0       /* Index Address               */
+#define CODEC_R0_TRD                    5       /* Transfer Request Disable    */
+#define CODEC_R0_MCE                    6       /* Mode Change Enable          */
+#define CODEC_R0_INIT                   7       /* CS4231A Initialization      */
+
+/* STATUS register bits (R2)                                                   */
+#define CODEC_R2_INT                    0       /* Interrupt Status            */
+#define CODEC_R2_PRDY                   1       /* Playback Data Ready         */
+#define CODEC_R2_PLR                    2       /* Playback Left-Right sample  */
+#define CODEC_R2_PUL                    3       /* Playback Upper-Lower byte   */
+#define CODEC_R2_SER                    4       /* Sample Error                */
+#define CODEC_R2_CRDY                   5       /* Capture Data Ready          */
+#define CODEC_R2_CLR                    6       /* Capture Left-Right sample   */
+#define CODEC_R2_CUL                    7       /* Capture Upper-Lower byte    */
+
+/* CODEC_LEFT_ADC_IN_CTRL (I0) register bits                                   */
+#define CODEC_I0_LAG                    0       /* Left ADC Gain               */
+#define CODEC_I0_LMGE                   5       /* Left Mic Gain Enable        */
+#define CODEC_I0_LSS                    6       /* Left ADC Input Source Select*/
+
+/* CODEC_RIGHT_ADC_IN_CTRL (I1) register bits                                  */
+#define CODEC_I1_RAG                    0       /* Right ADC gain              */
+#define CODEC_I1_RMGE                   5       /* Right Mic Gain Enable       */
+#define CODEC_I1_RSS                    6       /* Right ADC Input Source Sel  */
+
+/* CODEC_LEFT_AUX1_IN_CTRL (I2) register bits                                  */
+#define CODEC_I2_LX1G                   0       /* Left Aux #1 Gain            */
+#define CODEC_I2_LX1M                   7       /* Left Aux #1 Mute            */
+
+/* CODEC_RIGHT_AUX1_IN_CTRL (I3) register bits                                 */
+#define CODEC_I3_RX1G                   0       /* Right Aux #1 Gain           */
+#define CODEC_I3_RX1M                   7       /* Right Aux #1 Mute           */
+
+/* CODEC_LEFT_AUX2_IN_CTRL (I4) register bits                                  */
+#define CODEC_I4_LX2G                   0       /* Left Aux #2 Gain            */ 
+#define CODEC_I4_LX2M                   7       /* Left Aux #2 Mute            */
+
+/* CODEC_RIGHT_AUX2_IN_CTRL (I5) register bits                                 */
+#define CODEC_I5_RX2G                   0       /* Right Aux #2 Gain           */
+#define CODEC_I5_RX2M                   7       /* Right Aux #2 Mute           */
+
+/* CODEC_LEFT_DAC_OUT_CTRL (I6) register bits                                  */
+#define CODEC_I6_LDA                    0       /* Left DAC Attenuator         */
+#define CODEC_I6_LDM                    7       /* Left DAC mute               */
+                                                                                                                                                                         
+/* CODEC_RIGHT_DAC_OUT_CTRL (I7) register bits                                 */
+#define CODEC_I7_RDA                    0       /* Right DAC Attenuator        */
+#define CODEC_I7_RDM                    7       /* Right DAC mute              */
+
+/* CODEC_FS_PBACK_DATA_FMT (I8) register bits                                  */
+#define CODEC_I8_CFS                    0       /* Clock Frequency select      */
+#define CODEC_I8_SM                     4       /* Stereo-Mono select          */
+#define CODEC_I8_FMT                    5       /* Audio data Format           */
+
+/* CODEC_INTFC_CONFIG (I9) register bits                                       */
+#define CODEC_I9_PEN                    0       /* Playback Enable             */
+#define CODEC_I9_CEN                    1       /* Capture Enable              */
+#define CODEC_I9_SDC                    2       /* Single DMA Channel          */
+#define CODEC_I9_CAL                    3       /* Calibration mode            */
+#define CODEC_I9_PPIO                   6       /* Playback PIO enable         */
+#define CODEC_I9_CPIO                   7       /* Capture PIO enable          */
+
+/* CODEC_PIN_CTRL (I10) register bits                                          */
+#define CODEC_I10_IEN                   1       /* Interrupt Enable            */ 
+#define CODEC_I10_DEN                   3       /* Dither Enable               */
+#define CODEC_I10_XCTL0                 6       /* XCTL Control                */
+#define CODEC_I10_XCTL1                 7       /* XCTL Control                */
+
+/* CODEC_ERR_STATUS_INIT (I11) register bits                                   */
+#define CODEC_I11_ORL                   0       /* Overrange Left Defect       */
+#define CODEC_I11_ORR                   2       /* Overrange Right Defect      */
+#define CODEC_I11_DRS                   4       /* DRQ status                  */
+#define CODEC_I11_ACI                   5       /* Auto Calibrate in Progress  */
+#define CODEC_I11_PUR                   6       /* Playback Underrun           */
+#define CODEC_I11_COR                   7       /* Capture Overrun             */
+
+/* CODEC_MODE_ID (I12) register bits                                           */
+#define CODEC_I12_ID                    0       /* Codec ID                    */
+#define CODEC_I12_MODE2                 6       /* MODE2 :enables expanded mode*/
+
+/* CODEC_LBACK_CTRL (I13) register bits                                        */
+#define CODEC_I10_LBE                   0       /* Loopback Enable             */
+#define CODEC_I10_LBA                   1       /* Loopback attenuation        */
+
+/* CODEC_ALT_FEATURE_EN1 (I16) register bits                                   */
+#define CODEC_I16_DACZ                  0       /* DAC Zero                    */
+#define CODEC_I16_SPE                   1       /* Serial Port Enable          */
+#define CODEC_I16_SF                    2       /* Serial Format               */
+#define CODEC_I16_PMCE                  4       /* Playback Mode Change Enable */
+#define CODEC_I16_CMCE                  5       /* Caputure Mode Change Enable */
+#define CODEC_I16_TE                    6       /* Timer Enable                */
+#define CODEC_I16_OLB                   7       /* Output Level Bit            */
+
+/* CODEC_ALT_FEATURE_EN2 (I17) register bits                                   */
+#define CODEC_I17_HPF                   0       /* High Pass Filter- 1 enables */
+#define CODEC_I17_XTALE                 1       /* Crystal Enable              */
+#define CODEC_I17_APAR                  2       /* ADPCM Playback acc reset    */
+#define CODEC_I17_TEST                  4       /* Factory Test                */
+
+/* CODEC_LEFT_LINE_IN_CTRL (I18) register bits                                 */
+#define CODEC_I18_LLG                   0       /* Left Line Mix Gain          */
+#define CODEC_I18_LLM                   7       /* Left Line Mute              */
+
+/* CODEC_RIGHT_LINE_IN_CTRL (I19) register bits                                */
+#define CODEC_I19_RLG                   0       /* Right Line Mix Gain         */
+#define CODEC_I19_RLM                   7       /* Right Line Mute             */
+
+/* CODEC_ALT_FEATURE_EN3 (I23) register bits                                   */
+#define CODEC_I23_ACF                   0       /* ADPCM Capture and Freeze    */
+
+/* CODEC_ALT_FEATURE_STAT (I24) register bits                                  */
+#define CODEC_I24_PU                    0       /* Playback Underrun           */
+#define CODEC_I24_PO                    1       /* Playback Overrun            */
+#define CODEC_I24_CO                    2       /* Capture Overrun             */
+#define CODEC_I24_CU                    3       /* Capture Underrun            */
+#define CODEC_I24_PINT                  4       /* Playback Interrupt          */
+#define CODEC_I24_CINT                  5       /* Capture Interrupt           */
+#define CODEC_I24_TINT                  6       /* Timer Interrupt             */
+
+/* CODEC_VER_CHIPID (I25) register bits                                        */
+#define CODEC_I25_VER                   5       /* Version number              */
+#define CODEC_I25_CID                   0       /* Chip Identification         */
+
+/* CODEC_MONO_IO_CTRL (I26) register bits                                      */
+#define CODEC_I26_MIA                   0       /* Mono Input Attenuation      */
+#define CODEC_I26_MBY                   5       /* Mono Bypass                 */
+#define CODEC_I26_MOM                   6       /* Mono output mute            */
+#define CODEC_I26_MIM                   7       /* Mono input mute             */
+
+/* Capture Data Format (I28) register bits                                     */
+#define CODEC_I28_SM                    4       /* Stereo/Mono Select          */
+#define CODEC_I28_FMT                   5       /* Audio Data Format           */
+
+/* gains */
+%% map gains to appropriate masks
+%%
+%assign codec_source_gain    = getCodecSourceGain(block)
+%assign codec_dac_atten      = getCodecDacAtten(block)
+%assign codec_mono_mix_atten = getCodecMonoMixAtten(block)
+%assign codec_lin_gain       = getCodecLinGain(block)
+%assign codec_aux1_gain      = getCodecAux1Gain(block)
+%assign codec_aux2_gain      = getCodecAux2Gain(block)
+%%
+#define CODEC_ADC_GAIN                  %<codec_source_gain>
+#define CODEC_DAC_ATTEN                 %<codec_dac_atten>
+#define CODEC_MONO_MIX_ATTEN            %<codec_mono_mix_atten>
+#define CODEC_LIN_GAIN                  %<codec_lin_gain>
+#define CODEC_AUX1_GAIN                 %<codec_aux1_gain>
+#define CODEC_AUX2_GAIN                 %<codec_aux2_gain>
+
+/* adc input multiplexer */
+#define CODEC_LINE_INPUT                0x00
+#define CODEC_AUX1_INPUT                0x01
+#define CODEC_MIC_INPUT                 0x02
+#define CODEC_LOOPBACK_INPUT            0x03
+
+/* sample frequencies */
+#define CODEC_FS_5512                   0x01
+#define CODEC_FS_6615                   0x0F
+#define CODEC_FS_8000                   0x00
+#define CODEC_FS_9600                   0x0E
+#define CODEC_FS_11025                  0x03
+#define CODEC_FS_16000                  0x02
+#define CODEC_FS_18900                  0x05
+#define CODEC_FS_22050                  0x07
+#define CODEC_FS_27428                  0x04
+#define CODEC_FS_32000                  0x06
+#define CODEC_FS_33075                  0x0D
+#define CODEC_FS_37800                  0x09
+#define CODEC_FS_44100                  0x0B
+#define CODEC_FS_48000                  0x0C
+
+/* stereo/mono options */
+#define CODEC_MONO                      0x00
+#define CODEC_STEREO                    0x01
+
+/* mic gain options */
+#define CODEC_MIC_GAIN_OFF              0x00
+#define CODEC_MIC_GAIN_ON               0x01
+
+/* mute options */
+#define CODEC_MUTE_DISABLE              0x00
+#define CODEC_MUTE_ENABLE               0x01
+
+/* data format options */
+#define LINEAR_8BIT                     0x00
+#define MU_LAW_8BIT                     0x01
+#define LINEAR_16BIT_LE                 0x02
+#define A_LAW_8BIT                      0x03
+#define ADPCM_4BIT_IMA                  0x05
+#define LINEAR_16BIT_BE                 0x06
+#define LINEAR_16BIT                    0xFF /* should never use this */
+
+/* calibration modes */
+#define CODEC_CAL_NONE                  0x00
+#define CODEC_CAL_CONV                  0x01
+#define CODEC_CAL_DAC                   0x02
+#define CODEC_CAL_FULL                  0x03
+
+/* playback capture modes */
+#define CODEC_PB_DISABLE                0x00
+#define CODEC_PB_ENABLE                 0x01
+
+/* capture modes */
+#define CODEC_CP_DISABLE                0x00
+#define CODEC_CP_ENABLE                 0x01
+
+/* single channel dma */
+#define CODEC_DMA_DUAL                  0x00
+#define CODEC_DMA_SINGLE                0x01
+
+/* playback pio modes */
+#define CODEC_PB_DMA                    0x00
+#define CODEC_PB_PIO                    0x01
+
+/* capture pio modes */
+#define CODEC_CP_DMA                    0x00
+#define CODEC_CP_PIO                    0x01
+
+/* DACZ modes */
+#define CODEC_DACZ_ZERO                 0x00
+#define CODEC_DACZ_PREV                 0x01
+
+/* serial port modes */
+#define CODEC_SP_OFF                    0x00
+#define CODEC_SP_ON                     0x01
+
+/* serial port formats */
+#define CODEC_SP_64E                    0x00
+#define CODEC_SP_64                     0x01
+#define CODEC_SP_32                     0x02
+
+/* playback mode change enable */
+#define CODEC_PB_MCE_OFF                0x00
+#define CODEC_PB_MCE_ON                 0x01
+
+/* capture mode change enable */
+#define CODEC_CP_MCE_OFF                0x00
+#define CODEC_CP_MCE_ON                 0x01
+
+/* timer enable */
+#define CODEC_TIMER_OFF                 0x00
+#define CODEC_TIMER_ON                  0x01
+
+/* output level */
+#define CODEC_OUTPUT_M3DB               0x00
+#define CODEC_OUTPUT_0DB                0x01          
+
+/* mode change enable */
+#define CODEC_MCE_OFF                   0x00
+#define CODEC_MCE_ON                    0x01
+
+/* transfer request disable */
+#define CODEC_TRD_OFF                   0x00
+#define CODEC_TRD_ON                    0x01
+
+/* mode2 */
+#define CODEC_MODE2_OFF                 0x00
+#define CODEC_MODE2_ON                  0x01
+
+/* codec macros */
+#define CODEC_ENABLE                    CPLD_CNTL |= MASK(1,SP0SEL)
+#define CODEC_DISABLE                   CPLD_CNTL &= UNMASK(1,SP0SEL)
+#define SELECT_CODEC_IREGISTER(reg)     CODEC_INDEX = ((CODEC_INDEX & 0xE0) | reg)
+#define ENABLE_MODE_CHANGE              CODEC_INDEX |= MASK(1,CODEC_R0_MCE)
+#define DISABLE_MODE_CHANGE             CODEC_INDEX &= UNMASK(1,CODEC_R0_MCE)
+
+%closefile buff
+%return buff
+%endfunction %% renderCodecDefinesC6701
+
+
+
+%% ==========================================================================
+%% Function: Create_wait_for_codec_ready
+%% Abstract: 
+%%      This function adds definition of Create_wait_for_codec_ready function 
+%%       (Used only for C6701EVM)
+
+%function Create_wait_for_codec_ready(block) void
+%if JustCreatedCompiledModelRecord("c6000_wait_for_codec_ready")
+%openfile buff
+
+/* Function: wait_for_codec_ready --------------------------------------
+ *
+ * Abstract: 
+ *      This function polls the codec init bit until codec is in a 
+ *      ready state
+ */
+
+void wait_for_codec_ready(int debounce)
+{
+    int i;
+    
+    for (i=0;i<debounce;i++) {
+        /* Wait until INIT bit drops to zero */
+        while (CODEC_INDEX & MASK(1,CODEC_R0_INIT)) {/* nop */};
+    }
+}
+
+%closefile buff
+%return buff
+%endif %% only allow config codec to be created once
+%endfunction %% Create_wait_for_codec_ready
+    
+
+
+%% ==========================================================================
+%% Function: renderConfigCodecFunctionC6701 
+%% Abstract: 
+%%      This function adds definition of ConfigCodec function for TMS320c6701 
+
+%function renderConfigCodecFunctionC6701(block) void
+%openfile buff
+%%
+%% If signed 16 bit integer, determine proper endianness
+%if (DataFormat == "LINEAR_16BIT")
+	%if (CompiledModel.ConfigSet.ProdEndianess=="BigEndian")
+		%assign CodecDataFormat = "LINEAR_16BIT_BE"
+	%else
+		%assign CodecDataFormat = "LINEAR_16BIT_LE"
+	%endif
+%else
+	%assign CodecDataFormat = DataFormat
+%endif
+
+/* Function: config_codec ----------------------------------------------
+ *
+ * Abstract: 
+ *      This function configures the codec data i/o with the following:
+ *           Sampling Frequency = %<SampleRate>
+ *           Channels = %<Stereo>
+ *           DataFormat = %<CodecDataFormat>
+ */
+
+void config_codec(void)
+{
+    volatile int i;
+
+    /* reset codec (via pseudo shutdown) */
+    CODEC_DISABLE;            
+
+    /* wait_for_codec_reset(); */
+    /* wait until chip completely shut down (xxx make this a delay) */
+    for (i=0; i<100000; i++) {/* nop */};
+
+    /* turn codec on again */
+    CODEC_ENABLE;
+
+    wait_for_codec_ready(1);
+    
+    /* Switch to mode 2 */
+    SELECT_CODEC_IREGISTER(CODEC_MODE_ID);
+    CODEC_IDATA |= MASK(CODEC_MODE2_ON,CODEC_I12_MODE2);
+
+    ENABLE_MODE_CHANGE;
+
+    /* setup default interface configuration I9 */
+    SELECT_CODEC_IREGISTER(CODEC_INTFC_CONFIG);
+    CODEC_IDATA = MASK(CODEC_PB_ENABLE,CODEC_I9_PEN)
+                | MASK(CODEC_CP_ENABLE,CODEC_I9_CEN)
+                | MASK(CODEC_DMA_DUAL,CODEC_I9_SDC)
+                | MASK(CODEC_CAL_FULL,CODEC_I9_CAL)
+                | MASK(CODEC_PB_PIO,CODEC_I9_PPIO)
+                | MASK(CODEC_CP_PIO,CODEC_I9_CPIO);
+
+    wait_for_codec_ready(1);
+
+    /* setup default sample rate, stereo mode, and data format I8 */
+    SELECT_CODEC_IREGISTER(CODEC_FS_PBACK_DATA_FMT);
+    CODEC_IDATA = MASK(%<SampleRate>,CODEC_I8_CFS)
+                | MASK(%<Stereo>,CODEC_I8_SM)
+                | MASK(%<CodecDataFormat>,CODEC_I8_FMT);
+
+    wait_for_codec_ready(5);
+
+    /* setup alternate features */
+    /* full scale D/A [2.8 Vpp], serial enable, no timer, 32 bit mode, zero DAC */
+    SELECT_CODEC_IREGISTER(CODEC_ALT_FEATURE_EN1);
+    CODEC_IDATA = MASK(CODEC_DACZ_PREV,CODEC_I16_DACZ)
+                | MASK(CODEC_SP_ON,CODEC_I16_SPE)
+                | MASK(CODEC_SP_32,CODEC_I16_SF)
+                | MASK(CODEC_PB_MCE_OFF,CODEC_I16_PMCE)
+                | MASK(CODEC_CP_MCE_OFF,CODEC_I16_CMCE)
+                | MASK(CODEC_TIMER_OFF,CODEC_I16_TE)
+                | MASK(CODEC_OUTPUT_0DB,CODEC_I16_OLB);
+
+    wait_for_codec_ready(1);
+
+   /* setup capture data format */
+    SELECT_CODEC_IREGISTER(CODEC_CAPTURE_DATA_FMT);
+    CODEC_IDATA = MASK(%<Stereo>,CODEC_I28_SM)
+                | MASK(%<CodecDataFormat>,CODEC_I28_FMT);
+
+    wait_for_codec_ready(1);
+
+    /* disable mode change and calibrate codec */
+    /* calibration initiates when MCE drops to 0 */
+    DISABLE_MODE_CHANGE;
+
+    /* wait for calibration to complete */
+    SELECT_CODEC_IREGISTER(CODEC_ERR_STATUS_INIT);
+    while (CODEC_IDATA & MASK(1,CODEC_I11_ACI)) {/* nop */};
+}
+
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecFunctionC6701
+
+
+
+%% ==========================================================================
+%% Function Create_config_codec
+%% Abstract: 
+%%      This function generates code needed for codec configuration
+
+%function Create_config_codec(block) void
+	%if JustCreatedCompiledModelRecord("c6000_config_codec")
+        %%
+        %openfile hdrFile = "MW_c6xxx_bsl.h", "a"
+        %openfile srcFile = "MW_c6xxx_bsl.c", "a"
+        %%
+        %selectfile hdrFile
+        %%
+        %% Create/Cache defines and function definitions:
+        %if BoardType=="C6711DSK"
+		    %<renderCodecDefinesC6711(block)>
+		    %selectfile srcFile
+		    %if EXISTS("::CompiledModel.c6711dsk_adc_instance") || EXISTS("::CompiledModel.c6711dsk_dac_instance")
+		        %<renderConfigCodecFunctionC6711(block)>  
+		    %elseif EXISTS("::CompiledModel.tmdx326040_adc_instance") || EXISTS("::CompiledModel.tmdx326040_dac_instance")
+		        %<renderConfigCodecFunctionTMDX326040(block)>
+            %endif
+        %elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+		    %<renderCodecDefinesAIC23(block)>
+            extern MCBSP_Handle hMcbspCtrl;
+		    %selectfile srcFile
+		    %if EXISTS("::CompiledModel.aic23_adc_instance") || EXISTS("::CompiledModel.aic23_dac_instance")
+		        %<renderConfigCodecFunctionAIC23(block)>  
+            %endif
+        %elseif BoardType=="C6701EVM"
+		    %<renderCodecDefinesC6701(block)>
+            %selectfile srcFile
+            %<renderConfigCodecFunctionC6701(block)>
+            %% Create any necessary subfunctions
+            %<Create_wait_for_codec_ready(block)>
+        %endif
+        %%
+        %% Cache the function prototypes:
+        %selectfile hdrFile        
+        void config_codec(void);
+        %if BoardType=="C6701EVM"
+        void wait_for_codec_ready(int debounce);
+        %endif
+        %%   
+        %closefile hdrFile
+        %closefile srcFile
+        %%
+	%endif %% only allow config serial port to be created once
+%endfunction %% Create_config_codec()
+
+
+
+%% ==========================================================================
+%% Function: renderConfigCodecInput
+%% Abstract: 
+%%      This function adds definition of config_codec_input function
+
+%function renderConfigCodecInput(block) void
+%openfile buff
+
+/* Function: config_codec_input ----------------------------------------      
+ *      This function configures the codec input characteristics
+ *      based on model characteristics
+ */
+
+void config_codec_input(void)
+{
+%if BoardType=="C6711DSK"
+	%if EXISTS("::CompiledModel.c6711dsk_adc_instance") || EXISTS("::CompiledModel.c6711dsk_dac_instance")
+        unsigned int temp_variable;
+		/* Set-Up Register 4 */
+		Write_Codec_Control(4, 0x0000  | %<block.MicGain> | CODEC_ADC_GAIN);
+		temp_variable = Read_Codec_Control(4);
+        if ( (temp_variable & 0x00ff) != (0x0000 | %<block.MicGain> | CODEC_ADC_GAIN) ) 
+            codec_error(4);	
+	%elseif EXISTS("::CompiledModel.tmdx326040_adc_instance") || EXISTS("::CompiledModel.tmdx326040_dac_instance")
+        /* no codec input configuration needed yet */  
+	%endif        
+%elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+	%if EXISTS("::CompiledModel.aic23_adc_instance") || EXISTS("::CompiledModel.aic23_dac_instance")
+        /*  Codec input is configured only in config_codec() for this target.    */
+	%endif        
+%else       
+    /* setup left ADC input */
+    SELECT_CODEC_IREGISTER(CODEC_LEFT_ADC_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_ADC_GAIN,CODEC_I0_LAG)
+                | MASK(%<MicGain>,CODEC_I0_LMGE)
+                | MASK(%<AdcSource>,CODEC_I0_LSS);
+
+    /* setup right ADC input */
+    SELECT_CODEC_IREGISTER(CODEC_RIGHT_ADC_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_ADC_GAIN,CODEC_I1_RAG)
+                | MASK(%<MicGain>,CODEC_I1_RMGE)
+                | MASK(%<AdcSource>,CODEC_I1_RSS);
+
+    /* setup left AUX1 input */
+    SELECT_CODEC_IREGISTER(CODEC_LEFT_AUX1_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_AUX1_GAIN,CODEC_I2_LX1G)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I2_LX1M);
+
+    /* setup right AUX1 input */
+    SELECT_CODEC_IREGISTER(CODEC_RIGHT_AUX1_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_AUX1_GAIN,CODEC_I3_RX1G)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I3_RX1M);
+
+    /* setup left AUX2 input */
+    SELECT_CODEC_IREGISTER(CODEC_LEFT_AUX2_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_AUX2_GAIN,CODEC_I4_LX2G)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I4_LX2M);
+
+    /* setup right AUX2 input */
+    SELECT_CODEC_IREGISTER(CODEC_RIGHT_AUX2_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_AUX2_GAIN,CODEC_I5_RX2G)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I5_RX2M);
+
+    /* enable mode change */
+    ENABLE_MODE_CHANGE;
+
+    /* setup left line input */
+    SELECT_CODEC_IREGISTER(CODEC_LEFT_LINE_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_LIN_GAIN,CODEC_I18_LLG)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I18_LLM);
+
+    /* setup right line input */
+    SELECT_CODEC_IREGISTER(CODEC_RIGHT_LINE_IN_CTRL);
+    CODEC_IDATA = MASK(CODEC_LIN_GAIN,CODEC_I19_RLG)
+                | MASK(CODEC_MUTE_ENABLE,CODEC_I19_RLM);
+
+    /* disable calibration mode */
+    SELECT_CODEC_IREGISTER(CODEC_INTFC_CONFIG);
+    CODEC_IDATA &= UNMASK(CODEC_CAL_FULL,CODEC_I9_CAL);
+    CODEC_IDATA |= MASK(CODEC_CAL_NONE,CODEC_I9_CAL);
+
+    /* disable mode change (no calibration) */
+    DISABLE_MODE_CHANGE;
+
+    /* wait for calibration to complete */
+    SELECT_CODEC_IREGISTER(CODEC_ERR_STATUS_INIT);
+    while (CODEC_IDATA & MASK(1,CODEC_I11_ACI)) {/* nop */};
+%endif
+}
+
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecInput   
+    
+    
+    
+%% ==========================================================================
+%% Function Create_config_codec_input
+%% Abstract: 
+%%      This function generates code needed for codec input configuration
+
+%function Create_config_codec_input(block) void
+    %if JustCreatedCompiledModelRecord("c6000_config_codec_input")
+        %%
+        %openfile hdrFile = "MW_c6xxx_bsl.h", "a"
+        %openfile srcFile = "MW_c6xxx_bsl.c", "a"     
+        %%
+        %selectfile hdrFile
+        void config_codec_input(void);
+        %%
+	    %selectfile srcFile
+	    %<renderConfigCodecInput(block)>  
+        %%   
+        %closefile hdrFile
+        %closefile srcFile
+        %%
+	%endif %% only allow config codec input to be created once
+%endfunction  %% Create_config_codec_input
+    
+    
+    
+%% ==========================================================================
+%% Function: renderConfigCodecOutput
+%% Abstract: 
+%%      This function adds definition of config_codec_output function 
+
+%function renderConfigCodecOutput(block) void
+%openfile buff
+
+/* Function: config_codec_output ---------------------------------------   
+ *      This function configures the codec output characteristics
+ *      based on model characteristics
+ */
+
+void config_codec_output(void)
+{
+%if BoardType=="C6711DSK"
+	%if EXISTS("::CompiledModel.c6711dsk_adc_instance") || EXISTS("::CompiledModel.c6711dsk_dac_instance")
+        unsigned int temp_variable;
+		/* Set-Up Register 5 - Spkr L/R gain */
+		Write_Codec_Control(5, 0x0000 | CODEC_SPK_ON | CODEC_DAC_ATTN);
+		temp_variable = Read_Codec_Control(5);
+        if ( (temp_variable & 0x00fe) != (0x0000 | CODEC_SPK_ON | CODEC_DAC_ATTN) )
+            codec_error(5);
+	%elseif EXISTS("::CompiledModel.tmdx326040_adc_instance") || EXISTS("::CompiledModel.tmdx326040_dac_instance")
+        /* no codec output configuration needed yet */    
+	%endif
+%elseif (BoardType=="C6416DSK" || BoardType=="C6713DSK")
+	%if EXISTS("::CompiledModel.aic23_adc_instance") || EXISTS("::CompiledModel.aic23_dac_instance")
+        /*  Codec output is configured only in config_codec(), for this target.    */
+	%endif
+%else       
+    /* setup left DAC output */
+    SELECT_CODEC_IREGISTER(CODEC_LEFT_DAC_OUT_CTRL);
+    CODEC_IDATA = MASK(CODEC_DAC_ATTEN,CODEC_I6_LDA)
+                | MASK(CODEC_MUTE_DISABLE,CODEC_I6_LDM);
+
+    /* setup right DAC output */
+    SELECT_CODEC_IREGISTER(CODEC_RIGHT_DAC_OUT_CTRL);
+    CODEC_IDATA = MASK(CODEC_DAC_ATTEN,CODEC_I7_RDA)
+                | MASK(CODEC_MUTE_DISABLE,CODEC_I7_RDM);
+%endif
+}
+
+%closefile buff
+%return buff
+%endfunction %% renderConfigCodecOutput   
+    
+    
+    
+%% ==========================================================================
+%% Function Create_config_codec_output
+%% Abstract: 
+%%      This function generates code needed for codec output configuration
+
+%function Create_config_codec_output(block) void
+	%if JustCreatedCompiledModelRecord("c6000_config_codec_output")
+        %%
+        %openfile hdrFile = "MW_c6xxx_bsl.h", "a"
+        %openfile srcFile = "MW_c6xxx_bsl.c", "a"     
+        %%
+        %selectfile hdrFile
+        void config_codec_output(void);
+        %%
+	    %selectfile srcFile
+	    %<renderConfigCodecOutput(block)>  
+        %%   
+        %closefile hdrFile
+        %closefile srcFile
+        %%
+	%endif %% only allow config codec output to be created once
+%endfunction  %% Create_config_codec_output
+
+
+
+%endif %% C6000_CODEC_TLC
+
+%% [EOF] c6000_codec.tlc

@@ -1,0 +1,459 @@
+%% $RCSfile: sdspacf2.tlc,v $
+%% $Revision: 1.11.4.5 $  $Date: 2004/04/12 23:08:07 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspacf2
+%%           Used for the AutoCorrelation Block
+
+%implements "sdspacf2" "C"
+
+%% Function: BlockTypeSetup =====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspacf_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %assign INPORT     = 0
+    %assign OUTPORT    = 0
+    %assign cmplx      = LibBlockOutputSignalIsComplex(OUTPORT)
+    %assign framebased = LibBlockInputSignalIsFrameData(INPORT)
+    %assign numDims    = LibBlockInputSignalNumDimensions(INPORT)
+    %assign inDims     = LibBlockInputSignalDimensions(INPORT)
+    %assign inWidth    = LibBlockInputSignalWidth(INPORT)
+    %assign inCols     = (framebased) ? inDims[1] : 1
+    %assign inRows     = (framebased) ? inDims[0] : inWidth
+    %assign numDims    = LibBlockOutputSignalNumDimensions(OUTPORT)
+    %assign outDims    = LibBlockOutputSignalDimensions(OUTPORT)
+    %assign outWidth   = LibBlockOutputSignalWidth(OUTPORT)
+    %assign outCols    = inCols
+    %assign outRows    = (framebased) ? outDims[0] : outWidth
+    %assign inDT       = FixPt_GetInputDataType(INPORT)
+    %assign outDT      = FixPt_GetOutputDataType(OUTPORT)
+    %assign NFFT       = SFcnParamSettings.NFFT
+    %assign TimeDomain = (SFcnParamSettings.Domain == 1)
+   
+    %assign block = block  + INPORT + OUTPORT    + cmplx   + ...
+                    inCols + inRows + outCols    + outRows + ...
+                    inDT   + outDT  + framebased + inWidth + ...
+                    NFFT   + TimeDomain
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %%
+  /* Signal Processing Blockset Autocorrelation (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if FixPt_DataTypeIsFloat(inDT)
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FLOATING POINT CODE GENERATION             %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %<FltPtRunTimeFcn(block)>
+    %%
+  %else
+    %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% FIXED-POINT CODE GENERATION                %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %<FixPtInlineCode(block)>
+    %%
+  %endif
+%%
+%endfunction
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FixPtInlineCode
+%%
+%% FIXED POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FixPtInlineCode(block) Output
+%%
+%% Algorithm-independent fixed-point record setup (i.e. all but I/O)
+%%
+%assign       accLabel  = "acc"
+%assign       accDT     = FixPt_GetParameterDataType(ACC_DATA_TYPE, 0, 0)
+%createrecord AccRec    { label     accLabel; ...
+                          dTypeRec  accDT; ...
+                          isComplex cmplx }
+%%
+%assign       prodLabel = "prod"
+%assign       prodDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%createrecord PrdRec    { label     prodLabel; ...
+                          dTypeRec  prodDT; ...
+                          isComplex 0 }
+%%
+%if cmplx
+  %assign       inLabelConj = "conjTmp"
+  %createrecord InpConjRec  { label     inLabelConj; ...
+                              dTypeRec  inDT; ...
+                              isComplex cmplx }
+%endif
+%%
+%createrecord RndSatRec { roundingMode FixPtRoundingMode; ...
+                          overflowMode FixPtSaturationMode}
+%%
+%% GENERATED FIXED-POINT C CODE STARTS HERE
+%%
+{
+  %if cmplx
+    %% Common complex algorithm temp variables
+    %<inDT.ComplexName> %<inLabelConj>;
+  %endif
+  %%
+  %if ( inWidth == 1 )
+    %if cmplx
+      %<prodDT.Name> %<prodLabel>;
+    %endif
+    %%
+    %% Scalar input
+    %%
+    %assign       inLabel = LibBlockInputSignal(INPORT, "", "", "0")
+    %createrecord InpRec  { label     inLabel; ...
+                            dTypeRec  inDT; ...
+                            isComplex cmplx }
+    %%
+    %assign       outLabel = LibBlockOutputSignal(OUTPORT, "", "", "0")
+    %createrecord OutRec   { label     outLabel; ...
+                             dTypeRec  outDT; ...
+                             isComplex cmplx }
+    %%
+    %if cmplx
+      %<accDT.ComplexName> %<accLabel>;
+      %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+      %<DSPFixptLibCplxTimes(AccRec, InpConjRec, InpRec, PrdRec, RndSatRec)>
+      %<DSPFixptLibEquals(OutRec, AccRec, RndSatRec)>
+    %else
+      %% REAL
+      %<DSPFixptLibTimes(OutRec, InpRec, InpRec, RndSatRec)>
+    %endif
+    %%
+  %elseif ( framebased && (inRows == 1) )
+    %% Multi-channel Scalar input
+    int_T c = %<outCols>;
+    %if cmplx
+      %<accDT.ComplexName> %<accLabel>;
+      %<prodDT.Name> %<prodLabel>;
+    %endif
+    while (c--) {
+      %%
+      %assign       inLabel = LibBlockInputSignal( INPORT,  "c", "", "0")
+      %createrecord InpRec  { label     inLabel; ...
+                              dTypeRec  inDT; ...
+                              isComplex cmplx }
+      %assign       outLabel = LibBlockOutputSignal(OUTPORT, "c", "", "0")
+      %createrecord OutRec   { label     outLabel; ...
+                               dTypeRec  outDT; ...
+                               isComplex cmplx }
+      %if cmplx
+        %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+        %<DSPFixptLibCplxTimes(AccRec, InpConjRec, InpRec, PrdRec, RndSatRec)>
+        %<DSPFixptLibEquals(OutRec, AccRec, RndSatRec)>
+      %else
+        %% REAL
+        %<DSPFixptLibTimes(OutRec, InpRec, InpRec, RndSatRec)>
+      %endif
+    }
+  %elseif (inCols == 1)
+    %%
+    %% Single-channel vector input
+    %%
+    %assign inRowsMinusOne = inRows - 1
+    %%
+    %<prodDT.Name> %<prodLabel>;
+    %if cmplx
+      %<accDT.ComplexName> %<accLabel>;
+    %else
+      %% REAL
+      %<accDT.Name> %<accLabel>;
+    %endif
+    %%
+    int_T i, outIdx = 0;
+
+    for (i=0; i<%<outRows>; i++) {
+      int_T idx = 0;
+      int_T jcnt = %<inRowsMinusOne> - i;
+      %%
+      %assign       inLabel    = LibBlockInputSignal( INPORT,  "",  "", "0")
+      %createrecord InpRec     { label     inLabel; ...
+                                 dTypeRec  inDT; ...
+                                 isComplex cmplx }
+      %assign       inLabel2nd = LibBlockInputSignal( INPORT,  "i", "", "0")
+      %createrecord Inp2ndRec  { label     inLabel2nd; ...
+                                 dTypeRec  inDT; ...
+                                 isComplex cmplx }
+      %assign       outLabel   = LibBlockOutputSignal(OUTPORT, "outIdx", "", "0")
+      %createrecord OutRec     { label     outLabel; ...
+                                 dTypeRec  outDT; ...
+                                 isComplex cmplx }
+      %%
+      %if cmplx
+        %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+        %<DSPFixptLibCplxTimes(AccRec, InpConjRec, Inp2ndRec, PrdRec, RndSatRec)>
+      %else
+        %% REAL
+        %<DSPFixptLibTimes(PrdRec, InpRec, Inp2ndRec, RndSatRec)>
+        %<DSPFixptLibEquals(AccRec, PrdRec, RndSatRec)>
+      %endif
+
+      while (jcnt--) {
+        idx++;
+        %%
+        %assign       inLabel    = LibBlockInputSignal(INPORT, "idx", "", "0")
+        %createrecord InpRec     { label     inLabel; ...
+                                   dTypeRec  inDT; ...
+                                   isComplex cmplx }
+        %assign       inLabel2nd = LibBlockInputSignal(INPORT, "idx+i", "", "0")
+        %createrecord Inp2ndRec  { label     inLabel2nd; ...
+                                   dTypeRec  inDT; ...
+                                   isComplex cmplx }
+        %%
+        %if cmplx
+          %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+          %<FixptMAC(AccRec, "+=", PrdRec, InpConjRec, Inp2ndRec, RndSatRec)>
+        %else
+          %% REAL
+          %<FixptMAC(AccRec, "+=", PrdRec, InpRec, Inp2ndRec, RndSatRec)>
+        %endif
+      }
+
+      %<DSPFixptLibEquals(OutRec, AccRec, RndSatRec)>
+      outIdx++;
+    }
+  %else
+    %%
+    %% Multi-channel vector input
+    %%
+    %assign inRowsMinusOne = inRows - 1
+    %%
+      %<prodDT.Name> %<prodLabel>;
+    %if cmplx
+      %<accDT.ComplexName> %<accLabel>;
+    %else
+      %% REAL
+      %<accDT.Name> %<accLabel>;
+    %endif
+    %%
+    int_T c, i, outIdx = 0;
+
+    for (c=0; c <%<outCols>; c++) {
+      const int_T idxStart = c * %<inRows>;
+      for (i=0; i<%<outRows>; i++) {
+        int_T idx = idxStart;
+        int_T jcnt = %<inRowsMinusOne> - i;
+        %%
+        %assign       inLabel    = LibBlockInputSignal( INPORT,  "idx", "", "0")
+        %createrecord InpRec     { label     inLabel; ...
+                                   dTypeRec  inDT; ...
+                                   isComplex cmplx }
+        %assign       inLabel2nd = LibBlockInputSignal( INPORT,  "idx+i", "", "0")
+        %createrecord Inp2ndRec  { label     inLabel2nd; ...
+                                   dTypeRec  inDT; ...
+                                   isComplex cmplx }
+        %assign       outLabel   = LibBlockOutputSignal(OUTPORT, "outIdx", "", "0")
+        %createrecord OutRec     { label     outLabel; ...
+                                   dTypeRec  outDT; ...
+                                   isComplex cmplx }
+        %%
+        %if cmplx
+          %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+          %<DSPFixptLibCplxTimes(AccRec, InpConjRec, Inp2ndRec, PrdRec, RndSatRec)>
+        %else
+          %% REAL
+          %<DSPFixptLibTimes(PrdRec, InpRec, Inp2ndRec, RndSatRec)>
+          %<DSPFixptLibEquals(AccRec, PrdRec, RndSatRec)>
+        %endif
+
+        while (jcnt--) {
+          idx++;
+          %%
+          %assign       inLabel    = LibBlockInputSignal(INPORT, "idx", "", "0")
+          %createrecord InpRec     { label     inLabel; ...
+                                     dTypeRec  inDT; ...
+                                     isComplex cmplx }
+          %assign       inLabel2nd = LibBlockInputSignal(INPORT, "idx+i", "", "0")
+          %createrecord Inp2ndRec  { label     inLabel2nd; ...
+                                     dTypeRec  inDT; ...
+                                     isComplex cmplx }
+          %%
+          %if cmplx
+            %<DSPFixptLibConjugate(InpConjRec, InpRec, RndSatRec)>
+            %<FixptMAC(AccRec, "+=", PrdRec, InpConjRec, Inp2ndRec, RndSatRec)>
+          %else
+            %% REAL
+            %<FixptMAC(AccRec, "+=", PrdRec, InpRec, Inp2ndRec, RndSatRec)>
+          %endif
+        }
+
+        %<DSPFixptLibEquals(OutRec, AccRec, RndSatRec)>
+        outIdx++;
+      }
+    }     
+  %endif
+}
+
+%endfunction    %%FixPtInlineCode
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Subfunction: FltPtRunTimeFcn
+%%
+%% FLOATING POINT CODE GENERATION             
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%function FltPtRunTimeFcn(block) Output
+    %%
+    %assign IS_SINGLE = CAST("Boolean",(LibBlockInputSignalDataTypeId(INPORT) == tSS_SINGLE))
+    %%
+    %if IS_SINGLE
+      %assign RealDType   = "real32_T"
+      %assign real_str    = "R"
+      %assign CplxDType   = "creal32_T"
+      %assign cplx_str    = "C"
+      %assign ZERO        = "0.0F"
+      %assign ONE         = "1.0F"
+    %else
+      %assign RealDType   = "real_T"
+      %assign real_str    = "D"
+      %assign CplxDType   = "creal_T"
+      %assign cplx_str    = "Z"
+      %assign ZERO        = "0.0"
+      %assign ONE         = "1.0"
+    %endif
+    %assign DType = cmplx ? CplxDType : RealDType
+    %%
+    %% Bias enumerations:
+    %assign bias     = SFcnParamSettings.Bias
+    %assign NO_BIAS  = 1
+    %assign BIASED   = 2
+    %assign UNBIASED = 3
+    %assign COEFF    = 4
+    %%
+    %assign args = "%<LibBlockInputSignalAddr(INPORT, "", "", 0)>, "
+    %assign args = args + "%<inRows>, "
+    %assign args = args + "%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, "
+    %assign args = args + "%<outRows>, "
+    %assign args = args + "%<outCols>"
+    %if TimeDomain == 1 || outRows == 1 %% Force time domain for scalar output
+      %assign acf_fcn_str = "MWDSP_ACF_TD_"
+    %else   %% Frequency Domain
+      %assign args = args + ", %<NFFT>"
+      %assign args = args + ", %<LibBlockDWorkAddr(FFT, "", "", 0)>"
+      %assign args = args + ", %<LibBlockParameterAddr(TwiddleTable,"","",0)>"
+      %assign acf_fcn_str = "MWDSP_ACF_FD_"
+    %endif
+    %if cmplx
+      %assign acf_fcn_str = acf_fcn_str + cplx_str
+    %else
+      %assign acf_fcn_str = acf_fcn_str + real_str
+    %endif
+    %<acf_fcn_str>(%<args>);
+    %if bias > 1
+        %switch bias
+          %case BIASED
+            /* Scale for biased acf estimate. */
+            %break
+          %case UNBIASED
+            /* Scale for unbiased acf estimate. */
+            %break
+          %case COEFF
+            /* Scale acf so that zero lag is 1.0. */
+            %break
+            %%
+        %endswitch
+    %endif
+    %if bias > 1
+      {
+        %<DType> *y = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        %<RealDType> g;
+        %switch bias
+          %case BIASED
+            %if  (outCols*outRows) > 1
+              int_T i=%<outCols*outRows>;
+              g = %<ONE> / (%<RealDType>)%<inRows>;
+              while (i--) {
+            %else
+              g = %<ONE> / (%<RealDType>)%<inRows>;
+            %endif
+            %if cmplx
+              y->re     *= g;
+              (y++)->im *= g;
+            %else
+              *y++ *= g;
+            %endif
+            %if  (outCols*outRows) > 1
+              }
+            %endif
+            %break
+          %case UNBIASED
+            %if  outCols > 1
+              int_T i, c;
+              for (c=0; c<%<outCols>; c++) {
+            %else
+              int_T i;
+            %endif
+            for (i=0; i<%<outRows>; i++) {
+              g = %<ONE> / (%<RealDType>)(%<inRows> - i);
+              %if cmplx
+                y->re     *= g;
+                (y++)->im *= g;
+              %else
+                *y++ *= g;
+              %endif
+            }
+            %if outCols > 1
+              }
+            %endif
+            %break
+          %case COEFF
+            %if  outCols > 1
+              int_T i, c;
+              for (c=0; c<%<outCols>; c++) {
+            %else
+              int_T i;
+            %endif
+            %if cmplx
+              g = (y->re > 0.0)? %<ONE>/(y->re) : %<ONE>;
+              y->re     = %<ONE>;
+              (y++)->im = %<ZERO>;
+              for (i=1; i<%<outRows>; i++) {
+                y->re     *= g;
+                (y++)->im *= g;
+              }
+            %else
+              g = (*y > 0.0)? %<ONE> / (*y) : %<ONE>;
+              *y++     = %<ONE>;
+              for (i=1; i<%<outRows>; i++) {
+                *y++ *= g;
+              }
+            %endif
+            %if outCols > 1
+              }
+            %endif
+            %break
+            %%
+        %endswitch
+      }
+    %endif
+
+%endfunction   %% FltPtRunTimeFcn
+
+%% [EOF] sdspacf2.tlc

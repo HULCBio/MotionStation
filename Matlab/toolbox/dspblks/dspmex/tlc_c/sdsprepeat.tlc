@@ -1,0 +1,347 @@
+%% $RCSfile: sdsprepeat.tlc,v $
+%% $Revision: 1.10.4.2 $ 
+%% $Date: 2004/04/12 23:09:35 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Repeat input samples N times. 
+%%           Output rate is N times the input rate.
+
+%implements sdsprepeat "C"
+
+%include "dsplib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign OUTPORT = 0
+  %assign INPORT  = 0
+  %assign IS_IC_TUNE  = CAST("Boolean",(SFcnParamSettings.ICIsTune == "Yes"))		
+  %assign block   = block + OUTPORT + INPORT + IS_IC_TUNE
+  %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Repeat (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %<ErrorIfDiscontiguous(block,INPORT)>\
+  %%
+  %if IS_IC_TUNE
+      %assign ICVal    = IC.Value
+      %assign ic_cplx  = CAST("Boolean",(IC.ComplexSignal == "yes"))
+      %assign numIC    = LibGetNumberOfElements(ICVal)      
+  %else
+      %assign IC       = SFcnParamSettings.IC
+      %assign ic_cplx  = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+      %assign numIC    = 1
+  %endif
+
+  %assign dtype_ic = ic_cplx ? "creal_T" : "real_T"
+  %%
+  %assign cplx_in  = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign dtype_in = cplx_in ? "creal_T" : "real_T"
+  %assign inWidth  = CAST("Number",LibDataInputPortWidth(INPORT))
+  %%
+  %assign isSingleRate   = LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+  %%
+  %% NOTE:  REPEAT_CNT and ITERATION_CNT DWorks are needed all the time.  
+  %%        Swap Buffer is only needed in Multi-rate,Multi-tasking mode
+  %%
+  /* Reset counters */
+  %<LibBlockDWork(REPEAT_CNT     ,"", "", 0)> = 0;
+  %<LibBlockDWork(ITERATION_CNT ,"", "", 0)> = 0;
+  %%
+  %if (!isSingleRate && isMultiTasking) 
+  {
+    %%
+    %if (numIC > 1)
+        %<dtype_ic> *pICs = (%<dtype_ic> *)%<LibBlockParameterAddr(IC,"","",0)>;
+    %endif
+    %%
+    %if (inWidth > 1)
+        %<dtype_in> *inBuf = %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+    %endif
+    %%
+    %if inWidth > 1
+        int_T n;
+    %endif  
+    %%
+    %<LibBlockDWork(SwapBuff  ,"", "", 0)> = false;
+    %%
+    %if inWidth > 1
+
+        for (n=0; n<%<inWidth>; n++) {   
+    %endif   
+        %%
+        %if (numIC == 1) 
+	        %%
+	        %assign IC_re = REAL(IC[0])
+            %%
+	        %if !ic_cplx
+	            %assign IC_im = 0.0
+	        %else
+	            %assign IC_im = IMAG(IC[0])
+	        %endif
+            %%
+	        /* Scalar IC */
+            %if inWidth > 1
+	            %if !cplx_in
+	                *inBuf++ = %<IC_re>;
+	            %else
+	                inBuf->re     = %<IC_re>;
+	                (inBuf++)->im = %<IC_im>;
+	            %endif
+            %else
+                %if !cplx_in
+	                %<LibBlockDWork(Buffer,"", "", 0)> = %<IC_re>;
+	            %else
+	                %<LibBlockDWork(Buffer,"", "", 0)>.re = %<IC_re>;
+	                %<LibBlockDWork(Buffer,"", "", 0)>.im = %<IC_im>;
+	            %endif
+            %endif
+        %else
+	    %%
+	    %% We are not using memcopy here because if the input
+	    %% is complex and the ic is real, we fill in the imaginary
+	    %% part with zeros.
+	    %%
+	        /* Vector IC */
+	        %if !cplx_in
+	            *inBuf++ = pICs[n];
+	        %else
+	            inBuf->re     = %<(ic_cplx) ? "pICs[n].re" : "pICs[n]">; 
+	            (inBuf++)->im = %<(ic_cplx) ? "pICs[n].im"  : 0.0>;
+	        %endif
+        %endif
+    %if inWidth > 1
+      }  %% end for inWidth
+    %endif
+    %%
+    %<LibBlockPWork(InBuf,"","",0)> = %<LibBlockDWorkAddr(Buffer,"","", 0)> + %<inWidth>;
+  }
+  %endif
+
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Repeat (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %%
+  %assign cplx_in      = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign isInputCmplx = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign dtype        = isInputCmplx ? "creal_T" : "real_T"
+  %assign cplx_cast    = isInputCmplx ? "(creal_T *)" : ""
+  %assign inWidth      = CAST("Number",LibDataInputPortWidth(INPORT))
+  %assign outWidth     = CAST("Number",LibDataOutputPortWidth(OUTPORT))
+  %assign frame        = (SFcnParamSettings.FRAME[0] != 0)
+  %assign nChans       = (frame) ? CAST("Number",SFcnParamSettings.NCHANS[0]) : inWidth
+  %%
+  %assign SamplesPerInputFrame  = CAST("Number", inWidth  / nChans)
+  %assign SamplesPerOutputFrame = CAST("Number", outWidth / nChans)
+  %%
+  %assign N        = CAST("Number",SFcnParamSettings.REPEAT[0])
+  %assign outmode  = CAST("Number",SFcnParamSettings.OUTMODE[0])
+  %% 
+  %assign isSingleRate   = LibIsSFcnSingleRate(block)
+  %assign isMultiTasking = IsModelMultiTasking()
+  %%     
+    %% Latency Case:
+    %%
+    %% NOTE:
+    %%  "Input_repeat_cnt" keeps track how many times an input element has been repeated
+    %%  "Iteration_cnt" keeps track how many elements in the current buffer have been 
+    %%      repeated N times. When each element has been repeated N times, 
+    %%      then set the flag to swap buffers. 
+    %%  "swapBuff" keeps track on when to swap buffers.
+    %%
+    %%
+    %if (!isSingleRate && isMultiTasking)
+        if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) 
+        {
+            %if !(nChans == 1 && SamplesPerOutputFrame == 1)
+                %<dtype>  *y = %<LibBlockOutputSignalAddr(OUTPORT,"", "", 0)>;
+            %endif
+            %<dtype>  *outBuf = %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+            %% 
+	        boolean_T  swapBuff = false;   /* Initialize local flag for swapping buffers */
+	        int_T      Input_repeat_cnt;
+	        int_T      Iteration_cnt;
+	                           
+	        if (%<LibBlockDWork(SwapBuff,"", "", 0)>) {
+	           %assign outBufUpdate = (inWidth == 1) ? "outBuf++" : "outBuf += %<inWidth>"
+               %<outBufUpdate>;	 /* Point to bottom buffer */
+	        }       
+	            %if nChans > 1
+                    {
+	                int_T   n;    
+	                for (n=0; n<%<nChans>; n++) {
+                        %%
+	                    /* Point to next channel: */
+                        %if (SamplesPerInputFrame == 1)
+	                        %<dtype> *out = outBuf + n;
+                        %else
+                            %<dtype> *out = outBuf + n*%<SamplesPerInputFrame>;
+                        %endif
+	            %endif
+	            %%
+	            /* Reset the counters */
+	            Input_repeat_cnt = %<LibBlockDWork(REPEAT_CNT,"", "", 0)>;
+	            Iteration_cnt    = %<LibBlockDWork(ITERATION_CNT,"", "", 0)>;
+	            %%
+	            %if SamplesPerOutputFrame > 1
+	            {
+	               int_T k;
+	               for (k=0; k < %<SamplesPerOutputFrame>; k++) {
+	            %endif
+	                %assign out_str = (nChans > 1) ? "*(out + Iteration_cnt)" : "*(outBuf + Iteration_cnt)" 
+	                
+                    %if (nChans == 1 && SamplesPerOutputFrame == 1)
+                        %<LibBlockOutputSignal(OUTPORT,"", "", 0)> = %<out_str>;
+                    %else
+                        *y++ = %<out_str>;
+                    %endif
+		            if (++Input_repeat_cnt == %<N>) {
+		                Input_repeat_cnt = 0;
+		                %if SamplesPerInputFrame > 1
+		                    if (++Iteration_cnt == %<SamplesPerInputFrame>) {
+			                Iteration_cnt = 0;
+			                swapBuff = true;
+		                    }
+		                %else
+		                    swapBuff = true;
+		                %endif
+		            }
+                %if SamplesPerOutputFrame > 1
+	                } %% ends for loop
+                }     %% ends SamplesPerOutputFrame loop
+	            %endif
+                %%
+                %if nChans > 1
+                    } %% end for nChans 
+                } %% end for loop
+                %endif
+              %%
+              /* Update counters */
+              %<LibBlockDWork(REPEAT_CNT,"", "", 0)>     = Input_repeat_cnt;
+              %<LibBlockDWork(ITERATION_CNT,"", "", 0)> = Iteration_cnt;
+
+              if (swapBuff) {
+	            %<LibBlockDWork(SwapBuff,"", "", 0)> = !%<LibBlockDWork(SwapBuff,"", "", 0)>;
+              }
+        }
+    %else 
+        %% No Latency: 
+        %% Not Multi-rate && Multi-tasking
+        %% 
+        %% NOTE:
+        %%  "Input_repeat_cnt" keeps track how many times an input element has been repeated
+        %%  "Iteration_cnt" keeps track how many elements in the current buffer have been 
+        %%      repeated N times. When each element has been repeated N times, 
+        %%      then set the flag to swap buffers. 
+        %%  "swapBuff" keeps track on when to swap buffers.
+        %%
+        %%
+        %if !isSingleRate
+            if (%<LibIsSFcnSampleHit("OutputPortIdx0")>) 
+        %endif
+        {     
+            %if (!(nChans == 1 && SamplesPerOutputFrame == 1 ))
+                %%
+                %<dtype> *y    = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+                %<dtype> *uptr = (%<dtype> *)(%<LibBlockInputSignalAddr(INPORT,"","",0)>);
+                int_T     Input_repeat_cnt;
+	            int_T     Iteration_cnt;
+                %%
+            %endif
+            %%
+            %% Special Optimization Case:
+            %%
+            %if (nChans ==1 && SamplesPerOutputFrame == 1 )
+                %%
+               	%<LibBlockOutputSignal(OUTPORT,"","",0)> = *((%<dtype> *)%<LibBlockInputSignalAddr(INPORT,"","",0)>);
+                %%
+            %else
+	           %if nChans > 1
+	             int_T   n; 
+                    
+	             for (n=0; n<%<nChans>; n++) {
+	                /* Point to next channel: */
+                    %assign uptrUpdate = (SamplesPerInputFrame==1) ? "uptr++" : "uptr += %<SamplesPerInputFrame>"
+                    if (n!=0) %<uptrUpdate>;
+
+	               %endif
+	               %%
+	                   /* Reset the counters */
+	                   Input_repeat_cnt = %<LibBlockDWork(REPEAT_CNT,"", "", 0)>;
+	                   Iteration_cnt = %<LibBlockDWork(ITERATION_CNT,"", "", 0)>;
+	                   %%
+	                   %if SamplesPerOutputFrame > 1
+	                   {
+	                        int_T k;
+	                        for (k=0; k < %<SamplesPerOutputFrame>; k++) {
+	                   %endif
+	                        *y++ = *(%<cplx_cast>uptr + Iteration_cnt);
+		                    if (++Input_repeat_cnt == %<N>) {
+                                Input_repeat_cnt = 0;
+		                        %if SamplesPerInputFrame > 1
+		                            if (++Iteration_cnt == %<SamplesPerInputFrame>) Iteration_cnt = 0;
+		                        %endif
+		                    }
+                        %if SamplesPerOutputFrame > 1
+	                        } %% ends for loop
+	                    }     %% ends SamplesPerOutputFrame loop
+	                    %endif
+                  %%
+                  %if nChans > 1
+                    } %% end for nChans
+                  %endif
+                  %%
+                  /* Update counters */
+                  %<LibBlockDWork(ITERATION_CNT,"", "", 0)> = Iteration_cnt;
+                  %<LibBlockDWork(REPEAT_CNT,"", "", 0)>     = Input_repeat_cnt;
+              %endif
+        }
+    %endif
+    
+    %% The "update" code for multirate+multitasking:
+    %%
+    %if (!isSingleRate && isMultiTasking)
+        if (%<LibIsSFcnSampleHit("InputPortIdx0")>) 
+        {
+	        %<dtype> *inBuf = %<LibBlockPWork(InBuf,"","", 0)>;
+	        %%
+	            %if inWidth > 1
+	              %% Use loop roller in order to support dicontig inputs
+	              %assign rollVars = ["U"]
+	              %roll sigIdx = RollRegions, lcv = RollThreshold, \
+	                block, "Roller", rollVars
+                    *inBuf++ = %<LibBlockInputSignal(INPORT, "", lcv, sigIdx)>;
+	              %endroll
+	              %%
+	            %else
+	              *inBuf++ = %<LibBlockInputSignal(INPORT,"","", 0)>;
+	            %endif
+	        %%
+	        {
+	          %<dtype> *aBuf = %<LibBlockDWorkAddr(Buffer,"", "", 0)>;
+	          if (inBuf == aBuf + %<2*inWidth>) {
+	            inBuf = aBuf ; /* Wrap to beginning of buffer. */
+	          }
+	        }
+	        %<LibBlockPWork(InBuf,"","",0)>  = inBuf;
+        }
+    %endif
+
+%endfunction
+
+%% [EOF] sdsprepeat.tlc

@@ -1,0 +1,193 @@
+%% $RCSfile: sdspmtrnsp2.tlc,v $
+%% $Revision: 1.9.4.2 $
+%% $Date: 2004/04/12 23:09:13 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Matrix transpose
+
+%implements sdspmtrnsp2 "C"
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Transpose (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign INPORT    = 0
+  %assign OUTPORT   = 0
+  %assign need_copy = (LibBlockInputSignalBufferDstPort(INPORT) != OUTPORT)
+  %assign cplx      = LibBlockInputSignalIsComplex(INPORT)
+  %assign dtype     = LibBlockInputSignalDataTypeName(INPORT, "%<tRealPart>")
+  %assign DTYPE_ID  = LibBlockInputSignalDataTypeId(INPORT)
+  %assign hermit    = SFcnParamSettings.Hermitian
+  %%
+  %assign numDims   = LibBlockInputSignalNumDimensions(INPORT)
+  %assign dims      = LibBlockInputSignalDimensions(INPORT)
+  %assign cols      = (numDims == 2) ? dims[1] : 1
+  %assign rows      = dims[0]
+  %assign width     = cols * rows
+
+  %assign SAT_MODE  = (SFcnParamSettings.SatMode) ? "Saturate" : "Wrap"
+
+  %%
+  %if need_copy
+    %createrecord inStruct  { Label     "u";  ...
+                              IsPtr     1;    ...
+                              postfixOp "++"   }
+
+    %if cols == 1 ||  rows == 1
+      %createrecord outStruct { Label     "y";  ...
+                                IsPtr     1;    ...
+                                postfixOp "++" }
+
+      %%
+      %% Vector input
+      %%
+    {
+      %<dtype> *u = (%<dtype> *)%<LibBlockInputSignalAddr(INPORT,   "", "", 0)>;
+      %<dtype> *y = (%<dtype> *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      int i=%<width>;
+      while (i-- > 0) {
+        %if cplx
+            *y++ = *u++;    /* Real Part */
+          %if hermit
+            %<LibBlockDSPUnaryMinus(outStruct, inStruct, DTYPE_ID, SAT_MODE)>
+          %else
+            *y++ = *u++;    /* Imag Part */
+          %endif
+        %else
+          *y++ = *u++;
+        %endif
+      }
+    }
+    %else
+      %%
+      %% Matrix input
+      %%
+      %%
+      {
+    /*
+     * Transpose matrix:  Walk the inputs in order down
+     * the columns and write the outputs across the rows
+     */
+        %createrecord outStruct { Label     "(yy+1)";  ...
+                                  IsPtr     1;    ...
+                                  postfixOp "" }
+
+        %<dtype> *u = (%<dtype> *)%<LibBlockInputSignalAddr(INPORT,   "", "", 0)>;
+        %<dtype> *y = (%<dtype> *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+        int_T j = %<cols>;
+        %if cplx
+          while(j-- > 0) {
+            %<dtype> *yy = y;
+            int_T   i  = %<rows>;
+            while(i-- > 0) {
+              *yy     = *u++;      /* Copy real part */
+              %if hermit
+            %<LibBlockDSPUnaryMinus(outStruct, inStruct, DTYPE_ID, SAT_MODE)>
+              %else
+              *(yy+1) = *u++;      /* Copy imag to imag */
+              %endif
+              yy += 2*%<cols>;
+            }
+            y += 2;
+          }
+        %else
+          while(j-- > 0) {
+            %<dtype> *yy = y++;
+            int_T   i  = %<rows>;
+            while(i-- > 0) {
+              *yy     = *u++;   /* Copy real to real */
+              yy += %<cols>;
+            }
+          }
+        %endif
+      }
+    %endif
+  %else
+    /* In-place algorithm for vectors and square matrices (checking is done in mdlStart) : */
+    %%
+        %if cols == 1 ||  rows == 1
+          %if cplx && hermit
+          {
+            %<dtype> *y = (%<dtype> *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+            %createrecord inStruct  { Label     "y";  ...
+                                      IsPtr     1;    ...
+                                      postfixOp ""   }
+
+            int_T i;
+            y++;                /* Align with first imaginary part */
+            for (i=0; i<%<width>; i++) {
+                %<LibBlockDSPUnaryMinus(inStruct, inStruct, DTYPE_ID, SAT_MODE)>
+                y += 2;         /* Skip to next imaginary part */
+            }
+          }
+	  %% else
+          %% Nothing to do if an in place vector and no conjugations needed
+          %endif  %%cplx...
+        %else      %% cols==1 || rows==1
+          {
+          %<dtype> *y = (%<dtype> *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+          const int_T cols = %<cols>;
+          int_T i;
+          for (i=0; i<cols; i++) {
+            int_T j;
+            %%
+            %% If this is complex hermitian, we need to
+            %% visit the diagonal terms (and conjugate them!)
+            %if cplx && hermit
+
+              %createrecord inStruct  { Label     "(y+2*i*(cols+1)+1)";  ...
+                                        IsPtr     1;    ...
+                                        postfixOp ""   }
+
+              %<LibBlockDSPUnaryMinus(inStruct, inStruct, DTYPE_ID, SAT_MODE)>
+            %endif
+            %%
+            %%
+            for (j=i+1; j<cols; j++) {
+                %if cplx
+                  {
+                    int_T ij_offset = 2*(i*cols+j), ji_offset = 2*(j*cols+i);
+                    %<dtype> tmp_re    =  *(y+ij_offset);
+                    %<dtype> tmp_im    =  *(y+ij_offset+1);
+
+                      *(y+ij_offset) =  *(y+ji_offset);      /* Real part */
+                      *(y+ji_offset) =  tmp_re;
+                    %if hermit
+                      %createrecord inStruct1  { Label     "(y+ji_offset+1)";  ...
+                                                IsPtr     1;    ...
+                                                postfixOp ""   }
+
+                      %createrecord inStruct2 { Label     "tmp_im";  ...
+                                                IsPtr     0;         ...
+                                                postfixOp ""   }
+
+                      %createrecord outStruct { Label     "(y+ij_offset+1)";  ...
+                                                IsPtr     1;    ...
+                                                postfixOp "" }
+                      /* Imag part */
+                      %<LibBlockDSPUnaryMinus(outStruct, inStruct1, DTYPE_ID, SAT_MODE)>
+                      %<LibBlockDSPUnaryMinus(inStruct1, inStruct2, DTYPE_ID, SAT_MODE)>
+                    %else
+                      *(y+ij_offset+1) = *(y+ji_offset+1);   /* Imag part */
+                      *(y+ji_offset+1) = tmp_im;
+                    %endif
+                  }
+                %else
+                  {
+                    %<dtype> tmp    =  *(y+i*cols+j);
+                    *(y+i*cols+j) = *(y+j*cols+i);     /* Real part */
+                    *(y+j*cols+i) = tmp;
+                  }
+                %endif
+            }  %% for j
+          }    %% for i
+         }
+        %endif    %% else cols==1 || rows==1
+  %endif  %% need_copy
+
+%endfunction
+
+%% [EOF] sdspmtrnsp2.tlc

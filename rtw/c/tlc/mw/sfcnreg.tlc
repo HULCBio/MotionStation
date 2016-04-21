@@ -1,0 +1,419 @@
+%% ============================================================================
+%% $RCSfile: sfcnreg.tlc,v $
+%% $Revision: 1.43.4.4 $
+%% $Date: 2004/04/14 23:48:54 $
+%%
+%% Abstract:
+%%   This system file creates model_reg.h for RTW's S-Function code format.
+%%
+%% January 28, 1997
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%selectfile NULL_FILE
+
+%% ============================================================================
+%% The S-Function file model_reg.h is created as follows:
+%%
+%% /* File banner */
+%%
+%% User code ....................... LibRegFileCustomCode(buffer, "header")
+%%
+%% mdlInitializeSizes()
+%% mdlInitializeSampleTimes()
+%% mdlRTW()
+%%
+%% #ifdef MATLAB_MEX_FILE
+%% # include "simulink.c"
+%% #else
+%% # include "cg_sfun.h"
+%% #endif
+%%
+%% User code ..................... LibRegFileCustomCode(buffer, "trailer")
+%%
+%% /* [EOF] model_reg.h */
+%%
+
+%if EXISTS("_SFCNREG_") == 0
+%assign _SFCNREG_ = 1
+
+%realformat "CONCISE"
+
+%assign opFile = SLibAddModelFile("SystemBody","Simulink", Name)
+
+
+%% ============================================================================
+%% Create an alias for the root and child SimStruct
+%%
+%assign S = "%<RTMGetModelSS()>"
+
+%%
+%% ============================================================================
+%% Top of registration file custom code
+%%
+%openfile tmpBuf
+%<LibDumpTopOfRegFileUserCode()>\
+%closefile tmpBuf
+%<SLibSetModelFileAttribute(opFile, "UserTop", tmpBuf)>
+
+%openfile fcnsBuf
+%% ============================================================================
+%% MdlInitializeSizes
+%%
+#if defined(RT_MALLOC) || defined(MATLAB_MEX_FILE)
+#  include "%<OrigName>_mid.h"
+#endif
+
+/* Function to initialize sizes */
+static void mdlInitializeSizes(SimStruct *%<RTMGetModelSS()>)
+{
+  %%
+  %% Outputs
+  %% (Cache into a buffer so the need for constant sample time can
+  %%  be determined)
+  %%
+  %assign NeedConstantST = 0
+  %openfile extOutBuffer
+  %with ExternalOutputs
+
+    /* Number of output ports */
+    if (!%<RTMSet("NumOutputPorts", NumExternalOutputs)>) return;
+      
+    %if NumExternalOutputs > 0
+      %foreach idx = NumExternalOutputs
+	%assign extOut       = ExternalOutput[idx]
+	%assign sysIdx       = extOut.Block[0]
+	%assign blkIdx       = extOut.Block[1]
+	%assign outportBlock = System[sysIdx].Block[blkIdx]
+	%with outportBlock
+	  %assign portIdx    = ParamSettings.PortNumber-1
+	  %assign width      = LibBlockInputSignalWidth(0)
+	  %assign nDims      = LibBlockInputSignalNumDimensions(0)
+	  %assign dtId       = LibBlockInputSignalDataTypeId(0)
+	  %assign isComplex  = LibBlockInputSignalIsComplex(0)
+          
+	  /* outport number: %<portIdx> */
+	  %if %<nDims> >= matrixDimensionThreshhold
+	    %assign dims = LibBlockInputSignalDimensions(0)
+	    if(!ssSetOutputPortMatrixDimensions(%<S>, ...
+	      %<portIdx>, %<dims[0]>, %<dims[1]>)) return;
+	  %else
+	    if(!ssSetOutputPortVectorDimension(%<S>, ...
+	      %<portIdx>, %<width>)) return;
+	  %endif
+          %%
+	  %if LibIsBuiltInDataType(dtId)
+            %assign dtEnum     = LibGetDataTypeEnumFromId(dtId)
+            ssSetOutputPortDataType(%<S>, %<portIdx>, %<dtEnum>);
+          %else
+            %%
+            %assign curDT = FixPt_GetDataTypeFromIndex(dtId)
+            %%
+            %if curDT.IsFixedPoint
+              {
+                DTypeId dataTypeIdReg =
+                %if FixPt_DataTypeIsFloat(curDT)
+                  ssRegisterDataTypeFxpScaledDouble(
+                %else
+                  ssRegisterDataTypeFxpFSlopeFixExpBias(
+                %endif
+                %<S>,
+                %<curDT.IsSigned>,
+                %<curDT.RequiredBits>,
+                %<curDT.FracSlope>,
+                %<curDT.FixedExp>,
+                %<curDT.Bias>,
+                0 /* false means do NOT obey data type override setting for this subsystem */ );
+                  
+                ssSetOutputPortDataType( %<S>, %<portIdx>, dataTypeIdReg );
+              }
+            %else
+              %assign errTxt = "User-defined data types not support for external" ...
+                "inputs/outputs when using the S-Function code format."
+              %<LibBlockReportError(outportBlock, errTxt)>
+            %endif
+	  %endif
+	  %if isComplex
+	    ssSetOutputPortComplexSignal(%<S>, %<portIdx>, COMPLEX_YES);
+	  %endif
+	  %if AllSampleTimesInherited == "yes"
+	    %% Do nothing.  This is a single rate discrete model so
+	    %% don't touch the I/O.  The S-Function will be registered
+	    %% with a (block based) inherited sample time.
+	    ssSetOutputPortOptimOpts(%<S>, %<portIdx>, SS_REUSABLE_AND_LOCAL);
+	  %elseif !ISEQUAL(TID,"constant")
+	    %assign period = SampleTime[TID].PeriodAndOffset[0]
+	    %assign offset = SampleTime[TID].PeriodAndOffset[1]
+	    ssSetOutputPortSampleTime(%<S>, %<portIdx>, %<period>);
+	    ssSetOutputPortOffsetTime(%<S>, %<portIdx>, %<offset>);
+	    ssSetOutputPortOptimOpts(%<S>, %<portIdx>, SS_REUSABLE_AND_LOCAL);
+	  %else
+	    %assign NeedConstantST = 1
+	    %% *** Fix Port Based Sample Times
+	    ssSetOutputPortSampleTime(%<S>, %<portIdx>, %<LibRealNonFinite("inf")>);
+	    ssSetOutputPortOffsetTime(%<S>, %<portIdx>, 0.0);
+	    ssSetOutputPortOptimOpts(%<S>, %<portIdx>, SS_NOT_REUSABLE_AND_LOCAL);
+	  %endif
+	%endwith
+      %endforeach
+    %endif
+    %undef sysIdx, blkIdx, portIdx
+  %endwith
+  %closefile extOutBuffer
+  %%
+  %% Sample times
+  %%
+  %if 0 %% NeedConstantST   *** Fix Port Based Sample Times
+    %<RTMSet("NumSampleTimes", (NumSynchronousSampleTimes+1))>; /* Number of sample times */  
+  %else
+    %assign nTs = AllSampleTimesInherited == "yes" ? 1 : NumSynchronousSampleTimes
+    %<RTMSet("NumSampleTimes", nTs)>; /* Number of sample times */  
+  %endif
+  %% States
+  %<RTMSet("NumContStates", NumContStates)>; /* Number of continuous states */
+  %% Nonsampled Zero Crossings
+  %<RTMSet("NumNonsampledZCs", NumNonsampledZCs)>; /* Number of nonsampled ZCs */
+  %% Dump External Outputs 
+  %<extOutBuffer>
+  
+  %%
+  %% Inputs and direct feedthrough
+  %%
+  %with ExternalInputs
+  
+    /* Number of input ports */
+    if (!%<RTMSet("NumInputPorts", NumExternalInputs)>) return;
+  
+    %if NumExternalInputs > 0
+      %foreach portIdx = NumExternalInputs
+	%assign dtId      = ExternalInput[portIdx].DataTypeIdx
+	%assign width     = ExternalInput[portIdx].Width
+	%assign inputTid  = ExternalInput[portIdx].TID
+	%assign isComplex = ExternalInput[portIdx].ComplexSignal == "yes"
+	%assign directFT  = ExternalInput[portIdx].DirectFeedThrough == "yes"
+	
+	/* inport number: %<portIdx> */
+	{
+	  %if EXISTS("ExternalInput[portIdx].Dimensions") == 1
+	    %assign dims    = ExternalInput[portIdx].Dimensions
+	    %assign numDims = SIZE(%<dims>,1)
+	  %else
+	    %assign dims    = width
+	    %assign numDims = 1
+	  %endif
+	  %if %<numDims> >= matrixDimensionThreshhold
+	    if(!ssSetInputPortMatrixDimensions(%<S>, ...
+	      %<portIdx>, %<dims[0]>, %<dims[1]>)) return;
+	  %else
+	    if(!ssSetInputPortVectorDimension(%<S>, ...
+	      %<portIdx>, %<width>)) return;
+	  %endif
+          %if LibIsBuiltInDataType(dtId)
+            %assign dtEnum    = LibGetDataTypeEnumFromId(dtId)
+            ssSetInputPortDataType(%<S>, %<portIdx>, %<dtEnum>);
+          %else
+            %%
+            %assign curDT = FixPt_GetDataTypeFromIndex(dtId)
+            %%
+            %if curDT.IsFixedPoint
+              {
+                DTypeId dataTypeIdReg =
+                %if FixPt_DataTypeIsFloat(curDT)
+                  ssRegisterDataTypeFxpScaledDouble(
+                %else
+                  ssRegisterDataTypeFxpFSlopeFixExpBias(
+                %endif
+                %<S>,
+                %<curDT.IsSigned>,
+                %<curDT.RequiredBits>,
+                %<curDT.FracSlope>,
+                %<curDT.FixedExp>,
+                %<curDT.Bias>,
+                0 /* false means do NOT obey data type override setting for this subsystem */ );
+                  
+                ssSetInputPortDataType( %<S>, %<portIdx>, dataTypeIdReg );
+              }
+            %else
+              %assign errTxt = "user defined data types not support for external" ...
+                "inputs/outputs when using the S-Function code format."
+              %<LibReportFatalError(errTxt)>
+            %endif
+          %endif
+	  %if isComplex
+	    ssSetInputPortComplexSignal(%<S>, %<portIdx>, COMPLEX_YES);
+	  %endif
+	  %if directFT
+	    ssSetInputPortDirectFeedThrough(%<S>, %<portIdx>, 1);
+	  %endif
+	  %if AllSampleTimesInherited == "yes"
+	    %% Do nothing.  This is a single rate discrete model so
+	    %% don't touch the I/O.  The S-Function will be registered
+	    %% with a (block based) inherited sample time.
+	  %else  
+	    %assign period = SampleTime[inputTid].PeriodAndOffset[0]
+	    %assign offset = SampleTime[inputTid].PeriodAndOffset[1]
+	    ssSetInputPortSampleTime(%<S>, %<portIdx>, %<period>);
+	    ssSetInputPortOffsetTime(%<S>, %<portIdx>, %<offset>);
+	  %endif
+	  ssSetInputPortOverWritable(%<S>, %<portIdx>, 0);
+	  ssSetInputPortOptimOpts(%<S>, %<portIdx>, SS_NOT_REUSABLE_AND_GLOBAL);
+	}
+      %endforeach
+    %endif
+  %endwith
+
+  %<RTMSet("RTWGeneratedSFcn", 1)>; /* RTW generated S-function */
+
+  %%
+  %% DWork
+  %%
+  %assign numDWorks = CompiledModel.DWorks.NumDWorks
+  %if numDWorks > 0
+    /* DWork */
+    if ( !%<RTMSet("NumDWork", numDWorks)>) {
+      return;
+    }
+
+    %foreach dwIdx = numDWorks
+      %assign dwRec     = CompiledModel.DWorks.DWork[dwIdx]
+      %assign dtRec     = CompiledModel.DataTypes.DataType[dwRec.DataTypeIdx]
+      %assign isComplex = SLibGetRecordIsComplex(dwRec)
+      %assign dTypeEnum = LibGetDataTypeEnumFromId(dwRec.DataTypeIdx)
+      %assign sysIdx    = dwRec.SigSrc[0]
+      %assign blkIdx    = dwRec.SigSrc[2]
+      %assign locIdx    = dwRec.SigSrc[3]
+      %assign block     = System[sysIdx].Block[blkIdx]
+      %assign locRec    = block.DWork[locIdx]
+	  
+      /* %<block.Name>: %<locRec.Name> */
+      %<RTMSetIdxed("DWorkName", dwIdx, "\"DWORK%<dwIdx>\"")>;
+      %<RTMSetIdxed("DWorkWidth", dwIdx, dwRec.Width)>;
+
+      %if dTypeEnum==""
+	%% custom data type. Need to register it
+	#if SS_SFCN_FOR_SIM
+	{
+	  int id = %<RTMRegisterDataType("\"%<dtRec.DTName>\"")>;
+	  if (id == INVALID_DTYPE_ID ) return;
+	  
+	  %assign sizeStr = "sizeof(%<dtRec.DTName>)"
+	  if(!%<RTMSetIdxed("DataTypeSize", "id", "%<sizeStr>")>) return;
+	  %<RTMSetIdxed("DWorkDataType", dwIdx, "id")>;
+	}
+	#endif
+      %else
+	%if dwRec.DataTypeIdx != tSS_DOUBLE
+	  %<RTMSetIdxed("DWorkDataType", dwIdx, dTypeEnum)>;
+	%endif
+      %endif
+      %if isComplex
+        %<RTMSetIdxed("DWorkComplexSignal", dwIdx, "COMPLEX_YES")>;
+      %endif
+      %if dwRec.UsedAs == "DSTATE"
+        %<RTMSetIdxed("DWorkUsedAsDState", dwIdx, 1)>;
+      %endif
+    %endforeach
+  %endif
+
+  %%
+  %% Parameters
+  %%
+  /* Tunable Parameters */
+  %<RTMSet("NumSFcnParams", ModelParameters.SfcnParamIdx)>;
+  /* Number of expected parameters */
+  #if defined(MATLAB_MEX_FILE)
+  if (%<RTMGet("NumSFcnParams")> == %<RTMGet("SFcnParamsCount")>) {
+    #if defined(MDL_CHECK_PARAMETERS)
+    mdlCheckParameters(S);
+    #endif /* MDL_CHECK_PARAMETERS */
+    if( %<RTMGetErrStat()> != NULL ) {
+      return;
+    }
+  } else {
+    return; /* Parameter mismatch will be reported by Simulink */
+  }
+  #endif /* MATLAB_MEX_FILE */
+  %%
+  %% SS_OPTIONS
+  %%
+  %assign optionStr = []
+  %assign optionStr = optionStr + "SS_OPTION_RUNTIME_EXCEPTION_FREE_CODE "
+  %if AllSampleTimesInherited == "yes"
+    %% Do nothing.  This is a single rate discrete model so
+    %% don't touch the I/O.  The S-Function will be registered
+    %% with a (block based) inherited sample time.
+  %elseif NeedConstantST  %% *** Fix Port Based Sample Times
+    %assign warntxt="Switching to block based sample times for the\n" + ...
+      "generated S-Function because one or more model outputs are constant."
+    %<LibReportWarning(warntxt)>
+  %else
+    %assign optionStr = optionStr + "\nSS_OPTION_PORT_SAMPLE_TIMES_ASSIGNED "
+  %endif
+  %assign numStr = SIZE(optionStr, 1)
+  %if numStr > 0
+    
+    /* Options */
+%openfile tmpBuf
+(%<optionStr[0]>\
+    %foreach strIdx = numStr-1
+| %<optionStr[strIdx+1]>\
+    %endforeach
+)\
+%closefile tmpBuf
+    %<RTMSet("Options", tmpBuf)>;
+  %endif
+}
+
+%% ============================================================================
+%% MdlInitializeSampleTimes
+%%
+/* Function to initialize sample times */
+static void mdlInitializeSampleTimes(SimStruct *%<RTMGetModelSS()>)
+{
+  %<LibDumpModelInitializeSampleTimes()>\
+  %% Add a constant sample time if needed
+  %if 0 %% NeedConstantST   *** Fix Port Based Sample Times
+    /* additional sample time for constant sample time ports */
+    %<RTMSetIdxed("SampleTime", NumSynchronousSampleTimes, rtInf)>;
+    %<RTMSetIdxed("OffsetTime", NumSynchronousSampleTimes, 0.0)>;
+  %endif
+    
+}
+
+%% ============================================================================
+%% MEX-glue
+%%
+#if defined(MATLAB_MEX_FILE)
+
+# include "simulink.c"
+# include "fixedpoint.c"
+
+#else
+
+# undef S_FUNCTION_NAME 
+# define S_FUNCTION_NAME %<Name> 
+# include "cg_sfun.h"
+
+#endif /* defined(MATLAB_MEX_FILE) */
+%closefile fcnsBuf
+
+%<SLibSetModelFileAttribute(opFile, "Functions", fcnsBuf)>
+
+%%
+%% ============================================================================
+%% Custom trailer code
+%%
+%openfile tmpBuf
+%<LibDumpBottomOfRegFileUserCode()>\
+%closefile tmpBuf
+%<SLibSetModelFileAttribute(opFile, "UserBottom", tmpBuf)>
+
+%% ============================================================================
+%% Undef aliases for consistency checking
+%%
+%undef S
+
+%selectfile NULL_FILE
+
+%endif %% _SFCNREG_
+
+%% [EOF] sfcnreg.tlc

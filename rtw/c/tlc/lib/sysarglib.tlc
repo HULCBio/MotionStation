@@ -1,0 +1,458 @@
+%% $Revision: 1.1.6.7 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%%
+
+%assign ::SystemFcnsForArgAccess = []
+
+%% Function: LibAccessCanPrmArg================================================
+%% Abstract:
+%%   This function mark systems hStruct system canonical parameter argument
+%%   as accessed for a specific block function.
+%%
+%function LibAccessCanPrmArg(sysIdx, canPrmIdx, global) void
+  %assign hstIdx = System[sysIdx].HStructDeclSystemIdx
+  %assign canPrm = System[hstIdx].Interface.CanonicalPrmArgDef[canPrmIdx]
+  %if global == "Global"
+    %<LibAccessGlobalArg(canPrm)>
+  %else
+    %<LibAccessArg(canPrm)>
+  %endif
+%endfunction
+
+%% Function: LibSetGlobalSysFcnsForArgAccess ==================================
+%% Abstract:
+%%      This function sets the global variable SystemFcnsForArgAccess.
+%%      When we generate code, LibAccessArg, marks the argument 
+%%      for all the functions specified in this global variable.
+%%
+%function LibSetGlobalSysFcnsForArgAccess(sysFcns) void
+  %assign ::SystemFcnsForArgAccess = sysFcns
+%endfunction
+
+
+%% Function: LibGetSysFcnsForArgAccess ========================================
+%% Abstract:
+%%     Return the list of system functions that must be marked.
+%function LibGetGlobalSysFcnsForArgAccess()
+  %assign sysFcns = ""
+  %if SIZE(::SystemFcnsForArgAccess,1) == 0
+    %assign sysFcns = ["%<::BlockFcn>"]
+  %else
+    %assign sysFcns = ::SystemFcnsForArgAccess
+  %endif
+  %assert(SIZE(sysFcns, 1) > 0)
+  %return sysFcns
+%endfunction
+
+
+%% Function:  LibAccessThisSysFcnArg ==========================================
+%% Abstract:
+%%    Mark the argument that has been accessed by the specified sysFcn.
+%%
+%function LibAccessThisSysFcnArg(arg, sysFcn, global) void
+  %if sysFcn == "Unknown"
+    %<LibReportFatalError("Encountered 'Unknown' arg")>
+  %endif
+
+  %if !ISFIELD(arg, "%<global>%<sysFcn>Accessed")
+    %addtorecord arg %<global>%<sysFcn>Accessed TLC_TRUE
+  %endif
+  
+  %if SLibIsRateGrouping()
+    %<SLibAccessSysFcnArgByTID(arg, sysFcn, global)>
+  %endif
+  
+  %if !ISFIELD(arg, "%<global>%<sysFcn>AccessedbyTID")
+    %addtorecord arg %<global>%<sysFcn>AccessedbyTID [-1]
+  %endif
+  
+  %if global == "Global"
+    %if !ISFIELD(arg, "GlobalAccessed")
+      %addtorecord arg GlobalAccessed TLC_TRUE
+    %endif
+  %endif
+  
+%endfunction
+
+
+%% Function: LibAccessArgHelper ===============================================
+%% Abstract:
+%%   For each system SystemFcnsForArgAccess, mark the arg accessed.
+%function LibAccessArgHelper(arg, global) void
+
+  %assign sysFcns = LibGetGlobalSysFcnsForArgAccess()
+  %foreach i = SIZE(sysFcns, 1)
+    %<LibAccessThisSysFcnArg(arg, sysFcns[i], global)>
+  %endforeach
+  
+%endfunction
+  
+
+%% Function: LibAccessArg ======================================================
+%% Abstract:
+%%   This function marks the arg as accessed by the system functions
+%%   in the LibGetGlobalSysFcnForArgAccess
+%% 
+%function LibAccessArg(arg) void
+  %<LibAccessArgHelper(arg, "")>
+%endfunction
+
+
+%% Function: SLibAddTIDtoArgAccessTIDList =====================================
+%%   This function add tid to the TIDList access the arg
+%%
+%function SLibAddTIDtoAccessTIDList(arg,sysFcn, global,tid) void
+  %if sysFcn == "Unknown"
+    %<LibReportFatalError("Encountered 'Unknown' arg")>
+  %endif
+  
+  %if !ISFIELD(arg, "%<sysFcn>Accessed")
+    %addtorecord arg %<sysFcn>Accessed TLC_TRUE
+  %endif
+  
+  %if TYPE(tid) != "Vector"
+    %assign tid = [%<tid>]
+  %endif
+  %if !ISFIELD(arg, "%<global>%<sysFcn>AccessedbyTID")
+    %addtorecord arg %<global>%<sysFcn>AccessedbyTID tid
+  %else
+    %assign oldAccessTID = arg.%<global>%<sysFcn>AccessedbyTID
+    %assign temp = oldAccessTID
+    %foreach idx0 = SIZE(tid,1)
+      %if ISEQUAL(tid[idx0], -1)
+	%% if -1 is not a valid tid in
+	%% AccessTIDList. 
+	%continue
+      %endif
+      %assign isNewAccessTID = TLC_TRUE
+      %foreach idx1 = SIZE(oldAccessTID,1)
+	%if ISEQUAL(tid[idx0], oldAccessTID[idx1])
+	  %assign isNewAccessTID = TLC_FALSE
+	  %break
+	%endif
+      %endforeach
+      %if isNewAccessTID
+	%assign temp = temp + tid[idx0] 
+      %endif
+    %endforeach
+    %assign arg.%<global>%<sysFcn>AccessedbyTID = temp
+  %endif
+%endfunction
+
+%% Function: SLibAccessSysFcnArgByTID  ========================================
+%% Abstract:
+%%   This function marks an argument as accessed by a TID and function.  Global
+%%   is a string which signifies whether this is a local or global variable.
+%function SLibAccessSysFcnArgByTID(arg,sysFcn,global) void
+  %% if sysFcn == "Unknown"
+    %% %<LibReportFatalError("Encountered 'Unknown' arg")>
+  %% endif
+  
+  %% if !ISFIELD(arg, "%<global>%<sysFcn>Accessed")
+    %% addtorecord arg %<global>%<sysFcn>Accessed TLC_TRUE
+  %% endif
+  
+  %assign accessTID = [-1]
+  %if (sysFcn == "Output" || sysFcn== "Update" ||...
+    sysFcn== "RootUpdate" || sysFcn== "OutputUpdate")
+    %% If the arg is accessed by model, or root system.
+    %% add TID 0 to  accessTID. TID does not exist
+    %% in these cases.
+    %if Name == CompiledModel.Name || ...
+        Name == "<Root>"
+      %assign accessTID = [0]
+    %else
+      %if ISEQUAL(TID,"Subsystem")
+        %if TYPE(SubsystemTID) == "Vector"
+          %assign accessTID = [%<CurrentTID>]
+        %elseif ISEQUAL(SubsystemTID, "triggered")
+          %assign accessTID = [%<TriggerTID>]
+        %elseif TYPE(SubsystemTID) == "Number"
+          %assign accessTID = [%<SubsystemTID>]
+        %endif
+        %if NumControlInputPorts == 1
+          %assign accessTID = accessTID + ControlInputPort.SignalSrcTID[0]
+        %elseif NumControlInputPorts > 1
+          %foreach idx = NumControlInputPorts
+            %assign accessTID = accessTID + ControlInputPort[idx].SignalSrcTID[0]
+          %endforeach
+        %endif
+      %elseif TYPE(TID) == "Number" 
+	%if EXISTS(SampleTimeIdx)
+	  %if (ISEQUAL(sysFcn,"RootUpdate") || ISEQUAL(sysFcn,"Update"))
+	    %assign accessTID = [%<SampleTimeIdx>]
+	  %elseif ISEQUAL(sysFcn,"Output")
+	    %assign accessTID = [%<TID>]
+	  %else
+	    %assign accessTID = [%<TID>, %<SampleTimeIdx>]
+	  %endif
+	%else
+	  %assign accessTID = [%<TID>]
+	%endif
+      %elseif TYPE(TID) == "Vector"
+        %assign accessTID = [%<CurrentTID>]
+      %elseif ISEQUAL(TID,"triggered")
+        %assign accessTID = [%<TriggerTID>]
+      %elseif ISEQUAL(TID, "constant")  
+        %assign accessTID = [0]  
+      %endif
+    %endif
+    %<SLibAddTIDtoAccessTIDList(arg,sysFcn,global,accessTID)>
+  %endif
+%endfunction
+
+
+%% Function: FcnArgIsNeededHelper =============================================
+%% Abstract:
+%%   Helper function to determine if a function argument has been accessed and 
+%%   is needed in the function prototype, regardless what is TID accesses 
+%%   the arg.
+%%
+%function FcnArgIsNeededHelper(arg, sysFcn, global) 
+  %if sysFcn == "Unknown"
+    %<LibReportFatalError("Unknown function argument")>
+  %elseif sysFcn == "Output" 
+    %return ISFIELD(arg, "%<global>OutputAccessed") || ...
+            ISFIELD(arg, "%<global>OutputUpdateAccessed")
+  %elseif sysFcn == "OutputUpdate"
+    %return ISFIELD(arg, "%<global>OutputAccessed") || ...
+            ISFIELD(arg, "%<global>OutputUpdateAccessed") || ...
+	    ISFIELD(arg, "%<global>RootUpdateAccessed")   || ...
+	    ISFIELD(arg, "%<global>UpdateAccessed")
+  %elseif sysFcn == "Start"
+    %return ISFIELD(arg, "%<global>StartAccessed") || ...
+            ISFIELD(arg, "%<global>EnableAccessed") || ...
+	    ISFIELD(arg, "%<global>InitializeAccessed") 
+  %elseif sysFcn == "Registration" && !IsModelReferenceTarget()
+    %return ISFIELD(arg, "%<global>RegistrationAccessed") || ...
+            ISFIELD(arg, "%<global>StartAccessed") || ...
+	    ISFIELD(arg, "%<global>InitializeAccessed")  || ...
+	    ISFIELD(arg, "%<global>EnableAccessed")
+  %elseif sysFcn == "RegistrationAndStart"
+    %assert IsModelReferenceTarget()
+    %return ISFIELD(arg, "%<global>RegistrationAccessed") || ...
+            ISFIELD(arg, "%<global>StartAccessed") || ...
+	    ISFIELD(arg, "%<global>EnableAccessed") || ...
+	    ISFIELD(arg, "%<global>InitializeAccessed") 
+  %elseif sysFcn == "UpdateContStates"
+    %return ISFIELD(arg, "%<global>OutputAccessed")       || ...
+            ISFIELD(arg, "%<global>OutputUpdateAccessed") || ...
+            ISFIELD(arg, "%<global>UpdateAccessed")       || ...
+            ISFIELD(arg, "%<global>RootUpdateAccessed")   || ...
+	    ISFIELD(arg, "%<global>DerivativeAccessed")
+  %elseif sysFcn == "RootUpdate"
+    %if NumContStates > 0 && (CodeFormat == "Embedded-C")
+      %return ISFIELD(arg, "%<global>RootUpdateAccessed") || ...
+              ISFIELD(arg, "%<global>UpdateAccessed")     || ...
+	      ISFIELD(arg, "%<global>OutputAccessed")     || ...
+              ISFIELD(arg, "%<global>DerivativeAccessed")
+    %else
+      %return ISFIELD(arg, "%<global>RootUpdateAccessed") || ...
+	      ISFIELD(arg, "%<global>UpdateAccessed")
+    %endif
+  %elseif sysFcn == "Update"
+    %return ISFIELD(arg, "%<global>UpdateAccessed")
+  %else
+    %return ISFIELD(arg, "%<global>%<sysFcn>Accessed")
+  %endif
+%endfunction
+
+
+%% Function: FcnArgIsNeeded ===================================================
+%% Abstract:
+%%       Return true if the function is needed.
+%function FcnArgIsNeeded(arg)
+  %assign retVal = FcnArgIsNeededHelper(arg, ::BlockFcn, "")
+  %return retVal
+%endfunction
+  
+
+%% Function: FcnArgIsNeededForTIDHelper =======================================
+%% Abstract:
+%%   Helper function to determine if a function argument has been accessed 
+%%   and is needed in the function prototype for specific TID. 
+%%
+%function FcnArgIsNeededForTIDHelper(arg, sysFcn, tid,global) 
+  %if !FcnArgIsNeededHelper(arg, sysFcn, global)
+    %return TLC_FALSE
+  %endif
+  %if !ISEQUAL(tid,"") && ...
+    (sysFcn == "Output" || sysFcn== "Update" ||...
+     sysFcn== "RootUpdate" || sysFcn== "OutputUpdate")
+    %assign isNeeded = TLC_FALSE
+    %assign accessedTID = []
+    %if sysFcn== "Update" || sysFcn== "RootUpdate"
+      %% Update fcn
+      %if ISFIELD(arg, "%<global>UpdateAccessed")
+	%assign accessedTID = arg.%<global>UpdateAccessedbyTID
+      %elseif ISFIELD(arg, "%<global>RootUpdateAccessed")
+        %assign accessedTID = arg.%<global>RootUpdateAccessedbyTID
+      %endif
+      %if sysFcn== "RootUpdate" && ...
+	  ISFIELD(arg, "%<global>OutputAccessed") && ...
+	  (NumContStates > 0) && (tid == 0)
+	%assign argField = arg.%<global>OutputAccessedbyTID
+        %foreach idx = SIZE(argField,1)
+	  %assign accessedTID = accessedTID + argField[idx]
+        %endforeach
+      %endif
+      %if ISEMPTY(accessedTID)
+        %return TLC_FALSE
+      %endif
+    %else
+      %% Output or OutputUpdate fcn
+      %if ISFIELD(arg, "%<global>OutputAccessed") 
+	%assign accessedTID = arg.%<global>OutputAccessedbyTID
+      %endif
+      %if ISFIELD(arg, "%<global>OutputUpdateAccessed")
+	%assign argField = arg.%<global>OutputUpdateAccessedbyTID
+	%foreach idx = SIZE(argField,1)
+	  %assign accessedTID = accessedTID + argField[idx]
+	%endforeach
+      %endif
+      %% OutputUpdate fcn needs have arg accessed by update fcn
+      %if sysFcn== "OutputUpdate"
+	%if ISFIELD(arg, "%<global>UpdateAccessedbyTID") 
+	  %assign argField = arg.%<global>UpdateAccessedbyTID
+	  %foreach idx = SIZE(argField,1)
+	    %assign accessedTID = accessedTID + argField[idx]
+	  %endforeach
+	%endif
+        %if ISFIELD(arg, "%<global>RootUpdateAccessedbyTID")
+	  %assign argField = arg.%<global>RootUpdateAccessedbyTID
+          %foreach idx = SIZE(argField,1)
+	    %assign accessedTID = accessedTID + argField[idx]
+	  %endforeach
+	%endif
+      %endif
+    %endif
+    %if ISEQUAL(accessedTID[0],-1)
+      %assign isNeeded = TLC_TRUE
+    %else
+      %foreach idx = SIZE(accessedTID,1) 
+	%if ISEQUAL(accessedTID[idx],tid) || ...
+	  ISEQUAL(accessedTID[idx],-1) 
+	  %assign isNeeded = TLC_TRUE
+	  %break
+	%endif
+      %endforeach
+    %endif
+  %else
+    %assign isNeeded = TLC_TRUE
+  %endif
+  %return isNeeded  
+%endfunction
+
+%% Function: FcnArgNeededHelper ===============================================
+%% Abstract:
+%%   Helper function to determine if a function argument has been accessed 
+%%   and is needed in the function prototype.
+%%
+%function FcnArgNeededHelper(arg, sysFcn, tid,isRateGrouping,global)
+  %if isRateGrouping
+    %if ISEQUAL(SolverType, "FixedStep") && FixedStepOpts.TID01EQ && ...
+        ISEQUAL(tid, 0)
+      %return (FcnArgIsNeededForTIDHelper(arg, sysFcn, 0, global) || ...
+	       FcnArgIsNeededForTIDHelper(arg, sysFcn, 1, global))
+    %else
+      %return FcnArgIsNeededForTIDHelper(arg, sysFcn, tid, global)
+    %endif
+  %else
+    %return FcnArgIsNeededHelper(arg, sysFcn, global)
+  %endif
+%endfunction
+
+
+%% Function: FcnArgNeeded =====================================================
+%% Abstract:
+%%   Determines if a function argument has been accessed and is needed in the
+%%   function prototype.
+%%
+%function FcnArgNeeded(arg,tid,isRateGrouping) 
+  %assign retVal = FcnArgNeededHelper(arg, ::BlockFcn, tid,isRateGrouping,"")
+  %return retVal
+%endfunction
+
+
+%% Function: SLibCopyArgAccessedFlags ==========================================
+%% Abstract:
+%%   This function copies all accessed argument flags from a source function
+%%   type (e.g "Initialize") to a destination function type.
+%%
+%%
+%function SLibCopyArgAccessedFlags(sysIdx, srcFcnType, destFcnType, global) void
+  %assign currBlkFcn = ::BlockFcn
+  %assign ::BlockFcn = srcFcnType
+  %with System[System[sysIdx].HStructDeclSystemIdx].Interface
+    %foreach argIdx=NumCanonicalInputArgDefs
+      %if FcnArgIsNeededHelper(CanonicalInputArgDef[argIdx], srcFcnType, global)
+	%assign ::BlockFcn = destFcnType
+	%<LibAccessArg(CanonicalInputArgDef[argIdx])>
+	%assign ::BlockFcn = srcFcnType
+      %endif
+    %endforeach
+    %foreach argIdx=NumCanonicalPrmArgDefs
+      %if FcnArgIsNeededHelper(CanonicalPrmArgDef[argIdx], srcFcnType,  global)
+	%assign ::BlockFcn = destFcnType
+	%<LibAccessArg(CanonicalPrmArgDef[argIdx])>
+	%assign ::BlockFcn = srcFcnType
+      %endif
+    %endforeach
+     %foreach argIdx = NumCanonicalDWorkArgDefs
+       %if FcnArgIsNeededHelper(CanonicalDWorkArgDef[argIdx], srcFcnType, global)
+	 %assign ::BlockFcn = destFcnType
+	%<LibAccessArg(CanonicalDWorkArgDef[argIdx])>
+	 %assign ::BlockFcn = srcFcnType
+      %endif
+    %endforeach
+    %if FcnArgIsNeededHelper(BlockIOArgDef, srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(BlockIOArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(RTMArgDef, srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(RTMArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(ConstBlockIOArgDef, srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(ConstBlockIOArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(DWorkArgDef, srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(DWorkArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(PrmArgDef, srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(PrmArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(ZCEventArgDef,srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(ZCEventArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(ContStatesArgDef,srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(ContStatesArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(ContStatesDerivativeArgDef,srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(ContStatesDerivativeArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+    %if FcnArgIsNeededHelper(ContStatesDisabledArgDef,srcFcnType,global)
+      %assign ::BlockFcn = destFcnType
+      %<LibAccessArg(ContStatesDisabledArgDef)>
+      %assign ::BlockFcn = srcFcnType
+    %endif
+  %endwith
+  %assign ::BlockFcn = currBlkFcn
+%endfunction
+

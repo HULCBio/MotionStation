@@ -1,0 +1,218 @@
+%%
+%% $Revision: 1.13 $ 
+%% $RCSfile: vxinterrupt.tlc,v $
+%%
+%% Abstract:
+%%      TLC file for the VxWorks Asynchronous Interrupt Block.
+%% Author:
+%%      Pete Szpak, Jim Carrick
+%% Date:
+%%      10-15-97
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+
+%implements "vxinterrupt" "C"
+
+%include "vxlib.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      Find all the function-call subsystems that are attached to the
+%%      interrupt block and hook-in the necessary code for each routine.
+%%      This function
+%%
+%%      o Redefine the number of formal arguments of each function-call
+%%        subsystem connected to the interrupt block to be one.  This is
+%%        done by placing a #define in model.h.  This is needed since VxWorks
+%%        only allows one argument to a ISR.
+%%
+%%      o Connect each ISR in the model's start function.
+%%
+%%      o Enable each ISR at the bottom of the model's start function.
+%%        
+%%      o Disable each ISR in the model's terminate function.
+%%
+%%      o Lock-out interrupts in the ISR's critical code section if the
+%%        ISR is configured as non-preemptive.
+%%
+%%      o Save floating point context in the ISR's critical code section
+%%        (unless the ISR represents the VxWorks Task block).
+%%
+
+%function BlockInstanceSetup(block, system) void
+  %% Only allow 1 interrupt block
+  %if EXISTS("VxWorksInterruptBlockSeen")
+    %assign errTxt = "Only 1 interrupt block is allowed in " ...
+      "model: %<CompiledModel.Name>."
+    %exit RTW Fatal: %<errTxt> 
+  %else
+    %assign ::VxWorksInterruptBlockSeen = 1
+  %endif
+  
+  %% Need to find the downstream function-call subsystems.  There is
+  %% only one output port on the interrupt s-function.
+  %% Simulink will have already verified that, if connected at all, 
+  %% it is a function-call subsystem and that it is the only destination.
+  %% The remaining test is whether the destination has other function-call
+  %% sources besides this Interrupt block which is not allowed since the
+  %% Interrupt block installs it as an ISR.
+  %% That test can done by checking ssBlock.ControlInputPort.Width.
+  %foreach callIdx = NumSFcnSysOutputCalls
+    %% Get downstream block if there is one
+    %if "%<SFcnSystemOutputCall[callIdx].BlockToCall>" != "unconnected"
+      %assign ssSysIdx = SFcnSystemOutputCall[callIdx].BlockToCall[0]
+      %assign ssBlkIdx = SFcnSystemOutputCall[callIdx].BlockToCall[1]
+      %assign ssBlock = CompiledModel.System[ssSysIdx].Block[ssBlkIdx]
+      %% Check to see if this is a direct connection
+      %if (ssBlock.ControlInputPort.Width != 1)
+	%assign errTxt = "The VxWorks Interrupt block '%<block.Name>' " ...
+	  "outputs must be directly connected to one function-call subsystem. " ...
+	  "The destination function-call subsystem block '%<ssBlock.Name>' " ...
+	  "has other inputs."
+	%exit RTW Fatal: %<errTxt>
+      %endif    
+      %% Assume it is a subsystem block(Simulink checked for a f-c subsys already).
+      %assign isrSystem = System[ssBlock.ParamSettings.SystemIdx]
+      
+      %% Determine the ISR configuration information
+      %assign number       = CAST("Number",SFcnParamSettings.Numbers[callIdx])
+      %assign vectorOffset = CAST("Number",SFcnParamSettings.Offsets[callIdx])
+      %if SIZE(SFcnParamSettings.Preemption, 1) == 1 
+	%assign preemptable = SFcnParamSettings.Preemption[0]
+      %else
+	%assign preemptable = SFcnParamSettings.Preemption[callIdx]
+      %endif
+      
+      %% Mode must be set to RTW
+      %%   mode = 1 (Simulation)
+      %%        = 2 (RTW)
+      %if SFcnParamSettings.Mode == 1
+	%assign errTxt = "The mode of the interrupt block " ...
+	  "must be set to RTW before generate code.  This allows " ...
+	  "you to remove the simulated IRQ signals, avoiding unnecessary " ...
+	  "code generation."
+	%exit RTW Fatal: %<errTxt>
+      %endif
+      
+      %% redefine arguments of ISR function
+      %openfile buffer
+      /* redefine arguments for ISR: %<ssBlock.Name> */ 
+      #define %<isrSystem.OutputUpdateFcn>(%<tSimStruct>,%<tControlPortIdx>,%<tTID>) \
+      (%<isrSystem.OutputUpdateFcn>(%<tSimStruct>))
+      %closefile buffer
+      %<LibCacheDefine(buffer)>
+      
+      %assign isTaskBlock = 0
+      %if EXISTS("ssBlock.MaskType")
+	%if ssBlock.MaskType == "VxWorks Task Block"
+	  %assign isTaskBlock = 1
+	%endif
+      %endif
+      
+      %% Since ISR can only have one argument, define tid to 0
+      %% controlPortIdx will never get used when only one f-c control input
+      %if !isTaskBlock
+	%openfile buffer
+	/* use base tid inside an ISR for any blocks accessing task time*/
+	#define %<tTID> 0
+	
+	%closefile buffer
+	%<LibSystemOutputCustomCode(isrSystem, buffer, "declaration")>
+	%openfile buffer
+	#undef %<tTID>
+
+	%closefile buffer
+	%<LibSystemUpdateCustomCode(isrSystem, buffer, "trailer")>
+      %endif
+
+      %% Can't disable interrupts inside ISR if it's making a system call
+      %if !preemptable && isTaskBlock
+	%assign errTxt = "The interrupt on port element %<callIdx> cannot be "\
+	  "configured as non-preemptable when it is connection to a Task Block."
+	%exit RTW Fatal: %<errTxt>
+      %endif
+      
+      %% Disable interrupts inside ISR if it's configured as non-preemptive
+      %if !preemptable
+	%openfile buffer
+	/* disable interrupts (system is configured as non-preemptive) */
+	int_T lock = intLock();
+	
+	%closefile buffer
+	%<LibSystemOutputCustomCode(isrSystem, buffer, "declaration")>
+      %endif
+      
+      %% Make ISR floating-point safe if it isn't a Task Block
+      %if !isTaskBlock
+	%% Declaration statements
+	%openfile decBuffer
+	FP_CONTEXT context;
+	%closefile decBuffer
+	
+	%% Entry code statements
+	%openfile entryBuffer
+	/* save floating point context */
+	fppSave(&context);
+	
+	%closefile entryBuffer
+	
+	%% Exit code statements
+	%openfile exitBuffer
+	/* restore floating point context */
+	fppRestore(&context);
+	
+	%closefile exitBuffer
+	%<LibSystemOutputCustomCode(isrSystem, decBuffer,   "declaration")>
+	%<LibSystemOutputCustomCode(isrSystem, entryBuffer, "declaration")>
+	%<LibSystemUpdateCustomCode(isrSystem, exitBuffer,  "trailer")>
+      %endif
+      
+      %% Re-enable interrupts if ISR was configured as non-preemptive
+      %if !preemptable
+	%openfile buffer
+	/* re-enable interrupts */
+	intUnlock(lock);
+	
+	%closefile buffer
+	%<LibSystemUpdateCustomCode(isrSystem, buffer, "trailer")>
+      %endif
+      
+      %% Connect the ISR in the model's start function
+      %% Enable the ISR at the bottom of the model's start function
+      %openfile buffer
+      /* connect ISR system: %<ssBlock.Name> */
+      if( intConnect(INUM_TO_IVEC(%<vectorOffset>), %<isrSystem.OutputUpdateFcn>, 
+          (int_T)%<tSimStruct>) != OK) {
+	printf("intConnect failed for ISR %<number>.\n");
+      }
+      
+      /* enable interrupt for ISR system: %<ssBlock.Name> */
+      sysIntEnable(%<number>);
+      
+      %closefile buffer
+      %<LibMdlStartCustomCode(buffer, "trailer")>
+      
+      %% Disable the ISR in the model's terminate function
+      %openfile buffer
+      /* disable interrupt for ISR system: %<ssBlock.Name> */
+      sysIntDisable(%<number>);
+      
+      %closefile buffer
+      %<LibMdlTerminateCustomCode(buffer, "header")>
+    %else  %% The element is not connected to anything
+      %assign wrnTxt = "No code will be generated for ISR %<number> "\
+	"since it is not connected to anything."
+      %warning %<wrnTxt>
+    %endif
+  %endforeach
+%endfunction
+
+%% [EOF] vxinterrupt.tlc
+
+
+
+
+
+
+
+

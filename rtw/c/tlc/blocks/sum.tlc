@@ -1,0 +1,838 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Sum block target file
+
+%implements Sum "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if ISFIELD(block,"FixPtRoundingMode")
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+
+%% Function: Output ============================================================
+%% Abstract:
+%%      This block can operate in a vector summer mode where a vector
+%%      input is collapsed into a scalar, or as a parallel summer where
+%%      there is more than one input port and the elements of the input
+%%      ports are summed row-by-row.
+%%
+%function Outputs(block, system) Output
+  %if !ISFIELD(block,"FixPtRoundingMode")
+    %assign doSaturate = SLibHandleSaturateOnOverflow(block)
+    %assign dtIdx = LibBlockOutputSignalDataTypeId(0)
+    %assign dtName = LibBlockOutputSignalDataTypeName(0, "%<tRealPart>")
+    %if NumDataInputPorts == 1
+      %%
+      %% Block is configured as a vector summer (1 input port)
+      %%
+      %assign outputOverWritesInput = (LibBlockInputSignalBufferDstPort(0) == 0)
+      %assign sign = (ParamSettings.Inputs[0] == "-") ? "-" : ""
+      %assign ur = LibBlockInputSignal( 0, "", "", "%<tRealPart>0")
+      %assign yr = LibBlockOutputSignal(0, "", "", "%<tRealPart>0")
+      %if doSaturate && sign == "-"
+	%if outputOverWritesInput
+	  {
+	  %<dtName> tmpVar = %<ur>;
+	  \
+	  %<SLibSumWithSaturate(dtIdx, ParamSettings.Inputs[0], yr, "0", "tmpVar", "")>
+	%else
+	  %<SLibSumWithSaturate(dtIdx, ParamSettings.Inputs[0], yr, "0", ur, "")>
+	%endif
+      %else    
+	%<yr> = %<sign>%<ur>;
+      %endif
+      %%
+      %if LibBlockOutputSignalIsComplex(0)
+	%% In this case the data input port is also complex
+	%assign ui = LibBlockInputSignal( 0, "", "", "%<tImagPart>0")
+	%assign yi = LibBlockOutputSignal(0, "", "", "%<tImagPart>0")
+	%if doSaturate
+      
+	  /* imaginary part */
+	%endif
+	%if doSaturate && sign == "-"
+	  %if outputOverWritesInput
+	    tmpVar = %<ui>;
+	    %<SLibSumWithSaturate(dtIdx, ParamSettings.Inputs[0], yi, "0", "tmpVar", "")>
+	  %else    
+	    %<SLibSumWithSaturate(dtIdx, ParamSettings.Inputs[0], yi, "0", ui, "")>
+	  %endif
+	%else    
+	  %<yi> = %<sign>%<ui>;
+	%endif
+      %endif
+      %if doSaturate && sign == "-"
+	%if outputOverWritesInput
+	  }
+	%endif
+      %endif
+      %%
+      %if LibBlockInputSignalWidth(0) > 1
+	%% Output never overwrites input when widths are different
+	%assign sign = ParamSettings.Inputs[0]
+	%assign rollVars = ["U", "Y"]
+	%assign rollRegions1 = LibGetRollRegions1(RollRegions)
+	%if doSaturate
+	  {
+	  %<dtName> tmpVar;
+	  \
+	%endif
+	%roll uIdx = rollRegions1, lcv=RollThreshold, block, "Roller", rollVars
+	  %assign ur = LibBlockInputSignal( 0, "", lcv, "%<tRealPart>%<uIdx>")
+	  %assign yr = LibBlockOutputSignal(0, "", "", "%<tRealPart>0")
+	  %if doSaturate
+	    tmpVar = %<yr>;
+	    %<SLibSumWithSaturate(dtIdx, sign, yr, "tmpVar", ur, "")>
+	  %else    
+          %<yr> %<sign>= %<ur>;
+          %endif
+	  %%
+	  %if LibBlockOutputSignalIsComplex(0)
+	    %% In this case the data input port is also complex
+	    %assign ui = LibBlockInputSignal( 0, "", lcv, "%<tImagPart>%<uIdx>")
+	    %assign yi = LibBlockOutputSignal(0, "", "", "%<tImagPart>0")
+	    %if doSaturate
+      
+	      /* imaginary part */
+	      tmpVar = %<yi>;
+	      %<SLibSumWithSaturate(dtIdx, sign, yi, "tmpVar", ui, "")>
+	    %else    
+	    %<yi> %<sign>= %<ui>;
+	    %endif
+	  %endif
+	%endroll
+	%if doSaturate
+	  }
+	%endif
+      %endif
+    %else
+      %%
+      %% Block is configured as a parallel summer (more than 1 input port)
+      %%
+      %assign rollVars  = ["U", "Y"]
+      %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% Real Part
+	%%
+	%assign yr = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<idx>")
+	%assign rhsStr = ""
+	%assign colLen = 0
+	%assign maxColLen = 75 - SIZE(yr, 1)
+	%assign sign = ParamSettings.Inputs[0]
+	%assign need_blk_begin_end_pair = 0
+	%assign need_tmpVar1            = 0
+	%assign need_tmpVar2            = 0
+	%if doSaturate
+	  %if NumDataInputPorts > 2 || sign !="+"|| LibBlockOutputSignalIsComplex(0)
+	    %assign need_blk_begin_end_pair = 1
+	    %assign need_tmpVar1            = 1
+	  %endif
+	  %foreach portIdx = NumDataInputPorts
+	    %assign outputOverWritesInput =(LibBlockInputSignalBufferDstPort(portIdx) == 0)
+	    %if outputOverWritesInput
+	      %assign need_blk_begin_end_pair = 1
+	      %assign need_tmpVar2            = 1
+	      %break
+	    %endif
+	  %endforeach
+	  %if need_blk_begin_end_pair == 1
+	    {
+	    %if need_tmpVar1 == 1
+	      %<dtName>  tmpVar1 = 0;
+	    %endif
+	    %if need_tmpVar2 == 1
+	      %<dtName> tmpVar2;
+	    %endif
+	    \
+	  %endif
+	%endif
+	%foreach portIdx = NumDataInputPorts
+	  %assign sign = ParamSettings.Inputs[portIdx]
+	  %assign msign = (sign == "+" && portIdx == 0) ? "" : sign
+	  %assign ur = LibBlockInputSignal(portIdx,"",lcv,"%<tRealPart>%<idx>")
+	  %if doSaturate
+	    /* port %<portIdx> */
+	    %if outputOverWritesInput
+	      %if portIdx == 0 && sign == "+"  %%just do assignment
+		%if need_tmpVar1 == 1
+		  tmpVar1 = %<ur>;
+		%else
+		  %assign ur0 = LibBlockInputSignal(0,"",lcv,"%<tRealPart>%<idx>")
+		%endif
+	      %else
+		%if need_tmpVar1 == 1
+		  %<SLibSumWithSaturate(dtIdx, sign, "tmpVar2", "tmpVar1", ur, "")>
+		  %if portIdx != NumDataInputPorts-1
+		    tmpVar1 = tmpVar2;
+		  %else
+		    %<yr> = tmpVar2;
+		  %endif
+		%else
+		  %<SLibSumWithSaturate(dtIdx, sign, "tmpVar2", ur0, ur, "")>
+		  %<yr> = tmpVar2;
+		%endif
+	      %endif
+	    %else
+	      %if portIdx == 0 && sign == "+"  %%just do assignment
+		%if need_tmpVar1 == 1
+		  tmpVar1 = %<ur>;
+		%else
+		  %assign ur0 = LibBlockInputSignal(0,"",lcv,"%<tRealPart>%<idx>")
+		%endif
+	      %else
+		%if need_tmpVar1 == 1
+		  %<SLibSumWithSaturate(dtIdx, sign, yr, "tmpVar1", ur, "")>
+		  %if portIdx != NumDataInputPorts-1
+		    tmpVar1 = %<yr>;
+		  %endif
+		%else
+		  %<SLibSumWithSaturate(dtIdx, sign, yr, ur0, ur, "")>
+		%endif
+	      %endif
+	    %endif
+	  %else
+	    %assign tmpStr = " %<msign> %<ur>"
+	    %if colLen + SIZE(tmpStr, 1) > maxColLen
+	      %assign rhsStr = rhsStr + "\n" + tmpStr
+	      %assign colLen = SIZE(tmpStr,1)
+	      %assign maxColLen = 75
+	    %else
+	      %assign rhsStr = rhsStr + tmpStr
+	      %assign colLen = colLen + SIZE(tmpStr,1)
+	    %endif
+	  %endif
+	%endforeach
+	%if !doSaturate
+	  %<yr> = %<rhsStr>;
+	%endif
+	%%
+	%% Imaginary Part
+	%%
+	%if LibBlockOutputSignalIsComplex(0)
+	  %assign yi = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<idx>")
+	  %assign rhsStr = ""
+	  %assign colLen = 0
+	  %assign maxColLen = 75 - SIZE(yi, 1)
+	  %if doSaturate
+	    
+	    %assign sign = ParamSettings.Inputs[0]
+	    /* imaginary part */
+	    %if LibBlockInputSignalIsComplex(0) && sign == "+"
+	      %% do nothing, tmpVar1 init is not needed
+	    %else
+	      tmpVar1 = 0;
+	    %endif
+	  %endif
+	  %foreach portIdx = NumDataInputPorts
+	    %if !LibBlockInputSignalIsComplex(portIdx)
+	      %if portIdx == NumDataInputPorts-1 && doSaturate
+		%<yi> = tmpVar1;
+		%continue
+	      %else
+		%continue
+	      %endif
+	    %endif
+	    %assign sign = ParamSettings.Inputs[portIdx]
+	    %assign msign = (sign == "+" && portIdx == 0) ? "" : sign
+	    %assign ui = LibBlockInputSignal(portIdx,"",lcv,"%<tImagPart>%<idx>")
+	    %if doSaturate
+	      /* port %<portIdx> */
+	      %if outputOverWritesInput
+		%if portIdx == 0 && sign == "+"  %%just do assignment
+		  tmpVar1 = %<ui>;
+		%else
+		  %<SLibSumWithSaturate(dtIdx, sign, "tmpVar2", "tmpVar1", ui, "")>
+		  %if portIdx != NumDataInputPorts-1
+		    tmpVar1 = tmpVar2;
+		  %else
+		    %<yi> = tmpVar2;
+		  %endif
+		%endif
+	      %else
+		%if portIdx == 0 && sign == "+"  %%just do assignment
+		  tmpVar1 = %<ui>;
+		%else
+		  %<SLibSumWithSaturate(dtIdx, sign, yi, "tmpVar1", ui, "")>
+		  %if portIdx != NumDataInputPorts-1
+		    tmpVar1 = %<yi>;
+		  %endif
+		%endif
+	      %endif
+	    %else
+	      %assign tmpStr = " %<msign> %<ui>"
+	      %if colLen + SIZE(tmpStr, 1) > maxColLen
+		%assign rhsStr = rhsStr + "\n" + tmpStr
+		%assign colLen = SIZE(tmpStr,1)
+		%assign maxColLen = 75
+	      %else
+		%assign rhsStr = rhsStr + tmpStr
+		%assign colLen = colLen + SIZE(tmpStr,1)
+	      %endif
+	    %endif
+	  %endforeach
+	  %if !doSaturate
+	    %<yi> = %<rhsStr>;
+	  %endif
+	%endif
+	%if need_blk_begin_end_pair == 1
+	  }
+	%endif
+	%%
+      %endroll
+    %endif  %% NumDataInputPorts
+  %else   %% InFixptMode
+    %%default is to call OutputsFixpt(block, system)
+    %with CompiledModel
+      %assign funcName = "%<sumOutputsFixptFunc>"
+      %assign typeName = "%<sumOutputsFixptType>"
+    %endwith
+    %<GENERATE_TYPE(block,funcName,typeName,system)>
+  %endif %%if ISFIELD(block,"FixPtRoundingMode")
+  
+%endfunction %% Outputs
+
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %if !ISFIELD(block,"FixPtRoundingMode")
+    %switch retType
+      %case "Signal"
+	%if NumDataInputPorts == 1
+	  %assign sign = (ParamSettings.Inputs[0] == "-") ? "-" : ""
+	  %assign ur = LibBlockInputSignal( 0, "", "", "%<tRealPart>0")
+	  %assign tmpStr = "%<sign>%<ur>"
+	  %if LibBlockInputSignalWidth(0) > 1
+	    %assign sign = ParamSettings.Inputs[0]
+	    %foreach idx = LibBlockInputSignalWidth(0) - 1
+	      %assign idx1 = idx + 1
+	      %assign ur = LibBlockInputSignal( 0, "", "", "%<tRealPart>%<idx1>")
+	      %assign tmpStr = "%<tmpStr> %<sign> %<ur>"
+	    %endforeach
+	  %endif
+	  %return "(%<tmpStr>)"
+	%else
+	  %foreach ipIdx = NumDataInputPorts
+	    %assign sign = ParamSettings.Inputs[ipIdx]
+	    %assign msign = (ipIdx == 0 && sign == "+") ? "" : sign
+	    %assign u = LibBlockInputSignal(ipIdx,ucv,lcv,idx)
+	    %if ipIdx == 0
+	      %assign tmpStr = msign + u
+	    %else
+	      %assign tmpStr = tmpStr + " %<msign> %<u>"
+	    %endif
+	  %endforeach
+	  %return "(%<tmpStr>)"
+	%endif
+      %default
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+    %endswitch
+  %else
+    %switch retType
+      %case "Signal"
+	%%
+	%%
+	%assign y0DT = FixPt_GetOutputDataType(0)
+	%assign u0DT = FixPt_GetInputDataType(0)
+	%assign u1DT = FixPt_GetInputDataType(1)
+	%%
+	%assign u0Label = LibBlockInputSignal(0,ucv,lcv,idx)
+	%assign u1Label = LibBlockInputSignal(1,ucv,lcv,idx)
+	%%
+	%assign u0Label = FixPt_Fix2Fix_Expr(y0DT,u0Label,u0DT,FixPtRoundingMode,FixPtSaturationMode)
+	%%
+	%assign u1Label = FixPt_Fix2Fix_Expr(y0DT,u1Label,u1DT,FixPtRoundingMode,FixPtSaturationMode)
+	%%
+	%if      ParamSettings.Inputs[0] == "+" && ParamSettings.Inputs[1] == "+"
+	  %%
+	  %if     FixPt_IsZeroNumericOrString(u0Label) 
+	    %%
+	    %assign outExpr = "%<u1Label>"
+	    %%
+	  %elseif FixPt_IsZeroNumericOrString(u1Label)
+	    %%
+	    %assign outExpr = "%<u0Label>"
+	  %else
+	    %assign outExpr = "(%<u0Label> + %<u1Label>)"
+	  %endif
+	  %%
+	%elseif  ParamSettings.Inputs[0] == "+" && ParamSettings.Inputs[1] == "-"
+	  %%
+	  %%
+	  %if FixPt_IsZeroNumericOrString(u1Label)
+	    %%
+	    %assign outExpr = "%<u0Label>"
+	  %else
+	    %assign outExpr = "(%<u0Label> - %<u1Label>)"
+	  %endif
+	  %%
+	%elseif  ParamSettings.Inputs[0] == "-" && ParamSettings.Inputs[1] == "+"
+	  %%
+	  %%
+	  %if FixPt_IsZeroNumericOrString(u0Label)
+	    %%
+	    %assign outExpr = "%<u1Label>"
+	  %else
+	    %assign outExpr = "(%<u1Label> - %<u0Label>)"
+	  %endif
+	  %%
+	%else %% Inputs[0] == "-" && Inputs[1] == "-"
+	  %%
+	  %<LibBlockReportFatalError(block,"Expression folding does not support sum block in '--' mode.")>
+	%endif
+	%%
+	%return FixPt_ProtectDataTypeOfExpression(outExpr,y0DT,y0DT)
+      %default
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+    %endswitch
+  %endif
+%endfunction
+  
+
+%% Function: OutputsFixpt =====================================================
+%% Abstract:
+%%      Output function for fixpt mode
+%%
+%function OutputsFixpt(block,system)
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign casesToHandle = 1 + y0IsComplex
+    %%
+    %% create header comment
+    %%
+    %openfile commentBuffer
+    %%
+    * %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+    *
+    %%
+    %% the output to be created
+    %%
+    %if LibDataOutputPortWidth(0) > 1
+      %assign opstr = "*  y[i] = "
+    %else
+      %assign opstr = "*  y = "
+    %endif
+    %%
+    %% handle case of multiple input ports
+    %%
+    %if NumDataInputPorts > 1
+      %%
+      %% handle each input port
+      %%
+      %foreach ipIdx = NumDataInputPorts
+	%%
+	%% get sign symbol for current input
+	%%
+	%assign signOp = ParamSettings.Inputs[ipIdx]
+	%%
+	%% special treatment of first input
+	%%
+	%if ipIdx == 0
+	  %%
+	  %% only subtraction cause op symbol
+	  %%  add puts out no op for first input
+	  %%
+	  %if signOp == "-"
+	    %assign opstr = opstr + "-"
+	  %endif
+	  %%
+	  %% handle inputs after first
+	  %%
+	%else
+	  %if signOp == "-"
+	    %assign opstr = opstr + " -"
+	  %else
+	    %assign opstr = opstr + " +"
+	  %endif
+	%endif
+	%%
+	%% handle wide inputs
+	%%
+	%if LibDataInputPortWidth(ipIdx) > 1
+	  %%
+	  %assign opstr = opstr + " u" + STRING(ipIdx) + "[i]"
+	  %%
+	  %% handle scalar inputs
+	  %%
+	%else
+	  %%
+	  %assign opstr = opstr + " u" + STRING(ipIdx)
+	%endif
+      %endforeach
+      %%
+      %% width of signal
+      %%
+      %if LibDataOutputPortWidth(0) > 1
+	%assign opstr = opstr + "    i = 0 to " + STRING(LibDataOutputPortWidth(0)-1)
+      %endif
+      %%
+      %% handle case of single input ports
+      %%
+    %else
+      %%
+      %% get sign symbol for the input port
+      %%
+      %assign signOp = ParamSettings.Inputs[0]
+      %%
+      %% handle subtraction
+      %%
+      %if signOp == "-"
+	%%
+	%% handle case of only one input scalar
+	%%
+	%if LibDataInputPortWidth(0) == 1
+	  %%
+	  %assign opstr = opstr + " -u0    (negation)"
+	  %%
+	  %% handle case less five or more scalars on input port
+	  %%
+	%elseif LibDataInputPortWidth(0) >= 5
+	  %%
+	  %assign opstr = opstr + " - u0[0] - u0[1] - ... - u0["
+	  %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+	  %%
+	  %% handle case less than five scalars on input port
+	  %%
+	%else
+	  %%
+	  %% handle each scalar
+	  %%
+	  %foreach i = LibDataInputPortWidth(0)
+	    %%
+	    %assign opstr = opstr + " - u0[" + STRING(i) + "]"
+	  %endforeach
+	%endif
+	%%
+	%% handle addition
+	%%
+      %else
+	%%
+	%% handle case of only one input scalar
+	%%
+	%if LibDataInputPortWidth(0) == 1
+	  %%
+	  %assign opstr = opstr + " +u0   (Trivial Addition!)"
+	  %%
+	  %% handle case more than five scalars on input port
+	  %%
+	%elseif LibDataInputPortWidth(0) >= 5
+	  %%
+	  %assign opstr = opstr + "u0[0] + u0[1] + ... + u0["
+	  %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+	  %%
+	  %% handle case less than five scalars on input port
+	  %%
+	%else
+	  %%
+	  %% handle each scalar
+	  %%
+	  %foreach i = LibDataInputPortWidth(0)
+	    %%
+	    %if i == 0
+	      %%
+	      %assign opstr = opstr + " u0[0]"
+	    %else
+	      %assign opstr = opstr + " + u0[" + STRING(i) + "]"
+	    %endif
+	  %endforeach
+	%endif
+      %endif
+    %endif
+    %%
+    %% spit out operation string
+    %%
+    %<opstr>
+    *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+    %closefile commentBuffer
+    %%
+    %<LibCacheBlockComment(block,commentBuffer)>\
+    %%
+    %openfile outBuffer
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create Bias Free version of output Data Type
+    %%
+    %copyrecord y0NoBiasDT y0DT
+    %%
+    %assign y0NoBiasDT.Bias = 0.0
+    %%
+    %% set up data type records
+    %%   just creating a true (nonalias) record outside the for loop to
+    %%   prevent segv.  the current value is irrelevant
+    %%
+    %copyrecord uiNoBiasDT y0DT
+    %%
+    %% define temporary variable to hold cast versions of inputs
+    %%
+    %assign castInLabel = "castIn"
+    %%
+    %openfile gutsOfAdd
+    %%
+    %assign castInWasUsed = 0
+    %%
+    %%  Handle case of multiple input port
+    %%  element by element vector addition/subtraction
+    %%
+    %if NumDataInputPorts > 1
+      %%
+      %% Roll around signal width (Note: a curly brace is opened and closed
+      %% by the loop roller.  Therefore, if the block is not going to roll
+      %% we need to open and close them ourselves).
+      %%
+      %assign rollVars = ["U", "Y"]
+      %%
+      %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	%%
+	%% handle real then if necessary imag parts
+	%%
+	%foreach iCase = casesToHandle
+	  %%
+	  %assign riSigIdx = FLib_ReImIdx(sigIdx,iCase)
+	  %%
+	  %assign y0Label = LibBlockOutputSignal(0, "", lcv,    riSigIdx)
+	  %%
+	  %% Initialize output to the input bias sum if necessary
+	  %%
+	  %if idxInputUsedToInitOutput < 0
+	    %%
+	    %<y0Label> = %<InitNetBiasValue[0]>;  /* initialize output */
+	    %%
+	  %else
+	    %%
+	    %assign uiDT = FixPt_GetInputDataType(idxInputUsedToInitOutput)
+	    %assign uiLabel = LibBlockInputSignal(idxInputUsedToInitOutput, "", lcv, riSigIdx)
+	    %%
+	    %% create Bias Free version of input Data Type
+	    %%
+	    %<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+	    %%
+	    %assign uiNoBiasDT.Bias = 0.0
+	    %%
+	    %% cast input to outputs data type
+	    %% and use result to initialize output
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0Label,y0NoBiasDT,...
+	      uiLabel,uiNoBiasDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	  %%
+	  %% handle each input port
+	  %%
+	  %foreach ipIdx = NumDataInputPorts
+	    %%
+	    %if ipIdx != idxInputUsedToInitOutput
+	      %%
+	      %% nothing to do for imag part unless input is complex
+	      %%
+	      %if (iCase == 0) || LibBlockInputSignalIsComplex(ipIdx)
+		%%
+		%% get add or subtract symbol
+		%%
+		%assign signOp = ParamSettings.Inputs[ipIdx]
+		%%
+		%% Get ith input
+		%%
+		%assign uiDT = FixPt_GetInputDataType(ipIdx)
+		%assign uiLabel = LibBlockInputSignal(ipIdx, "", lcv, riSigIdx)
+		%%
+		%% create Bias Free version of input Data Type
+		%%
+		%<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+		%%
+		%assign uiNoBiasDT.Bias = 0.0
+		%%
+		%% cast input to outputs data type
+		%% add or subtract input from output
+		%%
+		%assign retVecStr = FixPt_Fix2Fix(castInLabel,y0NoBiasDT,...
+		  uiLabel,    uiNoBiasDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)
+		%%
+		%if SIZE(retVecStr,1) == 3
+		  %%
+		  %% for trivial or simple casts do not assign results
+		  %% to temporary variable.  Use them in the next expression directly
+		  %%
+		  %assign inExpr = retVecStr[1]
+		%else
+		  %assign inExpr = castInLabel
+		  %%
+		  %assign castInWasUsed = 1
+		%endif
+		%%
+		%if (signOp == "+")
+		  %<FixPt_AccumPos(y0Label, y0NoBiasDT,...
+		    inExpr, y0NoBiasDT,...
+		    FixPtSaturationMode)>\
+		%else
+		  %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+		    inExpr, y0NoBiasDT,...
+		    FixPtSaturationMode)>\
+		%endif
+		%%
+	      %endif %% end handling imag part for complex outputs
+	    %endif
+	  %endforeach %% each input
+	  %%
+	  %% Initialize output to the input bias sum if necessary
+	  %%
+	  %if DoEndNetBias
+	    %%
+	    %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+	      STRING(EndNetBiasValue[0]),y0NoBiasDT,...
+	      FixPtSaturationMode)>\
+	  %endif
+	%endforeach %% iCase real and imag
+      %endroll
+      %%
+      %% case of single input port "collapsed"
+      %% to form scalar output
+    %else
+      %%
+      %% get sign symbol for the input port
+      %%
+      %assign signOp = ParamSettings.Inputs[0]
+      %%
+      %% Get input data type
+      %%
+      %assign uiDT = FixPt_GetInputDataType(0)
+      %%
+      %% create Bias Free version of input Data Type
+      %%
+      %<FixPt_MergeRecordDominantSource(uiNoBiasDT,uiDT)>\
+      %%
+      %assign uiNoBiasDT.Bias = 0.0
+      %%
+      %% handle real then if necessary imag parts
+      %%
+      %foreach iCase = casesToHandle
+	%%
+	%assign y0Label = LibBlockOutputSignal(0, "", "", FLib_ReImIdx(0,iCase))
+	%%
+	%% Initialize output to the input bias sum if necessary
+	%%
+	%if ( idxInputUsedToInitOutput < 0 )
+	  %%
+	  %<y0Label> = %<InitNetBiasValue[0]>;  /* initialize output */
+	  %assign curRollRegions = RollRegions
+	  %%
+	  %% special treatment to first input if output not already
+	  %% initialized
+	  %%
+	%else
+	  %%
+	  %assign uiLabel = LibBlockInputSignal(0, "", "", FLib_ReImIdx(0,iCase))
+	  %%
+	  %% cast input to outputs data type
+	  %% and use result to initialize output
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(y0Label,y0NoBiasDT,...
+	    uiLabel,uiNoBiasDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	  %assign curRollRegions = LibRemoveRollRegions(RollRegions,0)
+	%endif
+	%%
+	%if SIZE(curRollRegions,0)
+	  %%
+	  %% Roll around input
+	  %%
+	  %assign rollVars = ["U"]
+	  %%
+	  %roll sigIdx = curRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    %%
+	    %assign uiLabel = LibBlockInputSignal(0, "", lcv, FLib_ReImIdx(sigIdx,iCase))
+	    %%
+	    %% cast input to outputs data type
+	    %% add or subtract input from output
+	    %%
+	    %assign retVecStr = FixPt_Fix2Fix(castInLabel,y0NoBiasDT,...
+	      uiLabel,    uiNoBiasDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)
+	    %%
+	    %if SIZE(retVecStr,1) == 3
+	      %%
+	      %% for trivial or simple casts do not assign results
+	      %% to temporary variable.  Use them in the next expression directly
+	      %%
+	      %assign inExpr = retVecStr[1]
+	    %else
+	      %assign inExpr = castInLabel
+	      %%
+	      %assign castInWasUsed = 1
+	    %endif
+	    %%
+	    %if (signOp == "+")
+	      %<FixPt_AccumPos(y0Label, y0NoBiasDT,...
+		inExpr, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %else
+	      %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+		inExpr, y0NoBiasDT,...
+		FixPtSaturationMode)>\
+	    %endif
+	  %endroll
+	%endif
+	%%
+	%% Initialize output to the input bias sum if necessary
+	%%
+	%if DoEndNetBias
+	  %%
+	  %<FixPt_AccumNeg(y0Label, y0NoBiasDT,...
+	    STRING(EndNetBiasValue[0]),y0NoBiasDT,...
+	    FixPtSaturationMode)>\
+	%endif
+      %endforeach %% iCase real imag
+    %endif   %% Number of input ports
+    %%
+    %closefile gutsOfAdd
+    %%
+    %if castInWasUsed
+      {
+	%<y0NoBiasDT.NativeType> %<castInLabel>;
+	
+	%<gutsOfAdd>\
+      }
+    %else
+      %<gutsOfAdd>\
+    %endif
+    %%
+    %%
+    %% blank line for formating
+    
+    %closefile outBuffer
+    %return outBuffer
+%endfunction
+
+
+%% [EOF] sum.tlc

@@ -1,0 +1,1151 @@
+%% $RCSfile: fixptlook.tlc,v $
+%% $Revision: 1.2.4.5 $
+%% $Date: 2004/04/14 23:47:16 $
+%%
+%% This file contains tlc code for generation of fixed point
+%% lookup tables
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+
+%% Function: fxpInterpEvenBigProd =======================================
+%%
+%function fxpInterpEvenBigProd(...
+            yAddrLabel,             yDT ,...
+            yLeftLabel, yRghtLabel, yDataDT,...
+            xMinusXLeftLabel,       xDT,...
+            spacingLabel, ...
+            roundMode,satMode) Output
+  %%
+  %<LibPushEmptyStackSharedUtils()>\
+  %<FixPt_FloatingPointNotSupported(yDT)>\
+  %<FixPt_FloatingPointNotSupported(yDataDT)>\
+  %<FixPt_FloatingPointNotSupported(xDT)>\
+  %%
+  %copyrecord yRadixDT yDT
+  %%
+  %assign yRadixDT.Bias = 0.0
+  %assign yRadixDT.FracSlope = 1.0
+  %%
+  %copyrecord yDataRadixDT yDataDT
+  %%
+  %assign yDataRadixDT.Bias = 0.0
+  %assign yDataRadixDT.FracSlope = 1.0
+  %%
+  %copyrecord xRadixDT xDT
+  %%
+  %assign xRadixDT.Bias = 0.0
+  %assign xRadixDT.FracSlope = 1.0
+  %%
+  %% Create a string to represent the utility
+  %% 
+  %assign utilityName = "INTERPOLATE_EVEN"
+  %%
+  %% identify output storage type
+  %%
+  %assign utilityName = FixPt_UtilityNameAppendDTPair(utilityName,yRadixDT,yDataRadixDT)
+  %%
+  %% identify NUMERATOR storage type
+  %%
+  %assign utilityName = FixPt_UtilityNameAppendDT(utilityName,xRadixDT)
+  %%
+  %assign utilityName = FixPt_UtilityNameAppendMode(utilityName,roundMode,satMode)
+  %%
+  %% END: Create a string to represent the utility
+  %% 
+  %%
+  %% Output a "call" to the required utility
+  %%
+  %<utilityName>( %<yAddrLabel>, %<yLeftLabel>, %<yRghtLabel>, %<xMinusXLeftLabel>, %<spacingLabel>);
+  %%
+  %% determine if the required utility has already been defined
+  %%   If it has not, then create the definition.
+  %%
+  %if !(ISFIELD(FixPtUtils,utilityName))
+    %%
+    %% register that utility is being defined
+    %%
+    %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+    %%
+    %% Get fixpt records for generic variables INSIDE this util
+    %%
+    %assign yn  = yRadixDT.NativeType
+    %assign xn  = xRadixDT.NativeType
+    %assign ydn = yDataRadixDT.NativeType
+    %%
+    %assign yLocalLabel     = "*pY"
+    %assign yLeftLocalLabel = "yL"
+    %assign yRghtLocalLabel = "yR"
+    %assign xLocalLabel     = "xMinusxL"
+    %assign xSpacingLabel   = "xSpacing"
+    %assign xSpacingType    = xn
+    %%
+    %% open a buffer to hold the utility header comments
+    %%
+    %openfile utilityHeaderComment
+    
+    /*********************************************************************
+    * Fixed Point Evenly Spaced Interpolation %<utilityName>
+    */
+    %closefile utilityHeaderComment
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% open a buffer to hold the utility definition
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %openfile utilityDef
+    %%
+    %% create first line of utility 
+    %% case of C function
+    %%   including prototype definition
+    %%
+    %assign funcDecRoot = ...
+      "void %<utilityName>( " + ...
+      "%<yn> %<yLocalLabel>, " + ...
+      "%<ydn> %<yLeftLocalLabel>, " + ...
+      "%<ydn> %<yRghtLocalLabel>, " + ...
+      "%<xn> %<xLocalLabel>, " + ...
+      "%<xSpacingType> %<xSpacingLabel>)"
+    %%
+    %openfile funcProto
+    %<funcDecRoot>;
+    %closefile funcProto
+    %selectfile utilityDef 
+    %<funcDecRoot>
+    {
+      %%
+      %% prep bigProduct variable
+      %%
+      %assign bigProdBits = yDataRadixDT.RequiredBits + xRadixDT.RequiredBits
+      %%
+      %assign isSign = yDataRadixDT.IsSigned || xRadixDT.IsSigned
+      %%
+      %if ( bigProdBits <= IntegerSizes.IntNumBits ) 
+        %assign freeBits    = IntegerSizes.IntNumBits - bigProdBits
+        %assign bigProdBits = IntegerSizes.IntNumBits
+      %else
+        %assign freeBits    = IntegerSizes.LongNumBits - bigProdBits
+        %assign bigProdBits = IntegerSizes.LongNumBits
+      %endif
+      %%
+      %assign fixExp = yDataRadixDT.FixedExp + xRadixDT.FixedExp
+      %%
+      %if freeBits > 0
+        %%
+        %assign bigProdExtraShift = ...
+          ( yDataDT.FixedExp - yDT.FixedExp ) 
+        %% - ( xDataDT.FixedExp - xDT.FixedExp )   No DataDT for even space case
+        %%
+        %if bigProdExtraShift > 0
+          %%
+          %if bigProdExtraShift > freeBits
+            %%
+            %assign fixExp = fixExp - freeBits
+            %%
+          %else
+            %%
+            %assign fixExp = fixExp - bigProdExtraShift
+            %%
+          %endif
+        %endif
+      %endif
+      %%
+      %assign dataTypeName = LibFixPointFormDataTypeName(isSign,bigProdBits,fixExp)
+      %%
+      %createrecord bigProdDT { ...
+        DataTypeName     dataTypeName; ...
+        IsSigned         isSign; ...
+        RequiredBits     bigProdBits; ...
+        ActualBits       bigProdBits; ...
+        FixedExp         fixExp; ...
+        FracSlope        1.0; ...
+        Bias             0.0; ...
+        NativeType       "#error x" ...
+      }
+      %%
+      %<FixPt_DefineDataType(bigProdDT)>\
+      %%
+      %assign bigProdLocalLabel = "bigProd"
+      %%
+      %% create variable to hold the diffs
+      %%
+      %assign yDiffLocalLabel = "yDiff"
+      %%
+      %assign xDenLocalLabel = "xDen"
+      %%
+      %% declare variables
+      %%
+      %<bigProdDT.NativeType> %<bigProdLocalLabel>;
+      %<yDataRadixDT.NativeType> %<yDiffLocalLabel>;
+      %%
+      %if FixPt_DataTypesSame(yRadixDT,yDataRadixDT)
+        %%
+        %assign yAdjustLocalLabel = yDiffLocalLabel
+      %else
+        %%
+        %assign yAdjustLocalLabel = "yAjust"
+        %%
+        %<yRadixDT.NativeType> %<yAdjustLocalLabel>;
+      %endif
+      %%                
+      %<FixPt_Fix2FixAlwaysOutput(yLocalLabel,yRadixDT,yLeftLocalLabel,yDataRadixDT,roundMode,satMode)>\            
+      
+      %if yRadixDT.IsSigned 
+        %%
+        %<yDiffLocalLabel> = %<yRghtLocalLabel>;
+        %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yLeftLocalLabel, yDataRadixDT,satMode)>
+        
+        %<FixPt_Multiply(bigProdLocalLabel, bigProdDT,yDiffLocalLabel, yDataRadixDT,xLocalLabel, xRadixDT,roundMode,satMode)>
+        
+        %<FixPt_Division_protectZeroOpt(yAdjustLocalLabel, yRadixDT,bigProdLocalLabel, bigProdDT,xSpacingLabel, xRadixDT,roundMode,satMode,0)>
+        
+        %<FixPt_AccumPos(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+      %else
+        %%
+        if ( %<yRghtLocalLabel> >= %<yLeftLocalLabel> )
+        {
+          %<yDiffLocalLabel> = %<yRghtLocalLabel>;
+          %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yLeftLocalLabel, yDataRadixDT,satMode)>
+        }
+        else
+        {
+          %<yDiffLocalLabel> = %<yLeftLocalLabel>;
+          %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yRghtLocalLabel, yDataRadixDT,satMode)>
+        }
+        
+        %<FixPt_Multiply(bigProdLocalLabel, bigProdDT,yDiffLocalLabel, yDataRadixDT,xLocalLabel, xRadixDT,roundMode,satMode)>
+        
+        %<FixPt_Division_protectZeroOpt(yAdjustLocalLabel, yRadixDT,bigProdLocalLabel, bigProdDT,xSpacingLabel, xRadixDT,roundMode,satMode,0)>
+        
+        %%
+        if ( %<yRghtLocalLabel> >= %<yLeftLocalLabel> )
+        {
+          %<FixPt_AccumPos(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+        }
+        else
+        {
+          %<FixPt_AccumNeg(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+        }
+        %%                    
+      %endif
+    }
+    %closefile utilityDef
+    %%
+    %% create utility trailer comment
+    %%
+    %openfile utilityTrailerComment 
+    
+    /* end %<utilityName> 
+    *********************************************************************/
+    %closefile utilityTrailerComment
+    %%
+    %% cause utility define to be included in generated code
+    %%
+    %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+    %%
+    %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+    %<LibCacheFunctionPrototype(funcProto)>
+    %%
+  %endif  %% definition of utility
+  %%
+  %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction  %% fxpInterpEvenBigProd
+
+
+
+%% Function: fxpInterpUnevenBigProd ==============================
+%%
+%%
+%function fxpInterpUnevenBigProd(...
+            yAddrLabel,             yDT, ...
+            yLeftLabel, yRghtLabel, yDataDT, ...
+            xLabel,                 xDT, ...
+            xLeftLabel, xRghtLabel, xDataDT, ...
+            roundMode,satMode) Output
+    %%
+    %<LibPushEmptyStackSharedUtils()>\
+    %<FixPt_FloatingPointNotSupported(yDT)>\
+    %<FixPt_FloatingPointNotSupported(yDataDT)>\
+    %<FixPt_FloatingPointNotSupported(xDT)>\
+    %<FixPt_FloatingPointNotSupported(xDataDT)>\
+    %%
+    %copyrecord yRadixDT yDT
+    %%
+    %assign yRadixDT.Bias = 0.0
+    %assign yRadixDT.FracSlope = 1.0
+    %%
+    %copyrecord yDataRadixDT yDataDT
+    %%
+    %assign yDataRadixDT.Bias = 0.0
+    %assign yDataRadixDT.FracSlope = 1.0
+    %%
+    %copyrecord xRadixDT xDT
+    %%
+    %assign xRadixDT.Bias = 0.0
+    %assign xRadixDT.FracSlope = 1.0
+    %%
+    %copyrecord xDataRadixDT xDataDT
+    %%
+    %assign xDataRadixDT.Bias = 0.0
+    %assign xDataRadixDT.FracSlope = 1.0
+    %%
+    %% Create a string to represent the utility
+    %% 
+    %assign utilityName = "INTERPOLATE"
+    %%
+    %% identify output storage type
+    %%
+    %assign utilityName = FixPt_UtilityNameAppendDTPair(utilityName,yRadixDT,yDataRadixDT)
+    %%
+    %% identify NUMERATOR storage type
+    %%
+    %assign utilityName = FixPt_UtilityNameAppendDTPair(utilityName,xRadixDT,xDataRadixDT)
+    %%
+    %assign utilityName = FixPt_UtilityNameAppendMode(utilityName,roundMode,satMode)
+    %%
+    %% END: Create a string to represent the utility
+    %% 
+    %%
+    %% Output a "call" to the required utility
+    %%
+    %<utilityName>( %<yAddrLabel>, %<yLeftLabel>, %<yRghtLabel>, %<xLabel>, %<xLeftLabel>, %<xRghtLabel>);
+    %%
+    %% determine if the required utility has already been defined
+    %%   If it has not, then create the definition.
+    %%
+    %if !(ISFIELD(FixPtUtils,utilityName))
+      %%
+      %% register that utility is being defined
+      %%
+      %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+      %%
+      %% Get fixpt records for generic variables INSIDE this util
+      %%
+      %assign yLocalLabel     = "*pY"
+      %assign yLeftLocalLabel = "yL"
+      %assign yRghtLocalLabel = "yR"
+      %assign xLocalLabel     = "x"
+      %assign xLeftLocalLabel = "xL"
+      %assign xRghtLocalLabel = "xR"
+      %%
+      %% open a buffer to hold the utility header comments
+      %%
+      %openfile utilityHeaderComment
+      
+      /*********************************************************************
+      * Fixed Point Interpolation %<utilityName>
+      */
+      %closefile utilityHeaderComment
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      %% open a buffer to hold the utility definition
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      %openfile utilityDef
+      %%
+      %% create first line of utility 
+      %% case of C function
+      %%   including prototype definition
+      %%
+      %assign yn = yRadixDT.NativeType
+      %assign xn = xRadixDT.NativeType
+      %assign ydn = yDataRadixDT.NativeType
+      %assign xdn = xDataRadixDT.NativeType
+      %%
+      %assign funcDecRoot = ...
+        "void %<utilityName>( " + ...
+        "%<yn> %<yLocalLabel>, " + ...
+        "%<ydn> %<yLeftLocalLabel>, " + ...
+        "%<ydn> %<yRghtLocalLabel>, " + ...
+        "%<xn> %<xLocalLabel>, " + ...
+        "%<xdn> %<xLeftLocalLabel>, " + ...
+        "%<xdn> %<xRghtLocalLabel>)"
+      %%
+      %openfile funcProto
+      %<funcDecRoot>;
+      %closefile funcProto
+      %%
+      %selectfile utilityDef 
+      %<funcDecRoot>
+      {
+        %%
+        %% prep bigProduct variable
+        %%
+        %if xRadixDT.RequiredBits > xDataRadixDT.RequiredBits
+          %assign bigProdBits = yDataRadixDT.RequiredBits + xRadixDT.RequiredBits
+        %else
+          %assign bigProdBits = yDataRadixDT.RequiredBits + xDataRadixDT.RequiredBits
+        %endif
+        %%
+        %assign isSign = yDataRadixDT.IsSigned || xRadixDT.IsSigned
+        %%
+        %if ( bigProdBits <= IntegerSizes.IntNumBits ) 
+          %assign freeBits    = IntegerSizes.IntNumBits - bigProdBits
+          %assign bigProdBits = IntegerSizes.IntNumBits
+        %else
+          %assign freeBits    = IntegerSizes.LongNumBits - bigProdBits
+          %assign bigProdBits = IntegerSizes.LongNumBits
+        %endif
+        %%
+        %assign fixExp = yDataRadixDT.FixedExp + xRadixDT.FixedExp
+        %%
+        %if freeBits > 0
+          %%
+          %assign bigProdExtraShift = ...
+            ( yDataDT.FixedExp - yDT.FixedExp ) - ...
+            ( xDataDT.FixedExp - xDT.FixedExp )
+          %%
+          %if bigProdExtraShift > 0
+            %%
+            %if bigProdExtraShift > freeBits
+              %%
+              %assign fixExp = fixExp - freeBits
+              %%
+            %else
+              %%
+              %assign fixExp = fixExp - bigProdExtraShift
+              %%
+            %endif
+          %endif
+        %endif
+        %%
+        %assign dataTypeName = LibFixPointFormDataTypeName(isSign,bigProdBits,fixExp)
+        %%
+        %createrecord bigProdDT { ...
+          DataTypeName     dataTypeName; ...
+          IsSigned         isSign; ...
+          RequiredBits     bigProdBits; ...
+          ActualBits       bigProdBits; ...
+          FixedExp         fixExp; ...
+          FracSlope        1.0; ...
+          Bias             0.0; ...
+          NativeType       "#error x" ...
+        }
+        %%
+        %<FixPt_DefineDataType(bigProdDT)>\
+        %%
+        %assign bigProdLocalLabel = "bigProd"
+        %%
+        %% create variable to hold the diffs
+        %%
+        %assign yDiffLocalLabel = "yDiff"
+        %%
+        %assign xNumLocalLabel = "xNum"
+        %%
+        %assign xDenLocalLabel = "xDen"
+        %%
+        %% declare variables
+        %%
+        %<bigProdDT.NativeType> %<bigProdLocalLabel>;
+        %<yDataRadixDT.NativeType> %<yDiffLocalLabel>;
+        %<xRadixDT.NativeType> %<xNumLocalLabel>;
+        %<xDataRadixDT.NativeType> %<xDenLocalLabel>;
+        %%
+        %if FixPt_DataTypesSame(yRadixDT,yDataRadixDT)
+          %%
+          %assign yAdjustLocalLabel = yDiffLocalLabel
+        %else
+          %%
+          %assign yAdjustLocalLabel = "yAdjust"
+          %%
+          %<yRadixDT.NativeType> %<yAdjustLocalLabel>;
+        %endif
+        %%                
+        %if FixPt_DataTypesSame(xRadixDT,xDataRadixDT)
+          %%
+          %assign castXLeftLocalLabel = xLeftLocalLabel
+        %else
+          %%
+          %assign castXLeftLocalLabel = "castXLeft"
+          %%
+          %<xRadixDT.NativeType> %<castXLeftLocalLabel>;
+          %%
+          %<FixPt_Fix2FixAlwaysOutput(castXLeftLocalLabel,xRadixDT,xLeftLocalLabel,xDataRadixDT,roundMode,satMode)>\
+        %endif
+        
+        %<FixPt_Fix2FixAlwaysOutput(yLocalLabel,yRadixDT,yLeftLocalLabel,yDataRadixDT,roundMode,satMode)>\            
+        
+        /* If %<xLocalLabel> is not strictly between %<xRghtLocalLabel> and %<xLeftLocalLabel>
+         * then an interpolation calculation is not necessary %<xLocalLabel> == %<xLeftLocalLabel>
+         * or not valid.  The invalid situation is expected when the input
+         * is beyond the left or right end of the table.  The design is
+         * that %<yLeftLocalLabel> holds the correct value for %<yLocalLabel>
+         * in invalid situations.
+         */
+        if ( %<xRghtLocalLabel> > %<xLeftLocalLabel> && %<xLocalLabel> > %<castXLeftLocalLabel> )
+        {
+          %<xDenLocalLabel> = %<xRghtLocalLabel>;
+          %<FixPt_AccumNeg(xDenLocalLabel, xDataRadixDT,xLeftLocalLabel, xDataRadixDT,satMode)>
+          
+          %<xNumLocalLabel> = %<xLocalLabel>;
+          %<FixPt_AccumNeg(xNumLocalLabel, xRadixDT,castXLeftLocalLabel, xRadixDT,satMode)>
+          
+          %if yRadixDT.IsSigned 
+            %%
+            %<yDiffLocalLabel> = %<yRghtLocalLabel>;
+            %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yLeftLocalLabel, yDataRadixDT,satMode)>
+            
+            %<FixPt_Multiply(bigProdLocalLabel, bigProdDT,yDiffLocalLabel, yDataRadixDT,xNumLocalLabel, xRadixDT,roundMode,satMode)>
+            
+            %<FixPt_Division_protectZeroOpt(yAdjustLocalLabel, yRadixDT,bigProdLocalLabel, bigProdDT,xDenLocalLabel, xDataRadixDT,roundMode,satMode,0)>
+            
+            %<FixPt_AccumPos(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+          %else
+            %%
+            if ( %<yRghtLocalLabel> >= %<yLeftLocalLabel> )
+            {
+              %<yDiffLocalLabel> = %<yRghtLocalLabel>;
+              %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yLeftLocalLabel, yDataRadixDT,satMode)>
+            }
+            else
+            {
+              %<yDiffLocalLabel> = %<yLeftLocalLabel>;
+              %<FixPt_AccumNeg(yDiffLocalLabel, yDataRadixDT,yRghtLocalLabel, yDataRadixDT,satMode)>
+            }
+            
+            %<FixPt_Multiply(bigProdLocalLabel, bigProdDT,yDiffLocalLabel, yDataRadixDT,xNumLocalLabel, xRadixDT,roundMode,satMode)>
+            
+            %<FixPt_Division_protectZeroOpt(yAdjustLocalLabel, yRadixDT,bigProdLocalLabel, bigProdDT,xDenLocalLabel, xDataRadixDT,roundMode,satMode,0)>
+            
+            %%
+            if ( %<yRghtLocalLabel> >= %<yLeftLocalLabel> )
+            {
+              %<FixPt_AccumPos(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+            }
+            else
+            {
+              %<FixPt_AccumNeg(yLocalLabel, yRadixDT,yAdjustLocalLabel, yRadixDT,satMode)>
+            }
+            %%                    
+          %endif
+        }
+      }
+      %closefile utilityDef
+      %%
+      %% create utility trailer comment
+      %%
+      %openfile utilityTrailerComment 
+      
+      /* end %<utilityName> 
+      *********************************************************************/
+      %closefile utilityTrailerComment
+      %%
+      %% cause utility define to be included in generated code
+      %%
+      %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+      %%
+      %<SLibDumpUtilsSourceCode(utilityName,funcProto,utilityDef)>\
+      %<LibCacheFunctionPrototype(funcProto)>
+      %%
+    %endif  %% definition of utility
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%endfunction  %% fxpInterpUnevenBigProd
+
+
+
+%% Function: fxpInterpolateGetLambdaDT ================================
+%%
+%function fxpInterpolateGetLambdaDT( ...
+            yDT, yDataDT, xDT, xDataDT, ...
+            spacingIsPow2, spacingPow2Exp, ...
+            allowPow2Optimization ) void
+    %%
+    %% prep lambda variable
+    %%    the definition of the data type will be completed in the calc func
+    %%
+    %if FixPt_DataTypeIsFloat(yDT)     || ...
+        FixPt_DataTypeIsFloat(yDataDT) || ...
+        FixPt_DataTypeIsFloat(xDT)     || ...
+        FixPt_DataTypeIsFloat(yDataDT)
+      %%
+      %assign doFloat   = 1
+      %%
+      %if !FixPt_DataTypeIsSingle(yDT)     || ...
+          !FixPt_DataTypeIsSingle(yDataDT) || ...
+          !FixPt_DataTypeIsSingle(xDT)     || ...
+          !FixPt_DataTypeIsSingle(yDataDT)
+        %%
+        %assign lambdaDT = FixPt_GetDataTypeFromIndex(0)
+      %else
+        %%
+        %assign lambdaDT = FixPt_GetDataTypeFromIndex(1)
+      %endif
+      %%
+    %else
+      %%
+      %if yDT.RequiredBits > yDataDT.RequiredBits
+        %%
+        %assign maxOutReqBits = yDT.RequiredBits
+        %assign maxOutActBits = yDT.ActualBits
+      %else
+        %%
+        %assign maxOutReqBits = yDataDT.RequiredBits
+        %assign maxOutActBits = yDataDT.ActualBits
+      %endif
+      %%
+      %if xDT.RequiredBits > xDataDT.RequiredBits
+        %%
+        %assign maxInReqBits = xDT.RequiredBits
+        %assign maxInActBits = xDT.ActualBits
+      %else
+        %%
+        %assign maxInReqBits = xDataDT.RequiredBits
+        %assign maxInActBits = xDataDT.ActualBits
+      %endif
+      %%
+      %if maxInReqBits > maxOutReqBits
+        %%
+        %assign lambdaReqBits = maxInReqBits
+        %assign lambdaActBits = maxInActBits
+      %else
+        %%
+        %assign lambdaReqBits = maxOutReqBits
+        %assign lambdaActBits = maxOutActBits
+      %endif
+      %%
+      %assign isSigned = 0
+      %%
+      %if allowPow2Optimization && spacingIsPow2
+        %%
+        %% for evenly space powers of 2
+        %%   on-line division is NOT needed
+        %%   off-line the fixed exponent is set to account
+        %%   for that conceptual division by a power of 2
+        %%
+        %assign fixedExp = -1*spacingPow2Exp
+        %%
+      %else
+        %%
+        %% set the fixed exponent to make lambda a "fractional" type
+        %% for the case when actual on-line division will take place
+        %%
+        %assign fixedExp = (1+isSigned-lambdaReqBits)
+        %%
+      %endif
+      %%
+      %assign dataTypeName = LibFixPointFormDataTypeName(isSigned,lambdaReqBits,fixedExp)
+      %%
+      %createrecord lambdaDT { ...
+        DataTypeName     dataTypeName; ...
+        IsSigned         isSigned; ...
+        RequiredBits     lambdaReqBits; ...
+        ActualBits       lambdaActBits; ...
+        FixedExp         fixedExp; ...
+        FracSlope        1.0; ...
+        Bias             0.0; ...
+        NativeType       "#error x" ...
+      }
+      %%
+      %<FixPt_DefineDataType(lambdaDT)>\
+      %%
+    %endif
+    %%
+    %return lambdaDT
+    %%
+%endfunction  %% fxpInterpolateGetLambdaDT
+
+
+
+%% Function: fxpInterpolateGetLambdaDTUneven =============================
+%%
+%function fxpInterpolateGetLambdaDTUneven( ...
+            yDT, yDataDT, xDT, xDataDT, ...
+            allowPow2Optimization ) void
+  %%
+  %assign mootBreakPointInfo = FixPt_BreakPointInfoDefault()
+  %%
+  %assign lambdaDT = fxpInterpolateGetLambdaDT( ...
+            yDT, yDataDT, xDT, xDataDT, ...
+            mootBreakPointInfo.spacingIsPow2, ...
+            mootBreakPointInfo.spacingPow2Exp, ...
+            allowPow2Optimization )
+  %%
+  %return lambdaDT
+  %%
+%endfunction  %% fxpInterpolateGetLambdaDTUneven
+            
+            
+            
+%% Function: fxpInterpolateCalcLambdaPow2 ================================
+%%
+%function fxpInterpolateCalcLambdaPow2( ...
+           uAdjLabel,   u0DT,...
+           lambdaLabel, lambdaDT,...
+           pow2ExpValue, ...
+           roundMode, satMode) Output
+  %%
+  %assert !FixPt_DataTypeIsFloat(lambdaDT)
+  %%
+  %assert pow2ExpValue == -lambdaDT.FixedExp  
+  %%
+  %% rather THAN do a remainder operation
+  %%   because the divisor is a constant power of 2
+  %%   use mask to quickly get lambda
+  %%
+  /* The table is inlined with even spacing 2^%<pow2ExpValue>, so
+   * the interpolation factor is the least significant %<pow2ExpValue> bits. */
+  %%
+  %assign mask = SetLSNBitsStr(pow2ExpValue,u0DT.ActualBits,0)
+  %%
+  %<lambdaLabel> = %<uAdjLabel> & %<mask>;
+  %%
+%endfunction  %% fxpInterpolateCalcLambdaPow2
+
+
+
+%% Function: fxpInterpolateCalcLambdaEven ================================
+%%
+%function fxpInterpolateCalcLambdaEven( ...
+           uAdjLabel,   u0DT,...
+           lambdaLabel, lambdaDT,...
+           spacingValue, ...
+           iLeftLabel,...
+           roundMode, satMode) Output
+  %%
+  %% create a data type record for the den and num
+  %%
+  %copyrecord deltaDT u0DT
+  %%
+  %assign deltaDT.Bias = 0.0
+  %%
+  %% Get numerator rec
+  %%
+  %assign numLabel = "num"
+  %%
+  %assign unsignType = utilFloatOrUnsignedTypeFromDT(u0DT)
+  %%
+  %% Note it would be easier to subtract of Xleft, but
+  %% we are not storing the vector of breakpoints for the evenly
+  %% spaced case inorder to save ROM
+  %%
+  {
+    %<u0DT.NativeType> %<numLabel> = (%<unsignType>)%<uAdjLabel> - ( %<iLeftLabel> * %<spacingValue> );
+  
+    %%
+    %% initialize denominator to delta
+    %%
+    %assign denLabel = STRING(spacingValue)
+    %%
+    %% lambda = num/den
+    %%
+    %%  Division by zero is NOT possible
+    %%    equal x values is protected above
+    %%
+    %<FixPt_Division_protectZeroOpt(lambdaLabel,lambdaDT,numLabel,deltaDT,denLabel,deltaDT,roundMode,satMode,0)>\
+    %%
+  }
+%endfunction  %% fxpInterpolateCalcLambdaEven
+
+
+
+%% Function: fxpInterpolateCalcLambdaEven2 ================================
+%%
+%function fxpInterpolateCalcLambdaEven2( ...
+           uMinusLeftLabel,   u0DT,...
+           lambdaLabel, lambdaDT,...
+           spacingValue, ...
+           roundMode, satMode) Output
+  %%
+  %% create a data type record for the den and num
+  %%
+  %copyrecord deltaDT u0DT
+  %%
+  %assign deltaDT.Bias = 0.0
+  %%
+  %% lambda = num/den
+  %%
+  %%  Division by zero is NOT possible
+  %%    equal x values is protected above
+  %%
+  %<FixPt_Division_protectZeroOpt(...
+    lambdaLabel,          lambdaDT, ...
+    uMinusLeftLabel,      deltaDT, ...
+    STRING(spacingValue), deltaDT, ...
+    roundMode,satMode,0)>\
+  %%
+%endfunction  %% fxpInterpolateCalcLambdaEven2
+
+
+
+%% Function: fxpInterpolateCalcLambdaUneven ================================
+%%
+%function fxpInterpolateCalcLambdaUneven( ...
+           u0Label,     u0DT,...
+           lambdaLabel, lambdaDT,...
+           u0LeftLabel, u0RghtLabel, u0DataDT, ...
+           roundMode,satMode) Output
+    %%
+    %% Check that storage types and scaling are supported
+    %% and biases are zero
+    %%
+    %<FixPt_CheckInputBreakpointDataTypes(u0DT,u0DataDT)>\
+    %%
+    if ( %<u0RghtLabel> > %<u0LeftLabel> )
+    {
+      %%
+      %% create a data type record for the den and num
+      %%
+      %copyrecord deltaDT u0DT
+      %%
+      %assign deltaDT.Bias = 0.0
+      %%
+      %% Get numerator rec
+      %%
+      %assign numLabel = "num"
+      %%
+      %% Get denominator rec
+      %%
+      %assign denLabel = "den"
+      %%
+      %if FixPt_DataTypesSame(u0DT,u0DataDT)
+        %assign deltaDenDT = deltaDT
+      %else
+        %%
+        %% create a data type record for the den and num
+        %%
+        %copyrecord deltaDenDT u0DataDT
+        %%
+        %assign deltaDenDT.Bias = 0.0
+      %endif
+      %%
+      %% declare local variables
+      %%
+      %<u0DT.NativeType> %<numLabel>;
+      %<u0DataDT.NativeType> %<denLabel>;
+      
+      %%
+      %% initialize denominator to right value
+      %%
+      %<denLabel> = %<u0RghtLabel>;
+      %%
+      %% subtract left value to make denominator equal to the
+      %% delta = right - left
+      %%
+      %% for the evenly spaced non-power of 2 case
+      %% the whole subtraction could be eliminated
+      %% but there is the possibility u is signed and delta is
+      %% actually bigger than would fit in a signed number
+      %%    Keeping overflow behavior consistent with what happened
+      %% in simulation could be cumbersome.  For now, the Accumulation
+      %% function will be employed to maintain Bit True simulations.
+      %%
+      %<FixPt_AccumNeg(denLabel,deltaDenDT,u0LeftLabel,deltaDenDT,satMode)>\
+      %%
+      %% initialize numerator to current value
+      %%
+      %<numLabel> = %<u0Label>;
+      %%
+      %% subtract left value to make numerator equal to the
+      %% delta = current - left
+      %%
+      %if FixPt_DataTypesSame(deltaDT,deltaDenDT)
+        %<FixPt_AccumNeg(numLabel,deltaDT,u0LeftLabel,deltaDenDT,satMode)>\
+      %else
+        %assign tempVarName = "tempConversion"
+        %openfile captureConvert
+        %assign retVecStr = FixPt_Fix2Fix(tempVarName,deltaDT,u0LeftLabel,deltaDenDT,roundMode,satMode)
+        %closefile  captureConvert
+        %%
+        %if SIZE(retVecStr,1) == 3
+          %<FixPt_AccumNeg(numLabel,deltaDT,retVecStr[1],deltaDT,satMode)>\
+        %else
+          {
+            %<deltaDT.NativeType> %<tempVarName>;
+            %<captureConvert>\
+            %<FixPt_AccumNeg(numLabel,deltaDT,tempVarName,deltaDT,satMode)>\
+          }
+        %endif
+      %endif
+      %%
+      %% lambda = num/den
+      %%
+      %%  Division by zero is NOT possible
+      %%    equal x values is protected above
+      %%
+      %<FixPt_Division_protectZeroOpt(lambdaLabel,lambdaDT,numLabel,deltaDT,denLabel,deltaDenDT,roundMode,satMode,0)>\
+      %%
+    }
+    else
+    {
+      %<lambdaLabel> = 0;
+    }
+%endfunction  %% fxpInterpolateCalcLambdaUneven
+
+
+
+%% Function: fxpInterpolateApplyLambda ======================================
+%%
+%% Abstract:  Generate code for finding the lambda multiplier to be used in
+%%            an interpolation
+%%
+%% Synopsis:
+%%
+%% If the data type and scaling for the input and the breakpoints are not
+%% the same, then the inputs data type and scaling will dominate.
+%%
+%function fxpInterpolateApplyLambda(...
+           yLabel, yDT,...
+           yLeftLabel, yRghtLabel, yDataDT,...
+           lambdaLabel,lambdaDT,...
+           roundMode,satMode) Output
+    %%
+    %copyrecord yRadixDT yDT
+    %%
+    %assign yRadixDT.Bias = 0.0
+    %assign yRadixDT.FracSlope = 1.0
+    %%
+    %copyrecord yDataRadixDT yDataDT
+    %%
+    %assign yDataRadixDT.Bias = 0.0
+    %assign yDataRadixDT.FracSlope = 1.0
+    %%
+    %% do lambda interp
+    %%
+    %if FixPt_DataTypeIsFloat(lambdaDT)
+        %%
+        %% assuming lambda is an unscaled double or single
+        %%
+        {
+            %%
+%% This needs to be more efficient            
+            %assign tempLabela = "yLeftCast"
+            %assign tempLabelb = "yRghtCast"
+            %%            
+            %<lambdaDT.NativeType> %<tempLabela>;
+            %<lambdaDT.NativeType> %<tempLabelb>;
+            %%
+            %<FixPt_Fix2FixAlwaysOutput(tempLabela,lambdaDT,yLeftLabel,yDataRadixDT,roundMode,satMode)>\
+            %<FixPt_Fix2FixAlwaysOutput(tempLabelb,lambdaDT,yRghtLabel,yDataRadixDT,roundMode,satMode)>\
+            %%
+            %<tempLabela> += %<lambdaLabel> * ( %<tempLabelb> - %<tempLabela> );
+            %%      
+            %<FixPt_Fix2FixAlwaysOutput(yLabel,yRadixDT,tempLabela,lambdaDT,roundMode,satMode)>\
+        }
+    %elseif FixPt_DataTypeIsFloat(yRadixDT) || yRadixDT.IsSigned
+        %%
+        %if FixPt_DataTypesSame(yRadixDT,yDataRadixDT) && yLabel != yLeftLabel 
+            %%
+            %% SAME DATA TYPE case
+            %%
+            %if yLabel != yRghtLabel 
+                %<yLabel> = %<yRghtLabel>;
+            %endif
+            %%
+            %<FixPt_AccumNeg(yLabel,yRadixDT,yLeftLabel,yRadixDT,satMode)>\
+            %%
+            %% get first half of output
+            %%
+            %<FixPt_Multiply(yLabel,yRadixDT,lambdaLabel,lambdaDT,yLabel,yRadixDT,roundMode,satMode)>\
+            %%
+            %% combine two halfs of output
+            %%   normally rounding is NOT an issue
+            %%   possibly in very rare cases rounding could case extra
+            %%   bits that lead to overflow
+            %%
+            %<FixPt_AccumPos(yLabel,yRadixDT,yLeftLabel,yRadixDT,satMode)>\
+        %else
+            %%
+            %%    NOT the same DATA TYPE case   
+            %% OR   
+            %%    yLabel and yLeftLabel are the same beast so we must
+            %%    be careful not to wipe out value before we're through with it
+            %%
+            %assign tempDiffVarName = "tempDiff"
+            %assign tempConvertVarName = "tempConversion"
+            %%
+            %openfile captureConvert
+                %%
+                %assign retVecStr = FixPt_Fix2Fix(tempConvertVarName,yRadixDT,yLeftLabel,yDataRadixDT,roundMode,satMode)
+                %%
+                %if SIZE(retVecStr,1) != 3 || yLabel == yLeftLabel
+                    %assign needTempConvertVar = 1
+                %else
+                    %assign needTempConvertVar = 0
+                %endif
+            %closefile  captureConvert
+            %%
+            {
+                %<yDataRadixDT.NativeType> %<tempDiffVarName>;
+                %if needTempConvertVar
+                    %<yRadixDT.NativeType> %<tempConvertVarName>;
+                %endif
+                %%
+                %if needTempConvertVar
+                    %<captureConvert>\
+                    %if SIZE(retVecStr,1) == 3
+                        %<retVecStr[2]>
+                    %endif
+                %endif
+                %%
+                %<tempDiffVarName> = %<yRghtLabel>;
+                %%
+                %<FixPt_AccumNeg(tempDiffVarName,yDataRadixDT,yLeftLabel,yDataRadixDT,satMode)>\
+                %%
+                %% get first half of output
+                %%
+                %<FixPt_Multiply(yLabel,yRadixDT,lambdaLabel,lambdaDT,tempDiffVarName,yDataRadixDT,roundMode,satMode)>\
+                %%
+                %% combine two halfs of output
+                %%   normally rounding is NOT an issue
+                %%   possibly in very rare cases rounding could case extra
+                %%   bits that lead to overflow
+                %%
+                %if needTempConvertVar
+                    %<FixPt_AccumPos(yLabel,yRadixDT,tempConvertVarName,yRadixDT,satMode)>\
+                %else
+                    %<FixPt_AccumPos(yLabel,yRadixDT,retVecStr[1],yRadixDT,satMode)>\
+                %endif
+            }
+        %endif
+    %else
+        {
+            %assign yTempLabel2 = "yTemp2"
+            %assign absDiffLabel = "absDiff"
+            %%
+            %<yRadixDT.NativeType> %<yTempLabel2>;
+            %<yDataRadixDT.NativeType> %<absDiffLabel>;
+            %%
+            %if yLabel != yLeftLabel 
+                %<FixPt_Fix2FixAlwaysOutput(yLabel,yRadixDT,yLeftLabel,yDataRadixDT,roundMode,satMode)>\
+            %endif
+            %%
+            if ( %<yRghtLabel> >= %<yLeftLabel> )
+            {
+                %<absDiffLabel> = %<yRghtLabel>;
+                %%
+                %<FixPt_AccumNeg(absDiffLabel,yDataRadixDT,yLeftLabel,yDataRadixDT,satMode)>\
+                %%
+                %<FixPt_Multiply(yTempLabel2,yRadixDT,lambdaLabel,lambdaDT,absDiffLabel,yDataRadixDT,roundMode,satMode)>\
+                %%
+                %<FixPt_AccumPos(yLabel,yRadixDT,yTempLabel2,yRadixDT,satMode)>\
+            }
+            else
+            {
+                %<absDiffLabel> = %<yLeftLabel>;
+                %%
+                %<FixPt_AccumNeg(absDiffLabel,yDataRadixDT,yRghtLabel,yDataRadixDT,satMode)>\
+                %%
+                %<FixPt_Multiply(yTempLabel2,yRadixDT,lambdaLabel,lambdaDT,absDiffLabel,yDataRadixDT,roundMode,satMode)>\
+                %%
+                %<FixPt_AccumNeg(yLabel,yRadixDT,yTempLabel2,yRadixDT,satMode)>\
+            }
+        }
+    %endif
+    %%
+%endfunction  %% fxpInterpolateApplyLambda
+
+
+%assign searchTrivial     = 0
+%assign searchPow2        = 1
+%assign searchEven        = 2
+%assign searchUneven      = 3
+
+%function utilDecideSearchMethod(xDT,xDataDT,xDataBreakPointInfo)
+  %%
+  %<FixPt_CheckInputBreakpointDataTypes(xDT,xDataDT)>\
+  %%
+  %if !FixPt_DataTypeIsFloat(xDT)                 && ...
+      !FixPt_DataTypeIsFloat(xDataDT)             && ...
+      ISEQUAL(xDataBreakPointInfo.spacingValue,1) && ...
+      (xDT.FixedExp == xDataDT.FixedExp)
+    %%
+    %assign searchMethod = searchTrivial
+    %%
+  %else
+    %%
+    %if xDataBreakPointInfo.evenlySpaced
+      %%
+      %if !FixPt_DataTypeIsFloat(xDT)       && ...
+          !FixPt_DataTypeIsFloat(xDataDT)   && ...
+          xDataBreakPointInfo.spacingIsPow2
+        %%
+        %assign searchMethod = searchPow2
+      %else
+        %assign searchMethod = searchEven
+      %endif
+    %else
+      %assign searchMethod = searchUneven
+    %endif
+  %endif
+  %%
+  %return searchMethod
+  %%
+%endfunction %% utilDecideSearchMethod
+
+
+
+%assign interpolateTrivial     = 0
+%assign interpolateBigProduct  = 1
+%assign interpolateLambda      = 2
+%assign interpolatePow2        = 3
+
+%function utilDecideInterpolateMethod(...
+           yDT,yDataDT,xDT,xDataDT,...
+           evenlySpaced,...
+           spacingValue,...
+           spacingIsPow2)
+  %%
+  %<FixPt_CheckInputBreakpointDataTypes(xDT,xDataDT)>\
+  %%
+  %if !FixPt_DataTypeIsFloat(xDT)        && ...
+      !FixPt_DataTypeIsFloat(xDataDT)    && ...
+      ISEQUAL(spacingValue,1)            && ...
+      (xDT.FixedExp == xDataDT.FixedExp)
+    %%
+    %assign interpolateMethod = interpolateTrivial
+    %%
+  %elseif FixPt_DataTypeIsFloat(yDT)     || ...
+          FixPt_DataTypeIsFloat(xDT)     || ...
+          FixPt_DataTypeIsFloat(yDataDT) || ...
+          FixPt_DataTypeIsFloat(xDataDT)
+    %%
+    %assign interpolateMethod = interpolateLambda
+  %else
+    %if evenlySpaced && spacingIsPow2
+      %%
+      %assign interpolateMethod = interpolatePow2
+    %else
+      %if xDT.RequiredBits > xDataDT.RequiredBits
+        %%
+        %assign maxInReqBits = xDT.RequiredBits
+      %else        
+        %assign maxInReqBits = xDataDT.RequiredBits
+      %endif
+      %%
+      %% bigProduct is (yH-yL)*(x-xL)
+      %%   note it does not depend on the number of bits in y
+      %%
+      %assign bigProdBits = yDataDT.RequiredBits + maxInReqBits
+      %%
+      %assign bigProdWithExtraShift = bigProdBits + ...
+                  ( yDataDT.FixedExp - yDT.FixedExp ) - ...
+                  ( xDataDT.FixedExp - xDT.FixedExp )
+                
+      %%
+      %if ( bigProdBits           <= IntegerSizes.LongNumBits ) && ...
+          ( bigProdBits           <= 32 ) && ...
+          ( bigProdWithExtraShift <= IntegerSizes.LongNumBits ) && ...
+          ( bigProdWithExtraShift <= 32 )
+        %%
+        %assign interpolateMethod = interpolateBigProduct
+      %else
+        %assign interpolateMethod = interpolateLambda        
+      %endif
+    %endif
+  %endif
+  %%
+  %return interpolateMethod
+  %%
+%endfunction %% utilDecideInterpolateMethod
+
+%function utilDecideInterpolateMethodUneven(yDT,yDataDT,xDT,xDataDT)
+  %%
+  %assign mootBreakPointInfo = FixPt_BreakPointInfoDefault()
+  %%
+  %assign interpolateMethod =  utilDecideInterpolateMethod(...
+                                yDT,yDataDT,xDT,xDataDT,...
+                                mootBreakPointInfo.evenlySpaced,...
+                                mootBreakPointInfo.spacingValue,...
+                                mootBreakPointInfo.spacingIsPow2)
+  %%
+  %return interpolateMethod
+  %%
+%endfunction %% utilDecideInterpolateMethodUneven
+
+

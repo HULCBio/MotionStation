@@ -1,0 +1,4570 @@
+%% $RCSfile: fixptlib.tlc,v $
+%% $Revision: 1.10.4.18 $
+%% $Date: 2004/04/14 23:47:15 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: This TLC library file contains library routines in support
+%%           of the Fixed-Point Blockset.
+
+%%
+%% create variable to indicate that this file has already been loaded
+%%
+%if EXISTS("_FIXPTLIB_") == 0
+%assign _FIXPTLIB_ = 1
+
+%include "fixpt_version.tlc"
+
+%addtorecord CompiledModel FixPtAlreadyProcessed 0
+%addtorecord CompiledModel IncludeFloatDotH 0
+
+%if EXISTS("FixPtLookup_opt_pow2") == 0
+  %%
+  %% Unless overridden, evenly spaced lookup tables will be
+  %% optimized for the case when the spacing is a power of
+  %% 2.  The math is much simpler, smaller, and faster for
+  %% this case.  However, if minimum code size is the goal
+  %% then a user may prefer not to optimize this case.
+  %%   If the users model also contains other evenly spaced
+  %% lookup tables, especially ones that are not power of
+  %% 2 spacing, then a few general functions can handle
+  %% all the cases and thereby reduce overall code size
+  %% (but decrease overall speed)
+  %%
+  %assign FixPtLookup_opt_pow2 = 1
+%endif
+
+%% This variable must be defined for TLC to work properly
+%% with fixed point blocks.  Eventually, this should be
+%% automatically defined by the core TLC files, but for now
+%% it must be defined here.
+%%
+%assign SupportDataTypes = 1
+
+%%
+%% include target specific info
+%%
+%include "fixpttarget.tlc"
+
+%function FixPt_PoundDefineOddSizedDataType( curBits, prevBits, curCType ) void
+%%
+%if curBits > prevBits && ...
+    curBits != 8  && ...
+    curBits != 16 && ...
+    curBits != 32 && ...
+    curBits != 64
+    %%
+    %openfile utilityDef
+#ifndef INT%<curBits>_T
+#define INT%<curBits>_T signed %<curCType>
+#endif
+typedef INT%<curBits>_T int%<curBits>_T;
+#ifndef CINT%<curBits>_T
+typedef struct {
+    int%<curBits>_T re, im;
+} cint%<curBits>_T;
+#define CINT%<curBits>_T cint%<curBits>_T
+#endif
+#ifndef UINT%<curBits>_T
+#define UINT%<curBits>_T unsigned %<curCType>
+#endif
+typedef UINT%<curBits>_T uint%<curBits>_T;
+#ifndef CUINT%<curBits>_T
+typedef struct {
+    int%<curBits>_T re, im;
+} cuint%<curBits>_T;
+#define CUINT%<curBits>_T cuint%<curBits>_T
+#endif
+    %closefile utilityDef
+    %<LibCacheTypedefs(utilityDef)>\
+    %undef utilityDef
+%endif
+%%
+%endfunction
+
+%%
+%% create typedefs for any non standard types
+%%
+%<FixPt_PoundDefineOddSizedDataType( IntegerSizes.CharNumBits,  0,                         "char"  )>\
+%<FixPt_PoundDefineOddSizedDataType( IntegerSizes.ShortNumBits, IntegerSizes.CharNumBits,  "short" )>\
+%<FixPt_PoundDefineOddSizedDataType( IntegerSizes.IntNumBits,   IntegerSizes.ShortNumBits, "int"   )>\
+%<FixPt_PoundDefineOddSizedDataType( IntegerSizes.LongNumBits,  IntegerSizes.IntNumBits,   "long"  )>\
+
+%%
+%% central definition of THE STANDARD fixed point data type fields
+%%    this is useful for having things like copy operations automatically
+%%    include new fields or exclude obsolete fields
+%%
+%assign standardFixPointFields = [ ...
+    "DataTypeName", ...
+    "IsSigned", ...
+    "RequiredBits", ...
+    "ActualBits", ...
+    "FixedExp", ...
+    "FracSlope", ...
+    "Bias", ...
+    "NativeType" ...
+    ]
+
+%%
+%% TLC does not have a power operator, but Fixpt needs to compute
+%% lots of powers of two.  To make things fast in the most common situations
+%% a partial lookup table approach will be used.
+%%
+%assign pow2Table = [ ...
+                 1.0 , ...
+                 2.0 , ...
+                 4.0 , ...
+                 8.0 , ...
+                16.0 , ...
+                32.0 , ...
+                64.0 , ...
+               128.0 , ...
+               256.0 , ...
+               512.0 , ...
+              1024.0 , ...
+              2048.0 , ...
+              4096.0 , ...
+              8192.0 , ...
+             16384.0 , ...
+             32768.0 , ...
+             65536.0 , ...
+            131072.0 , ...
+            262144.0 , ...
+            524288.0 , ...
+           1048576.0 , ...
+           2097152.0 , ...
+           4194304.0 , ...
+           8388608.0 , ...
+          16777216.0 , ...
+          33554432.0 , ...
+          67108864.0 , ...
+         134217728.0 , ...
+         268435456.0 , ...
+         536870912.0 , ...
+        1073741824.0 , ...
+        2147483648.0 , ...
+        4294967296.0 ...
+    ]
+
+
+%%
+%% Check that native word sizes
+%%   are multiples of 8
+%%
+%if ( IntegerSizes.CharNumBits  % 8 ) || ...
+    ( IntegerSizes.ShortNumBits % 8 ) || ...
+    ( IntegerSizes.IntNumBits   % 8 ) || ...
+    ( IntegerSizes.LongNumBits  % 8 )
+    %%
+    %assign errTxt = "Real Time Workshop only supports word sizes that are " ...
+            "a multiple of 8.  Illegal word size: "+STRING(NativeWordSizes[idx])
+    %exit Real Time Workshop Fatal: %<errTxt>
+%endif
+
+%%
+%% Create the vector NativeWordSizes
+%%   for backward compatibility
+%%
+%%   For example:  [ 8, 16, 32 ]
+%%
+%if IntegerSizes.CharNumBits < IntegerSizes.ShortNumBits
+    %assign NativeWordSizes = []
+    %assign NativeWordSizes = NativeWordSizes + IntegerSizes.CharNumBits
+    %assign NativeWordSizes = NativeWordSizes + IntegerSizes.ShortNumBits
+%else
+    %assign NativeWordSizes = []
+    %assign NativeWordSizes = NativeWordSizes + IntegerSizes.ShortNumBits
+%endif
+%%
+%if IntegerSizes.IntNumBits > IntegerSizes.ShortNumBits
+    %assign NativeWordSizes = NativeWordSizes + IntegerSizes.IntNumBits
+%endif
+%%
+%if IntegerSizes.LongNumBits > IntegerSizes.IntNumBits
+    %assign NativeWordSizes = NativeWordSizes + IntegerSizes.LongNumBits
+%endif
+
+%%
+%% Define how word sizes are to be promoted
+%%
+%if !ISFIELD(CTargetSpecific,"TypeEmulationWarnSuppressLevel")
+  %addtorecord CTargetSpecific TypeEmulationWarnSuppressLevel 0
+%endif
+
+%%
+%% Keep track of which Fixed Point Utils have
+%% already been defined (and code generated)
+%%
+%assign errTxt = ""
+%if !EXISTS("FixPtUtils")
+  %createrecord FixPtUtils { ...
+  NothingMacro 1}
+%else
+    %exit Real Time Workshop Fatal: FixPtUtils already exists.
+%endif
+
+
+%%
+%% (1) Global Library Functions (Lib functions)
+%%
+
+%% Function: FixPt_MergeRecordDominantSource ==================================
+%%
+%% Abstract:  All fields from the sourceRecord are added to the 
+%%    destinationRecord if they do not already exist.  Afterwards,
+%%    all common fields have the value that the sourceRecord provided.
+%%    "Copies" only go one level deep.
+%%
+%function FixPt_MergeRecordDominantSource(destinationRecord,sourceRecord) void
+    %%
+    %assign allFields = FIELDNAMES(sourceRecord)
+    %%
+    %foreach iField = SIZE(allFields,1)
+        %%
+        %assign curField = allFields[iField]
+        %%
+        %assign curValue = GETFIELD(sourceRecord,curField)
+        %%
+        %if TYPE(curValue) != "Scope"
+          %assign tempRet = SETFIELD(destinationRecord,curField,curValue)
+        %else
+          %copyrecord curValue2 curValue
+          %assign tempRet = SETFIELD(destinationRecord,curField,curValue2)          
+        %endif
+        %%
+    %endforeach
+    %%
+%endfunction  %% FixPt_MergeRecordDominantSource
+
+
+%% Function: FLib_ReImIdx ==================================
+%%
+%function FLib_ReImIdx(sigIdx,iCase) void
+    %%
+    %if iCase == 0
+        %%
+        %assign riSigIdx = tRealPart + STRING(sigIdx)
+        %%
+    %elseif iCase == 1
+        %%
+        %assign riSigIdx = tImagPart + STRING(sigIdx)
+        %%
+    %else
+        %%
+        %assign riSigIdx = sigIdx
+        %%
+    %endif
+    %%
+    %return riSigIdx
+%endfunction  %% FLib_ReImIdx
+
+
+
+%% Function: FixPt_DataTypesSame ==================================
+%%
+%% Abstract:  Determine if two data types are the same
+%%
+%function FixPt_DataTypesSame(aDT,bDT)
+    %%
+    %if aDT.NativeType   != bDT.NativeType   || ...
+        aDT.RequiredBits != bDT.RequiredBits || ...
+        aDT.FixedExp     != bDT.FixedExp     || ...
+        aDT.IsSigned     != bDT.IsSigned     || ...
+        aDT.FracSlope    != bDT.FracSlope    || ...
+        aDT.Bias         != bDT.Bias
+        %%
+        %return 0
+    %else
+        %return 1
+    %endif        
+    %%
+%endfunction  %% FixPt_DataTypesSame
+
+
+%% Function: FixPt_FracSlopesSame ==================================
+%%
+%% Abstract:  Determine if two data types are the same
+%%
+%function FixPt_FracSlopesSame(aFracSlope,bFracSlope)
+    %%
+    %if aFracSlope == bFracSlope 
+        %%
+        %return 1
+        %%
+    %endif
+    %%
+    %if aFracSlope > bFracSlope
+        %%
+        %assign ferror = ( aFracSlope - bFracSlope )
+        %%
+    %else
+        %%
+        %assign ferror = ( bFracSlope - aFracSlope )
+        %%
+    %endif
+    %%
+    %% 2^-33 = 1.164153218269348e-010
+    %%
+    %return  ( ferror < 1.164153218269348e-010 )
+    %%
+%endfunction  %% FixPt_FracSlopesSame
+
+%% Function: FixPt_BiasSame ==================================
+%%
+%% Abstract:  Determine if two data types are the same
+%%
+%function FixPt_BiasSame(aBias,bBias)
+    %%
+    %if aBias == bBias 
+        %%
+        %return 1
+        %%
+    %endif
+    %%
+    %if aBias > bBias
+        %%
+        %assign berror = ( aBias - bBias )
+        %%
+    %else
+        %%
+        %assign berror = ( bBias - aBias )
+        %%
+    %endif
+    %%
+    %% 2^-33 = 1.164153218269348e-010
+    %%
+    %return  ( berror < 1.164153218269348e-010 )
+    %%
+%endfunction  %% FixPt_BiasSame
+
+
+%% Function: FixPt_Pow2 ==========================================
+%%
+%% Abstract:  Returns an integer power of two
+%%    The input should have a positive or negative integer value.
+%%    The returned value is a Real
+%%
+%function FixPt_Pow2(num) void
+    %%
+    %% only process inputs of TYPE Number
+    %%
+    %assign numCast = CAST("Number",num)
+    %%
+    %if numCast != num
+        %exit FixPt_Pow2 was called using a non integer value
+    %endif
+    %%
+    %if 0 <= numCast && numCast <= 32
+        %%
+        %% use lookup table to get quick answer
+        %%
+        %assign retVal = pow2Table[numCast]
+        %%
+    %elseif -32 <= numCast && numCast < 0
+        %%
+        %% use lookup table to get quick answer
+        %%
+        %assign retVal = 1.0 / pow2Table[-numCast]
+        %%
+    %else
+        %% 
+        %% use Matlab to get unusually large or small value
+        %%
+        %assign retVal = "(2^(%<numCast>))"
+        %assign retVal = FEVAL("eval", retVal)
+        %assign retVal = CAST( "Real", retVal)        
+    %endif    
+    %%
+    %return retVal
+    %%
+%endfunction  %% FixPt_Pow2
+
+
+
+%% Function: FixPt_IncludeFloatDotH ==========================================
+%% Abstract:
+%%   Cause float.h to be included if needed
+%%
+%function FixPt_IncludeFloatDotH(junk) void
+  %%
+  %if CompiledModel.IncludeFloatDotH == 0
+    %%
+    %openfile  localBuffer
+#ifndef DBL_MAX
+#include <float.h>
+#endif
+    %closefile localBuffer
+    %%
+    %<LibCacheIncludes(localBuffer)>\
+    %%
+    %assign CompiledModel.IncludeFloatDotH = 1
+    %<LibAddtoSharedUtilsIncludes("<float.h>")>    
+  %endif
+%endfunction  %% FixPt_IncludeFloatDotH
+
+
+
+%% Function: FixPt_GlobalSetup =================================================
+%% Abstract:
+%%     Makes sure all fixed point data types fully registered
+%%
+%function FixPt_GlobalSetup() void
+  %with CompiledModel
+  %%
+  %% Define fixed point info such as scaling needed to treat builtin data
+  %% types just like scaled fixed point data types.  In other words, make
+  %% it possible to handle builtin and fixed point using one TLC code base
+  %% without special cases for "pure integers" verses integers that
+  %% do not have nominal scaling
+  %%
+  %% Need to give this special treatment because non-fixpt blocks
+  %% (such as bit shuffle blocks) may be working with both
+  %% fixpt and non fixpt data types.  These blocks may call
+  %% a fixed point conversion function.  This will break down
+  %% if both data types are not registered.
+  %%
+  %if CompiledModel.FixPtAlreadyProcessed == 0
+    %%
+    %% register "name" for fixpt share info data type
+    %%
+    %assign numCustomDataTypes = CompiledModel.DataTypes.NumDataTypes - CompiledModel.DataTypes.NumSLBuiltInDataTypes
+    %foreach iRegDataType = numCustomDataTypes 
+      %%
+      %assign curDataType = FixPt_GetDataTypeFromIndex(iRegDataType+CompiledModel.DataTypes.NumSLBuiltInDataTypes)
+        %assign curDataTypeName = curDataType.DTName
+        %if "FixPtSharedGlobals" == curDataTypeName
+            %assign dTypeRec_FakeProperties = curDataType
+            %<SLibSetDataTypeName(dTypeRec_FakeProperties, "uint8_T")>      
+            %break          
+        %endif
+    %endforeach
+    %%
+    %assign CompiledModel.FixPtAlreadyProcessed = 1
+    %%
+  %endif
+  %%
+  %endwith %% CompiledModel
+%endfunction  %% FixPt_GlobalSetup
+
+
+
+%% Function: FixPt_DataTypeSetup ===============================================
+%% Abstract:
+%%     Makes sure all fixed point data types fully registered
+%%
+%function FixPt_DataTypeSetup(index) void
+  %with CompiledModel
+      %%
+      %assign curDT = FixPt_GetDataTypeFromIndex(index)
+      %%
+      %assign dTypeId = curDT.Id
+      %%
+      %% register data types in CompiledModel.DataTypes
+      %%
+      %if ISFIELD(curDT,"FracSlope")
+        %%
+        %<FixPt_DataTypePolish(index)>\
+        %%
+        %assign curDT = FixPt_GetDataTypeFromIndex(index)
+        %%
+        %% give special treatment to non-builtin types
+        %%
+        %if !LibIsBuiltInDataType(dTypeId)
+            %%
+            %assign dTypeRec  = FixPt_GetDataTypeFromIndex(dTypeId)
+            %assign dTypeName = curDT.NativeType
+            %%
+            %% register additional data type properties if not already done
+            %%
+            %if ISFIELD(dTypeRec,"GroundName")
+                %if dTypeRec.GroundName == ""
+                    %assign dTypeRecNeedsAdditions = 1
+                %else
+                    %assign dTypeRecNeedsAdditions = 0
+                %endif
+            %else
+                %assign dTypeRecNeedsAdditions = 1
+            %endif
+            %%
+            %if dTypeRecNeedsAdditions
+                %%
+                %% register data type name
+                %%
+		%if !LibIsAliasDataType(dTypeId)
+		  %<SLibSetDataTypeName(dTypeRec, dTypeName)>
+		%endif
+                %%
+                %<SLibSetDataTypeConvertBetweenTLCFcnName(dTypeRec, "FixPt_DtConvertBetween")>
+                %<SLibSetDataTypeIsPositiveTLCFcnName(    dTypeRec, "FixPt_DtIsPositive")>
+                %%
+                %<SLibSetDataTypeSignTLCFcnName(dTypeRec, "FixPt_DtSign")>
+                %%
+                %% register data type enumeration
+                %%
+                %% for now, determine native datatype Id from name and then
+                %% set the enum to the correct value.
+                %foreach nativeDtId = CompiledModel.DataTypes.NumSLBuiltInDataTypes
+                    %if curDT.NativeType == LibGetDataTypeNameFromId(nativeDtId)
+                        %assign enum = LibGetDataTypeEnumFromId(nativeDtId)
+                        %<SLibSetDataTypeEnum(dTypeRec, enum)>
+                        %undef enum
+                        %break
+                    %endif
+                %endforeach
+                %%
+                %% register Data Type Ground
+                %%
+                %assign storedIntegerZero = FixPt_Dbl2StoredInt(0.0,curDT)
+                %%
+                %assign grndLabel = curDT.DTName + "_GND"
+                %%
+                %<SLibSetDataTypeGroundName(dTypeRec, grndLabel)>
+                %<SLibSetDataTypeGroundValue(dTypeRec, storedIntegerZero)>
+                %%
+                %% register complex info
+                %%
+		%if !LibIsAliasDataType(dTypeId)
+		  %<SLibSetDataTypeComplexName(dTypeRec, "c" + dTypeName)>
+		%endif
+		%<SLibSetDataTypeComplexGroundName(dTypeRec, grndLabel + "_Complex")>
+            %endif
+            %%
+        %endif  %% handle non-builtin types
+        %%
+      %endif
+  %endwith %% CompiledModel
+%endfunction  %% FixPt_DataTypeSetup
+
+
+
+%% Function: FixPt_Setup =================================================
+%% Abstract:
+%%   All fixed-point blocks call this function in their BlockInstanceSetup
+%%   function.  This function
+%%     1) Gets mask name for clearer comments, errors, etc.
+%%     2) Convert rounding mode and saturate mode from integer codes to
+%%        meaningful strings
+%%
+%function FixPt_Setup(block, system) void
+  %%
+  %% get name of mask to make code more readable
+  %%   o Creates MaskBlockName to be used in each output function.  Using
+  %%     the mask block block name versus the underlying S-Function name makes
+  %%     the generated code more readable since the users may not even realize
+  %%     that the fixed-point block is actually a masked subsystem block.
+  %%
+  %assign MaskBlockName = "'" + Name + "'"
+  %assign block = block + MaskBlockName
+  %%
+  %% Convert rounding mode to a meaningful string
+  %%
+  %if ISFIELD(block,"FixPtRoundingMode")
+      %%
+      %switch FixPtRoundingMode
+        %case 0
+          %assign block.FixPtRoundingMode = "Zero"
+          %break
+        %case 1
+          %assign block.FixPtRoundingMode = "Nearest"
+          %break
+        %case 2
+          %assign block.FixPtRoundingMode = "Ceiling"
+          %break
+        %case 3
+          %assign block.FixPtRoundingMode = "Floor"
+          %break
+        %default
+          %exit Real Time Workshop Fatal: Unknown Rounding Mode: %<FixPtRoundingMode>
+      %endswitch
+  %endif
+  %%
+  %% Convert saturation mode to a meaningful string
+  %%
+  %if ISFIELD(block,"FixPtSaturationMode")
+      %%
+      %switch FixPtSaturationMode
+        %case 0
+          %assign block.FixPtSaturationMode = "Wrap"
+          %break
+        %case 1
+          %assign block.FixPtSaturationMode = "Saturate"
+          %break
+        %default
+          %exit Real Time Workshop Fatal: Unknown Saturation Mode: %<FixPtSaturationMode>
+      %endswitch
+  %endif
+  %%
+%endfunction  %% FixPt_Setup
+
+
+
+%% Function: FixPt_IsDataTypeIdxActuallyUsed ==========================
+%%
+%function FixPt_IsDataTypeIdxActuallyUsed(dataTypeId) void
+   %% 
+   %if !LibIsBuiltInDataType(dataTypeId)
+     %%
+     %% if data is a custom data type assume it is really used
+     %%
+     %return TLC_TRUE
+   %endif
+   %%
+   %foreach iCheck = CompiledModel.ExternalInputs.NumExternalInputs
+     %%
+     %if dataTypeId == CompiledModel.ExternalInputs.ExternalInput[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %%
+   %foreach iCheck = CompiledModel.BlockOutputs.NumGlobalBlockOutputs
+     %%
+     %if dataTypeId == CompiledModel.BlockOutputs.GlobalBlockOutput[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %foreach iCheck = CompiledModel.BlockOutputs.NumLocalBlockOutputs
+     %%
+     %if dataTypeId == CompiledModel.BlockOutputs.LocalBlockOutput[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %foreach iCheck = CompiledModel.BlockOutputs.NumExternalBlockOutputs
+     %%
+     %if dataTypeId == CompiledModel.BlockOutputs.ExternalBlockOutput[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %foreach iCheck = CompiledModel.BlockOutputs.NumConstBlockOutputs
+     %%
+     %if dataTypeId == CompiledModel.BlockOutputs.ConstBlockOutput[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %foreach iCheck = CompiledModel.BlockOutputs.NumConstOutputExpr
+     %%
+     %if dataTypeId == CompiledModel.BlockOutputs.ConstOutputExpr[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+   %%
+   %foreach iCheck = CompiledModel.DWorks.NumDWorks
+     %%
+     %if dataTypeId == CompiledModel.DWorks.DWork[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %foreach iCheck = CompiledModel.ModelParameters.NumParameters
+     %%
+     %if dataTypeId == CompiledModel.ModelParameters.Parameter[iCheck].DataTypeIdx
+       %%
+       %return TLC_TRUE
+       %%
+     %endif
+   %endforeach
+   %%
+   %return TLC_FALSE
+   %%
+%endfunction %% FixPt_IsDataTypeIdxActuallyUsed
+            
+            
+            
+%% Function: FixPt_DataTypePolish ========================================
+%% Abstract:
+%%
+%function FixPt_DataTypePolish(index) void
+  %%
+  %assign dataTypeRec = FixPt_GetDataTypeFromIndex(index)
+  %%
+  %assign dataTypeRecAliasThru = FixPt_GetAliasedThruDataTypeFromIndex(index)
+  %%
+  %% polish the data type, if this hasn't been done yet
+  %%
+  %if !(ISFIELD(dataTypeRec,"NativeType"))
+    %%
+    %% get name of the data type as it was registered with simulink
+    %%    note force data type name to be a string, sometimes it
+    %%    comes out of the rtw file as "Identifier" type which
+    %%    is sort of a string but can cause errors in some situations.
+    %%
+    %%
+    %assign validType = 1
+    %%
+    %assign dtName = "%<dataTypeRecAliasThru.DTName>"
+    %%
+    %% Define the new data type
+    %%
+    %if ISFIELD(dataTypeRec, "Enum") && dataTypeRec.Enum == "SS_DOUBLE"
+        %assign actualBits = dataTypeRec.RequiredBits
+        %assign nativeType = "real_T"
+    %elseif ISFIELD(dataTypeRec, "Enum") && dataTypeRec.Enum == "SS_SINGLE"
+        %assign actualBits = dataTypeRec.RequiredBits
+        %assign nativeType = "real32_T"
+    %else
+        %if dataTypeRec.RequiredBits <= IntegerSizes.CharNumBits
+            %%
+            %assign actualBits = IntegerSizes.CharNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.ShortNumBits
+            %%
+            %assign actualBits = IntegerSizes.ShortNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.IntNumBits
+            %%
+            %assign actualBits = IntegerSizes.IntNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.LongNumBits
+            %%
+            %assign actualBits = IntegerSizes.LongNumBits
+            %%
+        %else
+          %if Accelerator
+            %%START_ASSERT
+            %openfile errTxt
+This model can't be used with the Accelerator.  The Data Type 
+%<dtName> requires %<dataTypeRec.RequiredBits> bits, but the maximum supported
+with the Accelerator on this computer is %<IntegerSizes.LongNumBits> bits.
+            %closefile errTxt
+            %<LibReportFatalError(errTxt)>\
+            %%END_ASSERT
+          %else
+            %% 
+            %% If code gen, make sure data type is actually used before
+            %% issuing an error.  Main issues is an 8 bit micro with
+            %% long defined as 16 bits.  The builtin types int32 and
+            %% uint32 are always written to the RTW file.  If signal
+            %% or parameter uses these types, then they should effectively
+            %% be ignored.
+            %%
+            %if FixPt_IsDataTypeIdxActuallyUsed(dataTypeRec.Id)
+              %%
+              %%START_ASSERT
+              %openfile errTxt
+This model can't generate code for the intended TARGET C Compiler.  The 
+Data Type %<dtName> requires %<dataTypeRec.RequiredBits> bits, but
+the maximum supported by the TARGET C Compiler is %<IntegerSizes.LongNumBits> 
+bits.
+              %closefile errTxt
+              %<LibReportFatalError(errTxt)>\
+              %%END_ASSERT
+            %else
+              %%
+              %assign actualBits = IntegerSizes.LongNumBits
+              %%
+            %endif    
+          %endif
+        %endif
+        %%
+        %% create the standard name
+        %%
+        %assign dtStart = dtName[0]+dtName[1]+dtName[2]
+        %%
+        %if dtStart == "flt"
+            %%
+            %assign nativeType = "real_T"
+            %%
+        %elseif dataTypeRec.RequiredBits > actualBits
+          %%
+          %assign validType = 0
+          %%
+          %assign nativeType = "#error This data type bigger than a long."
+          %%
+        %else
+            %if dataTypeRec.IsSigned
+                %%
+                %assign nativeType = "int%<actualBits>_T"
+            %else
+                %assign nativeType = "uint%<actualBits>_T"
+            %endif
+        %endif
+    %endif
+    %%
+    %% Add the new fields to the record
+    %%
+    %assign dtRec = FixPt_GetDataTypeFromIndex(index)
+    %%
+    %addtorecord dtRec  DataTypeName dtName
+    %addtorecord dtRec  ActualBits   actualBits
+    %addtorecord dtRec  NativeType   nativeType
+    %%
+    %% Report changes in word sizing
+    %%
+    %if validType && (actualBits != dataTypeRec.RequiredBits)
+      %%
+      %if CTargetSpecific.TypeEmulationWarnSuppressLevel < 2
+        %openfile warnTxt
+The data type "%<dtName>" uses a word size that is not available on the intended target.  
+        %if CTargetSpecific.TypeEmulationWarnSuppressLevel < 1
+    Signals using this data type will be put inside a larger word.  When used, 
+extra software will be generated to force this larger word to emulate a smaller
+word.  This emulation is helpful when your prototype target and your final
+production target are not the same.  If the smaller word size does NOT exist
+on the final production target, then consider increasing the word size to
+one that is supported.
+          %%
+          %assign ::CTargetSpecific.TypeEmulationWarnSuppressLevel = 1
+        %endif
+        %closefile warnTxt
+        %warning %<warnTxt>
+      %endif
+    %endif
+  %endif
+  %%
+%endfunction  %% FixPt_DataTypePolish
+
+
+
+%% Function: FixPt_DefineDataType ========================================
+%% Abstract:
+%%
+%function FixPt_DefineDataType(dataTypeRec) void
+    %%
+    %assign dtName = "%<dataTypeRec.DataTypeName>"
+    %%
+    %if ISFIELD(dataTypeRec, "Enum") && dataTypeRec.Enum == "SS_DOUBLE"
+        %assign actualBits = dataTypeRec.RequiredBits
+        %assign nativeType = "real_T"
+    %elseif ISFIELD(dataTypeRec, "Enum") && dataTypeRec.Enum == "SS_SINGLE"
+        %assign actualBits = dataTypeRec.RequiredBits
+        %assign nativeType = "real32_T"
+    %else
+        %if dataTypeRec.RequiredBits <= IntegerSizes.CharNumBits
+            %%
+            %assign actualBits = IntegerSizes.CharNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.ShortNumBits
+            %%
+            %assign actualBits = IntegerSizes.ShortNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.IntNumBits
+            %%
+            %assign actualBits = IntegerSizes.IntNumBits
+            %%
+        %elseif dataTypeRec.RequiredBits <= IntegerSizes.LongNumBits
+            %%
+            %assign actualBits = IntegerSizes.LongNumBits
+            %%
+        %else
+          %%START_ASSERT
+          %if Accelerator
+            %openfile errTxt
+This model can't be used with the Accelerator.  The Data Type 
+%<dtName> requires %<dataTypeRec.RequiredBits> bits, but the maximum supported
+with the Accelerator on this computer is %<IntegerSizes.LongNumBits> bits.
+            %closefile errTxt
+            %<LibReportFatalError(errTxt)>\
+          %else
+            %%
+            %openfile errTxt
+This model can't generate code for the intended TARGET C Compiler.  The 
+Data Type %<dtName> requires %<dataTypeRec.RequiredBits> bits, but
+the maximum supported by the TARGET C Compiler is %<IntegerSizes.LongNumBits> 
+bits.
+            %closefile errTxt
+            %<LibReportFatalError(errTxt)>\
+          %endif
+          %%END_ASSERT
+        %endif
+        %%
+        %% create the standard name
+        %%
+        %assign dtStart = dtName[0]+dtName[1]+dtName[2]
+        %%
+        %if dtStart == "flt"
+            %assign nativeType = "real_T"
+        %else
+            %if dataTypeRec.IsSigned
+                %%
+                %assign nativeType = "int%<actualBits>_T"
+            %else
+                %assign nativeType = "uint%<actualBits>_T"
+            %endif
+        %endif
+    %endif
+    %%
+    %% Add the new fields to the record
+    %%
+    %if !(ISFIELD(dataTypeRec,"DataTypeName"))
+      %addtorecord dataTypeRec  DataTypeName dtName
+    %else
+      %<SETFIELD(dataTypeRec,"DataTypeName",dtName)>\
+    %endif
+    %%
+    %if !(ISFIELD(dataTypeRec,"ActualBits"))
+      %addtorecord dataTypeRec  ActualBits   actualBits
+    %else
+      %<SETFIELD(dataTypeRec,"ActualBits",actualBits)>\
+    %endif
+    %%
+    %if !(ISFIELD(dataTypeRec,"NativeType"))
+      %addtorecord dataTypeRec  NativeType   nativeType
+    %else
+      %<SETFIELD(dataTypeRec,"NativeType",nativeType)>\
+    %endif
+    %%
+%endfunction  %% FixPt_DefineDataType
+
+
+
+%% Function: FixPt_ParameterBlockComment =================================
+%% Abstract:
+%%
+%function FixPt_ParameterBlockComment(param,dataTypeIdMat,label) Output
+    %%
+    %assign dataTypeIsHeterogeneous = SIZE(dataTypeIdMat,0) > 1 || SIZE(dataTypeIdMat,1) > 1
+    %%
+    %assign paramSize = LibBlockParameterSize(param)
+    %assign nRows = paramSize[0]
+    %assign nCols = paramSize[1]
+    %%
+    %% get the first data type for the parameter
+    %%
+    %assign curDT = FixPt_GetParameterDataType(dataTypeIdMat,0,0)
+    %%
+    %%  Header Comment
+    %%
+    * Parameter: %<label>
+    %%
+    %% handle case gain has common scaling
+    %%
+    %if !dataTypeIsHeterogeneous
+        %%
+        %if LibBlockParameterIsComplex(param)
+            %<FixPt_DataTypeComment(curDT, " Complex")>
+        %else
+            %<FixPt_DataTypeComment(curDT, " ")>
+        %endif
+    %%
+    %% when gain scaling varies
+    %%
+    %else
+        %%
+        %if curDT.IsSigned
+           %assign storeType = "S"+STRING(curDT.RequiredBits)
+        %else
+           %assign storeType = "U"+STRING(curDT.RequiredBits)
+        %endif
+        %%
+        %if LibBlockParameterIsComplex(param)
+            *   Complex Data Type:  Fixed Point  %<storeType>  scaling varies by element
+        %else
+            *   Data Type:  Fixed Point  %<storeType>  scaling varies by element
+        %endif
+    %endif
+    %%
+    %if dataTypeIsHeterogeneous
+      %assign dimTranslationNeeded = SIZE(dataTypeIdMat,0) != nRows || SIZE(dataTypeIdMat,1) != nCols
+    %else
+      %assign dimTranslationNeeded = 0
+    %endif
+    %%
+    %if dimTranslationNeeded
+      %assign nRows = SIZE(dataTypeIdMat,0)
+      %assign nCols = SIZE(dataTypeIdMat,1)
+    %endif
+    %%
+    %%  comment on size
+    %%
+    %if nRows > 1 || nCols > 1
+      *   Size: %<nRows> by %<nCols>
+    %endif
+    %%
+    %% include the values for each parameter element only if desired
+    %% based on global setting
+    %%
+    %if FixPtIncludeParameterComment && dataTypeIsHeterogeneous
+        %%
+        %% process initial value for each scalar
+        %%
+        %foreach iRow = nRows
+            %%
+            %% start each row
+            %%
+            %if (nRows > 1) && (nCols > 1)
+                %%
+                *   Row %<iRow>
+                %%
+            %endif
+            %%
+            %foreach iCol = nCols
+                %%
+                %% Get data type info
+                %%
+                %assign curDT = FixPt_GetParameterDataType(dataTypeIdMat,iRow,iCol)
+                %%
+                %% create comment for each element
+                %%
+		%if (nRows > 1) && (nCols == 1)
+		  %assign iComment = "*   Row %<iRow>  "
+		%else 
+		  %assign iComment = "*     Col %<iCol>  "
+		%endif
+		%%
+		%assign iComment = iComment + "Scale 2^%<curDT.FixedExp>  "
+		%%
+		%if (curDT.FracSlope != 1.0) || (curDT.Bias != 0.0)
+		  %%
+		  %assign iComment = iComment + "FSlope "+STRING(curDT.FracSlope)+"  "
+		  %assign iComment = iComment + "Bias "+STRING(curDT.Bias)
+		  %%
+		%endif
+                %%
+                %<iComment>
+            %endforeach %% cols
+            %%
+        %endforeach %% rows
+    %endif
+    %%
+    %% end block comment
+    %%
+    %return " *"
+    %%
+%endfunction %% FixPt_ParameterBlockComment
+
+
+
+%% Function: FixPt_IndexStruct ===================================================
+%%
+%% Abstract:
+%%      This routine will return an optional index for a structure field. An
+%%      index into to the signal is returned for wide signals.  Nothing is
+%%      returned for scalar signals (this scalar expands them).
+%%
+%%      ""         - signal is scalar (width == 1)
+%%      [ucv]      - width > 1, ucv specified
+%%
+%% Note must treat lcv different than "built in" because
+%%  a pointer to the variable is not redefined just befor a loop
+%%      [idx+lcv]  - width > 1, lcv specified
+%%      [idx]      - otherwise
+%%
+%% Synopsis:
+%%      FixPt_IndexStruct(width, ucv, lcv, idx)
+%%
+%%      width  - width of variable
+%%      ucv    - user control variable
+%%      lcv    - loop control variable
+%%      idx    - index
+
+%function FixPt_IndexStruct(width, ucv, lcv, idx) void
+    %%
+    %% scalar case
+    %%
+    %if width == 1
+      %%
+      %return ""
+      %%
+    %endif
+    %%
+    %% vector case
+    %%
+    %if TYPE(ucv) != "String"
+      %%
+      %assign ucvStr = "%<ucv>"
+      %%
+    %else
+      %%
+      %assign ucvStr = ucv
+      %%
+    %endif
+    %%
+    %if ucvStr != ""
+      %%
+      %return "%<ucvStr>"
+      %%
+    %elseif lcv != ""
+        %%
+        %if idx != 0
+            %%
+            %% must include offset
+            %%
+            %return "%<idx>+%<lcv>"
+            %%
+        %else
+            %return "%<lcv>"
+        %endif
+    %else
+      %return "%<idx>"
+    %endif
+%endfunction  %% FixPt_IndexStruct
+
+
+%function FixPt_IndexTrivial(ucv, lcv, idx) void
+  %%
+  %if TYPE(ucv) != "String"
+    %%
+    %assign ucvStr = "%<ucv>"
+    %%
+  %else
+    %%
+    %assign ucvStr = ucv
+    %%
+  %endif
+  %%
+  %return ( ucvStr == "" || ucvStr == "0" ) && lcv == "" && ISEQUAL(idx,0)
+  %%
+%endfunction %% FixPt_IndexTrivial
+
+
+
+%function FixPt_GetUcv(lcv, idx) void
+    %%
+    %% vector case
+    %%
+    %if lcv != ""
+        %%
+        %if idx != 0
+            %%
+            %return STRING(idx)+"+"+lcv
+            %%
+        %else
+            %return lcv
+        %endif
+    %else
+        %return STRING(idx)
+    %endif
+%endfunction  %% FixPt_GetUcv
+
+
+
+%% Function: FixPt_ParameterCouldBeInlined =============================================
+%%
+%% This functions is only a stop gap measure!!!!!
+%% The function needs to determine if a parameters value cannot change 
+%% at runtime.
+%% The current version works for the moment because fixed point blockset
+%% does not support tunable parameters yet ( Feb 29, 2000 ).  Within approx
+%% three weeks, fixed point will support (at least simple) tunable parameters.
+%% This function will give WRONG results at that time.
+%% 
+%function FixPt_ParameterCouldBeInlined(param, ucv, lcv, idx) void
+    %%
+    %return ( !SLibBlockParameterIsTunable(param) && ( lcv == "" )  && ( ucv == "" ))
+    %%
+%endfunction
+
+
+
+%% Function: LibBlockMatrixParameterFixPoint =============================================
+%% Abstract:
+%%   Get the "label" or "inlined value" for a scalar element
+%%   from a fixed point parameter.  The parameter can be a scalar,
+%%   a row vector, a column vector, or a matrix.
+%%   The particular scalar in the element is specified by
+%%   a row index and a column index.  Scalar dimensions will be expanded.
+%%     Whether a "label" or and "inlined value" is returned is automatically
+%%   determined.
+%%
+%%    param   the parameter record must hold the Name, number of Rows, and
+%%            number of Cols, and values.
+%%
+%function LibBlockMatrixParameterFixPoint(param, rucv, rlcv, ridx, cucv, clcv, cidx) void
+    %%
+    %% Split the overloaded cidx
+    %%
+    %assign idNum = SLibGetReimAndIdx(cidx)
+    %assign reim  = idNum[0]
+    %assign idx   = idNum[1]
+    %%
+    %% The imaginary part of a non-complex parameter is always NULL
+    %%
+    %if !SLibGetRecordIsComplex(param) && reim == tImagPart
+      %return ""
+    %endif
+    %%
+    %% parameter must be a matrix,  why???
+    %%
+    %% %if TYPE(param.Value) != "Matrix"
+        %%
+    %%    %exit RTW Fatal: Parameter %<param.Name> must be of type Matrix
+        %%
+    %% %endif
+    %%
+    %% get the dimensions
+    %%
+    %assign nRows = SIZE(param.Value, 0)
+    %assign nCols = SIZE(param.Value, 1)
+    %%
+    %% get boolean that specifies whether P could get used in a true rolling
+    %%   fashion.  Note, P can be used in a loop, but if P is a scalar then
+    %%   P itself is not "truely" rolled.
+    %%
+    %assign trueRollingP = ( clcv != "" && nCols > 1 ) || ...
+                           ( rlcv != "" && nRows > 1 )
+    %%
+    %% ucv specified (highest precedence)
+    %%   OR
+    %% Not Inlining  AND  No True Rolling of P
+    %%
+    %if ( rucv != "" ) || ( cucv != "" ) || ...
+        ( (!trueRollingP) && (!InlineParameters) ) || ...
+        trueRollingP
+
+	%% There were bugs in the original version of LibIndexMatrix.
+	%% These were that it added idx to lcv and it had
+	%% incorrect lcv handling (even though there is no roller support!).
+	%% The replacement for LibIndexMatrix is SLibGet2DArrayIndexer. 
+	%% As of 10-14-00 there is no roller support and lcv handling isn't 
+	%% supported in SLibGet2DArrayIndexer. These must be "".
+
+	%if rucv == "" && rlcv != ""
+	  %if ridx != 0
+	    %assign rucv = "%<rlcv>+%<ridx>"
+	    %assign ridx = 0
+	  %else
+	    %assign rucv = rlcv
+	  %endif
+	%endif
+
+	%if cucv == "" && clcv != ""
+	  %if idx != 0
+	    %assign cucv = "%<clcv>+%<idx>"
+	    %assign idx  = 0
+	  %else
+	    %assign cucv = clcv
+	  %endif
+	%endif
+
+        %% Get index string for accessing this parameter
+        %assign sigIndexer = SLibGet2DArrayIndexer(0, nRows, rucv, "", ...
+          ridx, nCols, cucv, "", idx)
+
+        %% Combine base and appropriate indices
+        %assign resStr = SLibGenBlockPrmReference(param, sigIndexer)
+
+        %%
+        %% May be complex
+        %%
+        %if SLibGetRecordIsComplex(param) && reim != ""
+          %assign resStr = resStr + "."+STRING(reim)
+        %endif
+        %%
+        %return resStr
+    %%
+    %% Inlining parameters
+    %%    either we're not rolling, OR the parameter is a scalar
+    %%    so return a "hard coded" value for true inlining
+    %%
+    %else  %% if InlineParameters
+        %%
+        %% scalar expand the parameter if necessary
+        %%   if parameter is a scalar then
+        %%       ucv, lcv, and sigIdx don't matter; just use 0
+        %%   if parameter is not a scalar then
+        %%         ucv and lcv are empty or we wouldn't reach this code
+        %%         so use sigIdx
+        %%
+        %assign scalarExpandedColIdx = (nCols > 1) ?  idx : 0
+        %assign scalarExpandedRowIdx = (nRows > 1) ? ridx : 0
+        %%
+        %% get value
+        %%
+        %assign pRawValue = param.Value[scalarExpandedRowIdx][scalarExpandedColIdx]
+        %%
+        %if SLibGetRecordIsComplex(param)
+          %if reim == tRealPart
+            %assign pValue = REAL(pRawValue)
+          %elseif reim == tImagPart
+            %assign pValue = IMAG(pRawValue)
+          %else
+            %setcommandswitch "-v1"
+            %assign errTxt = "Invalid input argument (%<cidx>) for %<Type> " ...
+              "block %<LibUnmangledPathName(Name)>.  Expecting either " ...
+              +STRING(tRealPart)+" or "+STRING(tImagPart)+"."
+            %exit RTW Assert: %<errTxt>
+          %endif
+        %else
+          %assign pValue = pRawValue
+        %endif
+        %%
+        %% check if finite value
+        %%
+        %<LibCheckValue(0, pValue)>
+        %%
+        %% cast to the data type specified in the parameter record
+        %%   this may be different than what TLC defaulted to
+        %%   when it read the RTW file
+        %%   KNOWN TO CAUSE ERRORS FOR UINT32s !!!!!!!!???????
+        %%
+        %return SLibGetCastedValue(param, pValue)
+        %%
+    %endif
+    %%
+%endfunction %% LibBlockMatrixParameterFixPoint
+
+
+%% Function: FixPt_ParameterColRollRegions ==========================
+%%
+%% Abstract:
+%%      Return a roll region vector based on the scaling discontinuities
+%%   along the columns of a parameter.  This is useful for loop rolling.
+%%
+%%  For example suppose a matrix has radix only scaling represented by
+%%
+%%  FixExp = [  2^-1  2^-1  2^-1  2^-1  2^3
+%%              2^-6  2^-6  2^-1  2^-1  2^-1 ]
+%%
+%%  The rollregions would be [ 0:1, 2:3, 4 ]
+%%
+%%    there is a discontinuity from column 1 to 2 because of row 1
+%%    there is a discontinuity from column 3 to 4 because of row 2
+%%    Note 0:1 is a roll region even though rows 0 and 1 have different scaling
+%%      for these elements.  Changes in scaling from row to row don't matter.
+%%      It only matters that if scaling changes from one column to the next in
+%%      at least one row, then a discontinuity has occured.
+%%
+%%  param   is a fixed point parameter record that holds all the scaling info
+%%
+%function FixPt_ParameterColRollRegions(param,dataTypeIdMat) void
+    %%
+    %assign dataTypeIsHeterogeneous = SIZE(dataTypeIdMat,0) > 1 || SIZE(dataTypeIdMat,1) > 1
+    %%
+    %assign paramSize = LibBlockParameterSize(param)
+    %assign nRows = paramSize[0]
+    %assign nCols = paramSize[1]
+    %%
+    %% initialize roll regions record
+    %%
+    %assign colRollRegions = [0:%<nCols-1>]
+    %%
+    %% only need to refine roll regions is data type is not homogeneous
+    %%
+    %if dataTypeIsHeterogeneous
+        %%
+        %% process each row
+        %%
+        %foreach iRow = nRows
+            %%
+            %% initialize roll regions
+            %%
+            %assign curColRollRegions = "["
+            %%
+            %% get initial data type
+            %%
+            %assign leftDataTypeId = FixPt_GetParameterDataTypeId(dataTypeIdMat,iRow,0)
+            %assign leftIdx  = 0
+            %%
+            %% process each column
+            %%
+            %foreach iCol = nCols
+                %%
+                %% get right data type
+                %%
+                %assign rightDataTypeId = FixPt_GetParameterDataTypeId(dataTypeIdMat,iRow,iCol)
+                %assign rightIdx  = iCol
+                %%
+                %% if data types don't match then a roll region transition should be
+                %% marked
+                %%
+                %if leftDataTypeId != rightDataTypeId
+                    %%
+                    %% handle range of width one
+                    %%
+                    %if leftIdx == (rightIdx-1)
+                        %%
+                        %assign newRange = STRING(leftIdx)+","
+                    %%
+                    %% handle true range
+                    %%
+                    %else
+                        %assign newRange = STRING(leftIdx)+":"+STRING(rightIdx-1)+","
+                    %endif
+                    %%
+                    %% append new range to vector
+                    %%
+                    %assign curColRollRegions = curColRollRegions + newRange
+                    %%
+                    %% prepare for next range
+                    %%
+                    %assign leftDataTypeId = rightDataTypeId
+                    %assign leftIdx = rightIdx
+                %endif
+            %endforeach
+            %%
+            %% handle final region
+            %%
+            %% handle range of width one
+            %%
+            %if leftIdx == rightIdx
+                %%
+                %assign newRange = STRING(leftIdx)+"]"
+            %%
+            %% handle true range
+            %%
+            %else
+                %assign newRange = STRING(leftIdx)+":"+STRING(rightIdx)+"]"
+            %endif
+            %%
+            %% append new range to vector
+            %%
+            %assign curColRollRegions = curColRollRegions + newRange
+            %%
+            %% convert from string to vector of ranges
+            %%
+            %assign curColRollRegions = %<curColRollRegions>
+            %%
+            %% get intersection of roll regions
+            %%
+            %assign colRollRegions = LibIntersectRollRegions(colRollRegions,curColRollRegions)
+            %%
+        %endforeach
+    %endif
+    %%
+    %return colRollRegions
+%endfunction %% FixPt_ParameterColRollRegions
+
+
+
+%% Function: FixPt_ParameterRowRollRegions =============================================
+%%
+%% Abstract:
+%%      Return a roll region vector based on the scaling discontinuities
+%%   along the rows of a parameter.  This is useful for loop rolling.
+%%
+%%  For example suppose a matrix has radix only scaling represented by
+%%
+%%  FixExp = [  2^-6  2^-7  2^-1  2^-1  2^-1
+%%              2^-6  2^-6  2^-1  2^-1  2^-1
+%%              2^-6  2^-6  2^-1  2^-1  2^-1
+%%              2^-6  2^-6  2^-1  2^-1  2^-1 ]
+%%
+%%  The rollregions would be [ 0, 1:3 ]
+%%
+%%    there is a discontinuity from row 0 to 1 because of column 1
+%%    Note 1:3 is a roll region even though columns 0:1 have different scaling
+%%      from columns 2:4.  Changes in scaling from column to column don't matter.
+%%      It only matters that if scaling changes from one row to the next in
+%%      at least one column, then a discontinuity has occured.
+%%
+%%  param   is a fixed point parameter record that holds all the scaling info
+%%
+%function FixPt_ParameterRowRollRegions(param,dataTypeIdMat) void
+    %%
+    %assign dataTypeIsHeterogeneous = SIZE(dataTypeIdMat,0) > 1 || SIZE(dataTypeIdMat,1) > 1
+    %%
+    %assign paramSize = LibBlockParameterSize(param)
+    %assign nRows = paramSize[0]
+    %assign nCols = paramSize[1]
+    %%
+    %% initialize roll regions record
+    %%
+    %assign rowRollRegions = [0:%<nRows-1>]
+    %%
+    %% only need to refine roll regions is data type is not homogeneous
+    %%
+    %if dataTypeIsHeterogeneous
+        %%
+        %% process each column
+        %%
+        %foreach iCol = nCols
+            %%
+            %% initialize roll regions
+            %%
+            %assign curRowRollRegions = "["
+            %%
+            %% get initial data type
+            %%
+            %assign leftDataTypeId = FixPt_GetParameterDataTypeId(dataTypeIdMat,0,iCol)
+            %assign leftIdx  = 0
+            %%
+            %% process each row
+            %%
+            %foreach iRow = nRows
+                %%
+                %% get right data type
+                %%
+                %assign rightDataTypeId = FixPt_GetParameterDataTypeId(dataTypeIdMat,iRow,iCol)
+                %assign rightIdx  = iRow
+                %%
+                %% if data types don't match then a roll region transition should be
+                %% marked
+                %%
+                %if leftDataTypeId != rightDataTypeId
+                    %%
+                    %% handle range of width one
+                    %%
+                    %if leftIdx == (rightIdx-1)
+                        %%
+                        %assign newRange = STRING(leftIdx)+","
+                    %%
+                    %% handle true range
+                    %%
+                    %else
+                        %assign newRange = STRING(leftIdx)+":"+STRING(rightIdx-1)+","
+                    %endif
+                    %%
+                    %% append new range to vector
+                    %%
+                    %assign curRowRollRegions = curRowRollRegions + newRange
+                    %%
+                    %% prepare for next range
+                    %%
+                    %assign leftDataTypeId = rightDataTypeId
+                    %assign leftIdx  = rightIdx
+                %endif
+            %endforeach
+            %%
+            %% handle final region
+            %%
+            %% handle range of width one
+            %%
+            %if leftIdx == rightIdx
+                %%
+                %assign newRange = STRING(leftIdx)+"]"
+            %%
+            %% handle true range
+            %%
+            %else
+                %assign newRange = STRING(leftIdx)+":"+STRING(rightIdx)+"]"
+            %endif
+            %%
+            %% append new range to vector
+            %%
+            %assign curRowRollRegions = curRowRollRegions + newRange
+            %%
+            %% convert from string to vector of ranges
+            %%
+            %assign curRowRollRegions = %<curRowRollRegions>
+            %%
+            %% get intersection of roll regions
+            %%
+            %assign rowRollRegions = LibIntersectRollRegions(rowRollRegions,curRowRollRegions)
+            %%
+        %endforeach
+    %endif
+    %%
+    %return rowRollRegions
+%endfunction %% FixPt_ParameterRowRollRegions
+
+
+
+%% Function: FixPt_GetDataTypeFromIndex ===============================================
+%%
+%% Abstract:
+%%       For the specified input port, return an alias to the corresponding
+%%       DataTypes record
+%%
+%function FixPt_GetDataTypeFromIndex(dataTypeIdx) void
+  %%
+  %assign curDT = CompiledModel.DataTypes.DataType[dataTypeIdx]
+  %%
+  %return curDT
+  %%
+%endfunction  %% FixPt_GetDataTypeFromIndex
+
+%% Function: FixPt_GetAliasThruDataTypeFromIndex ===============================================
+%%
+%% Abstract:
+%%       For the specified input port, return an alias to the corresponding
+%%       DataTypes record
+%%
+%function FixPt_GetAliasedThruDataTypeFromIndex(dataTypeIdx) void
+  %%
+  %assign dataTypeIdxAliasThru = LibGetDataTypeIdAliasedThruToFromId(dataTypeIdx)
+  %%
+  %assign curDT = CompiledModel.DataTypes.DataType[dataTypeIdxAliasThru]
+  %%
+  %return curDT
+  %%
+%endfunction  %% FixPt_GetAliasedThruDataTypeFromIndex
+
+%% Function: FixPt_GetInputDataTypeId ========================================
+%%
+%% Abstract:
+%%       For the specified input port, return the data type id used in
+%%       in Simulink.  The standard function could return the id of the
+%%       builtin type to which it is aliased.  These would give the wrong
+%%       scaling information.
+%%
+%function FixPt_GetInputDataTypeId(portIdx) void
+  %%
+  %% get the data type index (into DataTypes record).
+  %%
+  %assign dataTypeIdx = LibBlockInputSignalDataTypeId(portIdx)
+  %%
+  %return LibGetDataTypeIdAliasedThruToFromId(dataTypeIdx)
+  %%
+%endfunction  %% FixPt_GetInputDataTypeId
+
+
+
+%% Function: FixPt_GetInputDataType ===============================================
+%%
+%% Abstract:
+%%       For the specified input port, return an alias to the corresponding
+%%       DataTypes record
+%%
+%function FixPt_GetInputDataType(portIdx) void
+  %%
+  %assign dataTypeIdx = LibGetDataTypeIdAliasedThruToFromId(LibBlockInputSignalDataTypeId(portIdx))
+  %%
+  %assign curDT = FixPt_GetDataTypeFromIndex(dataTypeIdx)
+  %%
+  %return curDT
+  %%
+%endfunction  %% FixPt_GetInputDataType
+
+
+
+%% Function: FixPt_GetOutputDataTypeId ========================================
+%%
+%% Abstract:
+%%       For the specified output port, return the data type id used in
+%%       in Simulink.  
+%%
+%function FixPt_GetOutputDataTypeId(portIdx) void
+  %%
+  %% get the data type index (into DataTypes record).
+  %%
+  %assign dataTypeIdx = LibBlockOutputSignalDataTypeId(portIdx)
+  %%
+  %return LibGetDataTypeIdAliasedThruToFromId(dataTypeIdx)
+  %%
+%endfunction  %% FixPt_GetOutputDataTypeId
+
+
+
+%% Function: FixPt_GetOutputDataType ==========================================
+%%
+%% Abstract:
+%%       For the specified output port, return an alias to the corresponding
+%%       DataTypes record
+%%
+%function FixPt_GetOutputDataType(portIdx) void
+  %%
+  %assign dataTypeIdx = LibGetDataTypeIdAliasedThruToFromId(FixPt_GetOutputDataTypeId(portIdx))
+  %%
+  %assign curDT = FixPt_GetDataTypeFromIndex(dataTypeIdx)
+  %%
+  %return curDT
+  %%
+%endfunction  %% FixPt_GetOutputDataType
+
+
+
+%% Function: FixPt_GetParameterDataTypeId ===============================================
+%%
+%% Abstract:
+%%    For the scalar on the ith Row and jth Col of the specified parameter,
+%%    return an alias to the corresponding DataTypes record
+%%
+%function FixPt_GetParameterDataTypeId(dataTypeIdMat,iRow,iCol) void
+    %%
+    %assign nRows = SIZE(dataTypeIdMat,0)
+    %assign nCols = SIZE(dataTypeIdMat,1)
+    %%
+    %% scalar expand the parameter if necessary
+    %%
+    %if (nRows == 1) && (nCols == 1)
+        %assign iRow = 0
+        %assign iCol = 0
+    %endif
+    %%
+    %% check range
+    %%
+    %if (nRows <= iRow) && (nCols <= iCol)
+      %%
+      %assign errTxt = "Specified row and/or column exceeds parameter size"
+      %%
+      %exit Real Time Workshop Fatal: %<errTxt>
+      %%
+    %endif
+    %%
+    %assign retRes = dataTypeIdMat[iRow][iCol]
+    %%
+    %return retRes
+%endfunction  %% FixPt_GetParameterDataTypeId
+
+%% Function: FixPt_GetParameterDataType ===============================================
+%%
+%% Abstract:
+%%    For the scalar on the ith Row and jth Col of the specified parameter,
+%%    return an alias to the corresponding DataTypes record
+%%
+%function FixPt_GetParameterDataType(dataTypeIdMat,iRow,iCol) void
+  %%
+  %assign dataTypeIdx = FixPt_GetParameterDataTypeId(dataTypeIdMat,iRow,iCol)
+  %%
+  %assign curDT = FixPt_GetDataTypeFromIndex(dataTypeIdx)
+  %%
+  %return curDT
+  %%
+%endfunction  %% FixPt_GetParameterDataType
+
+
+
+%% Function: SetMSNBitsStr ==========================================
+%%
+%% Abstract:
+%%    Get string that represents
+%%    an integer with the number of bits given by totalBits
+%%    and of these bits the most significant numSet bits are 1
+%%    and all remaining bits are 0
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function SetMSNBitsStr(numSet,totalBits,isSigned) void
+    %%
+    %% handle incorrect numSet
+    %%
+    %if numSet < 0
+        %%
+        %exit Real Time Workshop Fatal Error: SetMSNBitsStr: numSet MUST BE NON-NEGATIVE
+        %%
+    %elseif numSet > totalBits
+        %%
+        %exit Real Time Workshop Fatal Error: SetMSNBitsStr: numSet must be less or equal to totalBits
+        %%
+    %%
+    %% handle incorrect totalBits
+    %%
+    %elseif (totalBits % 4) != 0
+        %%
+        %exit Real Time Workshop Fatal Error: SetMSNBitsStr: totalBits MUST BE MULTIPLE OF 4
+        %%
+    %elseif totalBits > IntegerSizes.LongNumBits
+        %%
+        %exit Real Time Workshop Fatal Error: SetMSNBitsStr: totalBits MUST FIT IN A LONG
+        %%
+    %else
+        %%
+        %% Define string that represents the constant
+        %%
+        %assign bitMask = ")"
+        %%
+        %% Distinguish a LONG mask
+        %%
+        %if totalBits > IntegerSizes.IntNumBits
+            %assign bitMask = "L"+ bitMask
+        %endif
+        %%
+        %% Distinguish a UNSIGNED mask
+        %%
+        %if !isSigned
+            %assign bitMask = "U"+ bitMask
+        %endif
+        %%
+        %% added each hex character
+        %%
+        %foreach i = (totalBits/4)
+            %%
+            %assign j = totalBits - numSet - ( i * 4 )
+            %%
+            %if ( j >= 4 )
+                %assign bitMask = "0"+ bitMask
+            %elseif ( j == 3 )
+                %assign bitMask = "8"+ bitMask
+            %elseif ( j == 2 )
+                %assign bitMask = "C"+ bitMask
+            %elseif ( j == 1 )
+                %assign bitMask = "E"+ bitMask
+            %else
+                %assign bitMask = "F"+ bitMask
+            %endif
+        %endforeach
+        %%
+        %assign bitMask = "(0x"+ bitMask
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction  %% SetMSNBitsStr
+
+
+
+%% Function: SetLSNBitsStr ==========================================
+%%
+%% Abstract:
+%%    Get string that represents
+%%    an integer with the number of bits given by totalBits
+%%    and of these bits the least significant numSet bits are 1
+%%    and all remaining bits are 0
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function SetLSNBitsStr(numSet,totalBits,isSigned) void
+    %%
+    %% handle incorrect numSet
+    %%
+    %if numSet < 0
+        %%
+        %exit Real Time Workshop Fatal Error: SetLSNBitsStr: numSet MUST BE NON-NEGATIVE
+        %%
+    %elseif numSet > totalBits
+        %%
+        %exit Real Time Workshop Fatal Error: SetLSNBitsStr: numSet must be less or equal to totalBits
+        %%
+    %%
+    %% handle incorrect totalBits
+    %%
+    %elseif (totalBits % 4) != 0
+        %%
+        %exit Real Time Workshop Fatal Error: SetLSNBitsStr: totalBits MUST BE MULTIPLE OF 4
+        %%
+    %elseif totalBits > IntegerSizes.LongNumBits
+        %%
+        %exit Real Time Workshop Fatal Error: SetLSNBitsStr: totalBits MUST FIT IN A LONG
+        %%
+    %else
+        %%
+        %% Define string that represents the constant
+        %%
+        %assign bitMask = ")"
+        %%
+        %% Distinguish a LONG mask
+        %%
+        %if totalBits > IntegerSizes.IntNumBits
+            %assign bitMask = "L"+ bitMask
+        %endif
+        %%
+        %% Distinguish a UNSIGNED mask
+        %%
+        %if !isSigned
+            %assign bitMask = "U"+ bitMask
+        %endif
+        %%
+        %% added each hex character
+        %%
+        %foreach i = (totalBits/4)
+            %%
+            %assign j = numSet - ( i * 4 )
+            %%
+            %if ( j >= 4 )
+                %assign bitMask = "F"+ bitMask
+            %elseif ( j == 3 )
+                %assign bitMask = "7"+ bitMask
+            %elseif ( j == 2 )
+                %assign bitMask = "3"+ bitMask
+            %elseif ( j == 1 )
+                %assign bitMask = "1"+ bitMask
+            %else
+                %assign bitMask = "0"+ bitMask
+            %endif
+        %endforeach
+        %%
+        %assign bitMask = "(0x"+ bitMask
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction  %% SetLSNBitsStr
+
+
+
+%% Function: PowerOfTwoStr ==========================================
+%%
+%% Abstract:
+%%    Get string that represents a power of 2
+%%    using an integer or if necessary a long in the requested signed
+%%    or unsigned format.
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function PowerOfTwoStr(ipow,isSigned) void
+    %%
+    %% handle incorrect ipow
+    %%
+    %if ipow < 0
+        %%
+        %exit Real Time Workshop Fatal Error: PowerOfTwoStr: ipow MUST BE NON-NEGATIVE
+        %%
+    %elseif ipow >= ( IntegerSizes.LongNumBits - isSigned )
+        %%
+        %exit Real Time Workshop Fatal Error: PowerOfTwoStr: ipow must fit in a long
+        %%
+    %%
+    %% handle power that can be represented in
+    %% an unsigned integer or unsigned long
+    %%
+    %else
+        %%
+        %% Define string that represents the constant
+        %%
+        %assign bitMask = ")"
+        %%
+        %% init algorithm for integers
+        %%
+        %if ipow < ( IntegerSizes.IntNumBits - isSigned )
+            %%
+            %% specify number of hex digits that are needed
+            %%
+            %assign iHi = (IntegerSizes.IntNumBits/4)
+        %%
+        %% init algorithm for longs
+        %%
+        %else
+            %%
+            %% Distinguish a LONG mask
+            %%
+            %assign bitMask = "L"+ bitMask
+            %%
+            %% specify number of hex digits that are needed
+            %%
+            %assign iHi = (IntegerSizes.LongNumBits/4)
+        %endif
+        %%
+        %% Distinguish a UNSIGNED mask
+        %%
+        %if !isSigned
+            %assign bitMask = "U"+ bitMask
+        %endif
+        %%
+        %% start common algorithm
+        %%
+        %foreach i = iHi
+            %%
+            %assign j = ipow - ( i * 4 )
+            %%
+            %if ( j == 0 )
+                %assign bitMask = "1"+ bitMask
+            %elseif ( j == 1 )
+                %assign bitMask = "2"+ bitMask
+            %elseif ( j == 2 )
+                %assign bitMask = "4"+ bitMask
+            %elseif ( j == 3 )
+                %assign bitMask = "8"+ bitMask
+            %else
+                %assign bitMask = "0"+ bitMask
+            %endif
+        %endforeach
+        %%
+        %assign bitMask = "(0x"+ bitMask
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction  %% PowerOfTwoStr
+
+
+
+%% Function: UPowerOfTwoStr ==========================================
+%%
+%% Abstract:
+%%    Get string that represents a power of 2
+%%    using an unsigned integer or if necessary an unsigned long
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function UPowerOfTwoStr(ipow) void
+    %%
+    %assign bitMask = PowerOfTwoStr(ipow,0)
+    %return bitMask
+    %%
+%endfunction  %% UPowerOfTwoStr
+
+
+
+%% Function: SPow2Minus1Str ==========================================
+%%
+%% Abstract:
+%%    Get string that represents a (2^ipow)-1
+%%    using an Signed integer or if necessary an Signed long
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function SPow2Minus1Str(ipow) void
+    %%
+    %% handle power that is too small
+    %%
+    %if ipow <= 0
+        %%
+        %exit Real Time Workshop Fatal Error: SPow2Minus1Str: POWER MUST BE STRICTLY POSITIVE
+        %%
+    %%
+    %% handle power that is too large
+    %%
+    %elseif ipow >= IntegerSizes.LongNumBits
+        %%
+        %exit Real Time Workshop Fatal Error: SPow2Minus1Str: POWER LARGER THAN LONG CAN REPRESENT
+        %%
+    %%
+    %% handle power that can be represented in
+    %% an integer or long
+    %%
+    %else
+    %%
+        %%
+        %% init algorithm for integers
+        %%
+        %if ipow < IntegerSizes.IntNumBits
+            %%
+            %% specify number of bits that are needed
+            %%
+            %assign totalBits = IntegerSizes.IntNumBits
+        %%
+        %% init algorithm for longs
+        %%
+        %else
+            %%
+            %% specify number of bits that are needed
+            %%
+            %assign totalBits = IntegerSizes.LongNumBits
+        %endif
+        %%
+        %assign maskIsSigned = 1
+        %assign numSet = ipow
+        %assign bitMask = SetLSNBitsStr(numSet,totalBits,maskIsSigned)
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction  %% SPow2Minus1Str
+
+
+
+%% Function: SPow2NegStr ==========================================
+%%
+%% Abstract:
+%%    Get string that represents a -1*(2^ipow)
+%%    using an Signed integer or if necessary an Signed long
+%%    Please note this is a plain old integer, ie nominal scaling
+%%
+%function SPow2NegStr(ipow) void
+    %%
+    %% handle power that is too small
+    %%
+    %if ipow < 0
+        %%
+        %exit Real Time Workshop Fatal Error: SPow2NegStr: POWER MUST BE NONNEGATIVE
+        %%
+    %%
+    %% handle power that is too large
+    %%
+    %elseif ipow >= IntegerSizes.LongNumBits
+        %%
+        %exit Real Time Workshop Fatal Error: SPow2NegStr: POWER LARGER THAN LONG CAN REPRESENT
+        %%
+    %%
+    %% handle power that can be represented in
+    %% an unsigned integer or unsigned long
+    %%
+    %else
+        %%
+        %% init algorithm for integers
+        %%
+        %if ipow < ( IntegerSizes.IntNumBits - 1 )
+            %%
+            %% specify number of bits that are needed
+            %%
+            %assign totalBits = IntegerSizes.IntNumBits
+        %%
+        %% init algorithm for longs
+        %%
+        %else
+            %%
+            %% specify number of bits that are needed
+            %%
+            %assign totalBits = IntegerSizes.LongNumBits
+        %endif
+        %%
+        %assign maskIsSigned = 1
+        %assign numSet = totalBits-ipow
+        %assign bitMask = SetMSNBitsStr(numSet,totalBits,maskIsSigned)
+        %%
+        %% make sure string is treated as signed
+        %%
+        %if totalBits <= IntegerSizes.IntNumBits
+            %assign bitMask = "((int)"+ bitMask + ")"
+        %else
+            %assign bitMask = "((long)"+ bitMask + ")"
+        %endif
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction  %% SPow2NegStr
+
+
+
+%% Function: FixPt_GetMaxStr ============================================
+%%
+%% Abstract:
+%%   Returns the maximum value of a fixed-point number.  For example
+%%
+%%   Signed | Number of bits | Return value
+%%   -------+----------------+-------------
+%%     1    |       8        | 0x7F
+%%     1    |       16       | 0x7FFF
+%%     0    |       32       | 0xFFFFFFFF
+%%
+%% Synopsis:
+%%   FixPt_GetMaxStr(info)
+%%   info = fixed-point record
+
+%function FixPt_GetMaxStr(curDT) void
+    %%
+    %% get integer minimums and maximums
+    %%
+    %if FixPt_DataTypeIsDouble(curDT)
+        %%
+        %<FixPt_IncludeFloatDotH(0)>\
+        %assign bitMask = "DBL_MAX"
+        %%
+    %elseif FixPt_DataTypeIsSingle(curDT)
+        %%
+        %<FixPt_IncludeFloatDotH(0)>\
+        %assign bitMask = "FLT_MAX"
+        %%
+    %else
+        %%
+        %if curDT.RequiredBits == 8
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MAX_int8_T"
+          %else
+            %assign bitMask = "MAX_uint8_T"
+          %endif
+          %%
+        %elseif curDT.RequiredBits == 16
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MAX_int16_T"
+          %else
+            %assign bitMask = "MAX_uint16_T"
+          %endif
+          %%
+        %elseif curDT.RequiredBits == 32
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MAX_int32_T"
+          %else
+            %assign bitMask = "MAX_uint32_T"
+          %endif
+          %%
+        %else        
+          %%
+          %assign maskIsSigned = curDT.IsSigned
+          %assign totalBits    = curDT.ActualBits
+          %%
+          %% the number of bits to set depends on
+          %%   whether or not the number is signed
+          %%   on the number of bits of padding when emulating a data type
+          %%
+          %assign numSet       = curDT.RequiredBits - curDT.IsSigned
+          %%
+          %assign bitMask = SetLSNBitsStr(numSet,totalBits,maskIsSigned)
+          %%
+        %endif
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction %% FixPt_GetMaxStr
+
+
+%% Function: FixPt_GetMinStr ============================================
+%%
+%% Abstract:
+%%   Returns the minimum value of a fixed-point number.  For example
+%%
+%%   Signed | Number of bits | Return value
+%%   -------+----------------+-------------
+%%     1    |       8        | 0x80
+%%     1    |       16       | 0x8000
+%%     0    |       32       | 0x00000000
+%%
+%% Synopsis:
+%%   FixPt_GetMinStr(info)
+%%   info = fixed-point record
+
+%function FixPt_GetMinStr(curDT) void
+    %%
+    %% get integer minimums and maximums
+    %%
+    %if FixPt_DataTypeIsDouble(curDT)
+        %%
+        %<FixPt_IncludeFloatDotH(0)>\
+        %assign bitMask = "(-(DBL_MAX))"
+        %%
+    %elseif FixPt_DataTypeIsSingle(curDT)
+        %%
+        %<FixPt_IncludeFloatDotH(0)>\
+        %assign bitMask = "(-(FLT_MAX))"
+        %%
+    %else
+        %%
+        %if curDT.RequiredBits == 8
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MIN_int8_T"
+          %else
+            %assign bitMask = "MIN_uint8_T"
+          %endif
+          %%
+        %elseif curDT.RequiredBits == 16
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MIN_int16_T"
+          %else
+            %assign bitMask = "MIN_uint16_T"
+          %endif
+          %%
+        %elseif curDT.RequiredBits == 32
+          %%
+          %if curDT.IsSigned 
+            %assign bitMask = "MIN_int32_T"
+          %else
+            %assign bitMask = "MIN_uint32_T"
+          %endif
+          %%
+        %else        
+          %%
+          %assign maskIsSigned = 0
+          %assign totalBits    = curDT.ActualBits
+          %%
+          %% the number of bits to set depends on
+          %%   whether or not the number is signed
+          %%   on the number of bits of padding when emulating a data type
+          %%
+          %if curDT.IsSigned
+            %assign numSet = 1 + curDT.ActualBits - curDT.RequiredBits
+          %else
+            %assign numSet = 0
+          %endif
+          %%
+          %assign bitMask = SetMSNBitsStr(numSet,totalBits,maskIsSigned)
+          %%
+        %endif
+    %endif
+    %%
+    %return bitMask
+    %%
+%endfunction %% FixPt_GetMinStr
+
+
+
+%% Function: SPow2Minus1Val ==========================================
+%%
+%% Abstract:
+%%    Get the value (2^ipow)-1
+%%
+%%    This could produce errors if TLC's largest integer type has
+%%  fewer bits than the targets long.
+%%
+%function SPow2Minus1Val(ipow) void
+    %%
+    %% handle power that is too small
+    %%
+    %if ipow <= 0
+        %%
+        %exit Fatal Error SPow2Minus1Val: POWER MUST BE STRICTLY POSITIVE.
+        %%
+    %%
+    %% handle power that is too large
+    %%
+    %elseif ipow >= IntegerSizes.LongNumBits
+        %%
+        %exit Fatal Error SPow2Minus1Val: POWER LARGER THAN LONG CAN REPRESENT
+        %%
+    %%
+    %% handle power that can be represented in
+    %% an integer or long
+    %%
+    %else
+    %%
+        %%
+        %% init
+        %%
+        %assign outValue = 1
+        %%
+        %% init algorithm for integers
+        %%
+        %foreach i = ipow
+            %%
+            %% recursively evaluate and check to
+            %% see if TLC gives overflow
+            %%
+            %assign oldOutValue = outValue
+
+            %assign outValue = outValue * 2
+
+            %%
+            %% be sure to subtract one before comparison
+            %% this can deliberately cause an underflow on a number
+            %% that has already overflowed.  The net results
+            %% of the over-under-flow is the desired number
+            %%
+            %if (outValue-1) < (oldOutValue-1)
+                %%
+                %exit Fatal Error SPow2Minus1Val: TLCs largest integer less than targets.
+                %%
+            %endif
+
+        %endforeach
+        %%
+        %% finish up by subtracting one
+        %%
+        %assign outValue = outValue - 1
+        %%
+    %endif
+    %%
+    %return outValue
+    %%
+%endfunction  %% SPow2Minus1Val
+
+
+
+%% Function: SPow2NegVal ==========================================
+%%
+%% Abstract:
+%%    Get value -1*(2^ipow)
+%%
+%%    This could produce errors if TLC's largest integer type has
+%%  fewer bits than the targets long.
+%%
+%function SPow2NegVal(ipow) void
+    %%
+    %% handle power that is too small
+    %%
+    %if ipow < 0
+        %%
+        %exit Fatal Error SPow2NegVal: POWER MUST BE POSITIVE
+        %%
+    %%
+    %% handle power that is too large
+    %%
+    %elseif ipow >= IntegerSizes.LongNumBits
+        %%
+        %exit Fatal Error SPow2NegVal: POWER LARGER THAN LONG CAN REPRESENT
+        %%
+    %%
+    %% handle power that can be represented in
+    %% an unsigned integer or unsigned long
+    %%
+    %else
+    %%
+        %%
+        %% init
+        %%
+        %assign outValue = -1
+        %%
+        %% init algorithm for integers
+        %%
+        %foreach i = ipow
+            %%
+            %% recursively evaluate and check to
+            %% see if TLC gives overflow
+            %%
+            %assign oldOutValue = outValue
+
+            %assign outValue = outValue * 2
+
+            %if outValue > oldOutValue
+                %exit Fatal Error SPow2NegVal: TLCs largest integer less than targets.
+            %endif
+
+        %endforeach
+        %%
+    %endif
+    %%
+    %return outValue
+    %%
+%endfunction  %% SPow2NegVal
+
+
+
+%% Function: LibIsPow2 ==========================================
+%%
+%% Abstract:
+%%    Determine if a number is a power of (plus) two.
+%%    If it is a power of two, also return the exponent.
+%%
+%%    NOTE:  This is for use with the stored INTEGER, so negative
+%%    powers of two are NOT relavent!!!
+%%
+%%    This could produce errors if TLC's largest integer type has
+%%  fewer bits than the targets long.
+%%
+%%   returns
+%%      outValue  Vector(2)
+%%
+%%        outValue[0]   Boolean    TRUE for pow of 2
+%%        outValue[1]   Number     pow of 2 exponent
+%%
+%function LibIsPow2(num) void
+    %%
+    %% set default return variable
+    %%
+    %assign outValue = [ 0, 0 ]
+    %%
+    %% only process inputs of TYPE == Number or Unsigned
+    %%
+    %if ( TYPE(num) == "Number" ) || ( TYPE(num) == "Unsigned" )
+        %%
+        %% recursively search for a match on a power of two
+        %%
+        %assign curPow2 = 1
+        %%
+        %foreach ipow = ( IntegerSizes.LongNumBits - 1 )
+            %%
+            %% stop search early if number is smaller than current pow2
+            %%
+            %if num < curPow2
+                %%
+                %break
+                %%
+            %endif
+            %%
+            %% stop search if match is found
+            %%
+            %if num == curPow2
+                %%
+                %assign outValue = [ 1, %<ipow> ]
+                %%
+                %break
+                %%
+            %endif
+            %%
+            %% get next power of two
+            %%
+            %assign curPow2 = curPow2 << 1
+            %%
+        %endforeach
+        %%
+    %endif
+    %%
+    %return outValue
+    %%
+%endfunction  %% LibIsPow2
+
+
+
+%% Function: LibGenArithShiftLeft ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Arithmetic shift left.
+%%      It is generalized in that the number of shifts can be positive, zero, or
+%%      negative.  Zero values give no shift, and negative values give
+%%      Arithmatic shifts RIGHT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%% CAUTION
+%%   outLabel must be a "precedence immune expression" 
+%%       To prevent an explosion of unnecessary parentheses in the generated
+%%       code, defensive parentheses will NOT be wrapped around the input.
+%%       It is the callers responsiblility to include outer parentheses in
+%%       outLabel if there is any hypothetical way for the expression to give 
+%%       incorrect execution order when inserted in a larger expression.
+%% 
+%function LibGenArithShiftLeft(outLabel,outDT,numShiftLeft) void
+    %%
+    %%  handle number of shifts that are positive
+    %%     ie shifts that are actually to the left or trivial
+    %%  Note there is no difference between Arith Shift Left and
+    %%     Logical Shift Left for unsigned or twos complement integers.
+    %%
+    %assign numShiftIsString = TYPE(numShiftLeft) == "String"
+    %%
+    %if numShiftIsString || numShiftLeft >= 0
+        %assign resultString = LibGenLogicShiftLeft(outLabel,outDT,numShiftLeft)
+    %%
+    %%  handle number of shifts that are strictly negative
+    %%     ie shifts that are really to the right
+    %%
+    %else
+        %assign resultString = LibGenArithShiftRight(outLabel,outDT,-1*numShiftLeft)    
+    %endif
+    %%
+    %return resultString
+    %%
+%endfunction  %% LibGenArithShiftLeft
+
+
+
+%% Function: LibGenArithShiftRight ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Arithmetic shift right.
+%%      It is generalized in that the number of shifts can be positive, zero, or
+%%      negative.  Zero values give no shift, and negative values give
+%%      Arithmatic shifts LEFT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%% CAUTION
+%%   outLabel must be a "precedence immune expression" 
+%%       To prevent an explosion of unnecessary parentheses in the generated
+%%       code, defensive parentheses will NOT be wrapped around the input.
+%%       It is the callers responsiblility to include outer parentheses in
+%%       outLabel if there is any hypothetical way for the expression to give 
+%%       incorrect execution order when inserted in a larger expression.
+%% 
+%function LibGenArithShiftRight(outLabel,outDT,numShiftRght) void
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %%  handle number of shifts that are positive
+    %%     ie shifts that are actually to the left or trivial
+    %%  Note there is no difference between Arith Shift Left and
+    %%     Logical Shift Left for unsigned or twos complement integers.
+    %%
+    %assign numShiftIsString = TYPE(numShiftRght) == "String"
+    %%
+    %if !numShiftIsString && numShiftRght <= 0
+        %assign resultString = LibGenLogicShiftLeft(outLabel,outDT,-1*numShiftRght)
+    %%
+    %%  handle number of shifts that are strictly negative
+    %%     ie shifts that are really to the right
+    %%
+    %else
+        %%
+        %<FixPt_FloatingPointNotSupported(outDT)>\
+        %%
+        %assign outLabel = SLibProcessSafeExpression(Name, outLabel, 1)
+        %%
+        %% determine if all the bits are being shifted off
+        %%
+        %if numShiftIsString
+          %%
+          %assign allBitsOff = 0
+        %else
+          %if outDT.ActualBits > IntegerSizes.IntNumBits
+              %%
+              %if ( numShiftRght >= IntegerSizes.LongNumBits )
+                  %%
+                  %assign allBitsOff = 1
+              %else
+                  %assign allBitsOff = 0
+              %endif
+          %else
+              %if ( numShiftRght >= IntegerSizes.IntNumBits )
+                  %%
+                  %assign allBitsOff = 1
+              %else
+                  %assign allBitsOff = 0
+              %endif
+          %endif
+        %endif
+        %%
+        %% Create a string to represent the shift utility
+        %%
+        %assign utilityName = "ASR"
+        %%
+        %% identify output storage type
+        %%
+        %if outDT.ActualBits > IntegerSizes.IntNumBits
+            %%
+            %if outDT.IsSigned
+                %assign typeHandled = "signed long integers"
+                %assign utilityName = utilityName + "l"
+            %else
+                %assign typeHandled = "unsigned long integers"
+                %assign utilityName = utilityName + "ul"
+            %endif
+        %else
+            %if outDT.IsSigned
+                %assign typeHandled = "signed integers"
+                %assign utilityName = utilityName + ""
+            %else
+                %assign typeHandled = "unsigned integers"
+                %assign utilityName = utilityName + "u"
+            %endif
+        %endif
+        %%
+        %if allBitsOff
+            %%
+            %assign utilityName = utilityName + "_ShiftAllBitsOff"
+        %endif
+        %%
+        %% define "call" to the required utility
+        %%
+        %if allBitsOff
+            %assign resultString = utilityName+"(%<outLabel>)"
+        %else
+            %assign resultString = utilityName+"(%<numShiftRght>,%<outLabel>)"
+        %endif
+        %%
+        %% determine if the required utility has already been defined
+        %%   If it has not, then create the definition.
+        %%
+        %if !(ISFIELD(FixPtUtils,utilityName))
+            %%
+            %% register that utility is being defined
+            %%
+            %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+            %%
+            %% open a buffer to hold the utility header comments
+            %%
+            %openfile utilityHeaderComment
+            %%
+            %%  Produce header comment for utility
+            %%
+
+            /*********************************************************************
+             * %<utilityName>
+             * Arithmetic Shift Right for %<typeHandled>.
+            %if allBitsOff
+             * The requested number of bits to shift right was so large
+             * that all bits would be shifted off.
+            %endif
+            %if outDT.IsSigned
+             * Note: the C standard does not specify whether shift right >> 
+             * on %<typeHandled> is Logical, Arithmetic, or even garbage.
+             * This macro uses the implementation dependent behavior to
+             * get desired Arithmetic Shift Right behavior.  This macro is
+             * NOT portable.
+            %endif
+             */
+            %closefile utilityHeaderComment
+            %%
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %% open a buffer to hold the utility definition
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+            %openfile utilityDef
+            %%
+            %%  handle shifts that are too long
+            %%    ie only thing left after arithmetic shift right is
+            %%    all zeros or all ones
+            %%
+            %if allBitsOff
+                %%
+                %% handle Signed numbers
+                %%
+                %if outDT.IsSigned
+                    %if outDT.ActualBits > IntegerSizes.IntNumBits
+                      %%
+                      #define %<utilityName>(C)    ( ((C) >= 0) ? 0L : (-1L) )
+                    %else
+                      #define %<utilityName>(C)    ( ((C) >= 0) ? 0 : (-1) )
+                    %endif
+                %%
+                %% handle Unsigned numbers
+                %%
+                %else
+                    %%
+                    %% handle case when casts to longs are needed
+                    %%
+                    %if outDT.ActualBits > IntegerSizes.IntNumBits
+                        %%
+                        #define %<utilityName>(C)    ( ((long)(C)>=0) ? 0UL : (ULONG_MAX) )
+                        %%
+                    %%
+                    %% handle case when casts to ints are sufficient
+                    %%
+                    %else
+                        %%
+                        #define %<utilityName>(C)    ( ((int)(C)>=0) ? 0U : (UINT_MAX) )
+                        %%
+                    %endif
+                %endif
+            %%
+            %%  handle nontrivial arithmetic shifts right
+            %%
+            %else
+                %%
+                %%  handle case of
+                %%    Signed numbers when C Compiler implement >> as
+                %%         ARITHMETIC Shift Right on signed numbers
+                %%
+                %if outDT.IsSigned && CTargetSpecific.ShiftRightIntArith
+                    %%
+                    #define %<utilityName>(nBits,C)    ( (C)>>(nBits) )
+                %%
+                %%  handle case of
+                %%    Signed numbers when C Compiler implement >> as
+                %%         LOGIC Shift Right on signed numbers
+                %%
+                %elseif outDT.IsSigned
+                    %%
+                    #define %<utilityName>(nBits,C)    ( ((C)>=0) ? ((C)>>(nBits)) : (~((~(C))>>(nBits))) )
+                %%
+                %%  handle case of
+                %%    UNsigned numbers
+                %%
+                %else
+                    %%
+                    %% handle case when casts to longs are needed
+                    %%
+                    %if outDT.ActualBits > IntegerSizes.IntNumBits
+                        %%
+                        #define %<utilityName>(nBits,C)    ( ((long)(C)>=0) ? ((C)>>(nBits)) : (~((~(C))>>(nBits))) )
+                        %%
+                    %%
+                    %% handle case when casts to ints are sufficient
+                    %%
+                    %else
+                        %%
+                        #define %<utilityName>(nBits,C)    ( ((int)(C)>=0) ? ((C)>>(nBits)) : (~((~(C))>>(nBits))) )
+                        %%
+                    %endif
+                %endif
+            %endif
+            %%
+            %closefile utilityDef
+            %%
+            %% create utility trailer comment
+            %%
+            %openfile utilityTrailerComment
+
+            /* end macro %<utilityName>
+             *********************************************************************/
+            %closefile utilityTrailerComment
+            %%
+            %% cause utility define to be included in generated code
+            %%
+            %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+            %%            
+            %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+            %%
+        %endif  %% definition of shift utility
+    %endif
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+    %<LibAddtoSharedUtilsIncludesVector(GSUStackBuf)>
+    %%
+    %return resultString
+    %%
+%endfunction  %% LibGenArithShiftRight
+
+
+
+%% Function: LibGenLogicShiftLeft ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Logic shift left.
+%%      It is generalized in that the number of shifts can be positive, zero, or
+%%      negative.  Zero values give no shift, and negative values give
+%%      Arithmatic shifts RIGHT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%%      Note, this relies on the LSL and LSR macros and is subject to
+%%      their limitations.  Typically, if the compiler thinks the quantity being
+%%      LSR is signed, then repeation or not of the sign bit is implementation
+%%      dependent.
+%%
+%%      Note, this function does not check if an excessive number of
+%%      shifts right or left have been requested.  Excessive shifts
+%%      produce compiler dependent results.
+%%
+%% CAUTION
+%%   outLabel must be a "precedence immune expression" 
+%%       To prevent an explosion of unnecessary parentheses in the generated
+%%       code, defensive parentheses will NOT be wrapped around the input.
+%%       It is the callers responsiblility to include outer parentheses in
+%%       outLabel if there is any hypothetical way for the expression to give 
+%%       incorrect execution order when inserted in a larger expression.
+%% 
+%function LibGenLogicShiftLeft(outLabel,outDT,numShiftLeft) void
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %assign numShiftIsString = TYPE(numShiftLeft) == "String"
+    %%
+    %if !numShiftIsString && numShiftLeft == 0
+      %%
+      %assign resultString = outLabel
+      %%
+    %elseif !numShiftIsString && numShiftLeft < 0
+      %%
+      %assign resultString = LibGenLogicShiftRight(outLabel,outDT,-1*numShiftLeft)
+      %%
+    %else
+      %%
+      %<FixPt_FloatingPointNotSupported(outDT)>\
+      %%
+      %assign outLabel = SLibProcessSafeExpression(Name, outLabel, 1)
+      %%
+      %% Create a string to represent the utility
+      %%
+      %assign utilityName = "LSL"
+      %%
+      %assign allBitsOff = 0
+      %%
+      %% identify output storage type
+      %%
+      %if outDT.IsSigned
+          %assign utilityName = utilityName + "_S"
+      %else
+          %assign utilityName = utilityName + "_U"
+      %endif
+      %assign utilityName = utilityName + STRING(outDT.RequiredBits)
+      %%
+      %if outDT.ActualBits > IntegerSizes.IntNumBits
+          %%
+          %if outDT.IsSigned
+              %assign typeHandled = "signed long integers"
+          %else
+              %assign typeHandled = "unsigned long integers"
+          %endif
+          %%
+          %if !numShiftIsString && numShiftLeft >= IntegerSizes.LongNumBits
+              %%
+              %assign utilityName = utilityName + "_ShiftAllBitsOff"
+              %assign allBitsOff = 1
+          %endif
+      %else
+          %%
+          %if outDT.IsSigned
+              %assign typeHandled = "signed integers"
+          %else
+              %assign typeHandled = "unsigned integers"
+          %endif
+          %%
+          %if !numShiftIsString && numShiftLeft >= IntegerSizes.IntNumBits
+              %%
+              %assign utilityName = utilityName + "_ShiftAllBitsOff"
+              %assign allBitsOff = 1
+          %endif
+      %endif
+      %%
+      %% define "call" to the required utility
+      %%
+      %if allBitsOff
+          %%
+          %assign resultString = utilityName+"(%<outLabel>)"
+      %else
+          %assign resultString = utilityName+"(%<numShiftLeft>,%<outLabel>)"
+      %endif
+      %%
+      %% determine if the required utility has already been defined
+      %%   If it has not, then create the definition.
+      %%
+      %if !(ISFIELD(FixPtUtils,utilityName))
+          %%
+          %% register that utility is being defined
+          %%
+          %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+          %%
+          %% open a buffer to hold the utility header comments
+          %%
+          %openfile utilityHeaderComment
+          %%
+          %%  Produce header comment for utility
+          %%
+  
+          /*********************************************************************
+           * %<utilityName>
+           * Shift Left for %<typeHandled>.
+           * Note there is no differenct between logical shift left and
+           * arithmetic shift left.
+          %if allBitsOff
+           * The requested number of bits to shift right was so large
+           * that all bits would be shifted off.
+          %endif
+           */
+          %closefile utilityHeaderComment
+          %%
+          %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+          %% open a buffer to hold the utility definition
+          %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+          %openfile utilityDef
+          %%
+          %if allBitsOff
+              %%
+              %%  handle shifts that are too long
+              %%    ie only thing left after (logical) shift is zeros
+              %%
+              %if outDT.ActualBits > IntegerSizes.IntNumBits
+                  %%
+                  %if outDT.IsSigned
+                    #define %<utilityName>(C) (0L)
+                  %else
+                    #define %<utilityName>(C) (0UL)
+                  %endif
+              %else
+                  %if outDT.IsSigned
+                    #define %<utilityName>(C) (0)
+                  %else
+                    #define %<utilityName>(C) (0U)
+                  %endif
+              %endif
+          %else
+              %%
+              %%  handle nontrivial shifts
+              %%
+              %%  Note there is no difference between Arith Shift Left and
+              %%     Logical Shift Left for unsigned or twos complement integers.
+              %%
+              %if outDT.IsSigned
+                %%
+                %if     outDT.ActualBits == IntegerSizes.LongNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    (((long)(C))<<(nBits))
+                  %%
+                %elseif outDT.ActualBits >  IntegerSizes.IntNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    ((%<outDT.NativeType>)(((long)(C))<<(nBits)))
+                  %%
+                %elseif outDT.ActualBits == IntegerSizes.IntNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    (((int)(C))<<(nBits))
+                %else
+                  #define %<utilityName>(nBits,C)    ((%<outDT.NativeType>)(((int)(C))<<(nBits)))
+                %endif
+              %else
+                %if     outDT.ActualBits == IntegerSizes.LongNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    (((unsigned long)(C))<<(nBits))
+                  %%
+                %elseif outDT.ActualBits >  IntegerSizes.IntNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    ((%<outDT.NativeType>)(((unsigned long)(C))<<(nBits)))
+                  %%
+                %elseif outDT.ActualBits == IntegerSizes.IntNumBits
+                  %%
+                  #define %<utilityName>(nBits,C)    (((unsigned int)(C))<<(nBits))
+                %else
+                  #define %<utilityName>(nBits,C)    ((%<outDT.NativeType>)(((unsigned int)(C))<<(nBits)))
+                %endif
+              %endif
+          %endif
+          %%
+          %closefile utilityDef
+          %%
+          %% create utility trailer comment
+          %%
+          %openfile utilityTrailerComment
+  
+          /* end macro %<utilityName>
+           *********************************************************************/
+          %closefile utilityTrailerComment
+          %%
+          %% cause utility define to be included in generated code
+          %%
+          %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+          %%          
+          %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+          %%
+      %endif  %% definition of shift utility
+    %endif
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+    %<LibAddtoSharedUtilsIncludesVector(GSUStackBuf)>
+    %%
+    %return resultString
+    %%
+%endfunction  %% LibGenLogicShiftLeft
+
+
+
+%% Function: LibGenLogicShiftRight ==========================================
+%%
+%% Abstract:
+%%      This function performs a generalized Logic shift Right.
+%%      It is generalized in that the number of shifts can be positive, zero, or
+%%      negative.  Zero values give no shift, and negative values give
+%%      Arithmatic shifts LEFT.
+%%          This function is useful in reducing the number of cases that
+%%      require seperate TLC code sections.
+%%
+%%      Note, this relies on the LSL and LSR macros and is subject to
+%%      their limitations.  Typically, if the compiler thinks the quantity being
+%%      LSR is signed, then repeation or not of the sign bit is implementation
+%%      dependent.
+%%
+%%      Note, this function does not check if an excessive number of
+%%      shifts right or left have been requested.  Excessive shifts
+%%      produce compiler dependent results.
+%%
+%% CAUTION
+%%   outLabel must be a "precedence immune expression" 
+%%       To prevent an explosion of unnecessary parentheses in the generated
+%%       code, defensive parentheses will NOT be wrapped around the input.
+%%       It is the callers responsiblility to include outer parentheses in
+%%       outLabel if there is any hypothetical way for the expression to give 
+%%       incorrect execution order when inserted in a larger expression.
+%% 
+%function LibGenLogicShiftRight(outLabel,outDT,numShiftRght) void
+    %<LibPushEmptyStackSharedUtils()>\
+    %%
+    %assign numShiftIsString = TYPE(numShiftRght) == "String"
+    %%
+    %if !numShiftIsString && numShiftRght == 0
+        %%
+        %assign resultString = outLabel
+        %%
+    %elseif !numShiftIsString && numShiftRght < 0
+        %%
+        %assign resultString = LibGenLogicShiftLeft(outLabel,outDT,-1*numShiftRght)
+        %%
+    %else
+        %%
+        %<FixPt_FloatingPointNotSupported(outDT)>\
+        %%
+        %assign outLabel = SLibProcessSafeExpression(Name, outLabel, 1)
+        %%
+        %% Create a string to represent the utility
+        %%
+        %assign utilityName = "LSR"
+        %%
+        %assign allBitsOff = 0
+        %%
+        %% identify output storage type
+        %%
+        %if outDT.ActualBits > IntegerSizes.IntNumBits
+            %%
+            %if outDT.IsSigned
+                %assign utilityName = utilityName + "l"
+            %else
+                %assign utilityName = utilityName + "ul"
+            %endif
+        %else
+            %if outDT.IsSigned
+                %assign utilityName = utilityName + ""
+            %else
+                %assign utilityName = utilityName + "u"
+            %endif
+        %endif
+        %%
+        %if outDT.ActualBits > IntegerSizes.IntNumBits
+            %%
+            %if outDT.IsSigned
+                %assign typeHandled = "signed long integers"
+            %else
+                %assign typeHandled = "unsigned long integers"
+            %endif
+            %%
+            %if !numShiftIsString && numShiftRght >= IntegerSizes.LongNumBits
+                %%
+                %assign utilityName = utilityName + "_ShiftAllBitsOff"
+                %assign allBitsOff = 1
+            %endif
+        %else
+            %%
+            %if outDT.IsSigned
+                %assign typeHandled = "signed integers"
+            %else
+                %assign typeHandled = "unsigned integers"
+            %endif
+            %%
+            %if !numShiftIsString && numShiftRght >= IntegerSizes.IntNumBits
+                %%
+                %assign utilityName = utilityName + "_ShiftAllBitsOff"
+                %assign allBitsOff = 1
+            %endif
+        %endif
+        %%
+        %% define "call" to the required utility
+        %%
+        %if allBitsOff
+            %%
+            %assign resultString = utilityName+"(%<outLabel>)"
+        %else
+            %assign resultString = utilityName+"(%<numShiftRght>,%<outLabel>)"
+        %endif    
+        %%
+        %% determine if the required utility has already been defined
+        %%   If it has not, then create the definition.
+        %%
+        %if !(ISFIELD(FixPtUtils,utilityName))
+          %%
+          %% register that utility is being defined
+          %%
+          %assign tmpRet = SETFIELD(FixPtUtils,utilityName,1)
+          %%
+          %% open a buffer to hold the utility header comments
+          %%
+          %openfile utilityHeaderComment
+          %%
+          %%  Produce header comment for utility
+          %%
+  
+          /*********************************************************************
+           * %<utilityName>
+           * Logical Shift Right for %<typeHandled>.
+          %if allBitsOff
+           * The requested number of bits to shift right was so large
+           * that all bits would be shifted off.
+          %endif
+          %if outDT.IsSigned
+           * Note: the C standard does not specify whether shift right >> 
+           * on %<typeHandled> is Logical, Arithmetic, or even garbage.
+           * This macro uses the implementation dependent behavior to
+           * get desired Logical Shift Right behavior.  This macro is
+           * NOT portable.
+          %endif
+           */
+          %closefile utilityHeaderComment
+          %%
+          %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+          %% open a buffer to hold the utility definition
+          %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+          %openfile utilityDef
+          %%
+          %if allBitsOff
+              %%
+              %%  handle shifts that are too long
+              %%    ie only thing left after (logical) shift is zeros
+              %%
+              %if outDT.ActualBits > IntegerSizes.IntNumBits
+                  %%
+                  %if outDT.IsSigned
+                    #define %<utilityName>(C) (0L)
+                  %else
+                    #define %<utilityName>(C) (0UL)
+                  %endif
+              %else
+                  %if outDT.IsSigned
+                    #define %<utilityName>(C) (0)
+                  %else
+                    #define %<utilityName>(C) (0U)
+                  %endif
+              %endif
+          %else
+              %%
+              %%  handle nontrivial shifts
+              %%
+              %if outDT.IsSigned && CTargetSpecific.ShiftRightIntArith
+                  %%
+                  %%  handle case of
+                  %%    Signed numbers when C Compiler implement >> as
+                  %%         ARITHMETIC Shift Right on signed numbers
+                  %%
+                  %if outDT.ActualBits > IntegerSizes.IntNumBits
+                      %%
+                      %% handle case when casts to longs are needed
+                      %%
+                      #define %<utilityName>(nBits,C)    ((long)(((unsigned long)(C))>>(nBits)))
+                  %else
+                      %%
+                      %% handle case when casts to ints are sufficient
+                      %%
+                      #define %<utilityName>(nBits,C)    ((int)(((unsigned int)(C))>>(nBits)))
+                  %endif
+              %else
+                %%
+                %%  handle case of
+                %%    Signed numbers when C Compiler implement >> as
+                %%         LOGIC Shift Right on signed numbers
+                %%  OR
+                %%    UNsigned numbers
+                %%
+                %if outDT.IsSigned
+                  %%
+                  %if outDT.ActualBits > IntegerSizes.IntNumBits
+                    %%
+                    #define %<utilityName>(nBits,C)    (((long)(C))>>(nBits))
+                  %else
+                    #define %<utilityName>(nBits,C)    (((int)(C))>>(nBits))
+                  %endif
+                %else
+                  %if outDT.ActualBits > IntegerSizes.IntNumBits
+                    %%
+                    #define %<utilityName>(nBits,C)    (((unsigned long)(C))>>(nBits))
+                  %else
+                    #define %<utilityName>(nBits,C)    (((unsigned int)(C))>>(nBits))
+                  %endif
+                %endif
+              %endif
+          %endif
+          %%
+          %closefile utilityDef
+          %%
+          %% create utility trailer comment
+          %%
+          %openfile utilityTrailerComment
+  
+          /* end macro %<utilityName>
+           *********************************************************************/
+          %closefile utilityTrailerComment
+          %%
+          %% cause utility define to be included in generated code
+          %%
+          %assign utilityDef = utilityHeaderComment + utilityDef + utilityTrailerComment
+          %%          
+          %<SLibDumpUtilsMacro(utilityName,utilityDef)>\
+          %%
+      %endif  %% definition of shift utility
+    %endif
+    %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+    %<LibAddtoSharedUtilsIncludesVector(GSUStackBuf)>
+    %%
+    %return resultString
+    %%
+%endfunction  %% LibGenLogicShiftRight
+
+
+
+%% Function: FixPt_StripStorageName ======================================
+%%
+%% Abstract:  From a Fixed Point Data Type Name, get the part that specifices
+%%            the storage type.
+%% Examples
+%%              dataTypeName                storageTypeName
+%%
+%%              sfix32_En31                 sfix32
+%%              sfix16_En10                 sfix16
+%%              sfix16_S13000en3Bn15000en3  sfix16
+%%              sfix16_S70000en4B22000en3   sfix16
+%%              sfix16_Bn15000en3           sfix16
+%%              sfix8_E1                    sfix8
+%%
+%function FixPt_StripStorageName(dataTypeName) void
+    %%
+    %% init storage name
+    %%
+    %assign storageTypeName = ""
+    %%
+    %% determine total number of characters
+    %%
+    %assign numchar = SIZE(dataTypeName,1)
+    %%
+    %% search through chars until first underscore
+    %%
+    %foreach i = numchar
+        %%
+        %% stop on first underscore
+        %%
+        %if ( dataTypeName[i] == "_" )
+            %%
+            %break
+            %%
+        %%
+        %% append all preceeding chars
+        %%
+        %else
+            %%
+            %assign storageTypeName = storageTypeName + dataTypeName[i]
+            %%
+        %endif
+    %endforeach
+    %%
+    %return storageTypeName
+    %%
+%endfunction  %% FixPt_StripStorageName
+
+
+
+%% Function: LibNewLine2BackSlashNewLine ==========================================
+%%
+%% Abstract:  Takes a char buffer and replaces all newlines "\n"
+%%            with backslashes followed by newlines.
+%%            These is useful for converting buffer with multiple lines
+%%            of C code into code that is suitable for use as a multiline
+%%            C macro.
+%%
+%function LibNewLine2BackSlashNewLine(oldbuffer) Output
+    %assign newbuffer = FEVAL("strrep",oldbuffer,"\n"," \\\n")
+    %return newbuffer
+%endfunction  %% LibNewLine2BackSlashNewLine
+
+
+
+%% Function: LibCountNonEmptyLines ==========================================
+%%
+%% Abstract:  Takes a char buffer and counts the number of
+%%            non-empty lines
+%%
+%function LibCountNonEmptyLines(oldbuffer) void
+    %assign count = 0
+    %%
+    %% don't consider last char, because if it is a newline, the line is empty
+    %%
+    %assign numchar = SIZE(oldbuffer,1)-1
+    %foreach i = numchar
+        %%
+        %% a newline char should be counted unless it is immediately
+        %% followed by another newline
+        %%
+        %if ( oldbuffer[i] == "\n" ) && ( oldbuffer[i+1] != "\n" )
+            %assign count = count + 1
+        %endif
+    %endforeach
+    %return count
+%endfunction  %% LibCountNonEmptyLines
+
+
+
+%% Function: FixPt_DataTypeIsFloat ==========================================
+%%
+%function FixPt_DataTypeIsFloat(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( dataType.NativeType == "real_T" || dataType.NativeType == "real32_T" )
+    %%
+%endfunction  %% FixPt_DataTypeIsFloat
+
+
+
+%% Function: FixPt_DataTypeIsDouble ==========================================
+%%
+%function FixPt_DataTypeIsDouble(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( dataType.NativeType == "real_T" )
+    %%
+%endfunction  %% FixPt_DataTypeIsDouble
+
+
+%% Function: FixPt_DataTypeIsSingle ==========================================
+%%
+%function FixPt_DataTypeIsSingle(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( dataType.NativeType == "real32_T" )
+    %%
+%endfunction  %% FixPt_DataTypeIsSingle
+
+
+
+%% Function: FixPt_DataTypeIsInt ==========================================
+%%
+%function FixPt_DataTypeIsInt(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( dataType.IsSigned && ...
+              dataType.RequiredBits == IntegerSizes.IntNumBits && ...
+              !FixPt_DataTypeIsFloat(dataType) )
+    %%
+%endfunction  %% FixPt_DataTypeIsInt
+
+
+
+%% Function: FixPt_DataTypeIsLong =============================================
+%%
+%function FixPt_DataTypeIsLong(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( dataType.IsSigned && ...
+              dataType.RequiredBits == IntegerSizes.LongNumBits && ...
+              !FixPt_DataTypeIsFloat(dataType) )
+    %%
+%endfunction  %% FixPt_DataTypeIsLong
+
+
+
+%% Function: FixPt_DataTypeIsUnsignedInt ======================================
+%%
+%function FixPt_DataTypeIsUnsignedInt(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( !dataType.IsSigned && ...
+              dataType.RequiredBits == IntegerSizes.IntNumBits && ...
+              !FixPt_DataTypeIsFloat(dataType) )
+    %%
+%endfunction  %% FixPt_DataTypeIsUnsignedInt
+
+
+
+%% Function: FixPt_DataTypeIsUnsignedLong =====================================
+%%
+%function FixPt_DataTypeIsUnsignedLong(dataType) void
+    %%
+    %assert TYPE(dataType) == "Scope"
+    %%
+    %return ( !dataType.IsSigned && ...
+              dataType.RequiredBits == IntegerSizes.LongNumBits && ...
+              !FixPt_DataTypeIsFloat(dataType) )
+    %%
+%endfunction  %% FixPt_DataTypeIsUnsignedLong
+
+
+
+%% Function: FixPt_DataTypeMinMax ==========================================
+%%
+%% Abstract:
+%%    Get the maximum value for a given data type
+%%
+%%
+%function FixPt_DataTypeMinMax(dataType) void
+    %%
+    %% get integer minimums and maximums
+    %%
+        %assign intMax = 1.0
+        %%
+        %foreach i = (dataType.RequiredBits - dataType.IsSigned)
+            %assign intMax = 2.0 * intMax
+        %endforeach
+        %%
+        %% get minimum
+        %%
+        %if dataType.IsSigned
+            %assign intMin = -1.0 * intMax
+        %else
+            %assign intMin = 0.0
+        %endif
+        %%
+        %% adjust maximum
+        %%
+        %assign intMax = intMax - 1.0
+     %%
+     %% get total slope
+     %%
+        %assign totalSlope = 1.0 * dataType.FracSlope
+        %%
+        %if dataType.FixedExp > 0
+
+            %foreach i = dataType.FixedExp
+
+                %assign totalSlope = 2.0 * totalSlope
+
+            %endforeach
+        %%
+        %elseif dataType.FixedExp < 0
+
+            %foreach i = (-dataType.FixedExp)
+
+                %assign totalSlope = totalSlope / 2.0
+
+            %endforeach
+        %endif
+     %%
+     %% get total minimum and maximum
+     %%
+     %assign totalMin = ( totalSlope * intMin ) + 1.0 * dataType.Bias
+     %assign totalMax = ( totalSlope * intMax ) + 1.0 * dataType.Bias
+
+    %%
+    %return [%<totalMin>, %<totalMax>]
+    %%
+%endfunction  %% FixPt_DataTypeMinMax
+
+
+
+%% Function: LibFixPointFormDataTypeName ==========================================
+%%
+%function LibFixPointFormDataTypeName(isSigned,requiredBits,fixedExp) void
+    %%
+    %if isSigned
+        %assign dataTypeName  = "sfix%<requiredBits>_"
+    %else
+        %assign dataTypeName  = "ufix%<requiredBits>_"
+    %endif
+    %%
+    %if fixedExp < 0
+        %assign dataTypeName  = dataTypeName + "En%<-fixedExp>"
+    %elseif fixedExp > 0
+        %assign dataTypeName  = dataTypeName + "E%<fixedExp>"
+    %endif
+    %%
+    %return dataTypeName
+    %%
+%endfunction  %% LibFixPointFormDataTypeName
+
+
+
+%% Function: FixPt_DisplayRecordGrunt =========================================
+%%
+%% Abstract:
+%%    Display to STDOUT the info in a record.
+%%
+%%    curRec           Record    
+%%    comment          String    
+%%
+%function FixPt_DisplayRecordGrunt(curRec,level) Output
+    %%
+    %assign preFix = ""
+    %assign preInc = "   "
+    %%
+    %foreach i = level
+        %assign preFix = preFix + preInc
+    %endforeach
+    %%
+    %assign curFields = FIELDNAMES(curRec)
+    %%
+    %foreach iField = SIZE(curFields,1)
+        %%
+        %assign curVal = GETFIELD(curRec,curFields[iField])
+        %%        
+        %assign nRows = SIZE(curVal,0)
+        %%
+        %assign nCols = SIZE(curVal,1)
+        %%
+        %% determine the TYPE 
+        %%   special treatment to arrays of scopes must be given
+        %%
+        %if nRows == 1 && nCols > 1
+          %if TYPE(curVal[0]) == "Scope"
+            %assign outerType = "Scope"
+          %else
+            %assign outerType = TYPE(curVal)
+          %endif
+        %else
+          %assign outerType = TYPE(curVal)
+        %endif
+        %%
+        %if outerType == "String" || outerType == "Identifier"
+          %%
+%<preFix>%<curFields[iField]>     %<outerType>     %<curVal>
+          %%
+        %else         
+          %%
+          %assign curLine = "%<preFix>%<preInc>"
+          %%
+          %if outerType == "Matrix"
+            %%
+%<preFix>%<curFields[iField]>     Matrix (%<nRows>,%<nCols>)
+            %%
+          %elseif outerType == "Vector"
+            %%
+%<preFix>%<curFields[iField]>     Vector (%<nCols>)
+            %%
+          %elseif nRows > 1 && nCols > 1
+            %%
+%<preFix>%<curFields[iField]>     (%<nRows>,%<nCols>)
+            %%
+          %elseif nRows > 1
+            %%
+%<preFix>%<curFields[iField]>     (%<nRows>)
+            %%
+          %elseif nCols > 1
+            %%
+%<preFix>%<curFields[iField]>     (%<nCols>)
+            %%
+          %else
+            %%
+            %assign curLine = "%<preFix>%<curFields[iField]>"
+            %%
+          %endif
+          %%
+          %foreach iRow = nRows
+              %foreach iCol = nCols
+                  %%
+                  %assign curLine = "%<preFix>%<curFields[iField]>"
+                  %%
+                  %if outerType == "Matrix"
+                      %assign curElem = curVal[iRow][iCol]
+                      %assign nextLevel = level+2
+                      %assign curLine = curLine + "[%<iRow>][%<iCol>]  "
+                      %%
+                  %elseif outerType == "Vector"
+                      %assign curElem = curVal[iCol]
+                      %assign nextLevel = level+2
+                      %assign curLine = curLine + "[%<iCol>]  "
+                      %%
+                  %else
+                    %if nRows > 1 && nCols > 1
+                        %assign curElem = curVal[iRow][iCol]
+                        %assign nextLevel = level+2
+                        %assign curLine = curLine + "[%<iRow>][%<iCol>]  "
+                    %elseif nRows > 1
+                        %assign curElem = curVal[iRow]               
+                        %assign nextLevel = level+2
+                        %assign curLine = curLine + "[%<iRow>]  "
+                    %elseif nCols > 1
+                        %assign curElem = curVal[iCol]
+                        %assign nextLevel = level+2
+                        %assign curLine = curLine + "[%<iCol>]  "
+                    %else
+                        %assign nextLevel = level+1
+                        %assign curElem = curVal
+                        %assign curLine = curLine + "     "
+                    %endif
+                  %endif 
+                  %%
+                  %assign curType = TYPE(curElem)
+                  %%
+                  %assign curLine = curLine + "%<curType>     "
+                  %%
+                  %if curType == "Scope"
+                      %%
+%<curLine>
+                      %assign dummy = FixPt_DisplayRecordGrunt( curElem, nextLevel )
+                      %%
+                  %else
+                      %%
+                  %assign curLine = curLine + "%<curElem>"
+%<curLine>
+                      %%
+                  %endif
+              %endforeach
+          %endforeach  
+       %endif  
+    %endforeach    
+    %%
+    %return ""
+    %%
+%endfunction  %% FixPt_DisplayRecordGrunt
+
+%% Function: FixPt_DisplayRecord ==========================================
+%%
+%% Abstract:
+%%    Display to STDOUT the info in a record.
+%%
+%%    curRec           Record    
+%%    comment          String    
+%%
+%function FixPt_DisplayRecord(curRec,comment) void
+    %%
+    %% put to standard output
+    %%   must violate indenting for proper display
+    %%
+    %selectfile STDOUT
+
+##############################################################################
+Display Record
+  %<comment>
+####################################
+    %%
+    %% process each field
+    %%
+    %<FixPt_DisplayRecordGrunt( curRec, 0 )>\
+    %%
+    %% put blank line at end
+    %%
+####################################
+##############################################################################
+
+    %closefile STDOUT
+    %%
+    %return ""
+    %%
+%endfunction  %% FixPt_DisplayRecord
+
+
+
+%% Function: FixPt_DataTypeComment ======================================
+%%
+%% Abstract:
+%%   Create a string that is a standardized comment about a signal or
+%%   parameters data type.
+%%
+%% Synopsis:
+%%      outStr = FixPt_DataTypeComment(curDT, inStr)
+%%
+%function FixPt_DataTypeComment(curDT, inStr) void
+    %%
+    %% supports floating point including doubles override
+    %%
+    %if FixPt_DataTypeIsFloat(curDT)
+        %assign storeType = curDT.NativeType
+        %assign dtClass = "Floating Point "
+    %else
+        %if curDT.IsSigned
+           %assign storeType = "S"+STRING(curDT.RequiredBits)
+        %else
+           %assign storeType = "U"+STRING(curDT.RequiredBits)
+        %endif
+        %if (curDT.FixedExp == 0.0) && (curDT.FracSlope == 1.0) && (curDT.Bias == 0.0)
+          %assign dtClass = "Pure Integer   "
+        %else
+          %assign dtClass = "Fixed Point    "
+        %endif
+    %endif
+    %%
+    %assign outStr = "* "+STRING(inStr)+" Data Type:  "+dtClass+storeType
+    %%
+    %if (curDT.FixedExp != 0.0)
+        %assign outStr = outStr+"  2^"+STRING(curDT.FixedExp)
+    %endif
+    %%
+    %if (curDT.FracSlope != 1.0)
+        %assign outStr = outStr+"  FSlope "+STRING(curDT.FracSlope)
+    %endif
+    %%
+    %if (curDT.Bias != 0.0)
+        %assign outStr = outStr+"  Bias "+STRING(curDT.Bias)
+    %endif
+    %%
+    %return outStr
+    %%
+%endfunction %% FixPt_DataTypeComment
+
+
+
+%% Function: FixPt_GeneralComments ======================================
+%%
+%% Abstract:
+%%   Output general comments about data types of inputs, outputs, gain, and
+%%   rounding and saturation modes.
+%%
+%% Synopsis:
+%%      FixPt_GeneralComments()
+%%
+%function FixPt_GeneralComments() Output
+    %%
+    %% determine if any input or output ports are complex
+    %%
+    %assign anyComplex = 0
+    %%
+    %foreach portIdx = NumDataOutputPorts
+        %if LibBlockOutputSignalIsComplex(portIdx)
+            %assign anyComplex = 1
+            %break
+        %endif
+    %endforeach
+    %if !anyComplex
+        %foreach portIdx = NumDataInputPorts
+            %if LibBlockInputSignalIsComplex(portIdx)
+                %assign anyComplex = 1
+                %break
+            %endif
+        %endforeach
+    %endif
+    %%
+    %% comment on input data type
+    %%
+    %foreach portIdx = NumDataInputPorts
+        %%
+        %% Get input data type
+        %%
+        %assign portDT  = FixPt_GetInputDataType(portIdx)
+        %%
+        %if anyComplex
+            %if LibBlockInputSignalIsComplex(portIdx)
+                %<FixPt_DataTypeComment(portDT, "Input%<portIdx>  Complex")>
+            %else
+                %<FixPt_DataTypeComment(portDT, "Input%<portIdx>  Real   ")>
+            %endif
+        %else
+            %<FixPt_DataTypeComment(portDT, "Input%<portIdx> ")>
+        %endif
+        %%
+    %endforeach
+    %%
+    %% comment on output data type
+    %%
+    %foreach portIdx = NumDataOutputPorts
+        %%
+        %% Get input data type
+        %%
+        %assign portDT  = FixPt_GetOutputDataType(portIdx)
+        %%
+        %if anyComplex
+            %if LibBlockOutputSignalIsComplex(portIdx)
+                %<FixPt_DataTypeComment(portDT, "Output"+STRING(portIdx)+" Complex")>
+            %else
+                %<FixPt_DataTypeComment(portDT, "Output"+STRING(portIdx)+" Real   ")>
+            %endif
+        %else
+            %<FixPt_DataTypeComment(portDT, "Output"+STRING(portIdx) )>
+        %endif
+        %%
+    %endforeach
+    %%
+    %% comment on modes
+    %%
+    %if EXISTS("FixPtRoundingMode")
+      %if FixPtRoundingMode != "Floor"
+        * Round Mode: %<FixPtRoundingMode>
+      %endif
+    %endif
+    %%
+    %if EXISTS("FixPtSaturationMode")
+      %if FixPtSaturationMode != "Wrap"
+         * Saturation Mode: %<FixPtSaturationMode>
+       %endif
+    %endif
+    %%
+%endfunction %% FixPt_GeneralComments
+
+
+
+%% Function: FixPt_EmulationSignExt_Snippet ===================================
+%%
+%% Abstract:
+%%  If the number of bits required by a variable is less than the actual bits,
+%%  then this function force the variable to emulate the smaller sized variable.
+%%  It is assumed that all the extra bits are at the most significant (MS) end.
+%%  This function will force the extra bits to be the same as the
+%%  "desired" sign bit.  For unsigned numbers, the desired sign bit is always
+%%  zero.  For signed numbers, the desired sign bit is NOT the MS bit of the
+%%  actual word.  Instead, it is the MS bit of the required word size.
+%%
+%function FixPt_EmulationSignExt_Snippet(cLabel,cDT) void
+    %%
+    %assign cIsFloat = FixPt_DataTypeIsFloat(cDT)
+    %%
+    %% do nothing for floats
+    %%
+    %if cIsFloat
+        %return cLabel
+    %endif
+    %%
+    %% if emulating a smaller data type then force extra bits
+    %% to sign value
+    %%
+    %assign extraBits = cDT.ActualBits - cDT.RequiredBits
+    %%
+    %if extraBits <= 0
+        %return cLabel
+    %endif
+    %%
+    %if cDT.IsSigned
+      %%
+      %%    if the bit representing the sign of the emulated number is 1
+      %% then after wrapping the emulated number is negative so all the bits
+      %% padded on the left end should be forced to one.  This is done by
+      %% bit-wise ORing with a mask of the form 111000000.
+      %%    if the bit representing the sign of the emulated number is 0
+      %% then after wrapping the emulated number is positive so all the bits
+      %% padded on the left end should be forced to zero.  This is done by
+      %% bit-wise ANDing with a mask of the form 00011111.
+      %%
+      %assign emulSignBit = UPowerOfTwoStr(cDT.RequiredBits-1)
+      %assign posMask = SetLSNBitsStr( cDT.RequiredBits-1, cDT.ActualBits, cDT.IsSigned)
+      %assign negMask = SetMSNBitsStr( extraBits+1,        cDT.ActualBits, cDT.IsSigned)
+      %%
+      %return "(((%<cLabel>)&%<emulSignBit>)?((%<cLabel>)|%<negMask>):((%<cLabel>)&%<posMask>))"
+      %%
+    %else
+      %%
+      %%  Number always treated as positive so jam all the bits
+      %% padded on the left end should be forced to zero.  This is done by
+      %% bit-wise ANDing with a mask of the form 00011111.
+      %%
+      %assign posMask = SetLSNBitsStr( cDT.RequiredBits, cDT.ActualBits, cDT.IsSigned)
+      %%
+      %return "((%<cLabel>)&%<posMask>)"
+      %%
+    %endif
+    %%
+%endfunction %% FixPt_EmulationSignExt_Snippet
+
+
+
+%% Function: FixPt_EmulationSignExt ======================================
+%%
+%% Abstract:
+%%  If the number of bits required by a variable is less than the actual bits,
+%%  then this function force the variable to emulate the smaller sized variable.
+%%  It is assumed that all the extra bits are at the most significant (MS) end.
+%%  This function will force the extra bits to be the same as the
+%%  "desired" sign bit.  For unsigned numbers, the desired sign bit is always
+%%  zero.  For signed numbers, the desired sign bit is NOT the MS bit of the
+%%  actual word.  Instead, it is the MS bit of the required word size.
+%%
+%% Synopsis:
+%%      FixPt_EmulationSignExt(cLabel,cDT)
+%%
+%%      cLabel = label containing an l-value for the variable
+%%      cDT    = record containg all the fixed point data type info
+%%
+%function FixPt_EmulationSignExt(cLabel,cDT) Output
+    %%
+    %assign cIsFloat = FixPt_DataTypeIsFloat(cDT)
+    %%
+    %% do nothing for floats
+    %%
+    %if cIsFloat
+        %return
+    %endif
+    %%
+    %% if emulating a smaller data type then force extra bits
+    %% to sign value
+    %%
+    %assign extraBits = cDT.ActualBits - cDT.RequiredBits
+    %%
+    %if extraBits <= 0
+        %return ""
+    %endif
+    %%
+     /* EMULATION CODE for use on a prototype target whose data types
+      * do not match the data types of the final production target.
+      *
+    %%
+    %if cDT.IsSigned
+      %%
+      * A %<cDT.RequiredBits> bit signed number is being emulated inside
+      * a %<cDT.ActualBits> bit signed number.  The extra %<extraBits> bits
+      * are at the MS end.  These extra bits will be forced to equal
+      * the emulation sign bit, ie bit %<cDT.RequiredBits-1>.
+      */
+      %%
+      %%    if the bit representing the sign of the emulated number is 1
+      %% then after wrapping the emulated number is negative so all the bits
+      %% padded on the left end should be forced to one.  This is done by
+      %% bit-wise ORing with a mask of the form 111000000.
+      %%    if the bit representing the sign of the emulated number is 0
+      %% then after wrapping the emulated number is positive so all the bits
+      %% padded on the left end should be forced to zero.  This is done by
+      %% bit-wise ANDing with a mask of the form 00011111.
+      %%
+      %assign emulSignBit = UPowerOfTwoStr(cDT.RequiredBits-1)
+      %assign posMask = SetLSNBitsStr( cDT.RequiredBits-1, cDT.ActualBits, cDT.IsSigned)
+      %assign negMask = SetMSNBitsStr( extraBits+1,        cDT.ActualBits, cDT.IsSigned)
+      %%
+      if ( %<cLabel> & %<emulSignBit> )
+      {
+         /* force extra bits to 1 ie negative */
+         %<cLabel> = %<cLabel> | %<negMask>;
+      }
+      else
+      {
+         /* force extra bits to 0 ie positive */
+         %<cLabel> = %<cLabel> & %<posMask>;
+      }
+      %%
+    %else
+      %%
+      * A %<cDT.RequiredBits> bit unsigned number is being emulated inside
+      * a %<cDT.ActualBits> bit unsigned number.  The extra %<extraBits> bits
+      * are at the MS end.  These extra bits will be forced to zero.
+      */
+      %%
+      %%  Number always treated as positive so jam all the bits
+      %% padded on the left end should be forced to zero.  This is done by
+      %% bit-wise ANDing with a mask of the form 00011111.
+      %%
+      %assign posMask = SetLSNBitsStr( cDT.RequiredBits, cDT.ActualBits, cDT.IsSigned)
+      %%
+         %<cLabel> = %<cLabel> & %<posMask>;
+      %%
+    %endif
+    %%
+%endfunction %% FixPt_EmulationSignExt
+
+
+
+%function fxpPrivateInputIsInvariant(portIdx) void
+    %%
+    %% get the appropriate (either DataInput or Control) input port record
+    %%
+    %assign ip = FcnGetInputPortRecord(portIdx)
+    %%
+    %% idNum[0] is B (BlockOutputsMap), X (StatesMap), U (ExternalInputsMap),
+    %% or G (Ground), and idNum[1] is the index into the respective map.
+    %%
+    %assign sigRec = SLibGetSourceRecord(ip, 0)
+    %%
+    %if !ISEMPTY(sigRec) && sigRec.RecordType == "BlockOutput"
+        %assign retVal = sigRec.Invariant
+        %if sigRec.Invariant == "yes"
+            %if ISFIELD(sigRec,"InitialValue") && SIZE(sigRec.InitialValue,1) > 0
+                %assign retVal = sigRec.InitialValue
+            %elseif ISFIELD(sigRec,"CustomInitialValue")
+                %assign retVal = sigRec.CustomInitialValue
+            %else 
+              %assign mapSource = IDNUM(ip.SignalSrc[0])[0]
+              %%
+              %if (mapSource == "I" || mapSource == "C")
+                %assign portWidth = LibBlockInputSignalWidth(portIdx)
+                %assign retVal = []
+                %foreach idx = portWidth
+                  %assign curVal = FEVAL("eval",LibBlockInputSignal(portIdx,"","",idx),"'no'")
+                   %if TYPE(curVal) == "String"
+                     %assign retVal = "no"
+                     %break
+                   %else
+                     %assign uDT  = FixPt_GetInputDataType(portIdx)
+                     %%
+                     %if FixPt_DataTypeIsFloat(uDT)
+                       %%
+                       %if FixPt_DataTypeIsSingle(uDT)
+                         %%
+                         %assign curVal = CAST("Real32",curVal)
+                         %%
+                       %else
+                         %%
+                         %assign curVal = CAST("Real",curVal)
+                         %%
+                       %endif
+                     %else
+                       %%
+                       %if uDT.IsSigned
+                         %%
+                         %assign curVal = CAST("Number",curVal)
+                         %%
+                       %else
+                         %%
+                         %assign curVal = CAST("Unsigned",curVal)
+                         %%
+                       %endif
+                     %endif
+                     %assign retVal = retVal + curVal
+                   %endif
+                %endforeach
+              %else
+                %assign retVal = "no"
+              %endif
+            %endif
+        %else
+            %assign retVal= "no"
+        %endif
+    %else
+        %assign retVal = "no"
+    %endif
+    %%
+    %return retVal
+    %%
+%endfunction %% LibBlockInputIsInvariant
+
+
+
+%% FixPt_IsZeroNumericOrString
+%%
+%function FixPt_IsZeroNumericOrString(in) void
+  %%
+  %if ISEQUAL(0.0,in)
+    %%
+    %return 1
+    %%
+  %elseif TYPE(in) == "String"
+    %%
+    %if in[0] != "("
+      %%
+      %assign in = "(" + in + ")"
+      %%
+    %endif
+    %%
+    %if ISEQUAL("(0)",in)
+      %%
+      %return 1
+      %%
+    %elseif in[1] == "0"
+      %%
+      %if in[2] == "."
+        %%
+        %return ISEQUAL("(0.0)",  in) || ...
+                ISEQUAL("(0.0F)", in) || ...
+                ISEQUAL("(0.0f)", in)
+        %%
+      %elseif in[2] == "U"
+        %%
+        %return ISEQUAL("(0U)",   in) || ...
+                ISEQUAL("(0UL)",  in) || ...
+                ISEQUAL("(0Ul)",  in)
+        %%
+      %elseif in[2] == "L"
+        %%
+        %return ISEQUAL("(0L)",   in) || ...
+                ISEQUAL("(0LU)",  in) || ...
+                ISEQUAL("(0Lu)",  in)
+        %%
+      %elseif in[2] == "u"
+        %%
+        %return ISEQUAL("(0u)",   in) || ...
+                ISEQUAL("(0uL)",  in) || ...
+                ISEQUAL("(0ul)",  in)
+        %%
+      %elseif in[2] == "l"
+        %%
+        %return ISEQUAL("(0l)",   in) || ...
+                ISEQUAL("(0lU)",  in) || ...
+                ISEQUAL("(0lu)",  in)
+        %%
+      %elseif in[2] == "x"
+        %%
+        %return ISEQUAL("(0x0)",        in) || ...
+                ISEQUAL("(0x00)",       in) || ...
+                ISEQUAL("(0x0000)",     in) || ...
+                ISEQUAL("(0x00000000)", in)
+        %%
+      %else
+        %return 0
+      %endif  
+    %else
+      %return 0
+    %endif
+  %else
+    %return 0
+  %endif
+%endfunction %% FixPt_IsZeroNumericOrString
+
+%% FixPt_LibBlockSetIsExpressionCompliant
+%%
+%function FixPt_LibBlockSetIsExpressionCompliant(block,system) void
+  %%
+  %foreach portIdx = NumDataOutputPorts
+    %%
+    %assign yDT = FixPt_GetOutputDataType(portIdx)
+    %%
+    %if yDT.ActualBits != yDT.RequiredBits
+      %%
+      %% sign extension needed so no expression compliant
+      %%
+      %return ""
+    %endif
+  %endforeach
+  %%
+  %foreach portIdx = NumDataInputPorts
+    %%
+    %assign uDT = FixPt_GetInputDataType(portIdx)
+    %%
+    %if uDT.ActualBits != uDT.RequiredBits
+      %%
+      %% sign extension needed so no expression compliant
+      %%
+      %return ""
+    %endif
+  %endforeach
+  %%
+  %% did not return early, so no ports required sign extension
+  %%
+  %<LibBlockSetIsExpressionCompliant(block)>\
+  %<LibBlockSetIntegerDowncastUnnecessary(block)>\
+  %%
+%endfunction %% FixPt_LibBlockSetIsExpressionCompliant
+
+
+
+%% FixPt_ProtectDataTypeOfExpression
+%%
+%function FixPt_ProtectDataTypeOfExpression(rightSideStr,yDT,uDT) void
+  %%
+  %assign protect = 0
+  %%
+  %if     FixPt_DataTypeIsDouble(yDT) && !FixPt_DataTypeIsDouble(uDT) 
+    %%
+    %assign protect = 1
+    %%
+  %elseif FixPt_DataTypeIsSingle(yDT) && !FixPt_DataTypeIsSingle(uDT) 
+    %%
+    %assign protect = 1
+    %%
+  %elseif FixPt_DataTypeIsFloat(uDT) 
+    %%
+    %assign protect = 1
+    %%
+  %elseif   yDT.ActualBits <  IntegerSizes.IntNumBits || ...
+          ( yDT.ActualBits == IntegerSizes.IntNumBits && uDT.ActualBits > IntegerSizes.IntNumBits )
+    %%
+    %assign protect = 1
+    %%
+  %endif
+  %%
+  %if protect
+    %%
+    %assign rightSideStr = SLibProcessSafeExpression(Name, rightSideStr, 1)
+    %%
+    %assign rightSideStr = "((%<yDT.NativeType>)%<rightSideStr>)"
+  %endif
+  %%
+  %return rightSideStr
+  %%
+%endfunction %% FixPt_ProtectDataTypeOfExpression
+
+
+
+%% Function: FixPt_DtConvertBetween ==================================
+%%
+%% This function is designed to convert between any combination of
+%% builtin and/or fixpt types.  It has not be designed to handle
+%% non-fixpt custom data types.  (It could be but there is no
+%% current need hence no bang for the buck).
+%%
+%function FixPt_DtConvertBetween(dTypeOut,dTypeIn,inLabel,options,outLabel) Output
+    %%
+    %assign roundMode = "Nearest"
+    %assign satMode   = "Saturate"
+    %%
+    %if TYPE(options) == "Scope"
+      %if ISFIELD(options,"roundMode")
+        %assign roundMode = options.roundMode
+      %endif
+      %if ISFIELD(options,"satMode")
+        %assign satMode = options.satMode
+      %endif
+    %endif
+    %%
+    %assign inDT  = FixPt_GetDataTypeFromIndex(dTypeIn )
+    %assign outDT = FixPt_GetDataTypeFromIndex(dTypeOut)
+    %%
+    %<FixPt_Fix2FixAlwaysOutput(outLabel,outDT,inLabel,inDT,roundMode,satMode)>\
+    %%
+    %return 1
+%endfunction  %% FixPt_DtConvertBetween
+
+
+
+%% Function: FixPt_DtIsPositive ==========================================
+%%
+%function FixPt_DtIsPositive(dTypeIn,inLabel,options,outLabel) Output
+    %%
+    %assign inDT = FixPt_GetDataTypeFromIndex(dTypeIn)
+    %%
+    %if inDT.Bias == 0.0                  
+        %%
+        %assign storedIntegerZero = "0"
+        %%
+    %else
+        %%
+        %assign storedIntegerZero = STRING(FixPt_Dbl2StoredInt(0.0,inDT))
+        %%
+    %endif
+    %%
+    %<outLabel> = ( (%<inLabel>) > (%<storedIntegerZero>) );
+    %%
+    %return 1
+%endfunction  %% FixPt_DtIsPositive
+
+
+
+%% Function: FixPt_DtGreaterThan ==========================================
+%%
+%function FixPt_DtGreaterThan(dTypeIn,in1Label,in2Label,options,outLabel) Output
+    %%
+    %% by design datatype and scaling of inputs are identical
+    %%
+    %<outLabel> = ( (%<in1Label>) > (%<in2Label>) );
+    %%
+    %return 1
+%endfunction  %% FixPt_DtGreaterThan
+
+
+
+%% Function: FixPt_DtSign ==========================================
+%%
+%function FixPt_DtSign(dTypeIn,inLabel,options,outLabel) Output
+    %%
+    %assign inDT = FixPt_GetDataTypeFromIndex(dTypeIn)
+    %%
+    %if inDT.Bias == 0.0                  
+        %%
+        %assign storedIntegerZero = "0"
+        %%
+    %else
+        %%
+        %assign storedIntegerZero = STRING(FixPt_Dbl2StoredInt(0.0,inDT))
+        %%
+    %endif
+    %%
+    %if !(inDT.IsSigned) && ( inDT.Bias >= 0.0 )
+        %%
+        %% can only be positive
+        %%
+        %<outLabel> = ( (%<inLabel>) > (%<storedIntegerZero>) );
+    %else
+        %<outLabel> = ( ((%<inLabel>)<(%<storedIntegerZero>)) ? (-1) : ((%<inLabel>)>(%<storedIntegerZero>)) );
+        %%
+    %endif
+    %%
+    %return 1
+%endfunction  %% FixPt_DtIsPositive
+
+
+%function FixPt_FloatingPointNotSupported(uDT) void
+    %%
+    %assign uIsFloat = FixPt_DataTypeIsFloat(uDT)
+    %%
+    %if uIsFloat
+      %%START_ASSERT
+      %assign errTxt = "Block: %<MaskBlockName> Floating point signals are not supported by this function."
+      %<LibReportFatalError(errTxt)>\
+      %%END_ASSERT
+    %endif
+%endfunction  %% FixPt_FloatingPointNotSupported
+
+%function FixPt_UtilityNameAppendDT(utilityName,yDT) void
+  %%
+  %if FixPt_DataTypeIsFloat(yDT)
+    %assign utilityName = utilityName + "_" + yDT.NativeType
+  %else
+    %if yDT.IsSigned
+      %assign utilityName = utilityName + "_S"
+    %else
+      %assign utilityName = utilityName + "_U"
+    %endif
+    %assign utilityName = utilityName + STRING(yDT.RequiredBits)
+  %endif
+  %%
+  %return utilityName
+  %%
+%endfunction %% FixPt_UtilityNameAppendDT
+
+
+%function FixPt_UtilityNameAppendDTPair(utilityName,aDT,bDT) void
+  %%
+  %assign utilityName = utilityName + "_"
+  %%
+  %if FixPt_DataTypeIsFloat(aDT)
+    %assign utilityName = utilityName + aDT.NativeType
+  %else
+    %if aDT.IsSigned
+      %assign utilityName = utilityName + "S"
+    %else
+      %assign utilityName = utilityName + "U"
+    %endif
+    %assign utilityName = utilityName + STRING(aDT.RequiredBits)
+  %endif
+  %%
+  %if FixPt_DataTypeIsFloat(bDT)
+    %%
+    %if bDT.NativeType != aDT.NativeType
+      %assign utilityName = utilityName + bDT.NativeType
+    %endif
+  %else
+    %if FixPt_DataTypeIsFloat(aDT)           || ...
+        bDT.IsSigned     != aDT.IsSigned     || ...
+        bDT.RequiredBits != aDT.RequiredBits
+      %%
+      %if bDT.IsSigned
+        %assign utilityName = utilityName + "S"
+      %else
+        %assign utilityName = utilityName + "U"
+      %endif
+      %assign utilityName = utilityName + STRING(bDT.RequiredBits)
+    %endif
+  %endif
+  %%
+  %assign ExPrec = bDT.FixedExp - aDT.FixedExp
+  %if ExPrec < 0
+    %assign utilityName = utilityName + "L"
+    %assign utilityName = utilityName + STRING(-ExPrec)
+  %elseif ExPrec > 0
+    %assign utilityName = utilityName + "R"
+    %assign utilityName = utilityName + STRING(ExPrec)
+  %endif
+  %%
+  %if aDT.FracSlope != bDT.FracSlope
+    %%
+    %%START_ASSERT
+    %<LibReportFatalError("FixPt_UtilityNameAppendDTPair used improperly. The fractional slopes of the two data types must be the same.")>
+    %%END_ASSERT
+    %%
+  %endif
+  %%
+  %if aDT.Bias != bDT.Bias
+    %%
+    %%START_ASSERT
+    %<LibReportFatalError("FixPt_UtilityNameAppendDTPair used improperly. The biases of the two data types must be the same.")>
+    %%END_ASSERT
+    %%
+  %endif
+  %%    
+  %return utilityName
+  %%
+%endfunction %% FixPt_UtilityNameAppendDTPair
+
+
+%function FixPt_UtilityNameAppendMode(utilityName,roundMode,satMode) void
+  %%
+  %if satMode == "Saturate"
+    %assign utilityName = utilityName + "_SAT"
+  %else
+    %%%assign utilityName = utilityName + "_WRAP"
+  %endif
+  %%
+  %if roundMode == "Zero"
+    %assign utilityName = utilityName + "_ZERO"
+  %elseif roundMode == "Nearest"
+    %assign utilityName = utilityName + "_NEAR"
+  %elseif roundMode == "Ceiling"
+    %assign utilityName = utilityName + "_CEILING"
+  %elseif roundMode == "Floor"
+    %% do not append name
+    %%%assign utilityName = utilityName + "_FLOOR"   
+    %% do not append name
+  %%%elseif roundMode == "Easiest"
+    %% not yet supported
+  %else
+    %assign utilityName = utilityName + "_ROUNDERROR"   
+  %endif
+  %%
+  %return utilityName
+  %%
+%endfunction %% FixPt_UtilityNameAppendDT
+
+
+%%
+%% End of function library code
+%%
+
+%%
+%% define various binary masks
+%%
+%% Warning: these algorithms rely on the fact that
+%% unsigned longs have multiples of 4 bits.
+%%
+%assign ULong_Lo_Mask = ...
+    SetLSNBitsStr(IntegerSizes.LongNumBits/2,IntegerSizes.LongNumBits,0)
+%%
+%% end define binary masks
+%%
+
+
+
+%%
+%% insert C preprocessor code to check for agreement of
+%% integer sizes
+%%
+%if !ISFIELD(CTargetSpecific,"PreprocMaxBitsSint")
+  %%
+  %addtorecord CTargetSpecific PreprocMaxBitsSint 128
+  %%
+%endif
+
+%if !ISFIELD(CTargetSpecific,"PreprocMaxBitsUint")
+  %%
+  %addtorecord CTargetSpecific PreprocMaxBitsUint 128
+  %%
+%endif
+%%
+
+%% loop through the model data types and search for fixed point types
+%assign UsesFixedPointMath = TLC_FALSE
+%with CompiledModel.DataTypes
+  %foreach i=NumDataTypes
+    %if DataType[i].IsFixedPoint == 1
+      %assign UsesFixedPointMath = TLC_TRUE
+      %break
+    %endif
+  %endforeach
+%endwith
+%% only put the wor size checks in if fixed point data types are used
+%if UsesFixedPointMath == TLC_TRUE
+%openfile buffer
+%%
+%assign signedYes = 1
+%assign signedNo  = 0
+
+%%
+%% make sure limits.h has been included
+%%
+#ifndef UCHAR_MAX
+#include <limits.h>
+#endif
+%%
+%%
+%% check CHARS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.CharNumBits),IntegerSizes.CharNumBits,signedNo)
+%%
+
+%if IntegerSizes.CharNumBits > CTargetSpecific.PreprocMaxBitsUint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( UCHAR_MAX != %<mask> )
+#error Code was generated for compiler with different sized uchars.
+#endif
+%if IntegerSizes.CharNumBits > CTargetSpecific.PreprocMaxBitsUint
+#endif
+%endif
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.CharNumBits-1),IntegerSizes.CharNumBits,signedYes)
+%%
+
+%if IntegerSizes.CharNumBits > CTargetSpecific.PreprocMaxBitsSint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( SCHAR_MAX != %<mask> )
+#error Code was generated for compiler with different sized chars.
+#endif
+%if IntegerSizes.CharNumBits > CTargetSpecific.PreprocMaxBitsSint
+#endif
+%endif
+%%
+%% check SHORTS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.ShortNumBits),IntegerSizes.ShortNumBits,signedNo)
+%%
+
+%if IntegerSizes.ShortNumBits > CTargetSpecific.PreprocMaxBitsUint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( USHRT_MAX != %<mask> )
+#error Code was generated for compiler with different sized ushorts.
+#endif
+%if IntegerSizes.ShortNumBits > CTargetSpecific.PreprocMaxBitsUint
+#endif
+%endif
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.ShortNumBits-1),IntegerSizes.ShortNumBits,signedYes)
+%%
+
+%if IntegerSizes.ShortNumBits > CTargetSpecific.PreprocMaxBitsSint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( SHRT_MAX != %<mask> )
+#error Code was generated for compiler with different sized shorts.
+#endif  
+%if IntegerSizes.ShortNumBits > CTargetSpecific.PreprocMaxBitsSint
+#endif
+%endif
+%%
+%% check INTS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.IntNumBits),IntegerSizes.IntNumBits,signedNo)
+%%
+
+%if IntegerSizes.IntNumBits > CTargetSpecific.PreprocMaxBitsUint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( UINT_MAX != %<mask> )
+#error Code was generated for compiler with different sized uints.
+#endif
+%if IntegerSizes.IntNumBits > CTargetSpecific.PreprocMaxBitsUint
+#endif
+%endif
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.IntNumBits-1),IntegerSizes.IntNumBits,signedYes)
+%%
+
+%if IntegerSizes.IntNumBits > CTargetSpecific.PreprocMaxBitsSint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( INT_MAX != %<mask> )
+#error Code was generated for compiler with different sized ints.
+#endif
+%if IntegerSizes.IntNumBits > CTargetSpecific.PreprocMaxBitsSint
+#endif
+%endif
+%%
+%% check LONGS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.LongNumBits),IntegerSizes.LongNumBits,signedNo)
+%%
+
+%if IntegerSizes.LongNumBits > CTargetSpecific.PreprocMaxBitsUint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( ULONG_MAX != %<mask> )
+#error Code was generated for compiler with different sized ulongs.
+#endif
+%if IntegerSizes.LongNumBits > CTargetSpecific.PreprocMaxBitsUint
+#endif
+%endif
+%%
+%assign mask = SetLSNBitsStr((IntegerSizes.LongNumBits-1),IntegerSizes.LongNumBits,signedYes)
+%%
+
+%if IntegerSizes.LongNumBits > CTargetSpecific.PreprocMaxBitsSint
+#if 0
+/* Skip this size verification because of preprocessor limitation */
+%endif
+#if ( LONG_MAX != %<mask> )
+#error Code was generated for compiler with different sized longs.
+#endif
+%if IntegerSizes.LongNumBits > CTargetSpecific.PreprocMaxBitsSint
+#endif
+%endif
+%%
+%closefile buffer
+%%
+%% cause defines to be included in generated code
+%%
+%<LibCacheDefine(buffer)>\
+%%
+%% end define integer size check
+%%
+%% end of %if UsesFixedPointMath == TLC_TRUE
+%%
+%endif
+
+
+%include "fixptmul.tlc"
+%include "fixptdiv.tlc"
+%include "fixptrecip.tlc"
+%include "fixptcast.tlc"
+%include "fixptadd.tlc"
+%include "fixptrelop.tlc"
+%include "fixptlook_support.tlc"
+%include "fixptlook_search.tlc"
+%include "fixptlook.tlc"
+%include "fixptlook1D.tlc"
+%include "fixptlook2D.tlc"
+%include "fixptfft.tlc"
+%include "fixptmatrixmul.tlc"
+
+%endif %% _FIXPTLIB_
+
+%% [EOF] %% $RCSfile: fixptlib.tlc,v $

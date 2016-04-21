@@ -1,0 +1,535 @@
+%% c6000_main.tlc
+%% $Revision: 1.20.6.4 $ 
+%% $Date: 2004/04/01 16:14:57 $
+%% Copyright 2001-2004 The MathWorks, Inc.
+%% 
+%% Abstract:
+%%   Generation of GRT-based main.c file for 
+%%   Embedded Target for TI C6000 DSP.
+%%   Most of the content is based on rtw/c/grt/grt_main.c.  
+%%   External mode, mat-file logging, and continuous states
+%%   are not supported by this target.  
+
+%include "c6000_main_common.tlc"
+
+%% ==============================================================
+%function render_rtOneStep() void
+%%
+%openfile buff
+%if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+  %<render_singletasking_rtonestep()>
+%else
+    %%#define FIRST_TID %<CompiledModel.FixedStepOpts.TID01EQ>
+    %if CompiledModel.FixedStepOpts.TID01EQ == 1
+        /* TID01EQ = 1 */
+        #define FIRST_TID 1
+    %else
+        /* TID01EQ = 0 */
+        #define FIRST_TID 0
+    %endif
+
+    %<render_multitasking_rtonestep()>
+%endif
+%closefile buff
+%return buff
+%endfunction %% render_rtOneStep
+
+
+%% ==============================================================
+%function render_singletasking_rtonestep() void
+%%
+%openfile buff
+/* Function: rt_OneStep -------------------------------------------
+ *
+ * Abstract:
+ *      Perform one step of the model.  Single-tasking implementation.
+ */
+static void rt_OneStep(void)
+{
+    real_T tnext;
+
+    /***********************************************
+     * Check and see if base step time is too fast *
+     ***********************************************/
+
+    if (GBLbuf.overrunFlags[0]++) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    /***********************************************
+     * Check and see if error status has been set  *
+     ***********************************************/
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    tnext = rt_SimGetNextSampleHit();
+    rtsiSetSolverStopTime(rtmGetRTWSolverInfo(S),tnext);
+
+    MdlOutputs(0);
+
+    MdlUpdate(0);
+    rt_SimUpdateDiscreteTaskSampleHits(rtmGetNumSampleTimes(S),
+                                       rtmGetTimingData(S),
+                                       rtmGetSampleHitPtr(S),
+                                       rtmGetTPtr(S));
+
+%%     if (rtmGetSampleTime(S,0) == CONTINUOUS_SAMPLE_TIME) {
+%%         rt_UpdateContinuousStates(S);
+%%     }
+
+    GBLbuf.overrunFlags[0]--;
+
+} /* end rtOneStep */
+
+%closefile buff
+%return buff
+%endfunction %% render_singletasking_rtonestep
+
+
+%% ==============================================================
+%function render_multitasking_rtonestep() void
+%%
+%openfile buff
+/* Function: rtOneStep -------------------------------------------
+ *
+ * Abstract:
+ *      Perform one step of the model. Multi-tasking implementation.
+ *
+ *      This routine is modeled for use in a multitasking environment and
+ *	therefore needs to be fully re-entrant when it is called from an
+ *	interrupt service routine.
+ */
+%% static void rt_OneStep(RT_MODEL *S)
+void rt_OneStep(void)
+{
+    int_T  eventFlags[NUMST];
+    int_T  i;
+    real_T tnext;
+    int_T  *sampleHit = rtmGetSampleHitPtr(S);
+
+    %<disable_c6x_interrupts()>
+
+    /***********************************************
+     * Check and see if base step time is too fast *
+     ***********************************************/
+
+    if (GBLbuf.overrunFlags[0]++) {
+        GBLbuf.isrOverrun = 1;
+        %if (OverrunAction == "Notify_and_halt")
+            GBLbuf.stopExecutionFlag = 1;
+        %else
+            GBLbuf.overrunFlags[0]--; // allow future iterations to succeed
+        %endif
+        return;
+    }
+
+    /***********************************************
+     * Check and see if error status has been set  *
+     ***********************************************/
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        GBLbuf.stopExecutionFlag = 1;
+        return;
+    }
+
+    %<enable_c6x_interrupts()>
+
+    /************************************************************************
+     * Update discrete events and buffer event flags locally so that ISR is *
+     * re-entrant.                                                          *
+     ************************************************************************/
+
+    tnext = rt_SimUpdateDiscreteEvents(rtmGetNumSampleTimes(S),
+                                       rtmGetTimingData(S),
+                                       rtmGetSampleHitPtr(S),
+                                       rtmGetPerTaskSampleHitsPtr(S));
+    rtsiSetSolverStopTime(rtmGetRTWSolverInfo(S),tnext);
+    for (i=FIRST_TID+1; i < NUMST; i++) {
+        eventFlags[i] = sampleHit[i];
+    }
+
+    /*******************************************
+     * Step the model for the base sample time *
+     *******************************************/
+
+    MdlOutputs(FIRST_TID);
+
+    MdlUpdate(FIRST_TID);
+
+%%     if (rtmGetSampleTime(S,0) == CONTINUOUS_SAMPLE_TIME) {
+%%         rt_UpdateContinuousStates(S);
+%%     }
+%%      else {
+        rt_SimUpdateDiscreteTaskTime(rtmGetTPtr(S), 
+                                     rtmGetTimingData(S), 0);
+%%     }
+
+#if FIRST_TID == 1
+    rt_SimUpdateDiscreteTaskTime(rtmGetTPtr(S), 
+                                 rtmGetTimingData(S),1);
+#endif
+
+
+    /************************************************************************
+     * Model step complete for base sample time, now it is okay to          *
+     * re-interrupt this ISR.                                               *
+     ************************************************************************/
+
+    GBLbuf.overrunFlags[0]--;
+
+
+    /*********************************************
+     * Step the model for any other sample times *
+     *********************************************/
+
+    for (i=FIRST_TID+1; i<NUMST; i++) {
+        if (eventFlags[i]) {
+            if (GBLbuf.overrunFlags[i]++) {
+                GBLbuf.isrOverrun = 1;
+                %if (OverrunAction == "Notify_and_halt")
+                    GBLbuf.stopExecutionFlag = 1;
+                %else
+                    GBLbuf.overrunFlags[i]--; // allow future iterations to succeed
+                %endif
+                return;
+            }
+
+            MdlOutputs(i);
+
+            MdlUpdate(i);
+
+            rt_SimUpdateDiscreteTaskTime(rtmGetTPtr(S), 
+                                         rtmGetTimingData(S),i);
+
+            /* Indicate task complete for sample time "i" */
+            GBLbuf.overrunFlags[i]--;
+        }
+    }
+
+} /* end rtOneStep */
+
+%closefile buff
+%return buff
+%endfunction %% render_multitasking_rtonestep
+
+
+%% ==============================================================
+%function render_model_execution_code() void
+%% Spit out the model execution code that is 
+%%   shared between two implementations:
+%%                1.  Without DSP/BIOS, this code goes at the end of main()
+%%                    right after enable_interrupts.
+%%                2.  With DSP/BIOS, this code goes in singleRateStep().
+%openfile buff
+
+%if (useDSPBIOS && CompiledModel.FixedStepOpts.SolverMode == "SingleTasking")
+    pendingInterrupt = FALSE;
+%endif
+
+%if useDSPBIOS
+    if (!GBLbuf.stopExecutionFlag &&
+           (rtmGetT(S) <= %<CompiledModel.StopTime>))   {
+%else
+    while (!GBLbuf.stopExecutionFlag &&
+           (rtmGetT(S) <= %<CompiledModel.StopTime>))   {
+%endif
+
+%if ((!useDSPBIOS) && CompiledModel.FixedStepOpts.SolverMode == "SingleTasking")
+    while (pendingInterrupt != TRUE) { /* wait */ }
+          
+    /* Reset the event immediately */
+    pendingInterrupt = FALSE;
+%endif
+
+    if (rtmGetStopRequestedFlag(S)) {
+        %if useDSPBIOS
+            %<debugMsgPrint("Stop requested.")>
+            exitprocessing();
+        %else
+            break;
+        %endif
+    }
+
+%if useDSPBIOS || CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+    rt_OneStep();
+
+%endif
+%if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+    if (pendingInterrupt) {
+        GBLbuf.isrOverrun = 1;
+    }
+
+%endif
+
+%if OverrunAction != "None"
+    if (GBLbuf.isrOverrun) {
+        %<render_interrupt_overrun_handling()>
+    }   
+
+%endif
+%if useDSPBIOS
+    return(EXIT_SUCCESS);
+%endif
+    }    %% end main loop ( or if() )
+
+    /********************
+     * Clean up and exit *
+     ********************/
+
+    %<debugMsgPrint("**stopping the model**")>
+
+    if (rtmGetT(S) >= %<CompiledModel.StopTime>) {
+        %<debugMsgPrint("Requested stop time has been reached.")>
+    }
+
+    if (rtmGetErrorStatus(S) != NULL) {
+        %<debugMsgPrint("Error detected.")>
+        %% %<debugMsgPrint()> rtmGetErrorStatus(S)
+        %if useDSPBIOS
+            exitprocessing();
+        %endif
+         exit(EXIT_FAILURE);
+    }
+
+    MdlTerminate();
+%if useDSPBIOS
+    exitprocessing();
+%endif
+    return(EXIT_SUCCESS);
+
+
+%closefile buff
+%return buff
+%endfunction %% render_model_execution_code
+
+
+%% ==============================================================
+%function render_singleratestep() void
+%%
+%openfile buff
+/* Function: singleRateStep ----------------------------------
+ *
+ * Abstract: This function is called from the software interrupt (SWI)
+ *           in DSP/BIOS and serves as a wrapper for rt_OneStep. 
+ *      
+ */
+ 
+int_T singleRateStep(void)
+{
+        %<render_model_execution_code()>
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_singleratestep
+
+
+
+%% =========================================================
+%function constructMainFile() void
+
+%openfile mainFile
+/* 
+ * Abstract:
+ *   Scheduler-related functions and main() function.
+ *   This file is auto-generated by Embedded Target for TI C6000(tm) DSP.
+ *
+ * Compiler-specified defines:
+ *	RT              - Required.
+ *  MODEL=modelname - Required.
+ *	NUMST=#         - Required. Number of sample times.
+ *	NCSTATES=#      - Required. Number of continuous states.
+ *  TID01EQ=1 or 0  - Optional. Only define to 1 if sample time task
+ *                      id's 0 and 1 have equal rates.
+ *  MULTITASKING    - Optional. (use MT for a synonym).
+ */
+
+/*=========*
+ * Headers *
+ *=========*/
+
+#include <float.h>
+%if !useDSPBIOS
+    #include <stdio.h>
+%endif
+#include <stdlib.h>
+#include <string.h>
+#include "rtwtypes.h"
+# include "rtmodel.h"
+#include "rt_sim.h"
+#include "rt_nonfinite.h"
+
+#include "c6000_main.h"
+%if useDSPBIOS
+    #include "%<CompiledModel.Name>cfg.h"
+%endif
+
+%if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    #include <std.h>
+    #include <csl.h>
+    #include <csl_irq.h>
+    #include <csl_edma.h>
+    #include <csl_mcbsp.h>
+    %if (IRInfo.timerIntNeeded) %% && !useDSPBIOS)
+        #include <csl_timer.h>
+        #include <csl_legacy.h>
+    %endif
+%endif
+
+%<dsk_cpld_defines()>
+
+/*====================*
+ * External functions *
+ *====================*/
+extern RT_MODEL *MODEL(void);
+
+extern void MdlInitializeSizes(void);
+extern void MdlInitializeSampleTimes(void);
+extern void MdlStart(void);
+extern void MdlOutputs(int_T tid);
+extern void MdlUpdate(int_T tid);
+extern void MdlTerminate(void);
+
+/*==================================*
+ * Global data
+ *==================================*/
+
+struct {
+  int_T    stopExecutionFlag;
+  volatile int_T    isrOverrun;
+  int_T    overrunFlags[NUMST];
+  const char_T *errmsg;
+} GBLbuf = {NULL,0,0,0};
+
+RT_MODEL  *S;  
+
+
+/*==================================*
+ * Extern variables                 *
+ *==================================*/
+%if (CompiledModel.FixedStepOpts.SolverMode == "SingleTasking")
+    extern volatile int pendingInterrupt;
+%endif
+
+%% Call local TLC functions to render the C function definitions
+
+%<render_rtOneStep()>
+
+%<render_exitprocessing()>
+
+%if useDSPBIOS 
+    %<render_singleratestep()>    
+%endif
+
+%<render_mainFunction()>
+
+%closefile mainFile
+%return mainFile
+%endfunction %% constructMainFile
+
+
+
+%% ==============================================================
+%function render_mainFunction() void
+%openfile buff
+
+/* Function: main -------------------------------------------
+ *
+ * Abstract:
+ *      Set up board and execute model code.
+ */
+int_T main(void)
+{
+    const char *status;
+
+    /************************
+     * Initialize the model *
+     ************************/
+    rt_InitInfAndNaN(sizeof(real_T));
+
+    S = MODEL();
+    if (rtmGetErrorStatus(S) != NULL) {
+        %<debugMsgPrint("Error during model registration")>
+        %% %<debugMsgPrint()> "rtmGetErrorStatus(S)"
+        %if useDSPBIOS
+            exitprocessing();
+        %endif
+        exit(EXIT_FAILURE);
+    }
+
+    rtmSetTFinal(S,%<CompiledModel.StopTime>);
+
+%if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    /* In multitasking mode, initialize overrun flags to zero for all rates */
+    /*    note: the base rate flag is preset to zero at compile time        */
+    memset(&GBLbuf.overrunFlags[1],0,(sizeof(GBLbuf.overrunFlags[1]))*(NUMST-1));
+%endif
+
+    MdlInitializeSizes();
+    MdlInitializeSampleTimes();
+    
+    status = rt_SimInitTimingEngine(rtmGetNumSampleTimes(S),
+                                    rtmGetStepSize(S),
+                                    rtmGetSampleTimePtr(S),
+                                    rtmGetOffsetTimePtr(S),
+                                    rtmGetSampleHitPtr(S),
+                                    rtmGetSampleTimeTaskIDPtr(S),
+                                    rtmGetTStart(S),
+                                    &rtmGetSimTimeStep(S),
+                                    &rtmGetTimingData(S));
+
+    if (status != NULL) {
+        %<debugMsgPrint("Failed to initialize sample time engine")> 
+        %% %<debugMsgPrint()> status);
+        %if useDSPBIOS
+            exitprocessing();
+        %endif
+        exit(EXIT_FAILURE);
+    }
+%%    rt_CreateIntegrationData(S);
+
+    MdlStart();
+    if (rtmGetErrorStatus(S) != NULL) {
+      GBLbuf.stopExecutionFlag = 1;
+    }
+
+    %<render_target_setup()>
+
+%if !useDSPBIOS       
+    /* register a function to be invoked at exit */
+    atexit (exitprocessing);
+%endif
+
+    %<debugMsgPrint("**starting the model**")>
+
+    enable_interrupts();
+
+    %if useDSPBIOS
+        /* Drop out of main() and enter DSP/BIOS Kernel */
+        %% singleRateStep() contains %<render_model_execution_code()>
+    %else
+        %<render_model_execution_code()>
+    %endif
+
+} /* end main() */
+
+%closefile buff
+%return buff
+%endfunction %% render_mainFunction
+
+
+%% ==============================================================
+%%
+%% Entry point for c6000_main.tlc
+%% Create <model>_main.c source file.
+%%
+%openfile autoMain = "%<CompiledModel.Name>_main.c"
+%<constructMainFile()>
+/* [EOF] %<CompiledModel.Name>_main.c */
+%closefile autoMain
+
+%% [EOF] c6000_main.tlc

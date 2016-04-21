@@ -1,0 +1,444 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: 2D-Lookup block target file
+
+%implements Lookup2D "C"
+
+%% Function: BlockTypeSetup ===================================================
+%% Abstract:
+%%      Have mdlhdr.tlc include rtlibsrc.h
+%%
+%function BlockTypeSetup(block, system) void
+  %assign ::CompiledModel.IncludeLibsrc = 1
+%endfunction
+
+%% Function: BlockFixptInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%   This function is called when in fixpt mode
+%%
+%function BlockFixptInstanceSetup(block, system) void
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %if GenerateInterfaceAPI
+      %% Create a parameter group for ASAP2 data definition
+      %assign group  = SLibCreateParameterGroup(block,"Lookup2D")
+      %assign tmpVar = SLibAddMember(block, group, RowIndex)
+      %assign tmpVar = SLibAddMember(block, group, ColumnIndex)
+      %assign tmpVar = SLibAddMember(block, group, OutputValues)
+    %endif
+    %%
+%endfunction
+
+
+%% Function: BlockClassicInstanceSetup ================================================
+%% Abstract:
+%%    This function is called when in classic mode
+%%
+%function BlockClassicInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+  %% If generating code for Embedded-C code formats, inform user
+  %% that they can generate more efficient code by removing repeated zero
+  %% values.
+  %if (CodeFormat == "Embedded-C")
+    %if !(ParamSettings.ColZeroTechnique == "NormalInterp" && ...
+      ParamSettings.RowZeroTechnique == "NormalInterp")
+      %if (block.InMask == "yes")
+        %assign blockName = LibParentMaskBlockName(block)
+      %else
+        %assign blockName = LibGetFormattedBlockPath(block)
+      %endif
+      %selectfile STDOUT
+
+Note: Removing repeated zero values from the X and Y axes will produce
+more efficient code for block: %<blockName>.  To locate this block, type
+
+hilite_system('%<blockName>')
+
+at the MATLAB command prompt.
+
+      %selectfile NULL_FILE
+    %endif
+  %endif
+
+  %if GenerateInterfaceAPI
+    %% Create a parameter group for ASAP2 data definition
+    %assign group  = SLibCreateParameterGroup(block, "Lookup2D")
+    %assign tmpVar = SLibAddMember(block, group, RowIndex)
+    %assign tmpVar = SLibAddMember(block, group, ColumnIndex)
+    %assign tmpVar = SLibAddMember(block, group, OutputValues)
+  %endif
+%endfunction
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract: 
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %<BlockFixptInstanceSetup(block, system)>
+  %else
+    %<BlockClassicInstanceSetup(block, system)>
+  %endif
+%endfunction
+
+%% Function: FixptOutputs ==========================================================
+%% Abstract:
+%%     This function is called when in fixpt mode
+%%
+%function FixptOutputs(block, system) Output
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %%
+    %% Get input data types
+    %%
+    %assign u0DT  = FixPt_GetInputDataType(0)
+    %%
+    %assign u1DT  = FixPt_GetInputDataType(1)
+    %%
+    %% Get output data type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create header comment
+    %%
+    /* %<SLibBlkType(block)> Block: '%<SLibBlkName(block)>'
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% comment on modes
+    %%
+     * Lookup Method: %<FixPtLookUpMethodStr>
+     *
+    %%
+    %% add comments about fixed-point parameters
+    %%
+     * Row Data    parameter uses the same data type and scaling as Input0
+     * Column Data parameter uses the same data type and scaling as Input1
+     * Table Data  parameter uses the same data type and scaling as Output0
+    %%
+    %% END: header comment
+    %%
+     */
+    %%
+    %% determine if the Row and Col Data is inlined and evenly spaced
+    %%
+    %if FixPt_ParameterCouldBeInlined(RowIndex, "", "", 0)
+        %assign rowDataEvenSpaceInfo = FixPt_GetBreakPointInfo(RowIndex.Value)
+    %else
+        %assign rowDataEvenSpaceInfo = FixPt_BreakPointInfoDefault()
+    %endif
+    %%
+    %if FixPt_ParameterCouldBeInlined(ColumnIndex, "", "", 0)
+        %assign colDataEvenSpaceInfo = FixPt_GetBreakPointInfo(ColumnIndex.Value)
+    %else
+        %assign colDataEvenSpaceInfo = FixPt_BreakPointInfoDefault()
+    %endif
+    %%
+    %if FixPtLookUpMethodStr != "Linear_Endpoint"
+    {
+    %endif
+    %%
+    %% declare local variables as needed
+    %%
+    %if FixPtLookUpMethodStr == "Linear_Endpoint"
+        %%
+        %% no index vars needed
+        %%
+    %elseif FixPtLookUpMethodStr == "Below"
+        %%
+        unsigned int iRowIndex1, iColumnIndex1;
+
+    %elseif FixPtLookUpMethodStr == "Above"
+        %%
+        unsigned int iRowIndex2, iColumnIndex2;
+
+    %elseif FixPtLookUpMethodStr == "Nearest"
+        %%
+        unsigned int iRowIndex1, iColumnIndex1;
+
+    %else
+      %openfile errTxt
+
+        The lookup method: %<FixPtLookUpMethodStr> is not supported
+        for code generation.
+
+        Block: '%<SLibBlkName(block)>'
+
+      %closefile errTxt
+      %exit %<errTxt>
+      %%
+    %endif
+    %%
+    %% Roll around signal width
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        %%
+        %% Get input 0
+        %%
+        %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+        %%
+        %% Get input 1
+        %%
+        %assign u1Label = LibBlockInputSignal(1, "", lcv, sigIdx)
+        %%
+        %% Get output
+        %%
+        %if FixPtLookUpMethodStr == "Linear_Endpoint"
+            %%
+            %% if complex, get the whole structure
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+        %else
+            %%
+            %assign reSigIdx = tRealPart + STRING(sigIdx)
+            %assign imSigIdx = tImagPart + STRING(sigIdx)
+            %%
+            %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+            %if y0IsComplex
+                %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+            %endif
+        %endif
+        %%
+        %% lookup method Linear_Endpoint
+        %%
+        %if FixPtLookUpMethodStr == "Linear_Endpoint"
+            %<FixPt_SearchAndInterpolate2D(...
+               y0Label,      y0DT,...
+                                    u0Label,u0DT,...
+                                    u1Label,u1DT,...
+                                    OutputValues,y0DT,-1,...
+               RowIndex,     u0DT, rowDataEvenSpaceInfo, -1,...
+               ColumnIndex,  u1DT, colDataEvenSpaceInfo, -1,...
+                                    FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+        %% lookup method BELOW
+        %%
+        %elseif FixPtLookUpMethodStr == "Below"
+            %%
+            %% find row indices
+            %%
+            %<FixPt_IndexSearch("iRowIndex1","",...
+                                u0Label,u0DT,...
+                                RowIndex,u0DT,...
+                                rowDataEvenSpaceInfo,-1,...
+                                "Below")>
+            %%
+            %% find col indices
+            %%
+            %<FixPt_IndexSearch("iColumnIndex1","",...
+                                u1Label,u1DT,...
+                                ColumnIndex,u1DT,...
+                                colDataEvenSpaceInfo,-1,...
+                                "Below")>
+            %%
+            %% set output to proper Table Data Value
+            %%
+            %<y0ReLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex1", "", 0,...
+                                                   "iColumnIndex1", "", "re0")>;
+            %if y0IsComplex
+                %<y0ImLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex1", "", 0,...
+                                                   "iColumnIndex1", "", "im0")>;
+            %endif
+        %%
+        %% lookup method ABOVE
+        %%
+        %elseif FixPtLookUpMethodStr == "Above"
+            %%
+            %% find row indices
+            %%
+            %<FixPt_IndexSearch("","iRowIndex2",...
+                                u0Label,u0DT,...
+                                RowIndex,u0DT,...
+                                rowDataEvenSpaceInfo,-1,...
+                                "Above")>
+            %%
+            %% find col indices
+            %%
+            %<FixPt_IndexSearch("","iColumnIndex2",...
+                                u1Label,u1DT,...
+                                ColumnIndex,u1DT,...
+                                colDataEvenSpaceInfo,-1,...
+                                "Above")>
+            %%
+            %% set output to proper Table Data Value
+            %%
+            %<y0ReLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex2", "", 0,...
+                                                   "iColumnIndex2", "", "re0")>;
+            %if y0IsComplex
+                %<y0ImLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex2", "", 0,...
+                                                   "iColumnIndex2", "", "im0")>;
+            %endif
+        %%
+        %% lookup method NEAREST
+        %%
+        %else  %%  if FixPtLookUpMethodStr == "Nearest"
+            %%
+            %% find row indices
+            %%
+            %<FixPt_IndexSearch("iRowIndex1","",...
+                                u0Label,u0DT,...
+                                RowIndex,u0DT,...
+                                rowDataEvenSpaceInfo,-1,...
+                                "Near")>
+            %%
+            %% find col indices
+            %%
+            %<FixPt_IndexSearch("iColumnIndex1","",...
+                                u1Label,u1DT,...
+                                ColumnIndex,u1DT,...
+                                colDataEvenSpaceInfo,-1,...
+                                "Near")>
+            %%
+            %% set output to proper Table Data Value
+            %%
+            %<y0ReLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex1", "", 0,...
+                                                   "iColumnIndex1", "", "re0")>;
+            %if y0IsComplex
+                %<y0ImLabel> = %<LibBlockMatrixParameter(OutputValues,...
+                                                   "iRowIndex1", "", 0,...
+                                                   "iColumnIndex1", "", "im0")>;
+            %endif
+        %endif
+    %endroll
+    %if FixPtLookUpMethodStr != "Linear_Endpoint"
+    }
+    %endif
+    %%
+    %% blank line for formating
+
+%endfunction   %% FixptOutputs
+
+%% [EOF] sfix_look2.tlc
+
+
+%% Function: ClassicOutputs ==========================================================
+%% Abstract:
+%%      Output for classic mode
+%%      Yz = LookUp2D(Ux,Uy)
+%%      This function is called when in classic mode
+%function ClassicOutputs(block, system) Output
+  %assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign addrColValues = LibBlockParameterBaseAddr(ColumnIndex)
+  %assign numColValues = SIZE(ColumnIndex.Value, 1)
+  %%
+  %assign addrRowValues = LibBlockParameterBaseAddr(RowIndex)
+  %assign numRowValues = SIZE(RowIndex.Value, 1)
+  %assign outputValues = LibBlockMatrixParameterBaseAddr(OutputValues)
+  %%
+  %assign rollVars = ["U", "Y"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %%
+    %assign uX = LibBlockInputSignal(0, "", lcv, sigIdx)
+    %assign uY = LibBlockInputSignal(1, "", lcv, sigIdx)
+    %assign yZ = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %%
+    %assign opt32 = (outputDataType == tSS_SINGLE) ? "32" : ""
+    %if (ParamSettings.ColZeroTechnique == "NormalInterp" && ...
+      ParamSettings.RowZeroTechnique == "NormalInterp")
+      %<yZ> = rt_Lookup2D%<opt32>_Normal(%<addrRowValues>, ...
+	%<numRowValues>, ...
+	%<addrColValues>, %<numColValues>, %<outputValues>, ...
+	%<uX>, %<uY>);
+    %else
+      %assign outputAtRowZero = LibBlockParameterBaseAddr(OutputAtRowZero)
+      %switch ParamSettings.ColZeroTechnique
+	%case "NormalInterp"
+	  %assign colZeroTechnique = "NORMAL_INTERP"
+	  %break
+	%case "AverageValue"
+	  %assign colZeroTechnique = "AVERAGE_VALUE"
+	  %break
+	%case "MiddleValue"
+	  %assign colZeroTechnique = "MIDDLE_VALUE"
+	  %break
+	%default
+	  %%START_ASSERT
+	  %assign errTxt = "Internal error: ParamSetting 'ColZeroTechnique' " ...
+	    "cannot be '%<ParamSettings.ColZeroTechnique>', please contact " ...
+	    "The MathWorks technical support."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	  %%END_ASSERT
+      %endswitch
+      %<yZ> = rt_Lookup2D%<opt32>_General(%<addrRowValues>, %<numRowValues>,
+      %<addrColValues>, %<numColValues>,\
+      %<outputValues>,\
+      %<uX>, %<uY>,\
+      %<ParamSettings.ColZeroIndex>,\
+      %<colZeroTechnique>, %<outputAtRowZero>);
+    %endif
+  %endroll
+
+%endfunction
+
+%% Function: Outputs ==============================================
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %<FixptOutputs(block, system)>
+  %else
+    %<ClassicOutputs(block, system)>
+  %endif
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %if !block.InFixptMode
+    %switch retType
+      %case "Signal"
+	%assign outputDataType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	%%
+	%assign addrColValues = LibBlockParameterBaseAddr(ColumnIndex)
+	%assign numColValues = SIZE(ColumnIndex.Value, 1)
+	%%
+	%assign addrRowValues = LibBlockParameterBaseAddr(RowIndex)
+	%assign numRowValues = SIZE(RowIndex.Value, 1)
+	%assign outputValues = LibBlockMatrixParameterBaseAddr(OutputValues)
+	%%
+	%assign uX = LibBlockInputSignal(0, ucv, lcv, idx)
+	%assign uY = LibBlockInputSignal(1, ucv, lcv, idx)
+	%%
+	%assign opt32 = (outputDataType == tSS_SINGLE) ? "32" : ""
+	%if (ParamSettings.ColZeroTechnique == "NormalInterp" && ...
+	  ParamSettings.RowZeroTechnique == "NormalInterp")
+	    %return "rt_Lookup2D%<opt32>_Normal(%<addrRowValues>," ...
+	      "%<numRowValues>, " ...
+	      "%<addrColValues>, %<numColValues>, %<outputValues>, " ...
+	      "%<uX>, %<uY>)"
+	%else
+	  %%START_ASSERT
+	  %assign errTxt = "Expression output is not valid."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	  %%END_ASSERT
+	%endif
+	%%START_ASSERT
+      %default
+	%assign errTxt = "Unsupported return type: %<retType>"
+	%<LibBlockReportError(block,errTxt)>
+	%%END_ASSERT
+    %endswitch
+  %endif
+%endfunction  
+
+%% [EOF] lookup2d.tlc

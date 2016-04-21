@@ -1,0 +1,104 @@
+%% File : sfun_get_expr
+%%
+%% Purpose : Generate a C Code expression that can be read as
+%%           a Simulink signal.
+%%
+%% Details : The user is allowed to enter a simple TLC expression
+%%           in the mask. For example the user could enter
+%%
+%%           MIOS1.ADC[%<idx>]
+%%
+%%           The user also indicates the width of the output signal.
+%%           If the signal is rolled then the output will look like
+%%
+%%           ... MIOS1.ADC[0] ...
+%%           ... MIOS1.ADC[1] ...
+%%           ... MIOS1.ADC[2] ...
+%%
+%%           If the signal is looped the output will look like
+%%
+%%           for (i1=0;i1<3;i1++){
+%%              ... MIOS1.ADC[i] ...
+%%           }       
+%%
+%% $Revision: 1.1.6.2 $
+%% $Date: 2004/04/19 01:22:38 $
+%%
+%% Copyright 2002-2004 The MathWorks, Inc.
+
+%implements sfun_get_expr "C"
+%include "targets_general_includes.tlc"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+    %if !ISEMPTY(RTWdata.header)
+      %<LibAddToCommonIncludes(RTWdata.header)>
+    %endif
+    %if !ISEMPTY(RTWdata.src)
+      %<LibAddToModelSources(RTWdata.src)>
+    %endif
+    %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%     Generate code according the the expression supplied by
+%%     the user. 
+%%
+%function Outputs(block, system) Output
+
+    %if (EXISTS(OptionalParameter)) && (LibBlockParameterSize(OptionalParameter)[0] != 0)
+       %assign rollVars = ["Y","P"]
+    %else
+       %assign rollVars = ["Y"]
+    %endif
+
+    %roll  idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+       %assign expr = BlockOutputSignal(block,system,0,"",lcv,idx,"Signal")
+       %assign y = LibBlockOutputSignal(0,"" ,lcv, idx)
+       %<y> = %<expr>;
+    %endroll
+%endfunction
+
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+    %assign outputIsExpr = LibBlockOutputSignalIsExpr(0) ? 1 : 0
+    %switch retType
+    %case "Signal"
+        %if SLibCodeGenForSim() 
+            %% Output a default expression for Simulation
+            %assign outDTypeID = LibBlockOutputSignalDataTypeId(0)
+            %assign outGND = LibGetGroundValueFromId(outDTypeID)
+            %assign expr  = outGND
+        %else
+            %% Output the requested expression for Real Time 
+            %assign expr = RTWdata.expr
+            %assign i = FcnGetLoopIndex(ucv,lcv,idx)
+            %if (EXISTS(OptionalParameter)) && (LibBlockParameterSize(OptionalParameter)[0] != 0)
+               %assign p = LibBlockParameter(OptionalParameter,ucv,lcv,idx)
+            %endif
+            %assign expr  = "\"%<expr>\""
+            %assign expr  = %<expr>
+            %assign expr  = "(%<expr>)"
+        %endif
+        %return expr
+    %default
+        %assign errTxt = "Unsupported return type: %<retType>"
+        %<LibBlockReportError(block,errTxt)>
+    %endswitch
+%endfunction
+
+%function FcnGetLoopIndex(ucv,lcv,idx) void
+    %if ucv != ""
+        %assign i = ucv
+    %elseif lcv != ""
+        %assign i = lcv
+    %else
+        %assign i = idx
+    %endif
+    %return i
+%endfunction
+
+

@@ -1,0 +1,324 @@
+%% ============================================================================
+%% $RCSfile: formatwide.tlc,v $
+%% $Revision: 1.9.4.19 $ 
+%% $Date: 2004/04/14 23:48:20 $
+%%
+%% Abstract:
+%%   This system file is the entry point for RTW's "RealTimeMalloc" code
+%%   format. The files model.h, model.c, model_private.h, model_data.c
+%%   are produced.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%selectfile NULL_FILE
+%include "sfcnutil.tlc"
+%include "data_cachebuffers.tlc"
+%include "prm_assignbuffers.tlc"
+
+%if EXISTS("_FORMATWIDE_") == 0
+%assign _FORMATWIDE_ = 1
+
+%assign ::BlockFcn = "Unknown"
+
+%if CodeFormat == "S-Function" && !Accelerator
+  %assign sfcnNoAccel = 1
+%else
+  %assign sfcnNoAccel = 0
+%endif
+
+%<LoadModelReferenceBlocksInterface()>
+
+%if CodeFormat == "Embedded-C"
+  %<SLibErtWideInit()>
+%endif
+  
+%% ============================================================================
+%% Cache all the body code for model.c file (minus terminate function since
+%% mallocs occur in registration and instance data code).
+%%
+
+%<SLibGenBodyCache()>
+
+%% ============================================================================
+%% Cache S-Function registration code and block instance data prior to
+%% generating the structure definitions/instances (this code may affect the
+%% contents of the parameters structure).  The accessed SimStruct variables
+%% are cached for later use in the registration generation.
+%%
+%% (mdt) Setting blockFcn to Initialize means that the Interface is no
+%% longer completely correct.
+%assign ::BlockFcn = "Registration"
+%if sfcnNoAccel
+  %<SLibSfcnWideInit()>
+%else
+  %if !Accelerator
+    %<LibCacheChildSFunctionRegistration(tChildSimStruct, Name)>
+  %endif
+  %<LibCacheBlockInstanceData()>
+%endif
+%assign ::BlockFcn = "Unknown"
+
+%% ============================================================================
+%% Cache terminate function.
+%%
+
+%<SLibGenTerminateBody()>
+
+%if IsModelReferenceTarget()
+  %<CreateModelrefSFunctionForTopSystem()>
+  %% Set up the model start fcn first because this
+  %% function is modified in model registration.
+  %<CacheModelrefSysFcnMethod("Start")>
+%endif
+
+%% ============================================================================
+%% Cache structure definitions prior to model registration.  Note that
+%% the instance should be cached prior to the definition to properly
+%% handle non-finites values.  For example, when inlining parameters the
+%% individual parameters are declared "const" unless they are non-finite.
+%% Whether a parameter is non-finite is determined while caching the
+%% parameter structure instance.
+%%
+%if !sfcnNoAccel
+  %assign ::BlockFcn = "Registration"
+  %<SLibCacheDataBuffers()>
+  %assign ::BlockFcn = "Unknown"
+%endif
+
+
+%% ============================================================================
+%% Dump any overflow warnings for blocks that can saturate.
+%%
+
+%<SLibDumpOverflowWarning()>
+
+%if CodeFormat == "RealTime" || CodeFormat == "Embedded-C"
+%% ============================================================================
+%% Block IO Signals information to map signals, must be included before
+%% model_reg.h .
+%%
+%if BlockIOSignals == 1
+  %assign ::BlockFcn = "Registration"
+  %include "biosig.tlc"
+  %assign ::BlockFcn = "Unknown"
+%endif
+%endif
+
+%% ============================================================================
+%% Parameter Tuning information to map parameters, must be included before
+%% model_reg.h.
+%%
+%if ParameterTuning == 1
+  %assign ::BlockFcn = "Registration"
+  %include "ptinfo.tlc"
+  %assign ::BlockFcn = "Unknown"
+%endif
+
+%% ===========================================================================
+%% CAPIInterface information to map parameters and signals.
+%%
+%if RTWCAPI
+  %assign ::BlockFcn = "Registration"
+  %include "capi.tlc"
+  %assign ::BlockFcn = "Unknown"
+%endif
+
+%% ============================================================================
+%% Dump contents of model.c file.  This must be done before dumping model.h
+%% since the source file may split in the process.  The header file declares
+%% global data "extern" when the file splits.
+%%
+
+%include "formatbody.tlc"
+%<SLibFormatBody()>
+
+%% ============================================================================
+%% model.h, model_private.h, model.c, model_data.c
+%% (order not important)
+%%
+
+%if IsModelReferenceTarget()
+  %assign nonVirtSubsbys = DumpAllSystemHeadersExcludingRootSystem()
+  %assert (WHITE_SPACE(nonVirtSubsbys))
+%else
+%include "formathdr.tlc"
+%<SLibFormatHdr()>
+%endif
+%include "formattypes.tlc"
+%<DumpHdrFileUserCode()>
+%include "formatprivate.tlc"
+%assign ::BlockFcn = "Registration"
+%<SLibCacheRTCallSys()>\
+%assert(!IsModelReferenceTarget() || CodeFormat == "Embedded-C")
+%switch CodeFormat
+  %case "RealTime"
+    %include "srtreg.tlc"
+    %break
+  %case "RealTimeMalloc"
+    %include "mrtreg.tlc"
+    %break
+  %case "Embedded-C"
+    %assign ::BlockFcn = "Registration"
+    %include "ertreg.tlc"
+    %break
+  %case "S-Function"
+    %if Accelerator
+      %include "accelreg.tlc"
+    %else
+      %include "sfcnreg.tlc"
+      %include "sfcnsid.tlc"
+      %include "sfcnmid.tlc"
+    %endif
+    %break
+    %default
+%endswitch
+%assign BlockFcn = "Unknown"
+
+%<SLibIncludeRTWGeneratedChildSysExportFile()>
+%<DumpUserCodeAndCustomDataInst()>
+%<DumpExportedDataInstance()>
+%<SLibAssignPrmBuffers()>
+%<DumpExportedDataDefinition()>
+%<DumpExportFileUserCode()>
+%<SLibDumpCustomClassData()>
+%<SLibWriteDatatypeGrounds()>
+
+
+%if IsModelReferenceTarget()
+  %<ModelrefHandleExportFileInfo()>
+  %<ModelrefGenSfcnAndHandleConstPrmAndBIO()>
+%else
+  %if !Accelerator
+    %include "formatexport.tlc"
+    %<SLibFormatExport()>
+  %endif
+  %include "formatparam.tlc"
+  %<SLibFormatParam()>
+%endif
+
+%% ============================================================================
+%% Optionally dump integer only warnings
+%%
+%if PurelyIntegerCode
+  %<SLibDumpIntegerOnlyWarning()>
+%endif
+
+%% =============================================================================
+%% Generate ERT S-Function target (if required)
+%%
+%if CodeFormat == "Embedded-C" && !IsModelReferenceTarget()
+  %<SLibErtSfunction()>
+%endif
+
+%if IsModelReferenceTarget() 
+  %% Generate the dwork for the model reference which can contain the
+  %% models DWork, BlockIO and rtModel.  
+  %<SLibModelReferenceGenerateDWork()>
+
+  %if IsModelReferenceSimTarget() 
+    %<SLibWriteModelrefSFunctionMethods()>
+  %endif
+  %assign rootFileName = GetRootSystemFileName()
+  %assign opFile = SLibDoesModelFileExist("SystemHeader", rootFileName)
+  %if TYPE(opFile) == "Scope" %% file exists
+    %assert(SLibGetModelFileIsEmpty(opFile))
+    %<SLibSetModelFileAttribute(opFile, "Filter", 1)>
+  %endif
+  %assign opFile = SLibDoesModelFileExist("SystemBody", rootFileName)
+  %if TYPE(opFile) == "Scope" %% file exists
+    %assert(SLibGetModelFileIsEmpty(opFile))
+    %<SLibSetModelFileAttribute(opFile, "Filter", 1)>
+  %endif
+%endif
+%% ==========================================================================
+%% Run TLC based TargetFcnLib callbacks
+%%
+%if EXISTS(::OrigName)      
+  %assign modelName = CompiledModel.OrigName
+%else
+  %assign modelName = CompiledModel.Name
+%endif
+%assign numcbs = FEVAL("rtwprivate","rtw_get_tfl_cb_info","%<modelName>",-1)
+%foreach i = numcbs
+  %assign fctInfo = FEVAL("rtwprivate","rtw_get_tfl_cb_info","%<modelName>",i+1)
+
+  %% Only generate if the file does not already exist
+  %assign fullPath = FEVAL("fullfile",GenUtilsPath,fctInfo.FileName)
+  %assign headerExists = FEVAL("exist","%<fullPath>.h")
+  %assign sourceExists = FEVAL("exist","%<fullPath>.c")
+  %if !(headerExists && sourceExists)
+    %% Create header and source file handles
+    %assign fileH = LibCreateSourceFile("Header","TFL callback",fctInfo.FileName)
+    %<LibSetSourceFileOutputDirectory(fileH,GenUtilsPath)>
+    %assign fileC = LibCreateSourceFile("Source","TFL callback",fctInfo.FileName)
+    %<LibSetSourceFileOutputDirectory(fileC,GenUtilsPath)>
+    %if FILE_EXISTS(fctInfo.genCallback)
+      %% Remove '.tlc' from callback name and use as the 'Type' for generatefile.
+      %assign type = FEVAL("regexprep","%<fctInfo.genCallback>",".tlc","","ignorecase")
+      %generatefile "%<type>" "%<fctInfo.genCallback>"
+      %if GENERATE_TYPE_FUNCTION_EXISTS(fctInfo, fctInfo.FcnName, type)
+	%% Generate the contents of the header and source files
+	%assign result =  GENERATE_TYPE(fctInfo, fctInfo.FcnName, type, fileH, fileC)
+      %else
+	%openfile errTxt
+	Target Function Library TLC callback error: requested function '%<fctInfo.FcnName>' does not exist in file '%<fctInfo.genCallback>
+	%closefile errTxt
+	%<LibReportError(errTxt)>
+      %endif
+    %else
+	%openfile errTxt
+	Target Function Library TLC callback error: callback file '%<fctInfo.genCallback>' does not exist on the TLC path
+	%closefile errTxt
+	%<LibReportError(errTxt)>
+    %endif
+  %endif
+%endforeach
+%% =============================================================================
+%% Write code according to templates
+%%
+%<SLibERTCustomFileProcessing()>
+
+%if !EXISTS("CodeTemplateFile")
+  %<SLibERTWriteSource()>
+%else
+  %% Backward compatible override of templates
+  %% Will be obsolete in the future.
+  %assign warnTxt = "You are using an obsolete ERT code template, which " ...
+    "does not support all features of Real-Time Workshop Embedded Coder.  " ...
+    "For full compatibility, do not specify a CodeTemplateFile variable, " ...
+    "and use the configuration set 'File customization template' option " ...
+    "ERTCustomFileTemplate instead.  For an example, " ...
+    "see MATLAB/toolbox/rtw/targets/ecoder/example_file_process.tlc.  The " ...
+    "CodeTemplateFile option will be removed in a future release."
+  %<LibWriteToStandardOutput(warnTxt)>
+  %include "%<CodeTemplateFile>"
+%endif
+
+%<SLibDumpSharedUtilsIncludeFile()>
+
+%% Free globals as we are finished using them
+%<LibClearModelFileBuffers()>
+
+%if sfcnNoAccel
+  %include "sfcnmoduleinc.tlc"
+%endif
+
+%% =============================================================================
+%% Create modelsources.txt, a list of module sources cached by 
+%% LibAddToModelSources
+%% 
+%<SLibCreateBuildSourcesTxtFile()>
+  
+
+%% =============================================================================
+%% Code generation complete
+%%
+%selectfile STDOUT
+%if RTWVerbose
+### TLC code generation complete.
+%endif
+%selectfile NULL_FILE
+
+%endif  %% _FORMATWIDE_
+
+%% [EOF] formatwide.tlc

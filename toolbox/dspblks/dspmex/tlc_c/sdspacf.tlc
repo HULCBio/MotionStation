@@ -1,0 +1,159 @@
+%% $Revision: 1.13.4.2 $ 
+%% $RCSfile: sdspacf.tlc,v $
+%% $Date: 2004/04/12 23:08:06 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdspacf.c
+%%           Used for the AutoCorrelation Block
+
+%implements "sdspacf" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+	%<LibRenameParameter(block, P2, "Bias")>
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+    /* Signal Processing Blockset Autocorrelation (%<ParamSettings.FunctionName>) - %<Name> */
+    %%
+    %if !IsInputPortContiguous(block, 0) 
+      %<LibDiscontiguousInputError(block)>
+    %endif
+    %%
+    %assign INPORT  = 0
+    %assign OUTPORT = 0
+    %assign c0      = LibBlockOutputSignalIsComplex(OUTPORT)
+    %assign N       = LibDataInputPortWidth(INPORT)
+    %assign nlags   = LibDataOutputPortWidth(OUTPORT)
+    %assign bias    = LibBlockParameterValue(Bias, 0)
+    %%
+    %% Bias enumerations:
+    %assign NO_BIAS  = 1
+    %assign BIASED   = 2
+    %assign UNBIASED = 3
+    %assign COEFF    = 4    
+    %%
+    %if !c0
+        %% REAL
+    {
+        real_T      *u = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        real_T      *y = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T        i;
+        %if bias == COEFF
+            %% Only need norm variable for COEFF case:
+            real_T  norm = 0.0; /* quiet bogus gcc warning */
+        %endif
+
+        for (i=0; i<%<nlags>; i++) {
+            real_T *p0  = u;
+            real_T *p1  = u+i;
+            real_T sum  = 0.0;
+            int_T  jcnt;
+
+            for(jcnt = %<N>-i; jcnt-- > 0; ) {
+               sum += *p0++ * *p1++;
+            }
+
+            %%
+            %switch bias
+            %case NO_BIAS
+              *y++ = sum;
+            %break
+            %%
+            %case BIASED
+              /* Biased ACF estimate: */
+              *y++ = (1.0 / %<CAST("Real",N)>) * sum;
+            %break 
+            %%
+            %case UNBIASED
+              /* Unbiased ACF estimate: */
+              *y++ = sum / (%<N> - i);
+            %break
+            %%
+            %case COEFF
+                /* Autocorrelation coefficient:
+                 * Set norm = 1/magnitude of zero-lag and use for all remaining lags
+                 */
+                if (i == 0) {
+	            *y++ = 1.0;      /* Normalize the real element at zero lag to be 1 */
+                    norm = (sum == 0.0) ? 1.0 : 1.0/sum;
+                } else {
+	            *y++ = sum * norm;
+                }
+            %break
+            %%
+            %endswitch
+        }
+    }
+    %else
+        %% COMPLEX
+    {
+        creal_T      *u  = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+        creal_T      *y  = %<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+        int_T         i;
+	%if bias == COEFF
+            %% Only need norm variable for COEFF case:
+            real_T  norm = 0.0; /* quiet bogus gcc warning */
+        %endif
+
+        for (i=0; i<%<nlags>; i++) {
+            creal_T *p0  = u;
+            creal_T *p1  = u+i;
+            creal_T csum  = {0.0, 0.0};
+            int_T   jcnt;
+
+             for(jcnt = %<N>-i; jcnt-- > 0; ) {
+                const creal_T *u0 = p0++;
+                const creal_T *u1 = p1++;
+
+                /* add: conj(u0) * u1 */
+                csum.re += CMULT_XCONJ_RE(*u0, *u1);
+                csum.im += CMULT_XCONJ_IM(*u0, *u1);
+            } 
+
+            %switch bias
+            %%
+            %case NO_BIAS
+              *y++ = csum;
+            %break    
+            %%
+            %case BIASED
+              /* Biased ACF estimate: */
+              y->re     = (1.0 / %<CAST("Real",N)>) * csum.re;
+              (y++)->im = (1.0 / %<CAST("Real",N)>) * csum.im;
+            %break 
+            %%
+            %case UNBIASED
+              /* Unbiased ACF estimate: */
+              y->re     = csum.re / (%<N>-i);
+              (y++)->im = csum.im / (%<N>-i);
+            %break 
+            %%
+            %case COEFF
+                /* Autocorrelation coefficient:
+                 * Set norm = 1/magnitude of zero-lag and use for all remaining lags.
+                 */
+                if (i == 0) {
+                    /* In this special case the imaginary part is zero
+                     * because u0 and u1 are the same point at i=0, 
+                     * CMULT_XCONJ_IM(*u0, *u1) = 0;
+                     */
+                    norm = (csum.re == 0.0) ? 1.0 : 1.0/csum.re;
+                }
+                y->re     = norm * csum.re;
+                (y++)->im = norm * csum.im;
+            %break 
+            %%
+            %endswitch 
+        }
+    }
+    %endif
+
+%endfunction 

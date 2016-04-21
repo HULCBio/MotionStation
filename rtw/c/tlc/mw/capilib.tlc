@@ -1,0 +1,393 @@
+%% ============================================================================
+%% $RCSfile: capilib.tlc,v $
+%% $Revision: 1.1.6.10 $ 
+%% $Date: 2004/04/14 23:47:39 $
+%% $Author: batserve $
+%%
+%% Abstract:
+%%      Library of functions for generating C API files
+%%    
+%% Copyright 1994-2004 The MathWorks, Inc.
+
+%if EXISTS("_CAPILIB_") == 0
+%assign _CAPILIB_ = 1
+
+%selectfile NULL_FILE
+
+%% Function SLibGenDataMapInfoSubstruct =======================================
+%% Abstract:
+%%   Returns DataMapInfo substructure to be added to rtModel structure
+%%   Called in function FcnGetDTypeName.  
+%%
+%%
+%function SLibGenDataMapInfoSubstruct() void
+  %openfile tmpFcnBuf
+  
+  /*
+   * DataMapInfo: 
+   * The following substructure contains information regarding
+   * structures generated in the model's C API.                   
+   */
+   struct {
+     rtwCAPI_ModelMappingInfo mmi;
+     %if IsMultiInsatnceERTOrModelReference()
+       %if NumDataAddrInMap > 0
+	 void* dataAddress[%<NumDataAddrInMap>];
+       %endif
+     %endif
+     %if EXISTS(CompiledModel.ModelReferenceBlocks)
+       %assign nMdlRefBlks = SIZE(CompiledModel.ModelReferenceBlocks,0)
+       %if nMdlRefBlks > 0
+	 rtwCAPI_ModelMappingInfo* childMMI[%<nMdlRefBlks>];
+       %endif
+     %endif
+     %% This is the systen ran breadcrumb
+     %assign vecActive = SubsystemRanBC.ActiveVector
+     %assign nElem     = SIZE(vecActive,1)
+     %if nElem > 0 && IsModelReferenceSimTarget()
+       void* systemRanArray[%<nElem>];
+     %endif
+   } \
+  %closefile tmpFcnBuf
+  %return tmpFcnBuf
+%endfunction %% SLibGenDataMapInfoSubstruct
+
+%% Function: FcnGetDataOrientation ============================================
+%% Abstract:
+%%   Return orientation of data based on number of rows and columns.  Value is
+%%   rtwCAPI_SCALAR, rtwCAPI_VECTOR, rtwCAPI_MATRIX_ROW_MAJOR, 
+%%   rtwCAPI_MATRIX_COL_MAJOR or rtwCAPI_MATRIX_COL_MAJOR_ND
+%%
+%function FcnGetDataOrientation(data) void
+  %switch data.Class
+    %case "scalar"
+      %return "rtwCAPI_SCALAR"
+    %case "vector"
+      %return "rtwCAPI_VECTOR"
+    %case "col-mat"
+      %return "rtwCAPI_MATRIX_COL_MAJOR"
+    %case "row-mat"
+      %return "rtwCAPI_MATRIX_ROW_MAJOR"
+    %case "col-mat-nd"
+      %return "rtwCAPI_MATRIX_COL_MAJOR_ND"
+    %default
+      %assign errTxt = "Unhandled Data Orientation: %<data.Class>. The \
+      orientation specified for \"%<data.Name>\" is not supported for \
+      generating C-API. \n\tIf \"%<data.Name>\" is a Custom Storage class \
+      object, the DataAccess method for layout of the custom class should \
+      return one of the following strings: \
+      \"scalar\" | \"vector\" | \"col-mat\" | \"row-mat\"|\"col-mat-nd\""
+      %<LibReportError(errTxt)>
+  %endswitch
+%endfunction  %% FcnGetDataOrientation 
+
+%% Function FcnGetDataTypeMapIdx ==============================================
+%% Abstract:
+%%   Return the index into DataTypeMap structure. The structure fields include
+%%       o cDataName
+%%       o mwDataName
+%%       o numElements
+%%       o elemMapIndex
+%%       o slDataId
+%%       o dataSize
+%%       o isComplex
+%%   Use Hash table approach to check if the data type is already mapped 
+%%   in InstMap (im). 
+%%   If it is mapped ->return the value associated with the data in the table. 
+%%   If it is not mapped -> add data to DataTypeMap, add a new entry into 
+%%   the hash table (im.DTypeKeys) and return the new value.
+%%
+%function FcnGetDataTypeMapIdx(dataTypeIdx, isComplex, isPointer, im) void
+  %% Define Key 
+  %assign dTypeKey = "DType%<dataTypeIdx>C%<isComplex>P%<isPointer>"
+  %% Check if Key Exists
+  %if ISFIELD(im.DTypeKeys,dTypeKey)
+    %assign dTypeMapIdx     = GETFIELD(im.DTypeKeys,dTypeKey)
+  %else
+    %assign isStruct        = LibIsStructDataType(dataTypeIdx)
+    %if isComplex || isStruct
+      %assign cDataName     = "struct"
+    %else
+      %assign cDataName     = SLibGetANSICDataTypeFromId(dataTypeIdx)
+    %endif
+    %if isComplex  
+      %assign mwDataName    = LibGetDataTypeComplexNameFromId(dataTypeIdx)
+    %else
+      %assign mwDataName    = LibGetDataTypeNameFromId(dataTypeIdx)
+    %endif
+    %assign numElem         = LibDataTypeNumElements(dataTypeIdx)
+    %assign elemIdx         = FcnGetElementMapIdx(dataTypeIdx, im)
+    %if isStruct
+      %assign slDataId      = "SS_STRUCT"
+    %else
+      %assign slDataId      = LibGetDataTypeEnumFromId(dataTypeIdx)
+      %if slDataId == ""
+	%% See geck 176804
+	%assign slDataId = "SS_STRUCT"
+      %endif
+    %endif
+    %assign dataSize        ="sizeof(%<mwDataName>)"
+    %%assign isPointer       = "0"
+    %assign im.DataTypeMap  = im.DataTypeMap + ...
+"{\"%<cDataName>\", \"%<mwDataName>\", %<numElem>, %<elemIdx>, %<dataSize>, %<slDataId>, %<isComplex>, %<isPointer>}"
+    %assign dTypeMapIdx     = im.NumDataTypes
+    %assign im.NumDataTypes = im.NumDataTypes + 1
+    %<LibAddIdentifier(im.DTypeKeys, dTypeKey, dTypeMapIdx)>
+  %endif    
+  %return dTypeMapIdx
+%endfunction   %% FcnGetDataTypeMapIdx
+
+%% Function FcnGetElementMapIdx ==============================================
+%% Abstract:
+%%   Return the index into ElementMap structure. The structure fields include
+%%       o elementName
+%%       o elementOffset
+%%       o dataTypeIndex
+%%       o dimIndex
+%%       o fxpIndex
+%%   Use Hash table approach to check if the element is already mapped 
+%%   in InstMap (im). 
+%%   If it is mapped ->return the value associated with the data in the table. 
+%%   If it is not mapped -> add element to ElementMap, add a new entry into 
+%%   the hash table (im.ElementKeys) and return the new value.
+%%
+%function FcnGetElementMapIdx(dataTypeIdx, im) void
+  %if !LibIsStructDataType(dataTypeIdx)
+    %return 0
+  %endif
+  %assign structName = LibGetDataTypeNameFromId(dataTypeIdx)
+  %assign elemKey    = "E" + structName
+  %if ISFIELD(im.ElementKeys, elemKey)
+    %assign elemIdx   = GETFIELD(im.ElementKeys, elemKey)
+  %else
+    %assign elemIdx         = im.NumElements
+    %% Get the BusStructure record from GlobalMemoryMap
+    %assign gmmBusIdx       =  ...
+      GETFIELD(GlobalMemoryMap.NonVirtualStructures.BusStructureHash, structName)
+    %% Assert that the bus exists in GlobalMemoryMap
+    %assert (gmmBusIdx >= 0)
+    %assign gmmBusStruct    = GlobalMemoryMap.NonVirtualStructures.Bus[gmmBusIdx]
+    %assign numElem         = gmmBusStruct.NumElements
+    %assign im.NumElements  = im.NumElements + numElem
+    %foreach eIdx = numElem
+      %assign gmmBusElem    = gmmBusStruct.BusElement[eIdx]
+      %assign elemName      = gmmBusElem.Name
+      %assign addrOffset    = "rt_offsetof(%<structName>, %<elemName>)"
+      %assign elemDTypeId   = gmmBusElem.DataTypeIdx
+      %assign elemIsCplx    = gmmBusElem.IsComplex
+      %assign dTypeMapIdx   = FcnGetDataTypeMapIdx(elemDTypeId,elemIsCplx,0,im)
+      %assign dimIdx        = FcnGetDimensionMapIdx(gmmBusElem, im)
+      %if gmmBusElem.IsFixedPoint
+	%assign fxpIdx      = FcnGetFxpMapIdx(gmmBusElem, im)
+      %else
+	%assign fxpIdx      = 0
+      %endif
+      %assign im.ElemMap  = im.ElemMap + ...
+  "{\"%<elemName>\", %<addrOffset>, %<dTypeMapIdx>, %<dimIdx>, %<fxpIdx>}"
+    %endforeach
+    %<LibAddIdentifier(im.ElementKeys, elemKey, elemIdx)>
+  %endif
+  %return elemIdx
+%endfunction
+
+%% Function FcnGetDimensionArrayIdx ===========================================
+%% Abstract:
+%%   Return the index into DimensionArray. Used in FcnGetDimensionMapIdx
+%%
+%function FcnGetDimensionArrayIdx(data,im) void
+  %assign nDims           = data.NumDimensions
+  %assign dimArrayKey     = "DA"
+  %if nDims < 3
+    %assign dimArrayKey   = dimArrayKey + "%<data.NumRows>" + "%<data.NumCols>"
+  %else
+    %foreach dimsIdx      = nDims
+      %assign dimArrayKey = dimArrayKey + "%<data.Dimensions[dimsIdx]>"
+    %endforeach
+  %endif
+  %%
+  %if ISFIELD(im.DimArrayKeys, dimArrayKey)
+    %assign dimArrayIdx    = GETFIELD(im.DimArrayKeys, dimArrayKey)
+  %else
+    %assign dimArrayIdx    = im.NumDimArray
+    %if nDims < 3
+      %assign im.DimArray    = im.DimArray + data.NumRows + data.NumCols
+      %assign im.DimArrayComments = im.DimArrayComments + ...
+       "%<im.NumDimArray>" + "%<im.NumDimArray+1>"
+      %assign im.NumDimArray = im.NumDimArray + 2
+    %else
+      %foreach dimsIdx = nDims
+	%assign im.DimArray  = im.DimArray + data.Dimensions[dimsIdx]
+	%assign im.DimArrayComments = im.DimArrayComments + ...
+	"%<im.NumDimArray+dimsIdx>"
+      %endforeach
+      %assign im.NumDimArray = im.NumDimArray + nDims
+    %endif
+    %<LibAddIdentifier(im.DimArrayKeys, dimArrayKey, dimArrayIdx)>
+  %endif
+  %return dimArrayIdx
+%endfunction    %% FcnGetDimensionArrayIdx
+
+%% Function FcnGetDimensionMapIdx =============================================
+%% Abstract:
+%%   Returns index into DimensionMap structure
+%%   Use Hash table approach to check if the data dimension is already mapped 
+%%   in InstMap (im). 
+%%   If it is mapped ->return the value associated with the data in the table. 
+%%   If it is not mapped -> add element to DimensionMap, add a new entry into 
+%%   the hash table (im.DimensionKeys) and return the new value.
+
+%function FcnGetDimensionMapIdx(data, im) void
+  %assign orientation   = FcnGetDataOrientation(data)
+  %assign numDims       = data.NumDimensions
+  %assign dimArrayIndex = FcnGetDimensionArrayIdx(data,im)
+  %assign dimKey        = "DM%<orientation>%<dimArrayIndex>%<numDims>"
+  %%
+  %if ISFIELD(im.DimKeys,dimKey)
+    %assign dimMapIdx           = GETFIELD(im.DimKeys,dimKey)
+  %else
+    %assign dimMapIdx           = im.NumDimensionMaps
+    %assign im.NumDimensionMaps = im.NumDimensionMaps + 1
+    %assign im.DimensionMap     = im.DimensionMap + ...
+      "{%<orientation>, %<dimArrayIndex>, %<numDims>}"
+    %<LibAddIdentifier(im.DimKeys, dimKey, dimMapIdx)>
+  %endif
+  %return dimMapIdx
+%endfunction    %% FcnGetDimensionMapIdx
+
+%% Function FcnGetFxpMapIdx ==================================================
+%% Abstract:
+%%   Returns index into the fixPtMap array of structures
+%%   Use Hash table approach to check if the Fixed Point information is 
+%%   already mapped in InstMap (im). 
+%%   If it is mapped ->return the value associated with the data in the table. 
+%%   If it is not mapped -> add a element to FixPtMap, add a new entry into 
+%%   the hash table (im.FxpKeys) and return the new value.
+%%
+%% Note:
+%%   Only,Fixed point data with Uniform Scaling is mapped into the API
+%%   Non-Uniform scaling data is not mapped into the API.
+
+%function FcnGetFxpMapIdx(data, im) void
+
+  %assign fxpRec = data.FixedPointInfo 
+  %%
+  %if fxpRec.Scaling == "uniform"
+    
+    %% Create a Hash Key for the Fix Pt Values
+    %% Hash key is Sum of
+    %%    "U" - for uniform
+    %%    exponent - EN prepended for negative, E prepend for Positive
+    %%    FractionalSlope
+    %%    Bias
+    %%    IsSigned
+    %if %<fxpRec.FixedExp> < 0
+      %assign exp   = "EN%<-fxpRec.FixedExp>"
+    %else
+      %assign exp   = "E%<fxpRec.FixedExp>"
+    %endif
+    %assign biasIdx  = FcnGetStoredDoublesIdx(im, fxpRec.Bias)
+    %assign slopeIdx = FcnGetStoredDoublesIdx(im, fxpRec.FracSlope)
+    %assign fxpKey = "U" + exp + "%<slopeIdx>%<biasIdx>%<fxpRec.IsSigned>"
+    
+    %% Check if the Hash key exists in FxpKeys record
+    %if ISFIELD(im.FxpKeys, fxpKey)
+      %assign fxpMapIdx      = GETFIELD(im.FxpKeys,fxpKey)
+    %else
+      %assign fxpMapIdx      = im.NumFixPoint
+      %assign im.NumFixPoint = im.NumFixPoint + 1
+      %assign slopeStr       = "(void *) &rtcapiStoredFloats[%<slopeIdx>]"
+      %assign biasStr        = "(void *) &rtcapiStoredFloats[%<biasIdx>]"
+      %assign im.FixPointMap = im.FixPointMap + ...
+	"{%<slopeStr>, %<biasStr>, rtwCAPI_FIX_UNIFORM_SCALING, " ...
+	"%<fxpRec.FixedExp>, %<fxpRec.IsSigned>}"
+      %<LibAddIdentifier(im.FxpKeys, fxpKey, fxpMapIdx)>
+    %endif
+  %else  
+    %assign fxpMapIdx = 0
+  %endif
+  %return fxpMapIdx
+%endfunction  %% FcnGetFxpMapIdx
+
+%% Function FcnGetStoredDoublesIdx ============================================
+%% Abstract
+%function FcnGetStoredDoublesIdx(im, value) void
+
+  %% Create a hash key from the value 
+  %if value == 0
+    %assign hashKey = "K0"
+  %elseif value < 0
+    %% Format Value as a double with %g format specifier
+    %assign cValue = SPRINTF("%g",-value)
+    %if value > -1
+      %assign hashKey = "N" + FEVAL("regexprep", cValue, "[.-]", "n")
+    %else
+      %assign hashKey = "N" + FEVAL("regexprep", cValue, "[.+]", "p")
+    %endif
+  %else
+    %assign cValue = SPRINTF("%g",value)
+     %if value < 1
+      %assign hashKey = "P" + FEVAL("regexprep", cValue, "[.-]", "n")
+    %else
+      %assign hashKey = "P" + FEVAL("regexprep", cValue, "[.+]", "p")
+    %endif
+  %endif 
+  
+  %% Check if hashKey already exists in DoubleKeys
+  %if ISFIELD(im.DoubleKeys, hashKey)
+    %% if exists, return the value associated with the key
+    %assign retValue = GETFIELD(im.DoubleKeys, hashKey)
+  %else
+    %% add the value to DoublesMap and return the appended value
+    %assign retValue      = im.NumDoubles
+    %assign im.DoublesMap = im.DoublesMap + value
+    %<LibAddIdentifier(im.DoubleKeys, hashKey, retValue)>
+    %assign im.NumDoubles = im.NumDoubles + 1
+  %endif
+  
+  %% return the index of the double number in the Doubles Array
+  %return retValue
+%endfunction
+
+%% FcnGetSampTimeIdx =========================================================
+%% Abstract:
+%%
+%function FcnGetSampTimeIdx(tID, contextTid, isFrame, im) void
+  %if contextTid >= 0
+    %assign cTid = "%<contextTid>"
+  %else
+    %assign cTid = "N%<-contextTid>"
+  %endif
+  %if tID >= 0
+    %assign tidKey = "T%<tID>%<cTid>%<isFrame>"
+    %if ISFIELD(im.STimeKeys, tidKey)
+      %assign sTimeIdx =  GETFIELD(im.STimeKeys, tidKey)
+    %else
+      %assign sTimeIdx          = im.NumSampleTimes
+      %assign im.NumSampleTimes = im.NumSampleTimes + 1
+      %assign sTimeRec          = CompiledModel.SampleTime[tID]
+      %assign sPeriodIdx = FcnGetStoredDoublesIdx(im,sTimeRec.PeriodAndOffset[0])
+      %assign sPeriodStr = "(void *) &rtcapiStoredFloats[%<sPeriodIdx>]"
+      %assign sOffsetIdx = FcnGetStoredDoublesIdx(im,sTimeRec.PeriodAndOffset[1])
+      %assign sOffsetStr = "(void *) &rtcapiStoredFloats[%<sOffsetIdx>]"
+      %assign im.SampleTimeMap  = im.SampleTimeMap + ...
+	"{%<sPeriodStr>, %<sOffsetStr>, %<sTimeRec.TID>, %<contextTid>, %<isFrame>}"
+      %<LibAddIdentifier(im.STimeKeys, tidKey, sTimeIdx)>
+    %endif
+  %else %% for constant and triggered signals TID < 0
+    %assign tidKey = "TN%<-tID>%<cTid>%<isFrame>"
+    %if ISFIELD(im.STimeKeys, tidKey)
+      %assign sTimeIdx =  GETFIELD(im.STimeKeys, tidKey)
+    %else
+      %assign sTimeIdx          = im.NumSampleTimes
+      %assign im.NumSampleTimes = im.NumSampleTimes + 1
+      %assign im.SampleTimeMap  = im.SampleTimeMap + ...
+	"{NULL, NULL, %<tID>, %<contextTid>, %<isFrame>}"
+      %<LibAddIdentifier(im.STimeKeys, tidKey, sTimeIdx)>
+    %endif
+  %endif
+  %return sTimeIdx
+%endfunction
+
+%endif  %% EXISTS("_CAPILIB_") == 0
+
+%% EOF capilib.tlc ============================================================

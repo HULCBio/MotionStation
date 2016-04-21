@@ -1,0 +1,1369 @@
+%% $RCSfile: sdspstatfcns.tlc,v $
+%% $Revision: 1.17.4.7 $ 
+%% $Date: 2004/04/12 23:09:48 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Find the stdvar value of a vector
+
+%implements sdspstatfcns "C"
+
+%include "event_port_handler.tlc"
+
+%% Function: BlockTypeSetup ==============================================
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block,"dspeph_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT_DATA  = 0
+  %assign INPORT_RESET = 1
+  %assign OUTPORT_DATA = 0
+  %%
+  %assign fcn      = SFcnParamSettings.Fcn
+  %assign FCN_VAR  = 0
+  %assign FCN_STD  = 1
+  %assign FCN_RMS  = 2
+  %assign FCN_MEAN = 3
+  %assign FCN_MIN  = 4
+  %assign FCN_MAX  = 5
+  %%
+  %<FixPt_Setup(block, system)>
+  %%
+  %assign isRunning = CAST("Boolean",(SFcnParamSettings.isRunning == "Yes"))
+  %assign resetport = CAST("Boolean",(SFcnParamSettings.isResetPort == "Yes"))
+  %assign inCplx    = (LibBlockInputSignalIsComplex(INPORT_DATA) != 0)
+
+  %assign inWidth = LibBlockInputSignalWidth(INPORT_DATA)
+  %assign numDims = LibBlockInputSignalNumDimensions(INPORT_DATA)
+  %assign dims    = LibBlockInputSignalDimensions(INPORT_DATA)  
+  %assign frameBased   = LibBlockInputSignalIsFrameData(INPORT_DATA)
+  %assign isFullMatrix = LibBlockInputSignalIsFullMatrix(INPORT_DATA)
+  %assign nChans       = (frameBased || isFullMatrix) ? dims[1] : 1
+  %assign nSamps       = (frameBased || isFullMatrix) ? dims[0] : inWidth
+  %assign isFramedRow  = (frameBased && (nSamps == 1) && inWidth > 1)
+  %%
+  %assign uType         = LibBlockInputSignalDataTypeName(INPORT_DATA,"")
+  %assign DType_ID      = LibBlockOutputSignalDataTypeId(OUTPORT_DATA)
+  %assign inDT          = FixPt_GetInputDataType(INPORT_DATA)
+  %assign isFixPt       = !FixPt_DataTypeIsFloat(inDT)
+  %if isFixPt
+    %assign accumDT     = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+    %assign block       = block + accumDT
+    %if (fcn != FCN_MEAN)
+      %assign prodDT    = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+      %assign block     = block + prodDT
+    %endif
+    %if ((fcn == FCN_MEAN) || (fcn == FCN_VAR))
+      %assign outDT     = FixPt_GetOutputDataType(OUTPORT_DATA)
+      %assign denDT     = FixPt_GetParameterDataType(DEN_DATA_TYPE, 0, 0)
+      %assign block     = block + outDT + denDT
+    %endif
+  %endif
+  %assign zeroVal       = %<SLibGetGroundValueFromId(DType_ID)>
+  %assign diffPortRates = !LibIsSFcnSingleRate(block)
+  %assign isDouble      = (LibBlockOutputSignalDataTypeId(OUTPORT_DATA) == tSS_DOUBLE)
+  %assign isSingle      = (LibBlockOutputSignalDataTypeId(OUTPORT_DATA) == tSS_SINGLE)
+  %assign boolDataInput = (LibBlockOutputSignalDataTypeId(OUTPORT_DATA) == tSS_BOOLEAN)
+  %assign floatingPoint = (isDouble || isSingle)
+  %assign wrdLen        = SFcnParamSettings.WordLength
+  %assign signed        = CAST("Boolean",(SFcnParamSettings.isSigned == "Yes"))
+  %assign valDType      = LibBlockInputSignalDataTypeName(INPORT_DATA,"")
+  %assign yType         = LibBlockOutputSignalDataTypeName(OUTPORT_DATA,"")
+  %assign outCplx       = (LibBlockOutputSignalIsComplex(OUTPORT_DATA) != 0)
+  %assign multiTasking  = SFcnParamSettings.multiTasking
+
+  %assign block = block + ...
+    INPORT_DATA + INPORT_RESET + OUTPORT_DATA  + ...
+    uType       + inWidth      + isFramedRow   + ...
+    frameBased  + nChans       + nSamps        + ...
+    isRunning   + fcn          + FCN_VAR       + ...
+    FCN_STD     + FCN_RMS      + FCN_MEAN      + ...
+    FCN_MIN     + FCN_MAX      + resetport     + ...
+    inCplx      + zeroVal      + diffPortRates + ...
+    isDouble    + isSingle     + floatingPoint + ...
+    wrdLen      + signed       + boolDataInput + ...
+    yType       + outCplx      + valDType      + ...
+    multiTasking+ inDT         + isFixPt
+  %%
+  %if fcn < FCN_MIN %% STD,VAR,RMS,MEAN
+    %assign hasValDat = (fcn != FCN_RMS)  ? 1 : 0
+    %assign hasSqDat  = (fcn != FCN_MEAN) ? 1 : 0
+    %assign block = block + hasValDat + hasSqDat
+  %else %% MIN and MAX
+    %% indPortIndex will be -1 if there is no index outport
+    %assign indPortIndex = SFcnParamSettings.OutputMode-1
+    %assign VALUE_ONLY = 0
+    %assign INDEX_ONLY = 1
+    %assign VALUE_AND_INDEX = 2
+    %assign hasValOutport = CAST("Boolean",(SFcnParamSettings.OutputMode != INDEX_ONLY))
+    %assign hasIndOutport = CAST("Boolean",(SFcnParamSettings.OutputMode != VALUE_ONLY))
+    %assign hasValDat = hasValOutport
+    %assign hasIndDat = hasIndOutport
+    %% having hasSqDat makes initConds easier
+    %assign hasSqDat = 0
+    %assign isIndOutDouble = (hasIndOutport) ? (LibBlockOutputSignalDataTypeId(indPortIndex) == tSS_DOUBLE) : 0
+    %assign indDType = (hasIndOutport) ? LibBlockOutputSignalDataTypeName(indPortIndex,"") : valDType
+    %assign compOp = (fcn == FCN_MIN) ? "<" : ">"
+    %assign block = block + ...
+      hasValDat      + hasIndDat      + hasValOutport   + ...
+      hasIndOutport  + indPortIndex   + compOp          + ...
+      isIndOutDouble + indDType       + hasSqDat
+  %endif
+  %%
+  %% Setup the event port handler:
+  %%
+  %if resetport
+      %if (multiTasking && diffPortRates)
+          %% To achieve determinism we delay the event port data and store it in
+          %% DWork. The variable below tells event port handler to use this DWork
+          %% instead of the input port to check for events
+
+          %assign ephDataSource = PortDataEPH
+          %assign block = block + ephDataSource
+      %endif
+      %<EventPortHandlerInstanceSetup(block)>
+      %if  EventPortRequiresState(block)
+        %assign ephdwork = EPHPState
+      %else
+        %assign ephdwork = 0
+      %endif
+      %assign block = block + ephdwork
+  %endif
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  %%
+  %if isRunning
+    %assign FcnName = ["Variance","StdDev","RMS","Mean","Min","Max"]
+    /* Signal Processing Blockset %<FcnName[fcn]> (%<ParamSettings.FunctionName>) - '%<Name>' */
+    %%
+    %if frameBased
+      %assign newNChans = nChans
+    %else
+      %assign newNChans = nChans * nSamps
+    %endif 
+    %if newNChans > 1
+    {
+      int_T i;
+      for (i = 0;i < %<newNChans>;i++) {
+      %if ((fcn < FCN_MIN) && (!isFixPt))
+      %<clear(hasValDat,hasSqDat,"i")>
+      %elseif fcn == FCN_MIN
+        %if inCplx
+          %<LibBlockDWork(ValData, "i", "", 0)>.re = %<dspStatMaxVal(block)>;
+          %<LibBlockDWork(ValData, "i", "", 0)>.im = %<dspStatMaxVal(block)>;
+        %else
+          %<LibBlockDWork(ValData, "i", "", 0)> = (%<yType>)%<dspStatMaxVal(block)>;
+        %endif
+      %else   %% fcn == FCN_MAX
+        %if inCplx
+          %% need to have zero MAGNITUDE for complex case
+          %<LibBlockDWork(ValData, "i", "", 0)>.re = %<zeroVal>;
+          %<LibBlockDWork(ValData, "i", "", 0)>.im = %<zeroVal>;
+        %else
+          %<LibBlockDWork(ValData, "i", "", 0)> = (%<yType>)%<dspStatMinVal(block)>;
+        %endif
+      %endif
+      }
+    }
+    %else
+      %% Scalar case (newNChans == 1)
+      %if ((fcn < FCN_MIN) && (!isFixPt))
+      %<clear(hasValDat,hasSqDat,"0")>
+      %elseif fcn == FCN_MIN
+        %if inCplx
+          %<LibBlockDWork(ValData, "0", "", 0)>.re = %<dspStatMaxVal(block)>;
+          %<LibBlockDWork(ValData, "0", "", 0)>.im = %<zeroVal>;
+        %else
+          %<LibBlockDWork(ValData, "0", "", 0)> = (%<yType>)%<dspStatMaxVal(block)>;
+        %endif
+      %else   %% fcn == FCN_MAX
+        %if inCplx
+          %% need to have zero MAGNITUDE for complex case
+          %<LibBlockDWork(ValData, "0", "", 0)>.re = %<zeroVal>;
+          %<LibBlockDWork(ValData, "0", "", 0)>.im = %<zeroVal>;
+        %else
+          %<LibBlockDWork(ValData, "0", "", 0)> = (%<yType>)%<dspStatMinVal(block)>;
+        %endif
+      %endif
+    %endif %% newNChans > 1
+    %%
+    %% MIN and MAX don't need iteration count
+    %if fcn < FCN_MIN
+      %<LibBlockDWork(Iteration,"", "", 0)> = 0;
+    %endif
+    %%
+    %if resetport
+      %<InitializeEventPortPrevStateCache(block, ephdwork)>\
+    %endif
+  %endif
+%endfunction %% InitializeConditions
+
+
+%function dspStatMaxVal(block) Output
+  %if floatingPoint
+    %%
+    %% Always use MAX_real32_T (it's big enough...)
+    %%
+    %assign retStr = "MAX_real32_T"
+    %%
+  %elseif boolDataInput
+    %%
+    %assign retStr = "1"
+    %%
+  %else
+    %%
+    %% Signed or unsigned integer:
+    %%
+    %% We currently only support generated C code
+    %% for the cases of 8, 16, or 32 bit word lengths.
+    %% This is checked in the mdlRTW function in the S-fcn.
+    %%
+    %if signed
+      %% Signed integer (includes fixed-point)
+      %assign retStr = "0x7F"
+      %if wrdLen > 8
+        %% 16-bit bucket-size (or greater)
+        %assign retStr = retStr + "FF"
+      %endif
+      %if wrdLen > 16
+        %% 32-bit bucket-size
+        %assign retStr = retStr + "FFFF"
+      %endif
+    %else
+      %% Unsigned integer (includes fixed-point)
+      %assign retStr = "0x80"
+      %if wrdLen > 8
+        %% 16-bit bucket-size (or greater)
+        %assign retStr = retStr + "00"
+      %endif
+      %if wrdLen > 16
+        %% 32-bit bucket-size
+        %assign retStr = retStr + "0000"
+      %endif
+    %endif
+  %endif
+  %%
+  %% Common return point
+  %%
+  %return retStr
+  %%
+%endfunction %% dspStatMaxVal
+
+
+%function dspStatMinVal(block) Output
+  %if floatingPoint
+    %%
+    %% Always use -MAX_real32_T (it's small enough...)
+    %%
+    %assign retStr = "-MAX_real32_T"
+    %%
+  %elseif boolDataInput
+    %%
+    %assign retStr = "0"
+    %%
+  %else
+    %%
+    %% Signed or unsigned integer
+    %%
+    %% We currently only support generated C code
+    %% for the cases of 8, 16, or 32 bit word lengths.
+    %% This is checked in the mdlRTW function in the S-fcn.
+    %%
+    %if signed
+      %% Signed integer (includes fixed-point)
+      %assign retStr = "0x80"
+      %if wrdLen > 8
+        %% 16-bit bucket-size (or greater)
+        %assign retStr = retStr + "00"
+      %endif
+      %if wrdLen > 16
+        %% 32-bit bucket-size
+        %assign retStr = retStr + "0000"
+      %endif
+    %else
+      %% Unsigned integer (includes fixed-point)
+      %assign retStr = "0"
+    %endif
+  %endif
+  %%
+  %% Common return point
+  %%
+  %return retStr
+  %%
+%endfunction %% dspStatMinVal
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  %assign FcnName = ["Variance","StdDev","RMS","Mean","Min","Max"]
+  /* Signal Processing Blockset %<FcnName[fcn]> (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %if !isRunning
+      %if isFixPt
+        %createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                               overflowMode FixPtSaturationMode}
+      %endif
+      %%
+      %if inWidth==1
+        %%
+        %if (fcn == FCN_STD) || (fcn == FCN_VAR)
+          %if outCplx
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.re = %<zeroVal>;
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.im = %<zeroVal>;
+          %else
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = %<zeroVal>;
+          %endif  
+        %elseif (fcn == FCN_RMS)
+          %if inCplx
+            %if (isDouble)
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = sqrt(CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "","", 0)>));
+            %elseif (isSingle)
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = (real32_T)sqrt((double)CMAGSQ(%<LibBlockInputSignal(INPORT_DATA, "","", 0)>));
+            %endif
+          %else
+            %if (isDouble)
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = fabs(%<LibBlockInputSignal(INPORT_DATA, "","", 0)>);
+            %elseif (isSingle)
+            %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = (real32_T)fabs((double)%<LibBlockInputSignal(INPORT_DATA, "","", 0)>);
+            %endif
+          %endif  
+        %elseif (fcn == FCN_MEAN)
+          %if isFixPt
+            %createrecord inRec { label LibBlockInputSignal(INPORT_DATA,"","","0");   dTypeRec  inDT; isComplex inCplx }
+            %createrecord outRec{ label LibBlockOutputSignal(OUTPORT_DATA,"","","0"); dTypeRec outDT; isComplex inCplx }
+            %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+          %else
+            %if inCplx
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.re = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>.re;
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.im = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>.im;
+            %else
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>;
+            %endif  
+          %endif
+        %elseif (fcn == FCN_MIN) || (fcn == FCN_MAX)
+          %if hasValOutport
+            %if inCplx
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.re = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>.re;
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)>.im = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>.im;
+            %else
+              %<LibBlockOutputSignal(OUTPORT_DATA, "","", 0)> = %<LibBlockInputSignal(INPORT_DATA, "","", 0)>;
+            %endif  
+          %endif
+          %if hasIndOutport
+            %if isIndOutDouble
+              %<LibBlockOutputSignal(indPortIndex, "","", 0)> = 1.0;
+            %else
+              %<LibBlockOutputSignal(indPortIndex, "","", 0)> = 1;
+            %endif
+          %endif
+        %endif
+      %elseif (isFramedRow)
+        {
+          int_T j;
+          for (j=0;j < %<nChans>;j++) {
+            %if (fcn == FCN_STD) || (fcn == FCN_VAR)
+              %if outCplx
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)>.re = %<zeroVal>;
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)>.im = %<zeroVal>;
+              %else
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = %<zeroVal>;
+              %endif
+            %elseif (fcn == FCN_RMS)
+              %if inCplx
+                %if (isDouble)
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = sqrt(CMAGSQ(%<LibBlockInputSignal(INPORT_DATA,"j","",0)>));
+                %elseif (isSingle)
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = (real32_T)sqrt((double)CMAGSQ(%<LibBlockInputSignal(INPORT_DATA,"j","",0)>));
+                %endif
+              %else
+                %if (isDouble)
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = fabs(%<LibBlockInputSignal(INPORT_DATA,"j","",0)>);
+                %elseif (isSingle)
+                %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = (real32_T)fabs((double)%<LibBlockInputSignal(INPORT_DATA,"j","",0)>);
+                %endif
+              %endif
+            %elseif (fcn == FCN_MEAN)
+              %if isFixPt
+                %createrecord inRec { label LibBlockInputSignal(INPORT_DATA,"j","","0");   dTypeRec  inDT; isComplex inCplx }
+                %createrecord outRec{ label LibBlockOutputSignal(OUTPORT_DATA,"j","","0"); dTypeRec outDT; isComplex inCplx }
+                %<DSPFixptLibEquals(outRec, inRec, RndSat)>
+              %else
+                %if inCplx
+                  %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)>.re = %<LibBlockInputSignal(INPORT_DATA,"j","",0)>.re;
+                  %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)>.im = %<LibBlockInputSignal(INPORT_DATA,"j","",0)>.im;
+                %else
+                  %<LibBlockOutputSignal(OUTPORT_DATA,"j","",0)> = %<LibBlockInputSignal(INPORT_DATA,"j","",0)>;
+                %endif
+              %endif
+            %elseif (fcn == FCN_MIN) || (fcn == FCN_MAX)
+              %if hasValOutport
+                %if inCplx
+                  %<LibBlockOutputSignal(OUTPORT_DATA, "j","", 0)>.re = %<LibBlockInputSignal(INPORT_DATA, "j","", 0)>.re;
+                  %<LibBlockOutputSignal(OUTPORT_DATA, "j","", 0)>.im = %<LibBlockInputSignal(INPORT_DATA, "j","", 0)>.im;
+                %else
+                  %<LibBlockOutputSignal(OUTPORT_DATA, "j","", 0)> = %<LibBlockInputSignal(INPORT_DATA, "j","", 0)>;
+                %endif  
+              %endif
+              %if hasIndOutport
+                %if isIndOutDouble
+                  %<LibBlockOutputSignal(indPortIndex, "j","", 0)> = 1.0;
+                %else
+                  %<LibBlockOutputSignal(indPortIndex, "j","", 0)> = 1;
+                %endif
+              %endif
+            %endif
+          }
+        }
+      %else	
+          %%
+          %<processNonRunning(block)>
+          %%
+      %endif %% if !isRunning
+  %else %%isRunning
+    %%
+    %% Block could be multirate if and only if it has more than
+    %% one input port (eg, a reset input).  If it is multirate,
+    %% generate "sample hit" conditional so code executes at the
+    %% block's base rate, and not the overall model base rate.
+    %%
+    %if diffPortRates
+      if (%<LibIsSFcnSampleHit("InputPortIdx0")>) { %<LibTaskSFcnComment("InputPortIdx0")>
+      %if (multiTasking)
+        %%Delay reset port data by storing in DWork to achieve determinism
+        if (%<LibIsSFcnSpecialSampleHit("InputPortIdx1", "InputPortIdx0")>) {
+            memcpy(%<LibBlockDWorkAddr(ephDataSource, "", "", 0)>, 
+                   %<LibBlockInputSignalAddr(INPORT_RESET, "", "", 0)>,
+                   sizeof(%<LibBlockInputSignalDataTypeName(INPORT_RESET, "")>));
+        }
+      %endif
+    %endif
+    %% 
+    %<runningProcessCode(block, system)>
+    %if diffPortRates
+      }
+    %endif
+  %endif
+
+%endfunction    %%outputs
+
+
+%% Function: OutputsForTID =====================================================
+%% This function is called only when the block is multi-rate, multi-tasking
+%% and in ert mode
+%function OutputsForTID(block, system, tid) Output
+  %assign FcnName = ["Variance","StdDev","RMS","Mean","Min","Max"]
+  /* Signal Processing Blockset %<FcnName[fcn]> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %if (tid == %<LibGetGlobalTIDFromLocalSFcnTID("InputPortIdx0")>)
+    %%Delay reset port data by storing in DWork to achieve determinism
+    if (%<LibIsSFcnSpecialSampleHit("InputPortIdx1", "InputPortIdx0")>) {
+          memcpy(%<LibBlockDWorkAddr(ephDataSource, "", "", 0)>, 
+                 %<LibBlockInputSignalAddr(INPORT_RESET, "", "", 0)>,
+                 sizeof(%<LibBlockInputSignalDataTypeName(INPORT_RESET, "")>));
+    }
+    %<runningProcessCode(block, system)>
+  %endif
+}
+%endfunction %% OutputsForTID
+
+%% Function: runningProcessCode ================================================
+%% 
+%function runningProcessCode(block, system) Output
+    %if resetport
+      /* check for reset */
+      if(%<CheckEventPort(block, INPORT_RESET, ephdwork)>) {
+        %<LibBlockDWork(Iteration, "", "", 0)> = 0;
+      }
+    %endif
+    %if !frameBased
+      %<processRunSample(block)>
+    %else
+      %<processRunFrame(block)>
+    %endif
+%endfunction %% runningProcessCode
+
+
+%% Function: processNonRunning =================================================
+%%
+%% Non-running case: switchyard
+%%
+%function processNonRunning(block) Output
+  %if fcn < FCN_MIN %% Std, Var, RMS, Mean
+    %if isFixPt
+      %<processNonRunningFixptValOnly(block)> \
+    %else
+      %<processNonRunningFltptValOnly(block)> \
+    %endif
+  %else %% Min and Max
+    %<processNonRunningValAndIndex(block)> \
+  %endif
+%endfunction
+
+
+%% Function: processNonRunningFixptValOnly ====================================================
+%%
+%% Non-running case
+%%
+%function processNonRunningFixptValOnly(block) Output
+%%
+%createrecord rndSat{ roundingMode FixPtRoundingMode; overflowMode FixPtSaturationMode }
+%createrecord inRec { label LibBlockInputSignal(INPORT_DATA,"inIdx","","0");   dTypeRec inDT;  isComplex inCplx }
+%createrecord outRec{ label LibBlockOutputSignal(OUTPORT_DATA,"j","","0"); dTypeRec outDT; isComplex inCplx }
+%createrecord sumValRec{ label "sumVal"; dTypeRec accumDT; isComplex inCplx }
+%createrecord denRec{ label "%<nSamps>"; dTypeRec denDT; isComplex 0 }
+%if (fcn != FCN_MEAN)
+  %createrecord sqValRec{  label "sqVal";  dTypeRec accumDT; isComplex 0 }
+  %createrecord tmpAccRec{ label "tmpAcc"; dTypeRec accumDT; isComplex 0 }
+  %createrecord tmpAcc1Rec{ label "tmpAcc1"; dTypeRec accumDT; isComplex 0 }
+  %createrecord prodRec {  label "prod"; dTypeRec prodDT;  isComplex 0 }
+%endif
+{
+  int_T j = %<nChans>;
+  int_T inIdx = 0;
+  %if hasSqDat
+    %<prodDT.Name> %<prodRec.label> = 0;
+    %<accumDT.Name> %<tmpAccRec.label> = 0;
+    %<accumDT.Name> %<tmpAcc1Rec.label> =0;
+  %endif
+  while (j-- > 0) {
+    %if (sumValRec.isComplex)
+      %<accumDT.ComplexName> %<sumValRec.label> = {0, 0};
+    %else
+      %<accumDT.Name> %<sumValRec.label> = 0;
+    %endif
+    %if hasSqDat
+      %<accumDT.Name> %<sqValRec.label> = 0;
+    %endif
+    int_T i = %<nSamps>;
+    while (i-- > 0) {
+      %<DSPFixptLibPlusEquals(sumValRec, inRec, rndSat)> \
+      %if hasSqDat
+        %<DSPFixptLibNorm(tmpAccRec, inRec, prodRec, rndSat)> \
+        %<DSPFixptLibPlusEquals(sqValRec, tmpAccRec, rndSat)> \
+      %endif
+      inIdx++;
+    }
+    %if (fcn == FCN_MEAN)
+      %<DSPFixptLibDivide(outRec, sumValRec, denRec, rndSat)> \
+    %elseif (fcn == FCN_VAR)
+      %<calFixptVar(sumValRec, sqValRec, tmpAccRec, tmpAcc1Rec, prodRec, denRec, outRec, rndSat)> \
+    %else
+      %error "Fixed-point code generation is not yet supported for RMS or StdDev block."
+    %endif
+  }
+}
+%endfunction  %% processNonRunningFixptValOnly
+
+
+%% Function: processNonRunningFltptValOnly ====================================================
+%%
+%% Non-running case
+%%
+%function processNonRunningFltptValOnly(block) Output
+%%
+{
+  const %<uType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+  %<yType> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+  int_T j = %<nChans>;
+  while (j-- > 0) {
+    %assign sumValZero = inCplx ? "{%<zeroVal>,%<zeroVal>}" : "%<zeroVal>"   
+    %if hasValDat
+      %<uType> sumVal = %<sumValZero>;
+    %endif
+    %if hasSqDat
+      %<yType> sqVal  = %<zeroVal>;
+    %endif
+    %if nSamps > 1
+    int_T i = %<nSamps>;
+    while (i-- > 0) {
+    %endif
+      %if hasValDat
+        %<doPlusEquals(inCplx,"sumVal","(*u)")> \
+      %endif
+      %if hasSqDat
+        %<doPlusEquals(outCplx,"sqVal",doNorm(inCplx,"(*u)"))> \
+      %endif
+      u++;
+    %if nSamps > 1
+    }
+    %endif
+    %if nSamps == 1
+      %<initVal("sumVal","sqVal")>
+    %else
+      %<calcVal("sumVal","sqVal",nSamps)>
+    %endif
+  }
+}
+%endfunction  %% processNonRunningFltptValOnly
+
+
+%% Function: processNonRunningValAndIndex ====================================================
+%%
+%% Non-running case
+%%
+%function processNonRunningValAndIndex(block) Output
+%%
+{
+  const %<valDType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+  %<valDType> val;
+  %if (isFixPt && inCplx)
+    %<accumDT.Name> AccumIn, AccumState;
+    %<prodDT.Name> Prod;
+  %endif
+  %if hasValOutport
+    %<valDType> *valPort = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+  %endif
+  %if hasIndOutport
+    %<indDType> *indPort = %<LibBlockOutputSignalAddr(indPortIndex,"", "", 0)>;
+    %<indDType> ind;
+  %endif
+  %if nChans > 1 && nSamps > 2
+    int_T i,j;
+  %elseif nChans > 1
+    int_T i;
+  %elseif nSamps > 2
+    int_T j;
+  %endif
+  %if nChans > 1
+  for (i=0;i<%<nChans>;i++) {
+  %endif
+    %<doEquals(inCplx,"val","*u",0,1)> \
+    %if hasIndOutport
+      ind = 1;
+    %endif
+    %if nSamps > 2
+    for (j=1;j<%<nSamps>;j++) {
+      %<doMinMaxUpdate(inCplx,hasIndOutport,"j+1","val","ind",compOp)> \
+    }
+    %elseif nSamps == 2
+      %<doMinMaxUpdate(inCplx,hasIndOutport,"2","val","ind",compOp)> \
+    %endif
+    %if hasValOutport
+      %if nChans > 1
+      %<doEquals(inCplx,"*valPort","val",1,0)> \
+      %else
+      %<doEquals(inCplx,"*valPort","val",0,0)> \
+      %endif
+    %endif
+    %if hasIndOutport
+      %if nChans > 1
+      *indPort++ = ind;
+      %else
+      *indPort = ind;
+      %endif
+    %endif
+  %if nChans > 1
+  } 
+  %endif
+}
+%endfunction  %% processNonRunningValAndIndex
+
+
+%% Function: processRunSample ====================================================
+%%
+%% Running and sample-based case: switchyard
+%%
+%function processRunSample(block) Output
+  %if fcn < FCN_MIN %% Std, Var, RMS, Mean
+    %if isFixPt
+      %<processRunSampleFixptValOnly(block)> \
+    %else
+      %<processRunSampleFltptValOnly(block)> \
+    %endif
+  %else %% Min and Max
+    %<processRunSampleValAndIndex(block)> \
+  %endif
+%endfunction
+
+
+%% Function: processRunSampleFixptValOnly ====================================================
+%%
+%% Running/sample-based input
+%%
+%function processRunSampleFixptValOnly(block) Output
+%assign newNChans = nChans * nSamps
+%createrecord rndSat   { roundingMode FixPtRoundingMode; overflowMode FixPtSaturationMode }
+%createrecord denRec   { label "(*iterCount)";  dTypeRec denDT;   isComplex 0 }
+%if newNChans > 1
+  %createrecord inRec    { label LibBlockInputSignal(INPORT_DATA,"idx","","0");   dTypeRec inDT;    isComplex inCplx }
+  %createrecord outRec   { label LibBlockOutputSignal(OUTPORT_DATA,"idx","","0"); dTypeRec outDT;   isComplex inCplx }
+  %createrecord sumValRec{ label LibBlockDWork(ValData, "idx", "", 0);            dTypeRec accumDT; isComplex inCplx }
+%else
+  %createrecord inRec    { label LibBlockInputSignal(INPORT_DATA,"","","0");   dTypeRec inDT;    isComplex inCplx }
+  %createrecord outRec   { label LibBlockOutputSignal(OUTPORT_DATA,"","","0"); dTypeRec outDT;   isComplex inCplx }
+  %createrecord sumValRec{ label LibBlockDWork(ValData, "", "", 0);            dTypeRec accumDT; isComplex inCplx }
+%endif
+%if (fcn != FCN_MEAN)
+  %if newNChans > 1
+    %createrecord sqValRec{ label LibBlockDWork(SqData, "idx", "", 0); dTypeRec accumDT; isComplex 0 }
+  %else
+    %createrecord sqValRec{ label LibBlockDWork(SqData, "", "", 0);  dTypeRec accumDT; isComplex 0 }
+  %endif
+  %createrecord tmpAccRec { label "tmpAcc";  dTypeRec accumDT; isComplex 0 }
+  %createrecord tmpAcc1Rec{ label "tmpAcc1"; dTypeRec accumDT; isComplex 0 }
+  %createrecord prodRec   { label "prod";    dTypeRec prodDT;  isComplex 0 }
+%endif
+{
+  int32_T *iterCount = (int32_T *)%<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+  %if hasSqDat
+    %<prodDT.Name> %<prodRec.label> = 0;
+    %<accumDT.Name> %<tmpAccRec.label> = 0;
+    %<accumDT.Name> %<tmpAcc1Rec.label> =0;
+  %endif
+  %if newNChans > 1
+    const int_T nChans = %<newNChans>;
+    int_T idx = 0;
+    int_T i;
+  %endif
+  %%
+  (*iterCount)++;
+  /* Check for counter overflow */
+  if (*iterCount == 0) {
+    *iterCount = 1;
+  }
+  %if newNChans > 1
+    for (i=0;i<nChans;i++) {
+  %endif
+  if (*iterCount == 1) {
+    %<DSPFixptLibEquals(sumValRec, inRec, rndSat)> \
+    %if hasSqDat
+      %<DSPFixptLibNorm(sqValRec, inRec, prodRec, rndSat)> \
+    %endif
+    %% first output value
+    %if (fcn == FCN_MEAN)
+      %<DSPFixptLibEquals(outRec, inRec, rndSat)>
+    %else
+      %<outRec.label>= 0;
+    %endif
+  } else {
+    %<DSPFixptLibPlusEquals(sumValRec, inRec, rndSat)> \
+    %if hasSqDat
+      %<DSPFixptLibNorm(tmpAccRec, inRec, prodRec, rndSat)> \
+      %<DSPFixptLibPlusEquals(sqValRec, tmpAccRec, rndSat)> \
+    %endif
+    %if (fcn == FCN_MEAN)
+      %<DSPFixptLibDivide(outRec, sumValRec, denRec, rndSat)> \
+    %elseif (fcn == FCN_VAR)
+      %<calFixptVar(sumValRec, sqValRec, tmpAccRec, tmpAcc1Rec, prodRec, denRec, outRec, rndSat)> \
+    %else
+      %error "Fixed-point code generation is not yet supported for RMS or StdDev block."
+    %endif
+  }
+  %if newNChans > 1
+  idx++;
+  }
+  %endif
+}
+%endfunction  %% processRunSampleFixptValOnly
+
+
+%% Function: processRunSampleFltptValOnly ====================================================
+%%
+%% Running/sample-based input
+%%
+%function processRunSampleFltptValOnly(block) Output
+  {
+    %assign newNChans = nChans * nSamps
+    const %<uType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+    %<yType> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+    %if hasValDat
+      %<uType> *valSum = %<LibBlockDWorkAddr(ValData, "", "", 0)>;
+    %endif
+    %if hasSqDat
+      %<yType> *sqSum = %<LibBlockDWorkAddr(SqData, "", "", 0)>;
+    %endif
+    uint32_T *iterCount = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    %if newNChans > 1
+    const int_T nChans = %<nChans> * %<nSamps>;
+    int_T i;
+    %endif
+    %%
+    (*iterCount)++;
+    /* Check for counter overflow */
+    if (*iterCount == 0) {
+      *iterCount = 1;
+    }
+    %if newNChans > 1
+    for (i=0;i<nChans;i++) {
+    %endif
+      if (*iterCount == 1) {
+        %if newNChans > 1
+          %<initState(hasValDat,hasSqDat,"i","(*valSum)","(*u)","*sqSum",doNorm(inCplx,"(*u)"))> \
+        %else
+          %<initState(hasValDat,hasSqDat,"","(*valSum)","(*u)","*sqSum",doNorm(inCplx,"(*u)"))> \
+        %endif
+        %<initVal("(*u)",doNorm(inCplx,"(*u)"))> \
+      } else {
+        %if hasValDat
+          %<doPlusEquals(inCplx,"(*valSum)","(*u)")> \
+        %endif
+        %if hasSqDat
+          %<doPlusEquals(outCplx,"*sqSum",doNorm(inCplx,"(*u)"))> \
+        %endif
+        %<calcVal("(*valSum)","(*sqSum)","(*iterCount)")> \
+      }
+    %if newNChans > 1
+      %if hasValDat
+      valSum++;
+      %endif
+      %if hasSqDat
+      sqSum++;
+      %endif
+      u++;
+    }
+    %endif
+  }
+%endfunction  %% processRunSampleFltptValOnly
+
+
+%% Function: processRunSampleValAndIndex ====================================================
+%%
+%% Running/sample-based input
+%%   only has a value outport (no index output in running mode)
+%%
+%function processRunSampleValAndIndex(block) Output
+{
+  %assign newNChans = nChans * nSamps
+  const %<valDType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+  %<valDType> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+  %<valDType> *valDat = %<LibBlockDWorkAddr(ValData, "", "", 0)>;
+  int_T i;
+  uint32_T *iterCount = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+  /* check for reset */
+  if(*iterCount > 0) {
+    for (i=0;i<%<newNChans>;i++) {
+      %if (isFixPt && inCplx)
+        %<accumDT.Name> AccumIn, AccumState;
+        %<prodDT.Name> Prod;
+      %endif
+      %%update
+      %<doMinMaxUpdate(inCplx,hasIndOutport,"","*valDat","",compOp)> \
+      %%output
+      %<doEquals(inCplx,"*y","*valDat",1,1)> \
+    }
+  } else {  /* reset */
+    *iterCount = 1;
+    for (i=0;i<%<newNChans>;i++) {
+      %%init
+      %<doEquals(inCplx,"*valDat","*u",0,1)> \
+      %%output
+      %<doEquals(inCplx,"*y","*valDat",1,1)> \
+    }
+  }
+}
+%endfunction %% processRunSampleValAndIndex
+
+
+%% Function: processRunFrame ====================================================
+%%
+%% Running and frame-based case: switchyard
+%%
+%function processRunFrame(block) Output
+  %if fcn < FCN_MIN %% Std, Var, RMS, Mean
+    %if isFixPt
+      %<processRunFrameFixptValOnly(block)> \
+    %else
+      %<processRunFrameFltptValOnly(block)> \
+    %endif
+  %else %% Min and Max
+    %<processRunFrameValAndIndex(block)> \
+  %endif
+%endfunction
+
+
+%% Function: processRunFrameFixptValOnly ====================================================
+%%
+%% Running/frame-based input
+%%
+%function processRunFrameFixptValOnly(block) Output
+%createrecord rndSat { roundingMode FixPtRoundingMode; overflowMode FixPtSaturationMode }
+%createrecord denRec { label "(*iterCount)";                                    dTypeRec denDT; isComplex 0 }
+%createrecord inRec  { label LibBlockInputSignal(INPORT_DATA,"inIdx","","0");   dTypeRec inDT;  isComplex inCplx }
+%createrecord outRec { label LibBlockOutputSignal(OUTPORT_DATA,"inIdx","","0"); dTypeRec outDT;   isComplex inCplx }
+%if nChans > 1
+  %createrecord sumValRec{ label LibBlockDWork(ValData, "i", "", 0);              dTypeRec accumDT; isComplex inCplx }
+%else
+  %createrecord sumValRec{ label LibBlockDWork(ValData, "", "", 0);            dTypeRec accumDT; isComplex inCplx }
+%endif
+%if (fcn != FCN_MEAN)
+  %if nChans > 1
+    %createrecord sqValRec{ label LibBlockDWork(SqData, "i", "", 0); dTypeRec accumDT; isComplex 0 }
+  %else
+    %createrecord sqValRec{ label LibBlockDWork(SqData, "", "", 0);  dTypeRec accumDT; isComplex 0 }
+  %endif
+  %createrecord tmpAccRec { label "tmpAcc";  dTypeRec accumDT; isComplex 0 }
+  %createrecord tmpAcc1Rec{ label "tmpAcc1"; dTypeRec accumDT; isComplex 0 }
+  %createrecord prodRec   { label "prod";    dTypeRec prodDT;  isComplex 0 }
+%endif
+  {
+    int32_T *iterCount = (int32_T *)%<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    int_T inIdx = 0;
+    %if nChans > 1
+    uint32_T iterStart = *iterCount;
+    int_T i,j;
+    %else
+    int_T j;
+    %endif
+    %if hasSqDat
+    %<prodDT.Name> %<prodRec.label> = 0;
+    %<accumDT.Name> %<tmpAccRec.label> = 0;
+    %<accumDT.Name> %<tmpAcc1Rec.label> =0;
+    %endif
+    %%
+    %if nChans > 1
+    for (i = 0;i < %<nChans>;i++) {
+      *iterCount = iterStart;
+    %endif
+      for (j = 0;j < %<nSamps>;j++) {
+        (*iterCount)++;
+        /* Check for counter overflow */
+        if (*iterCount == 0) {
+          *iterCount = 1;
+        }
+        if (*iterCount == 1) {
+          %<DSPFixptLibEquals(sumValRec, inRec, rndSat)> \
+          %if hasSqDat
+            %<DSPFixptLibNorm(sqValRec, inRec, prodRec, rndSat)> \
+          %endif
+          %% first output value
+          %if (fcn == FCN_MEAN)
+            %<DSPFixptLibEquals(outRec, inRec, rndSat)>
+          %else
+            %<outRec.label>= 0;
+          %endif
+        } else {
+          %<DSPFixptLibPlusEquals(sumValRec, inRec, rndSat)> \
+          %if hasSqDat
+            %<DSPFixptLibNorm(tmpAccRec, inRec, prodRec, rndSat)> \
+            %<DSPFixptLibPlusEquals(sqValRec, tmpAccRec, rndSat)> \
+          %endif
+          %if (fcn == FCN_MEAN)
+            %<DSPFixptLibDivide(outRec, sumValRec, denRec, rndSat)> \
+          %elseif (fcn == FCN_VAR)
+            %<calFixptVar(sumValRec, sqValRec, tmpAccRec, tmpAcc1Rec, prodRec, denRec, outRec, rndSat)> \
+          %else
+            %error "Fixed-point code generation is not yet supported for RMS or StdDev block."
+          %endif
+        }
+        inIdx++;
+      }
+    %if nChans > 1
+    } 
+    %endif
+  }   
+%endfunction    %% processRunFrameFixptValOnly
+
+
+%% Function: processRunFrameFltptValOnly ====================================================
+%%
+%% Running/frame-based input
+%%
+%function processRunFrameFltptValOnly(block) Output
+  {
+    const %<uType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+    %<yType> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+    %if hasValDat
+      %<uType> *valSum = %<LibBlockDWorkAddr(ValData, "", "", 0)>;
+    %endif
+    %if hasSqDat
+      %<yType> *sqSum = %<LibBlockDWorkAddr(SqData, "", "", 0)>;
+    %endif
+    uint32_T *iterCount = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+    %if nChans > 1
+    uint32_T iterStart;
+    uint32_T i,j;
+    %else
+    uint32_T j;
+    %endif
+    %%
+    %if nChans > 1
+    iterStart = *iterCount;
+    for (i = 0;i < %<nChans>;i++) {
+      *iterCount = iterStart;
+    %endif
+      for (j = 0;j < %<nSamps>;j++) {
+        (*iterCount)++;
+        /* Check for counter overflow */
+        if (*iterCount == 0) {
+          *iterCount = 1;
+        }
+        if (*iterCount == 1) {
+          %if nChans > 1
+            %<initState(hasValDat,hasSqDat,"i","(*valSum)","(*u)","*sqSum",doNorm(inCplx,"(*u)"))> \
+          %else
+            %<initState(hasValDat,hasSqDat,"","(*valSum)","(*u)","*sqSum",doNorm(inCplx,"(*u)"))> \
+          %endif
+          %<initVal("(*u)",doNorm(inCplx,"(*u)"))>
+        } else {
+          %if hasValDat
+            %<doPlusEquals(inCplx,"(*valSum)","(*u)")> \
+          %endif
+          %if hasSqDat
+            %<doPlusEquals(outCplx,"*sqSum",doNorm(inCplx,"(*u)"))> \
+          %endif
+          %<calcVal("(*valSum)","(*sqSum)","(*iterCount)")>
+        }
+        u++;
+      }
+    %if nChans > 1
+      %if hasValDat
+        valSum++;
+      %endif
+      %if hasSqDat
+        sqSum++;
+      %endif
+    } 
+    %endif
+  }   
+%endfunction  %% processRunFrameFltptValOnly
+
+
+%% Function: processRunFrameValAndIndex ==================================
+%%
+%% Running/frame-based input
+%%   only has a value outport (no index output in running mode)
+%%
+%function processRunFrameValAndIndex(block) Output
+{
+  const %<valDType> *u = %<LibBlockInputSignalAddr(INPORT_DATA,"","",0)>;
+  %<valDType> *y = %<LibBlockOutputSignalAddr(OUTPORT_DATA,"", "", 0)>;
+  %<valDType> *valDat = %<LibBlockDWorkAddr(ValData, "", "", 0)>;
+  int_T i,j,jStart=0;
+  boolean_T reset = false;
+  uint32_T *iterCount = %<LibBlockDWorkAddr(Iteration, "", "", 0)>;
+  if (*iterCount == 0) {
+    reset = true;
+    *iterCount = 1;
+    jStart = 1;
+  }
+  for (i=0;i<%<nChans>;i++) {
+    if (reset) {
+      %%init
+      %<doEquals(inCplx,"*valDat","*u",0,1)> \
+      %%output
+      %<doEquals(inCplx,"*y","*valDat",1,0)> \
+    }
+    for (j = jStart;j < %<nSamps>;j++) {
+      %if (isFixPt && inCplx)
+        %<accumDT.Name> AccumIn, AccumState;
+        %<prodDT.Name> Prod;
+      %endif
+      %%update
+      %<doMinMaxUpdate(inCplx,hasIndOutport,"","*valDat","",compOp)> \
+      %%output  
+      %<doEquals(inCplx,"*y","*valDat",1,0)> \
+    }
+    valDat++;
+  }
+}
+%endfunction  %% processRunFrameValAndIndex
+
+
+%% Function: initVal ====================================================
+%%
+%% Switchyard to call correct init fcn
+%%
+%function initVal(valSum,sqSum) Output
+  %switch fcn
+    %case FCN_VAR
+      %<initVar(valSum,sqSum)> \
+      %break
+    %case FCN_STD
+      %<initStdDev(valSum,sqSum)> \
+      %break
+    %case FCN_RMS
+      %<initRMS(sqSum)> \
+      %break
+    %case FCN_MEAN
+      %<initMean(valSum)> \ 
+      %break
+  %endswitch
+%endfunction  %%initVal 
+
+%% Function: initVar ====================================================
+%%
+%% Variance calculation
+%%
+%function initVar(valSum,sqSum) Output
+  %if (outCplx)
+    (*y).re = %<zeroVal>;
+    (*y++).im = %<zeroVal>;
+  %else
+    *y++ = %<zeroVal>;
+  %endif
+%endfunction  %%initVar 
+
+%% Function: initStdDev ====================================================
+%%
+%% Standard Deviation calculation
+%%
+%function initStdDev(valSum,sqSum) Output
+  %if (outCplx)
+    (*y).re = %<zeroVal>;
+    (*y++).im = %<zeroVal>;
+  %else
+    *y++ = %<zeroVal>;
+  %endif
+%endfunction  %%initStdDev 
+
+%% Function: initRMS ====================================================
+%%
+%% RMS calculation
+%%
+%function initRMS(sqSum) Output
+  %if (isDouble)
+    *y++ = sqrt(%<sqSum>);
+  %elseif (isSingle)
+    *y++ = (real32_T)sqrt((double)%<sqSum>);
+  %endif
+%endfunction  %%initRMS
+
+%% Function: initMean ====================================================
+%%
+%% Mean calculation
+%%
+%function initMean(valSum) Output
+  %if (inCplx)
+    (*y).re = %<valSum>.re;
+    (*y++).im = %<valSum>.im;
+  %else
+    *y++ = %<valSum>;
+  %endif
+%endfunction  %%initMean 
+
+
+%% Function: calcVal ====================================================
+%%
+%% Switchyard to call correct calc fcn
+%%
+%function calcVal(valSum,sqSum,nSamps) Output
+  %switch fcn
+    %case FCN_VAR
+      %<calcVar(valSum,sqSum,nSamps)> \
+      %break
+    %case FCN_STD
+      %<calcStdDev(valSum,sqSum,nSamps)> \
+      %break
+    %case FCN_RMS
+      %<calcRMS(sqSum,nSamps)> \
+      %break
+    %case FCN_MEAN
+      %<calcMean(valSum,nSamps)> \      
+      %break
+  %endswitch
+%endfunction  %%calcVal 
+
+%% Function: calcVar ====================================================
+%%
+%% Variance calculation
+%%
+%function calcVar(valSum,sqSum,nSamps) Output
+  *y++ = (%<sqSum> - %<doNorm(inCplx,valSum)> / %<nSamps>) / (%<nSamps> - 1);
+%endfunction  %%calcVar 
+
+%% Function: calcStdDev ====================================================
+%%
+%% Standard Deviation calculation
+%%
+%function calcStdDev(valSum,sqSum,nSamps) Output
+  %if (isDouble)
+    *y++ = sqrt((%<sqSum> - %<doNorm(inCplx,valSum)> / %<nSamps>) / (%<nSamps> - 1));
+  %elseif (isSingle)
+    *y++ = (real32_T)sqrt((double)(%<sqSum> - %<doNorm(inCplx,valSum)> / %<nSamps>) / (%<nSamps> - 1));
+  %endif
+%endfunction  %%calcStdDev 
+
+%% Function: calcRMS ====================================================
+%%
+%% RMS calculation
+%%
+%function calcRMS(sqSum,nSamps) Output
+  %if (isDouble)
+    *y++ = sqrt(%<sqSum> / %<nSamps>);
+  %elseif (isSingle)
+    *y++ = (real32_T)sqrt((double)(%<sqSum> / %<nSamps>));
+  %endif
+%endfunction  %%calcRMS
+
+%% Function: calcMean ====================================================
+%%
+%% Mean calculation
+%%
+%function calcMean(valSum,nSamps) Output
+  %if (inCplx)
+    (*y).re = %<valSum>.re / %<nSamps>;
+    (*y++).im = %<valSum>.im / %<nSamps>;
+  %else
+    *y++ = %<valSum> / %<nSamps>;
+  %endif
+%endfunction  %%calcMean 
+
+%% Function: initState ====================================================
+%%
+%% Initializes the saved data
+%%
+%function initState(hasValDat, hasSqDat, ind, lhsv, rhsv, lhss, rhss) Output
+  %if hasValDat
+    %%initialize the value sum
+    %if inCplx
+      %<lhsv>.re = %<rhsv>.re;
+      %<lhsv>.im = %<rhsv>.im;
+    %else
+      %<lhsv> = %<rhsv>;
+    %endif
+  %endif
+  %if hasSqDat
+    %%initialize the square sum
+    %if outCplx
+      %<lhss>.re = %<rhss>.re;
+      %<lhss>.im = %<rhss>.im;
+    %else                                  
+      %<lhss> = %<rhss>;
+    %endif
+  %endif
+%endfunction  %%initState
+
+%% Function: clear ====================================================
+%%
+%% Clears the saved data
+%%
+%function clear(hasValDat, hasSqDat, ind) Output
+  %if hasValDat
+    %%clear the value sum
+    %if inCplx
+      %<LibBlockDWork(ValData, ind, "", 0)>.re = %<zeroVal>;
+      %<LibBlockDWork(ValData, ind, "", 0)>.im = %<zeroVal>;
+    %else            
+      %<LibBlockDWork(ValData, ind, "", 0)> = %<zeroVal>;
+    %endif
+  %endif
+  %if hasSqDat
+    %%clear the square sum which is always real
+    %<LibBlockDWork(SqData, ind, "", 0)> = %<zeroVal>;
+  %endif
+%endfunction  %%clear
+
+%% Function: doPlusEquals ====================================================
+%%
+%% Performs +=, checking for complexity
+%%   Careful with pointers! (use parentheses on input)
+%%
+%function doPlusEquals(isCplx,lhs,rhs) Output
+      %if isCplx
+        %<lhs>.re += %<rhs>.re;
+        %<lhs>.im += %<rhs>.im;
+      %else
+        %<lhs> += %<rhs>; 
+      %endif
+%endfunction  %% doPlusEquals
+
+%% Function: doEquals ====================================================
+%%
+%% Performs =, checking for complexity
+%%   will increment lhs and/or rhs if either of last two args is nonzero
+%%
+%function doEquals(isCplx,lhs,rhs,incrlhs,incrrhs) Output
+  %if incrlhs
+    %if incrrhs
+      %<lhs>++ = %<rhs>++; 
+    %else
+      %<lhs>++ = %<rhs>; 
+    %endif
+  %else
+    %if incrrhs
+      %<lhs> = %<rhs>++; 
+    %else
+      %<lhs> = %<rhs>; 
+    %endif
+  %endif
+%endfunction  %% doEquals
+
+%% Function: doNorm ====================================================
+%%
+%% Calculates norm in temporary variable, checking for complexity
+%%   Careful with pointers! (use parentheses on input)
+%%
+%function doNorm(isCplx,rhs) 
+  %if isCplx
+    %return "CMAGSQ(%<rhs>)"
+  %else
+    %return "%<rhs>*%<rhs>"
+  %endif
+%endfunction  %% doNorm
+
+%% Function: doMinMaxUpdate ====================================================
+%%
+%% Performs state update for Min and Max functions
+%%
+%function doMinMaxUpdate(inCplx,hasIndOutport,ind,valState,indState,compOp) Output
+  %%
+  %% Set-up for fixed-point
+  %if isFixPt
+    %createrecord rndSatRec {roundingMode FixPtRoundingMode; ...
+      overflowMode FixPtSaturationMode}
+    %createrecord accumInRec {label "AccumIn"; ...
+      dTypeRec accumDT; isComplex 0}
+    %createrecord accumStateRec {label "AccumState"; ...
+      dTypeRec accumDT; isComplex 0}
+    %createrecord prodRec {label "Prod"; ...
+      dTypeRec prodDT; isComplex 0}
+    %assign inRealLabel = "u->re"
+    %assign inImagLabel = "u->im"
+    %createrecord inRealRec {label inRealLabel; ...
+      dTypeRec inDT; isComplex 0}
+    %createrecord inImagRec {label inImagLabel; ...
+      dTypeRec inDT; isComplex 0}
+    %assign stateRealLabel = "(" + valState + ").re"
+    %assign stateImagLabel = "(" + valState + ").im"
+    %createrecord stateRealRec {label stateRealLabel; ...
+      dTypeRec inDT; isComplex 0}
+    %createrecord stateImagRec {label stateImagLabel; ...
+      dTypeRec inDT; isComplex 0}
+  %endif
+  %%
+  %if inCplx
+    %if FixPt_DataTypeIsFloat(inDT)
+      if (CMAGSQ(*u) %<compOp> CMAGSQ(%<valState>)) {
+    %else
+      %<FixptMAC(accumInRec, "=",  prodRec, inRealRec, inRealRec, rndSatRec)>
+      %<FixptMAC(accumInRec, "+=", prodRec, inImagRec, inImagRec, rndSatRec)>
+      %<FixptMAC(accumStateRec, "=",  prodRec, stateRealRec, stateRealRec, rndSatRec)>
+      %<FixptMAC(accumStateRec, "+=", prodRec, stateImagRec, stateImagRec, rndSatRec)>
+      %% /*Do NOT Treat Accumulators as unsigned to maximize computation range. */
+      if (AccumIn %<compOp> AccumState) {
+    %endif
+  %else
+    if (*u %<compOp> %<valState>) {
+  %endif
+      %<doEquals(inCplx,valState,"*u",0,1)> \
+      %if hasIndOutport
+        %<indState> = %<ind>;
+      %endif
+    } else {
+      u++;
+    }
+%endfunction %% doMinMaxUpdate
+
+%% Function: calcFixptVar ====================================================
+%%
+%function calFixptVar(sumValRec, sqValRec, tmpAccRec, tmpAcc1Rec, prodRec, denRec, outRec, rndSatRec) Output
+  %<DSPFixptLibNorm(tmpAccRec, sumValRec, prodRec, rndSatRec)> \
+  %<DSPFixptLibDivide(tmpAccRec, tmpAccRec, denRec, rndSatRec)> \
+  %<DSPFixptNegate(tmpAcc1Rec, tmpAccRec, rndSatRec)>
+  %<DSPFixptLibPlusEquals(tmpAcc1Rec, sqValRec, rndSatRec)> \
+  %assign denRec.label = "(%<denRec.label> - 1)"
+  %<DSPFixptLibDivide(outRec, tmpAcc1Rec, denRec, rndSatRec)> \
+%endfunction %% calFixptVar
+
+%% [EOF] sdspstdvar2.tlc

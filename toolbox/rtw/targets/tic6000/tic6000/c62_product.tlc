@@ -1,0 +1,1240 @@
+%% Abstract: Register C6200 TLC replacement functions ====================
+%%
+%% Copyright 2002 The MathWorks, Inc.
+%% $RCSfile: c62_product.tlc,v $
+%% $Revision: 1.8 $ $Date: 2002/05/18 02:02:17 $
+%%
+%%construct v-table for TI-specific TLC replacement of fixed-point
+%%Outputs function for Simulink built-in blocks: Product, Sum, Gain
+%%
+%%
+%include "c62_common.tlc"
+
+%implements * "C"
+
+
+%%----------------------------------------------------------------------
+%% functions in this file:
+%% C62_OutputsFixpt          - Entry point to this file.
+%% C62_FixPtMul              - Main entry point for fixed point 
+%%                             optimized fixed point TI routine.
+%% C62_FixPtProdOfElements   - Generate code for product of elements.
+%% C62_MulCreateNameFunction - Creates unique C function name.
+%%----------------------------------------------------------------------
+
+
+%% Function: C62_OutputsFixpt ==========================================
+%% ENTRY POINT OF THIS TLC:
+%% The product.tlc calls this routine when fixed point code generation
+%% is invoked. if this function is invoked, and the input criteria
+%% passes, the product block generates highly optimized code.
+%%
+%% Abstract:
+%%   Output function for fixpt mode
+%%   This block can operate in an element by element vector product/division
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied/divided to
+%%   produce a scalar output.
+%%
+%function C62_OutputsFixpt(block, system) Output
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %assign y0RadixDT.Bias      = 0.0
+    %%
+    %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+        %%
+        %copyrecord y0CorrectionDT y0RadixDT
+        %%
+        %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+    %endif
+    %%
+    %% create RadixOnly version of first Input Data Type
+    %%
+    %assign uiDT = FixPt_GetInputDataType(0)
+    %%
+    %copyrecord uiRadixDT uiDT
+    %%
+    %assign uiRadixDT.FracSlope = 1.0
+    %assign uiRadixDT.Bias      = 0.0
+    %%
+    %copyrecord u0RadixDT uiDT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+        %%
+        %if FixPtMulDivStr[0] == "*"
+            %%
+            %assign u0RadixDT.FixedExp = u0RadixDT.FixedExp + iFixExpCorrection
+        %else
+            %assign u0RadixDT.FixedExp = u0RadixDT.FixedExp - iFixExpCorrection
+        %endif
+    %endif
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point Product Block: %<MaskBlockName>
+     *
+    %%
+    %% the output to be created
+    %%
+    %if LibDataOutputPortWidth(0) > 1
+        %assign opstr = "*  y[i] ="
+    %else
+        %assign opstr = "*  y ="
+    %endif
+    %%
+    %% handle case of multiple input ports
+    %%
+    %if NumDataInputPorts > 1
+        %%
+        %% handle each input port
+        %%
+        %foreach ipIdx = NumDataInputPorts
+            %%
+            %% get mul or div symbol for current input
+            %%
+            %assign mulDiv = FixPtMulDivStr[ipIdx]
+            %%
+            %% special treatment of first input
+            %%
+            %if ipIdx == 0
+                %%
+                %% only reciprocal cause op symbol
+                %%  mul puts out no op for first input
+                %%
+                %if mulDiv == "/"
+                    %assign opstr = opstr + " 1 /"
+                %endif
+            %%
+            %% handle inputs after first
+            %%
+            %else
+                %if mulDiv == "/"
+                    %assign opstr = opstr + " /"
+                %else
+                    %assign opstr = opstr + " *"
+                %endif
+            %endif
+            %%
+            %% handle wide inputs
+            %%
+            %if LibDataInputPortWidth(ipIdx) > 1
+                %%
+                %assign opstr = opstr + " u" + STRING(ipIdx) + "[i]"
+            %%
+            %% handle scalar inputs
+            %%
+            %else
+                %%
+                %assign opstr = opstr + " u" + STRING(ipIdx)
+            %endif
+        %endforeach
+        %%
+        %% width of signal
+        %%
+        %if LibDataOutputPortWidth(0) > 1
+            %assign opstr = opstr + "    i = 0 to "+STRING(LibDataOutputPortWidth(0)-1)
+        %endif
+    %%
+    %% handle case of single input ports
+    %%
+    %else
+        %%
+        %% get mul or div symbol for the input port
+        %%
+        %assign mulDiv = FixPtMulDivStr[0]
+        %%
+        %% handle division
+        %%
+        %if mulDiv == "/"
+            %%
+            %% handle case of only one input scalar
+            %%
+            %if LibDataInputPortWidth(0) == 1
+                %%
+                %assign opstr = opstr + " 1 / u0"
+            %%
+            %% handle case less five or more scalars on input port
+            %%
+            %elseif LibDataInputPortWidth(0) >= 5
+                %%
+                %assign opstr = opstr + " 1 / u0[0] / u0[1] / ... / u0["
+                %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+            %%
+            %% handle case less than five scalars on input port
+            %%
+            %else
+                %%
+                %assign opstr = opstr + " 1"
+                %%
+                %% handle each scalar
+                %%
+                %foreach i = LibDataInputPortWidth(0)
+                    %%
+                    %assign opstr = opstr + " / u0[" + STRING(i) + "]"
+                %endforeach
+            %endif
+        %%
+        %% handle multiplication
+        %%
+        %else
+            %%
+            %% handle case of only one input scalar
+            %%
+            %if LibDataInputPortWidth(0) == 1
+                %%
+                %assign opstr = opstr + "1 * u0   (Trivial Product!)"
+            %%
+            %% handle case more than five scalars on input port
+            %%
+            %elseif LibDataInputPortWidth(0) >= 5
+                %%
+                %assign opstr = opstr + "u0[0] * u0[1] * ... * u0["
+                %assign opstr = opstr + STRING(LibDataInputPortWidth(0)-1) + "]"
+            %%
+            %% handle case less than five scalars on input port
+            %%
+            %else
+                %%
+                %% handle each scalar
+                %%
+                %foreach i = LibDataInputPortWidth(0)
+                    %%
+                    %if i == 0
+                    %%
+                        %assign opstr = opstr + " u0[0]"
+                    %else
+                        %assign opstr = opstr + " * u0[" + STRING(i) + "]"
+                    %endif
+                %endforeach
+            %endif
+        %endif
+    %endif
+    %%
+    %% spit out operation string
+    %%
+    %<opstr>
+    *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+     */
+    %if Multiplication == "Element-wise(.*)"
+      %%
+      %% put guts in temp file and keep track if
+      %% temp variables are needed
+      %%
+      %assign needTemp1 = 0
+      %assign needTemp2 = 0
+      %%
+      %assign tmp1Label = "yTemp1"
+      %assign tmp2Label = "yTemp2"
+      %%
+      %openfile gutsOfBlock
+      %%
+      %%  Handle case of multiple input port
+      %%  element by element vector product/division
+      %%
+      %if NumDataInputPorts > 1
+	%%
+	%% get first two mul or div symbols
+	%%
+	%assign mulDiv0 = FixPtMulDivStr[0]
+	%assign mulDiv1 = FixPtMulDivStr[1]
+	%%
+	%% Roll around signal width (Note: a curly brace is opened and closed
+	%% by the loop roller.  Therefore, if the block is not going to roll
+	%% we need to open and close them ourselves).
+	%%
+        %assign rollVars = ["U", "Y"]
+	%%
+%if C62_FixPtMul() == 0
+	%roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	  %if lcv == "" && sigIdx != 0
+	    %% blank line for formating
+		
+	  %endif
+	  %%
+	  %% create RadixOnly version of second Input Data Type
+	  %%
+	  %assign uiIsComplex = LibBlockInputSignalIsComplex(1)
+	  %%
+	  %assign uiDT = FixPt_GetInputDataType(1)
+	  %%
+	  %<FixPt_MergeRecordDominantSource(uiRadixDT,uiDT)>\
+	  %%
+	  %assign uiRadixDT.FracSlope = 1.0
+	  %assign uiRadixDT.Bias      = 0.0
+	  %%
+	  %% keep track of when the imaginary part of y0 is no longer
+	  %% DEFINITELY equal to zero.
+	  %%   For example, suppose there are six input ports, the first five
+	  %% are real, and the sixth is complex.  Complex operations
+	  %% are unnecessary until the very last step.  Keeping track
+	  %% that imag(y0) is definitely zero facilitates optimizing out complex
+	  %% operations until they are truly necessary.
+	  %%
+	  %assign y0ImagStillZero = 1
+	  %%
+	  %assign reSigIdx = tRealPart + STRING(sigIdx)
+	  %assign imSigIdx = tImagPart + STRING(sigIdx)
+	  %%
+	  %% Get first input
+	  %%
+	  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	  %if u0IsComplex
+	    %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Get second input
+	  %%
+	  %assign uiReLabel = LibBlockInputSignal(1, "", lcv, reSigIdx)
+	  %if uiIsComplex
+	    %assign uiImLabel = LibBlockInputSignal(1, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Get output
+	  %%
+	  %assign y0ReLabel = LibBlockOutputSignal(0, "", lcv, reSigIdx)
+	  %if y0IsComplex
+	    %assign y0ImLabel = LibBlockOutputSignal(0, "", lcv, imSigIdx)
+	  %endif
+	  %%
+	  %% Handle case of multiplication of first two terms
+	  %%
+	  %if (mulDiv0 == "*") && (mulDiv1 == "*")
+	    %if y0IsComplex
+	      %if u0IsComplex
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %assign needTemp1 = 1
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ImLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %else %% u0IsReal
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    u0ReLabel,u0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	  %elseif (mulDiv0 == "*") && (mulDiv1 == "/")
+	    %if y0IsComplex
+	      %%
+	      %% the sfunction prohibits the divisor from being complex so
+	      %% ui is definitely real for this case
+	      %%
+	      %if u0IsComplex
+		%%
+		%assign y0ImagStillZero = 0
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  u0ReLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+		%<FixPt_Division(y0ImLabel,y0RadixDT,...
+		  u0ImLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+	      %else %% u0IsReal
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  u0ReLabel,u0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+		%%
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	  %else  %%if (mulDiv0 == "/")
+	    %if y0IsComplex
+	      %%
+	      %% the sfunction prohibits the divisor from being complex so
+	      %% u0 is definitely real for this case
+	      %%
+	      %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	      %if mulDiv1 == "*"
+		%if uiIsComplex
+		  %%
+		  %assign y0ImagStillZero = 0
+		  %%
+		  %% y0Re is used as input in two calculations so
+		  %% it is crucial that assignment to y0Re
+		  %% come second
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% uiIsReal
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %else
+		%%
+		%% the sfunction prohibits the divisor from being complex so
+		%% ui is definitely real for this case
+		%%
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %else
+	      %%
+	      %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	      %if mulDiv1 == "*"
+		%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %else
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %endif
+	  %endif
+	  %%
+	  %% handle each input port AFTER the first two
+	  %%
+	  %foreach ipIdx = (NumDataInputPorts-2)
+	    %%
+	    %% get mul or div symbol
+	    %%
+	    %assign mulDiv = FixPtMulDivStr[ipIdx+2]
+	    %%
+	    %% create RadixOnly version of ith Input Data Type
+	    %%
+	    %assign uiIsComplex = LibBlockInputSignalIsComplex(ipIdx+2)
+	    %%
+	    %assign uiDT = FixPt_GetInputDataType(ipIdx+2)
+	    %%
+	    %<FixPt_MergeRecordDominantSource(uiRadixDT,uiDT)>\
+	    %%
+	    %assign uiRadixDT.FracSlope = 1.0
+	    %assign uiRadixDT.Bias      = 0.0
+	    %%
+	    %assign uiReLabel = LibBlockInputSignal(ipIdx+2, "", lcv, reSigIdx)
+	    %if uiIsComplex
+	      %assign uiImLabel = LibBlockInputSignal(ipIdx+2, "", lcv, imSigIdx)
+	    %endif
+	    %%
+	    %% Handle multiplication of ith terms
+	    %%
+	    %if y0IsComplex
+	      %if mulDiv == "*"
+		%if y0ImagStillZero
+		  %if uiIsComplex
+		    %%
+		    %assign y0ImagStillZero = 0
+		    %%
+		    %% y0Re is used as input in two calculations so
+		    %% it is crucial that assignment to y0Re
+		    %% come second
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %else %% uiIsReal
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %endif
+		%else %% y0ImagNotZero
+		  %if uiIsComplex
+		    %%
+		    %assign needTemp1 = 1
+		    %assign needTemp2 = 1
+		    %%
+		    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %% y0Re is used as input in two calculations so
+		    %% it is crucial that assignment to y0Re
+		    %% come second
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiImLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		      tmp2Label,y0RadixDT,...
+		      FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		      tmp1Label,y0RadixDT,...
+		      FixPtSaturationMode)>\
+		    %%
+		  %else %% uiIsReal
+		    %%
+		    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		      y0ReLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		    %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		      y0ImLabel,y0RadixDT,...
+		      uiReLabel,uiRadixDT,...
+		      FixPtRoundingMode,FixPtSaturationMode)>\
+		    %%
+		  %endif
+		%endif
+	      %else %% division
+		%if y0ImagStillZero
+		  %%
+		  %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%else %% y0ImagNotZero
+		  %%
+		  %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Division(y0ImLabel,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    uiReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+	      %endif
+	    %else %% output is real
+	      %if mulDiv == "*"
+		%<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %else
+		%<FixPt_Division(y0ReLabel,y0RadixDT,...
+		  y0ReLabel,y0RadixDT,...
+		  uiReLabel,uiRadixDT,...
+		  FixPtRoundingMode,FixPtSaturationMode)>\
+	      %endif
+	    %endif
+	  %endforeach
+	  %%
+	  %%  handle fractional slope adjustment if necessary
+	  %%
+	  %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	    %%
+	    %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	      y0ReLabel,y0RadixDT,...
+	      STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	  %endif
+	%endroll
+%endif
+	%%
+	%% case of single input port "collapsed"
+	%% to form scalar output
+      %else
+	%%
+	%% get mul or div symbol for the input port
+	%%
+	%assign mulDiv = FixPtMulDivStr[0]
+	%%
+	%assign u0ReLabel = LibBlockInputSignal(0, "", "", "re0")
+	%if y0IsComplex
+	  %assign u0ImLabel = LibBlockInputSignal(0, "", "", "im0")
+	%endif
+	%%
+	%% Get output
+	%%
+	%assign y0ReLabel = LibBlockOutputSignal(0, "", "", "re0")
+	%if y0IsComplex
+	  %assign y0ImLabel = LibBlockOutputSignal(0, "", "", "im0")
+	%endif
+	%%
+        %% handle division
+        %%
+	%if mulDiv == "/"
+	  %%
+	  %% the sfunction prohibits the divisor from being complex so
+	  %% u0 is definitely real for this case, hence y0 must be real too
+	  %%
+	  %% handle first scalar
+	  %%
+	  %<FixPt_Reciprocal(y0ReLabel,y0RadixDT,...
+	    u0ReLabel,u0RadixDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	  %% handle remaining scalars
+	  %%
+	  %if LibDataInputPortWidth(0) > 1
+	    %%
+	    %% Roll around input
+	    %%
+	    %assign rollVars = ["U"]
+	    %%
+	    %% remove first input because it has already been
+	    %% handled by reciprocal
+	    %%
+	    %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+	    %%
+	    %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	      %%
+	      %assign reSigIdx = tRealPart + STRING(sigIdx)
+	      %assign imSigIdx = tImagPart + STRING(sigIdx)
+	      %%
+	      %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+	      %%
+	      %<FixPt_Division(y0ReLabel,y0RadixDT,...
+		y0ReLabel,y0RadixDT,...
+		u0ReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endroll
+	  %endif
+	  %%
+	  %% handle multiplication
+	  %%
+	%else
+	  %%
+	  %% handle trivial case of single scalar input
+	  %%
+	  %if LibDataInputPortWidth(0) == 1
+	    %%
+	    %%   block is just doing a cast, no mul or div
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(y0ReLabel,y0RadixDT,...
+	      u0ReLabel,u0RadixDT,...
+	      FixPtRoundingMode,FixPtSaturationMode)>\
+	    %if y0IsComplex
+	      %%
+	      %<FixPt_Fix2FixAlwaysOutput(y0ImLabel,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	    %endif
+	  %else
+%if C62_FixPtMul() == 0
+	    %%
+	    %% Get second input
+	    %%
+	    %assign uiReLabel = LibBlockInputSignal(0, "", "", "re1")
+	    %if y0IsComplex
+	      %assign uiImLabel = LibBlockInputSignal(0, "", "", "im1")
+	    %endif
+	    %%
+	    %% handle first two scalars
+	    %%
+	    %if y0IsComplex
+	      %%
+	      %assign needTemp1 = 1
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		uiImLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		tmp1Label,y0RadixDT,...
+		FixPtSaturationMode)>\
+	      %%
+	      %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiImLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		u0ImLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		tmp1Label,y0RadixDT,...
+		FixPtSaturationMode)>\
+	      %%
+	    %else
+	      %%
+	      %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		u0ReLabel,u0RadixDT,...
+		uiReLabel,uiRadixDT,...
+		FixPtRoundingMode,FixPtSaturationMode)>\
+	      %%
+	    %endif
+	    %%
+	    %% handle remaining scalars
+	    %%
+	    %if LibDataInputPortWidth(0) > 2
+	      %%
+	      %% Roll around input
+	      %%
+	      %assign rollVars = ["U"]
+	      %%
+	      %% remove first and second input because they have already been
+	      %% handled by "direct" multiply above
+	      %%
+	      %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+	      %assign reducedRollRegions = LibRemoveRollRegions(reducedRollRegions,1)
+	      %%
+	      %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+		%%
+		%assign reSigIdx = tRealPart + STRING(sigIdx)
+		%assign imSigIdx = tImagPart + STRING(sigIdx)
+		%%
+		%if y0IsComplex
+		  %%
+		  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+		  %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+		  %%
+		  %assign needTemp1 = 1
+		  %assign needTemp2 = 1
+		  %%
+		  %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    u0ImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+		    y0ImLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		  %% y0Re is used as input in two calculations so
+		  %% it is crucial that assignment to y0Re
+		  %% come second
+		  %%
+		  %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ImLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+		    tmp2Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+		    tmp1Label,y0RadixDT,...
+		    FixPtSaturationMode)>\
+		  %%
+		%else
+		  %%
+		  %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+		  %%
+		  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+		    y0ReLabel,y0RadixDT,...
+		    u0ReLabel,uiRadixDT,...
+		    FixPtRoundingMode,FixPtSaturationMode)>\
+		  %%
+		%endif
+		%%
+	      %endroll
+	    %endif
+	  %endif
+%endif
+	%endif
+	%%
+	%%  handle fractional slope adjustment if necessary
+	%%
+	%if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+	  %%
+	  %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+	    y0ReLabel,y0RadixDT,...
+	    STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+	    FixPtRoundingMode,FixPtSaturationMode)>\
+	%endif
+      %endif   %% Number of input ports
+      %%
+      %closefile gutsOfBlock
+      %%
+      %% declare temp vars if needed
+      %%
+      %if needTemp1
+	{
+	  %<y0DT.NativeType> %<tmp1Label>;
+	  %if needTemp2
+	    %<y0DT.NativeType> %<tmp2Label>;
+	  %endif
+	  
+	  %%
+	  %<gutsOfBlock>\
+	}
+      %else
+	%<gutsOfBlock>\
+      %endif
+      %%
+      %% blank line for formating
+      
+    %else
+      %% Matrix Multiplication Code
+      %% Need to perform In1 *In2 = temp
+      %% And then do temp = temp*In3, Out = temp* In(last)
+      %% Temp in this case will be a matrix.
+      %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+      %assign temp1Label = "temp1Array"
+      %assign temp2Label = "temp2Array"
+      %assign yLabelAddr = LibBlockOutputSignalAddr(0, "", "", 0)
+      %assign In1LabelAddr = LibBlockInputSignalAddr(0, "", "", 0)
+      %assign In1DT = FixPt_GetInputDataType(0)
+      %% Temp1 - Odd Mults
+      %% Temp2 - Even Mults
+      %% Analyse dims to get max size of
+      %% temp1 and temp2
+      %if NumDataInputPorts != 1
+	%assign MaxN1 = 0
+	%assign MaxN2 = 0
+	%assign MaxM = MultDimensions1[0]
+	%foreach ipIdx = NumDataInputPorts-2
+	  %assign dimsLabel = MultDimensions%<ipIdx+1>
+	  %if ipIdx % 2 == 0
+	    %% if ipIdx is even then it 
+	    %% corresponds to odd Multiplication
+	    %assign tempMaxN1 = dimsLabel[2]
+	    %if tempMaxN1 >= MaxN1
+	      %assign MaxN1 = tempMaxN1
+	    %endif
+	  %else
+	    %%
+	    %% temparray2, even multiplication
+	    %%
+	    %assign tempMaxN2 = dimsLabel[2]
+	    %if tempMaxN2 >= MaxN2
+	      %assign MaxN2 = tempMaxN2
+	    %endif
+	  %endif
+	%endforeach
+      %endif
+      %if y0IsComplex  
+	%% Output is Complex
+	%% This check is sufficient
+	%% because the output is set to complex
+	%% if one of the inputs is complex even if the final result
+	%% is real.
+	%assign cPrefix = "c"
+	%if NumDataInputPorts == 1
+	    {
+	    int iOut;
+	    %assign dimsOnePort = MultDimensionsOneInputPort
+	    for(iOut = 0; iOut < %<dimsOnePort[0]*dimsOnePort[1]>; iOut ++)
+	    {
+	      %assign ytempLabelRe = "(%<yLabelAddr>)[iOut].re"
+	      %assign ytempLabelIm = "(%<yLabelAddr>)[iOut].im"
+	      %assign In1tempLabelRe = "(%<In1LabelAddr>)[iOut].re"
+	      %assign In1tempLabelIm = "(%<In1LabelAddr>)[iOut].im"
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabelRe,y0RadixDT,In1tempLabelRe,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabelIm,y0RadixDT,In1tempLabelIm,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	    }
+	    }
+	%else  
+	  %foreach ipIdx = NumDataInputPorts
+	    %if ipIdx == 0 %% Input 1
+	      %assign In1IsComplex   = LibBlockInputSignalIsComplex(0)
+	      %assign In2IsComplex   = LibBlockInputSignalIsComplex(1)
+	      %assign In2DT = FixPt_GetInputDataType(1)
+	      %assign dims = MultDimensions1
+	      %% Allocate a temp array to store the first product
+	      %if NumDataInputPorts > 2
+		{
+		%assign arraySizetemp1 = MaxM * MaxN1 
+		%<cPrefix>%<y0DT.NativeType> %<temp1Label>[%<arraySizetemp1>];
+		%if NumDataInputPorts > 3
+		  %assign arraySizetemp2 = MaxM * MaxN2 
+		  %<cPrefix>%<y0DT.NativeType> %<temp2Label>[%<arraySizetemp2>];
+		%endif
+	      %endif
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(1, "", "", 0)
+	      %if NumDataInputPorts == 2
+		%<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],In1IsComplex, In2IsComplex)>\
+	      %else
+		%<FixPt_ComplexMatrixMultiply(temp1Label,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1],In1IsComplex, In2IsComplex)>\
+	      %endif
+	      %%
+	      %% No action is necessary for ipIdx ==1. Handled in case 0
+	      %%
+	    %elseif ipIdx > 1
+	      %assign In1IsComplex = "1"
+	      %% Multiply the next input with the working value of the output
+	      %assign dims = MultDimensions%<ipIdx>
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(ipIdx, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(ipIdx)
+	      %assign In2IsComplex   = LibBlockInputSignalIsComplex(ipIdx)
+	      %if ipIdx % 2 == 0
+		%assign MulOutTempLabel = "%<temp2Label>"		
+		%assign MulInTempLabel = "%<temp1Label>"		
+	      %else
+		%assign MulOutTempLabel = "%<temp1Label>"		
+		%assign MulInTempLabel = "%<temp2Label>"		
+	      %endif
+	      %if ipIdx == NumDataInputPorts-1
+		  %<FixPt_ComplexMatrixMultiply(yLabelAddr,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1], In1IsComplex, In2IsComplex)>\
+		  }
+	      %else
+		  %<FixPt_ComplexMatrixMultiply(MulOutTempLabel,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1], In1IsComplex, In2IsComplex)>\
+	      %endif
+	    %endif %% if ipIdx !=1
+	  %endforeach
+	%endif %%if NumInputPorts == 1
+      %else
+	%% Output is real
+	 %if NumDataInputPorts == 1
+	    {
+	    int iOut;
+	    %assign dimsOnePort = MultDimensionsOneInputPort
+	    for(iOut = 0; iOut < %<dimsOnePort[0]*dimsOnePort[1]>; iOut ++)
+	    {
+	      %assign ytempLabel = "(%<yLabelAddr>)[iOut]"
+	      %assign In1tempLabel = "(%<In1LabelAddr>)[iOut]"
+	      %<FixPt_Fix2FixAlwaysOutput(ytempLabel,y0RadixDT,In1tempLabel,In1DT,FixPtRoundingMode,...
+		FixPtSaturationMode)>\
+	    }
+	    }
+	 %else
+	    %% Now that we have identified the two biggest indices
+	    %% we assign storage space for the two temp arrays
+	  %foreach ipIdx = NumDataInputPorts
+	    %if ipIdx == 0 %% Input 1
+	      %assign dims = MultDimensions1
+	      %% Allocate a temp array to store the first product
+	      %if NumDataInputPorts > 2
+		{
+		%assign arraySizetemp1 = MaxM * MaxN1
+		%<y0DT.NativeType> %<temp1Label>[%<arraySizetemp1>];
+		%if NumDataInputPorts > 3
+		  %assign arraySizetemp2 = MaxM * MaxN2
+		  %<y0DT.NativeType> %<temp2Label>[%<arraySizetemp2>];
+		%endif
+	      %endif
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(1, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(1)
+	      %if NumDataInputPorts == 2
+		%<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %else
+		%<FixPt_MatrixMultiply(temp1Label,y0RadixDT,In1LabelAddr,In1DT,In2LabelAddr,In2DT,...
+		  FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %endif
+	    %elseif ipIdx > 1
+	      %% Multiply the next input with the working value of the output
+	      %assign dims = MultDimensions%<ipIdx>
+	      %assign In2LabelAddr = LibBlockInputSignalAddr(ipIdx, "", "", 0)
+	      %assign In2DT = FixPt_GetInputDataType(ipIdx)
+	      %if ipIdx % 2 == 0
+		%assign MulOutTempLabel = "%<temp2Label>"		
+		%assign MulInTempLabel = "%<temp1Label>"		
+	      %else
+		%assign MulOutTempLabel = "%<temp1Label>"		
+		%assign MulInTempLabel = "%<temp2Label>"		
+	      %endif
+	      %if ipIdx == NumDataInputPorts-1
+		  %<FixPt_MatrixMultiply(yLabelAddr,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+		  }
+	      %else
+		  %<FixPt_MatrixMultiply(MulOutTempLabel,y0RadixDT,MulInTempLabel,y0RadixDT,In2LabelAddr,In2DT,...
+		    FixPtRoundingMode,FixPtSaturationMode,dims[0],dims[2],dims[1])>\
+	      %endif
+	    %endif   %% ipIdx != 1
+	  %endforeach
+	 %endif
+      %endif
+    %endif
+    %% blank line for formatting
+    
+%endfunction
+
+
+
+
+
+%%----------------------------------------------------------------------
+%% C62_FixPtMul: Test if the input combination is supported by this
+%% optimization routine. if optimization is not possible, then return
+%% 0. otherwise, generate the optimized code and return 1.
+%function C62_FixPtMul() Output
+%%----------------------------------------------------------------------
+  %if NumDataInputPorts == 1
+    %return 0
+  %endif
+  %%
+  %if NumDataInputPorts > 2
+    %return 0
+  %endif
+  %%
+  %% only multiplication is supported
+  %%
+  %if FixPtMulDivStr[0] != "*" || FixPtMulDivStr[1] != "*"
+    %return 0
+  %endif
+  %%
+  %if  Multiplication!="Element-wise(.*)"  && ...                   
+       Multiplication!="Element-wise(K.*u)" && ... 
+       Multiplication!="Element-wise"
+       %%
+       %return 0
+       %%
+  %endif
+  %%
+  %if FixPtRoundingMode == "Zero"
+    %%
+    %return 0
+    %%
+  %endif
+  %%
+  %if (FixPt_GetInputDataType(0).ActualBits  != 16 && ...
+      FixPt_GetInputDataType(0).ActualBits  != 32) || ...
+      (FixPt_GetInputDataType(1).ActualBits  != 16 && ...
+      FixPt_GetInputDataType(1).ActualBits  != 32)
+      %%
+      %return 0
+      %%
+  %endif
+  %%
+  %if FixPt_GetOutputDataType(0).ActualBits != 16 && ...
+      FixPt_GetOutputDataType(0).ActualBits != 32
+      %%
+      %return 0
+      %%
+  %endif
+  %%
+  %return C62_MulWriteFunction(0)
+%endfunction
+
+
+%%----------------------------------------------------------------------
+%% C62_FixPtProdOfElements: Optimize product of elements for certain
+%% input combinations. if the optimization could not be made, return
+%% 0. otherwise, generate the code and return 1.
+%function C62_FixPtProdOfElements(ODD,SAT,Nsize) Output
+%%----------------------------------------------------------------------
+  %% get shift count
+  %assign SH_IN = FixPt_GetInputDataType(0).FixedExp
+  %assign SH_OUT = FixPt_GetOutputDataType(0).FixedExp
+  %%
+  %if SH_IN <= 0
+    %%
+    %assign SH_OUT = -SH_IN + FixPt_GetOutputDataType(0).FixedExp
+    %%
+  %else
+    %%
+    %assign SH_OUT =  SH_OUT - Nsize * SH_IN
+    %%
+  %endif
+  %%
+  %if LibBlockInputSignalIsComplex(0)
+    %%
+    register int re1, im1;
+
+    real = u0[0].re;
+    imag = u0[0].im;
+  %else
+    register int result;
+
+    result = u0[0];
+  %endif
+
+  #pragma MUST_ITERATE(1,%<Nsize>)
+  #pragma UNROLL(2)
+  %%
+  for (i1=1;i1<%<Nsize>;i1++)
+  {
+  %if LibBlockInputSignalIsComplex(0)
+    %%
+    re1 = real*u0[i1].re - imag*u0[i1].im;
+    im1 = imag*u0[i1].re + real*u0[i1].im;
+
+    real = re1;
+    imag = im1;
+    %%
+  %else
+    %%
+    result *= u0[i1];
+    %%
+  %endif
+  %%
+  %if SH_IN < 0 && FixPtRoundingMode != "Floor"
+    %%
+    /* round */
+    %if SH_IN < 0
+      %%
+      %assign SH_IN = -SH_IN
+      %%
+    %endif
+    %%
+    %if FixPtRoundingMode == "Nearest"
+      %%
+      %assign DEL = 1<<(SH_IN-1)
+      %%
+    %elseif FixPtRoundingMode == "Ceiling"
+      %%
+      %assign DEL = (1<<SH_IN) - 1
+      %%
+    %endif
+    %%
+    %if SAT && DEL > 0
+      %%
+      %if LibBlockInputSignalIsComplex(0)
+        %%
+        real = _sadd(real,%<DEL>);
+        imag = _sadd(imag,%<DEL>);
+        %%
+      %else
+        %%
+        result = _sadd(result,%<DEL>);
+        %%
+      %endif
+      %%
+    %elseif DEL > 0
+      %if LibBlockInputSignalIsComplex(0)
+        %%
+        real = real + %<DEL>;
+        imag = imag + %<DEL>;
+        %%
+      %else
+        %%
+        result = result + %<DEL>;
+        %%
+      %endif
+    %endif
+  %endif
+  %%
+  %if SH_IN < 0
+    /* scaling */
+    %if LibBlockInputSignalIsComplex(0)
+      %%
+      real >>= %<SH_IN>;
+      imag >>= %<SH_IN>;
+      %%
+    %else
+      %%
+      result >>= %<SH_IN>;
+      %%
+    %endif
+  %endif
+  }
+%endfunction %% C62_FixPtProdOfElements

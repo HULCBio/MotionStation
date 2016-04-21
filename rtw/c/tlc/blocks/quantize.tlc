@@ -1,0 +1,98 @@
+%% 
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Quantizer block target file.
+
+%implements Quantizer "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibBlockSetIsExpressionCompliant(block)>
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Y = Quantization * floor(fabs(U/Quantization)) + 0.5) * Sign(U)
+%%
+%function Outputs(block, system) Output
+  %assign uIsComplex = LibBlockInputSignalIsComplex(0)
+  %assign yDataTypeName = LibBlockOutputSignalDataTypeName(0, "%<tRealPart>")
+  %assign rollVars = ["U","Y","P"]
+  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+    %if (uIsComplex)
+      %assign ure = LibBlockInputSignal (0, "", lcv, "%<tRealPart>%<sigIdx>")
+      %assign uim = LibBlockInputSignal (0, "", lcv, "%<tImagPart>%<sigIdx>")
+      %assign yre = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<sigIdx>")
+      %assign yim = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<sigIdx>")
+    %else
+      %assign ure = LibBlockInputSignal(0, "", lcv, sigIdx)
+      %assign yre = LibBlockOutputSignal(0, "", lcv, sigIdx)
+    %endif
+    %%
+    %assign q = LibBlockParameter(QuantizationInterval, "", lcv, sigIdx)
+    %assign outpDType = LibBlockOutputSignalDataTypeId(0)
+    %assign outpDTname = LibGetDataTypeNameFromId(outpDType)
+    %assign dtHalf = SLibGetFormattedValueFromId(outpDType,0.5)
+    %assign dtZero = SLibGetFormattedValueFromId(outpDType,0)
+    %assign targetHasRoundFcn = LibMathFcnExists("round",outpDType)
+    %%
+    %if targetHasRoundFcn == 0
+      {
+	%assign rAbsCall = LibGenMathFcnCall("abs",outpDType, "(%<ure>/(%<q>))","")
+	%assign rFloorCall = LibGenMathFcnCall("floor",outpDType, "%<rAbsCall> + %<dtHalf>","")
+      %if uIsComplex
+	%assign iAbsCall = LibGenMathFcnCall("abs",outpDType, "(%<uim>/(%<q>))","")
+	%assign iFloorCall = LibGenMathFcnCall("floor",outpDType, "%<iAbsCall> + %<dtHalf>","")
+	%<yDataTypeName> yre;
+	%<yDataTypeName> yim;
+      %else
+	%<yDataTypeName> yre;
+      %endif
+      \
+    %else
+      %% Use target's round
+      %assign rRoundCall = LibGenMathFcnCall("round",outpDType, "(%<ure>/(%<q>))","")
+      %if uIsComplex
+	%assign iRoundCall = LibGenMathFcnCall("round",outpDType, "(%<uim>/(%<q>))","")
+      %endif 
+    %endif %% targetHasRoundFcn
+   %switch LibGetDataTypeIdAliasedThruToFromId(outpDType)
+      %case tSS_SINGLE	
+      %case tSS_DOUBLE
+	%if targetHasRoundFcn == 0
+	  yre = %<q> * %<rFloorCall>;
+	  %<yre> = ((%<ure> >= %<dtZero>) ? yre : -yre);
+	  %if (uIsComplex)
+	    yim = %<q> * %<iFloorCall>;
+	    %<yim> = ((%<uim> >= %<dtZero>) ? yim : -yim);
+	  %endif
+	%else
+	  %% use target's round function to calculate the outputs
+	  %<yre> = %<q> * %<rRoundCall>;
+	  %if (uIsComplex)
+	    %<yim> = %<q> * %<iRoundCall>;
+	  %endif
+	%endif %% targetHasRoundFcn
+	%break
+	%%START_ASSERT
+      %default
+	%assign errTxt = "Unsupported/Unhandled complex datatype: %<outDType>"
+	%<LibBlockReportFatalError(block, errTxt)>
+	%break
+	%%END_ASSERT
+   %endswitch
+
+    %if targetHasRoundFcn == 0
+      }
+    %endif
+  %endroll
+%endfunction
+
+%% [EOF] quantize.tlc

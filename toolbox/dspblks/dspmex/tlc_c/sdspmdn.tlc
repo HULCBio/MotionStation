@@ -1,0 +1,130 @@
+%% $RCSfile: sdspmdn.tlc,v $
+%% $Revision: 1.11.4.2 $ 
+%% $Date: 2004/04/12 23:08:58 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Output the median value of an input vector
+
+%implements sdspmdn "C"
+
+%openfile buffer
+/* Signal Processing Blockset Median Block dependencies: */
+extern void MWDSP_SrtQkRecD(const real_T *qid_array, uint32_T *qid_index, int_T i, int_T j);
+
+%closefile buffer
+%<LibCacheFunctionPrototype(buffer)> 
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %assign INPORT = 0
+  %assign width  = LibDataInputPortWidth(INPORT)
+  
+  %<LibDefineIWork(block, "Index", width)>  
+   
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%function InitializeConditions(block, system) Output
+  /* Signal Processing Blockset Median (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT = 0
+  %assign width  = LibDataInputPortWidth(INPORT)
+  %%
+  {
+    int_T i;
+    for (i=0; i < %<width>; i++) {
+      %<LibBlockIWork(Index, "i", "", 0)> = i;
+    }
+  }
+%endfunction %% InitializeConditions
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Median (%<ParamSettings.FunctionName>) - %<Name> */
+  %%
+  %assign INPORT  = 0
+  %assign OUTPORT = 0
+  %%
+  %assign cplx   = (LibBlockInputSignalIsComplex(INPORT) != 0)
+  %assign contig = IsInputPortContiguous(block, INPORT)
+  %assign N      =  LibDataInputPortWidth(INPORT)
+  %assign dtype  =  cplx ? "creal_T" : "real_T"
+  %%
+  %if !contig
+    %<LibDiscontiguousInputError(block)>    
+  %else
+    %if N != 1
+      %%
+      %% Only sort if the input width is greater than one.
+      %%
+      %if !cplx
+	%%
+	%% REAL
+	%% 
+	/* Sort input vector: */
+	MWDSP_SrtQkRecD(%<LibBlockInputSignalAddr(INPORT, "", "", 0)>, \
+	&%<LibBlockIWork(Index, "", "", 0)>, 0, %<N-1>);
+      %else
+	%%
+	%% COMPLEX
+	%%
+	{
+	  /* Copy magnitude of complex input values into temp scratch area: */
+	  real_T *sort_in = %<LibBlockDWorkAddr(Sort_In, "", "", 0)>;
+	  %assign rollVars = ["U"]
+	  %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+	    *sort_in++ = CMAGSQ(%<LibBlockInputSignal(INPORT, "", lcv, sigIdx)>);
+	  %endroll
+	  %%
+	  /* Sort input vector: */
+	  MWDSP_SrtQkRecD(sort_in - %<N>, &%<LibBlockIWork(Index, "", "", 0)>, 0, %<N-1>);
+	}      
+      %endif
+    %endif
+  %endif 
+  %%
+  %if (N % 2 == 0)
+    
+    /* Even number of elements - interpolate: */
+    %%
+    %if !cplx
+      %%
+      %% REAL
+      %%	
+      %assign u0 = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2-1>", "", 0)>", "", 0)
+      %assign u1 = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2>", "", 0)>", "", 0)
+      %%
+      %<LibBlockOutputSignal(OUTPORT, "","", 0)> = 0.5 * (%<u0> + %<u1>);
+    %else
+      %%
+      %% COMPLEX	
+      %%
+      %assign u0re = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2-1>", "", 0)>", "", "%<tRealPart>0")
+      %assign u0im = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2-1>", "", 0)>", "", "%<tImagPart>0")
+      %assign u1re = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2>", "", 0)>", "", "%<tRealPart>0")
+      %assign u1im = LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<N/2>", "", 0)>", "", "%<tImagPart>0")
+      %%
+      %<LibBlockOutputSignal(OUTPORT, "","", "%<tRealPart>0")> = 0.5 * (%<u0re> + %<u1re>);
+      %<LibBlockOutputSignal(OUTPORT, "","", "%<tImagPart>0")> = 0.5 * (%<u0im> + %<u1im>);
+    %endif
+    %%      
+  %else
+    %%
+    %% REAL AND COMPLEX uses same code in this case
+    %%
+    %<LibBlockOutputSignal(OUTPORT, "","", 0)> = \
+    %<LibBlockInputSignal(INPORT, "%<LibBlockIWork(Index, "%<(N-1)/2>", "", 0)>","", 0)>; 
+  %endif    
+  
+%endfunction
+
+%% [EOF] sdspmdn.tlc
+
+

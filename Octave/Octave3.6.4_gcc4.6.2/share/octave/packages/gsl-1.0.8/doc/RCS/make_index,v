@@ -1,0 +1,1301 @@
+head	1.1;
+access;
+symbols;
+locks
+	rrogers:1.1; strict;
+comment	@# @;
+
+
+1.1
+date	2008.06.11.13.20.31;	author rrogers;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@#!/usr/bin/env perl
+#
+# Albert Danial Mar 21 2002
+#
+# Creates .html files documenting all the functions in octave and
+# octave-forge.
+
+use strict;
+use File::Find;
+use File::Basename;
+use Text::Wrap;
+use FileHandle;
+use IPC::Open3;
+use POSIX ":sys_wait_h";
+
+## Local configuration; the OCTAVE directory should contain
+# src/DOCSTRINGS (which is a build product) and scripts/.
+my $OCTAVE  = "../octave";
+my $tmpdir = "/tmp";   # temp directory
+my $catdir = "doc/htdocs/doc";  # output directory
+
+## Commands to grab the last few defs from octave
+## Use the first def if you want to extract from
+## a locally compiled version, or the second if you
+## want to use the installed version.
+#my $OCTAVECMD = "LD_LIBRARY_PATH=$OCTAVE/src/:$OCTAVE/liboctave:$OCTAVE/libcruft $OCTAVE/src/octave -q";
+#my $OCTAVEINIT = "path='.:$OCTAVE/src//:$OCTAVE/scripts//'; suppress_verbose_help_message = 1;";
+my $OCTAVECMD = "octave -q";
+my $OCTAVEINIT = "suppress_verbose_help_message(1); more off;";
+
+# Links to octave/octave-forge web CVS/SVN
+my $OCTAVEHG = "http://velveeta.che.wisc.edu/cgi-bin/hgwebdir.cgi/octave/file/tip/";
+my $FORGESVN = "http://octave.svn.sourceforge.net/viewvc/octave/trunk/octave-forge/";
+
+#my $script  = basename($0);
+
+my $forgebar = qq~<center>
+<A href="http://octave.sourceforge.net">Home</A> |
+<A href="http://sourceforge.net/projects/octave/">Summary</A> |
+<A href="http://sourceforge.net/forum/?group_id=2888">Forums</A> |
+<A href="http://sourceforge.net/bugs/?group_id=2888">Bugs</A> |
+<A href="http://sourceforge.net/support/?group_id=2888">Support</A> |
+<A href="http://sourceforge.net/patch/?group_id=2888">Patches</A> |
+<A href="http://sourceforge.net/mail/?group_id=2888">Lists</A> |
+<A href="http://sourceforge.net/pm/?group_id=2888">Tasks</A> |
+<A href="http://sourceforge.net/docman/?group_id=2888">Docs</A> |
+<A href="http://sourceforge.net/survey/?group_id=2888">Surveys</A> |
+<A href="http://sourceforge.net/news/?group_id=2888">News</A> |
+<A href="http://sourceforge.net/svn/?group_id=2888">SVN</A> | 
+<A href="http://sourceforge.net/project/showfiles.php?group_id=2888">Files</A> 
+</center>
+    ~;
+
+my $forgelink = qq~
+<hr><center>
+<small>Hosted by</small> <a  href="http://sourceforge.net"><img  src="http://sourceforge.net/sflogo.php?group_id=2888&amp;type=4"  width="125" height="37" border="0" alt="SourceForge.net Logo"  /></a>
+</center>
+    ~;
+
+# initialize the indexing variables
+my %index_by_TB_cat   = (); # i_TB_cat{toolbox}{category} = list of functions
+my %index_by_function = (); # i_function{function} =[ [toolbox_1,category_1],
+#                         [toolbox_2,category_2],..]
+my %TB_description    = ();
+my %index_notes = (); # index_notes{function} = comment
+my %index_by_package = (); # i_package{package} = list of functions
+
+# find and load all indices
+my @@index_files = ();
+find(\&index_files, ".");
+sub index_files { # {{{1 populates global array @@files
+    return unless -f and /INDEX$/;  # INDEX files
+    return if ($File::Find::dir =~ /packages$/);
+    my $path = "$File::Find::dir/$_";
+    $path =~ s|^[.]/||;
+    my $noinstall = sprintf("%s/NOINSTALL", $path);
+    if (! -e $noinstall) {
+	push @@index_files, $path; 
+    }
+} # 1}}}
+foreach my $f ( @@index_files ) {
+    load_index($f,
+	       \%index_by_TB_cat,
+	       \%TB_description,
+	       \%index_by_function);
+}
+
+# XXX FIXME XXX should die if the index is empty
+# die "No INDEX in current directory" if !-e "INDEX";
+my $summary = !-e "admin/make_index";  # if not in the root, just summarize
+my $include_octave = !$summary;        # only include octave if not summarizing
+
+# locate all C++ and m-files in octave-forge, and all m-files in octave
+# don't need C++ files from octave because we have DOCSTRINGS
+my @@m_files = ();
+my @@C_files = ();
+find(\&cc_and_m_files, "$OCTAVE/scripts") if $include_octave; 
+find(\&cc_and_m_files, "$OCTAVE/src") if $include_octave; 
+        # or just use $OCTAVE/{src,scripts}/DOCSTRINGS ....
+find(\&cc_and_m_files, ".");
+sub cc_and_m_files { # {{{1 populates global array @@files
+    return unless -f and /\.(m|cc|l|y)$/;  # .m and .cc files (lex & yacc too!)
+    my $path = "$File::Find::dir/$_";
+    $path =~ s|^[.]/||;
+    my $noinstall = sprintf("%s/NOINSTALL", $path);
+    if (! -e $noinstall) {
+	if (/\.m$/) {
+	    push @@m_files, $path;
+	} else {
+	    push @@C_files, $path;
+	}
+    }
+} # 1}}}
+
+my %function_description  = ();
+my %octave_forge_function = ();
+my @@uncategorized = ();
+my @@skipped = ();
+my %n_appearances = ();
+my $n_functions = 0;
+my @@shadow_paths = ('FIXES', 'extra/NaN', 'extra/Windows', 'extra/ver20'); 
+my @@shadowed = ();
+my @@duplicated = ();
+my %n_duplicated = ();
+
+# grab help from C++ files
+foreach my $f ( @@C_files ) {
+    if ( open(IN,$f) ) {
+	while (<IN>) {
+	    # skip to the next function
+	    next unless /^\s*DEF(UN[ (]|UN_MAPPER|UN_DLD|CMD|VAR|CONST)/;
+
+	    # print "looking at $_";
+	    # extract function name to pattern space
+	    /\((\w*)\s*,/;
+	    # remember function name
+	    my $function = $1;
+	    # print "  found function $function\n";
+
+	    # skip to second , to skip default string options of DEFVAR
+	    # comment if third or higher arg
+	    # XXX FIXME XXX What about if the string arg includes ,
+	    # XXX FIXME XXX What if second , is not on first line!!
+	    # Special cases
+	    #  * for DEFCONST (I, Complex (0., 1.),
+	    s/\(\w*\s*,\s*Complex\s*\(\s*[0-9.]*\s*,\s*[0-9.]*\s*\),//;
+	    #  * for macro containing DEFUN_DLD
+	    s/\w*\s*\(\w*\s*,\s*"/"/;
+	    # Main case
+	    s/\(\w*\s*,.*?,//;
+
+	    # If we have nothing but a newline, skip
+	    $_ = <IN> if /^\s*DEF(UN[ (]|UN_MAPPER|UN_DLD|CMD|VAR|CONST)\s*,*\s*\n/;
+
+	    # if line contains \w+_DOC_STRING we have a macro for the
+	    # help text
+	    my $desc;
+	    if (/\w+_DOC_STRING/) {
+	      my $macro = $_;
+	      $macro =~ s/^.*?\s*(\w*_DOC_STRING).*$/$1/;
+	      $macro =~ s/\n//;
+
+	      my $line;
+	      if ( open(IN2, $f) ) {
+		while ($line = <IN2>) {
+		  next unless $line =~ /^\#\s*define\s+$macro\s+\"/;
+		  $desc = $line;
+		  $desc =~ s/^\#\s*define\s+$macro\s+\"(.*\n)$/$1/;
+		  while ($desc !~ /[^\\]\"/ && $desc !~ /^\"/) {
+		    $desc =~ s/\\\s*\n//;
+		    # join with the next line
+		    $desc .= <IN2>;
+		  }
+		  $desc = "" if $desc =~ /^\"/; # chop everything if it was ""
+		  $desc =~ s/\\n/\n/g;          # insert fake line ends
+		  $desc =~ s/([^\"])\".*$/$1/;  # chop everything after final '"'
+		  $desc =~ s/\\\"/\"/;          # convert \"; XXX FIXME XXX \\"
+		  last;
+		}
+		close (IN2);
+	      } else {
+		print STDERR "Could not open file ($f): $!\n";
+	      }
+	    } else {
+	      # skip to next line if comment doesn't start on this line
+	      # XXX FIXME XXX maybe we want a loop here?
+	      $_ = <IN> unless /\"/;
+	      # skip to the beginning of the comment string by
+	      # chopping everything up to opening "
+	      $desc = $_;
+	      $desc =~ s/^[^\"]*\"//;
+
+	      # join lines until you get the end of the comment string
+	      # plus a bit more.  You need the "plus a bit more" because
+	      # C compilers allow implicitly concatenated string constants
+	      # "A" "B" ==> "AB".
+	      while ($desc !~ /[^\\]\"\s*[\,\)]/ && $desc !~ /^\"/) {
+		# if line ends in '\', chop it and the following '\n'
+		$desc =~ s/\\\s*\n//;
+		# join with the next line
+		$desc .= <IN>;
+		# eliminate consecutive quotes, being careful to ignore
+		# preceding slashes. XXX FIXME XXX what about \\" ?
+		$desc =~ s/([^\\])\"\s*\"/$1/;
+	      }
+	      $desc = "" if $desc =~ /^\"/; # chop everything if it was ""
+
+	      # Now check for text included in help messages as macros
+	      # XXX FIXME XXX These macros are often compile dependent, so
+	      # how to we get the correct version of the macro in this case
+	      # without actually compiling the code???
+	      while ($desc =~ /[^\\]\"\s*\S+\s*[^\\]\"/) {
+		my $macro = $desc;
+		# Deal with issues of multiple macros...
+		# $macro =~ s/^.*[^\\]\"\s*(\S+?)\s*[^\\]\".*$/$1/;
+		($macro) =   ($macro =~ /[^\\]\"\s*(\S+?)\s*\"/);
+		$macro =~ s/\n//;
+		my $macro_defn;
+		my $line;
+		last unless $macro =~ /\S+/;
+		if ( open(IN2, $f) ) {
+		  while ($line = <IN2>) {
+		    if ($line =~ /^\#\s*define\s+$macro\s*\\\s*$/) {
+		      $line =~ s/\s*\\$//;
+		      $line .= <IN2>; 
+		      $line =~ s/\\\s*\n/\n/;
+		    }
+		    next unless $line =~ /^\#\s*define\s+$macro\s+\"/;
+		    $macro_defn = $line;
+		    $macro_defn =~ s/^\#\s*define\s+$macro\s+\"(.*)\n$/$1/;
+		    while ($macro_defn !~ /[^\\]\"/ && $macro_defn !~ /^\"/) {
+		      $macro_defn =~ s/\\\s*\n//;
+		      # join with the next line
+		      $macro_defn .= <IN2>;
+		    }
+		    $macro_defn = "" if $macro_defn =~ /^\"/; # chop everything if it was ""
+		    $macro_defn =~ s/\\n/\n/g;          # insert fake line ends
+		    $macro_defn =~ s/([^\"])\".*$/$1/;  # chop everything after final '"'
+		    $macro_defn =~ s/\\\"/\"/;          # convert \"; XXX FIXME XXX \\"
+		    $macro_defn =~ s/\\\\/\\/g;          # convert \"; XXX FIXME XXX \\"
+		    last;
+		  }
+		  close (IN2);
+		} else {
+		  print STDERR "Could not open file ($f): $!\n";
+		}
+		$desc =~ s/\"\s*$macro\s*\"/$macro_defn/;
+	      }
+	    }
+
+	    $desc =~ s/\\n/\n/g;          # insert fake line ends
+	    $desc =~ s/([^\"])\".*$/$1/;  # chop everything after final '"'
+	    $desc =~ s/\\\"/\"/;          # convert \"; XXX FIXME XXX \\"
+#	    print " description: $desc";
+
+	    # register the function with a brief description
+	    register_function($function,$desc,$f,0);
+	}
+	close (IN);
+    } else {
+	print STDERR "Could not open file ($f): $!\n";
+    }
+}
+
+# grab help from m-files (octave-forge and octave)
+foreach my $f ( @@m_files ) {
+    my $desc     = extract_description($f);
+    my $function = basename($f, ('.m'));
+    die "Null function?? [$f]\n" unless $function;
+    register_function($function,$desc,$f,0);
+}
+
+# grab help from octave's DOCSTRINGS
+if ( !$include_octave ) {
+  # skip DOCSTRINGS if just summary
+}
+else {
+
+  if (open (IN,"$OCTAVE/src/DOCSTRINGS")) {
+    process_docstrings();
+  } else {
+    print STDERR "could not open $OCTAVE/src/DOCSTRINGS !\n";
+  }
+  if (open (IN,"$OCTAVE/scripts/DOCSTRINGS")) {
+    process_docstrings();
+  } else {
+    print STDERR "could not open $OCTAVE/scripts/DOCSTRINGS !\n";
+  }
+}
+
+# Desperate last measure. Try help <func> within octave. Good for getting
+# keyword and operator descriptions
+my $octstring = "";
+my @@octfiles = ();
+foreach my $TB ( toolbox_list()) {
+  foreach my $cat ( cat_list($TB) ) {
+    foreach my $func ( cat_funcs($TB,$cat) ) {
+      if (! defined $function_description{$func}[1] && ! defined $index_notes{$func} ) {
+	  my $t =sprintf("help %s; disp('<CUT HERE>'); %s", $func, $octstring);
+	  $octstring = $t;
+	  push @@octfiles, $func;
+      }
+    }
+  }
+}
+
+open3(*Writer, *Reader, *Errer, $OCTAVECMD) or die "Could not run octave";
+print Writer $OCTAVEINIT;
+print Writer "$octstring"; close(Writer);
+my @@lines = <Reader>; close(Reader);
+my @@err = <Errer>; close(Errer);
+waitpid(-1,&WNOHANG);
+my $bodies = join("",@@lines);
+$bodies = substr($bodies,0, rindex($bodies, "<CUT HERE>"));
+
+# Display errors, if any
+if (@@err) {
+    print "Help Errors:\n>>> @@err";
+} else {
+    foreach my $func (@@octfiles) {
+	my $idx = rindex($bodies, "<CUT HERE>");
+	my $body;
+	if ($idx < 0) {
+	    $body = substr($bodies, $idx);
+	} else  {
+	    $body = substr($bodies, $idx + 10);
+	}
+	$bodies = substr($bodies, 0, $idx);
+
+	if ($body =~ /help: `(.*)' not found/ || $body =~ /help: sorry,/) {
+	    # do nothing
+	} else {
+	    ## print "help $func\n";
+
+	    my $start;
+	    if ($body =~ /^\n\*\*\*/) {
+	      # clipping assuming ops/keywords only
+	      $start = index($body,"$func") + 1 + length($func);
+	    } else {
+	      # first lines till \n\n will be octave tell us the type
+	      # of variable/funtion and where it is found
+	      $start = index($body,"\n\n") + 2;
+	    }
+	    my $stop = index($body,"ans =");
+	    $body = substr($body,$start,$stop-$start);
+	    register_function($func,$body,$OCTAVE,0);
+	}
+    }
+}
+
+# print a summary table rather than generating the html
+if ( $summary ) {
+    write_ascii("% ");
+}
+else {
+    write_html();
+}
+
+
+if (@@skipped) {
+    print "skipped ", scalar(@@skipped), " functions ";
+    my $rs = $,; $, = "\n  ";
+    print "  ", sort(@@skipped); $, = $rs;
+    print "\n";
+}
+
+print_missing();
+
+if (@@uncategorized) {
+    print scalar(@@uncategorized), " uncategorized functions ";
+    print "(out of ", $n_functions, " total)";
+    my $rs = $,; $, = "\n  ";
+    print "  ", sort(@@uncategorized); $, = $rs;
+    print "\n";
+#    print wrap("\t", "\t", join(" ", sort @@uncategorized)), "\n";
+}
+
+if (@@shadowed) {
+    print "unexpected shadowing of ", scalar(@@shadowed), " Octave functions";
+    my $rs = $,; $, = "\n  ";
+    print "  ", sort(@@shadowed); $, = $rs;
+    print "\n";
+#    print wrap("\t", "\t", join(" ", sort @@shadowed)), "\n";
+}
+
+if (@@duplicated) {
+    print "unexpected duplicate indexing of ", scalar(@@duplicated), " functions";
+    my $rs = $,; $, = "\n  ";
+    print "  ", sort(@@duplicated); $, = $rs;
+    print "\n";
+}
+
+sub process_docstrings {
+  my $function = "";
+  my $desc = "";
+  while (<IN>) {
+    if (/^\037/) {
+	if ($n_appearances{$function} == 0) {
+	    register_function($function,$desc,$OCTAVE,1) unless $function eq "";
+	}
+	$function = $_;
+	$function =~ s/^\037//;
+	$function =~ s/\n$//;
+        $desc = "";
+    } else {
+      $desc .= $_;
+    }
+  }
+  if ($n_appearances{$function} == 0) {
+      register_function($function,$desc,$OCTAVE,1) unless $function eq "";
+  }
+  close(IN);
+}
+
+sub first_sentence { # {{{1
+# grab the first real sentence from the function documentation
+    my ($desc) = @@_;
+    my $retval = '';
+    my $line;
+    my $next;
+    my @@lines;
+
+    my $trace = 0;
+    # $trace = 1 if $desc =~ /Levenberg/;
+    return "" unless defined $desc;
+    if ($desc =~ /^\s*-[*]- texinfo -[*]-/) {
+
+	# help text contains texinfo.  Strip the indicator and run it
+	# through makeinfo. (XXX FIXME XXX this needs to be a function)
+	$desc =~ s/^\s*-[*]- texinfo -[*]-\s*//;
+	my $cmd = "makeinfo --fill-column 1600 --no-warn --no-validate --no-headers --force --ifinfo";
+	open3(*Writer, *Reader, *Errer, $cmd) or die "Could not run info";
+	print Writer "\@@macro seealso {args}\n\n\@@noindent\nSee also: \\args\\.\n\@@end macro\n";
+	print Writer "$desc"; close(Writer);
+	@@lines = <Reader>; close(Reader);
+	my @@err = <Errer>; close(Errer);
+	waitpid(-1,&WNOHANG);
+
+	# Display source and errors, if any
+	if (@@err) {
+	    my $n = 1;
+	    foreach $line ( split(/\n/,$desc) ) {
+		printf "%2d: %s\n",$n++,$line;
+	    }
+	    print ">>> @@err";
+	}
+
+	# Print trace showing formatted output
+#	print "<texinfo--------------------------------\n";
+#	print @@lines;
+#	print "--------------------------------texinfo>\n";
+
+	# Skip prototype and blank lines
+	while (1) {
+	    return "" unless @@lines;
+	    $line = shift @@lines;
+	    next if $line =~ /^\s*-/;
+	    next if $line =~ /^\s*$/;
+	    last;
+	}
+
+    } else {
+
+#	print "<plain--------------------------------\n";
+#	print $desc;
+#	print "--------------------------------plain>\n";
+
+	# Skip prototype and blank lines
+	@@lines = split(/\n/,$desc);
+	while (1) {
+	    return "" if ($#lines < 0);
+	    $line = shift @@lines;
+	    next if $line =~ /^\s*[Uu][Ss][Aa][Gg][Ee]/; # skip " usage "
+	    next if $line =~ /^\s*-/;           # skip " -- blah"
+
+	    $line =~ s/^\s*\w+\s*://;             # chop " blah : "
+	    print "strip blah: $line\n" if $trace;
+	    $line =~ s/^\s*[Ff]unction\s+//;      # chop " function "
+	    print "strip function $line\n" if $trace;
+	    $line =~ s/^\s*\[.*\]\s*=\s*//;       # chop " [a,b] = "
+	    print "strip []= $line\n" if $trace;
+	    $line =~ s/^\s*\w+\s*=\s*//;          # chop " a = "
+	    print "strip a= $line\n" if $trace;
+	    $line =~ s/^\s*\w+\s*\([^\)]*\)\s*//; # chop " f(x) "
+	    print "strip f(x) $line\n" if $trace;
+	    $line =~ s/^\s*[;:]\s*//;                # chop " ; "
+	    print "strip ; $line\n" if $trace;
+
+	    $line =~ s/^\s*[[:upper:]][[:upper:]0-9_]+//; # chop " BLAH"
+	    print "strip BLAH $line\n" if $trace;
+	    $line =~ s/^\s*\w*\s*[-]+\s+//;        # chop " blah --- "
+	    print "strip blah --- $line\n" if $trace;
+	    $line =~ s/^\s*\w+ *\t\s*//;          # chop " blah <TAB> "
+	    print "strip blah <TAB> $line\n" if $trace;
+	    $line =~ s/^\s*\w+\s\s+//;            # chop " blah  "
+	    print "strip blah <NL> $line\n" if $trace;
+
+#	    next if $line =~ /^\s*\[/;           # skip  [a,b] = f(x)
+#	    next if $line =~ /^\s*\w+\s*(=|\()/; # skip a = f(x) OR f(x)
+	    next if $line =~ /^\s*or\s*$/;      # skip blah \n or \n blah
+	    next if $line =~ /^\s*$/;            # skip blank line
+	    next if $line =~ /^\s?!\//;          # skip # !/usr/bin/octave
+	    # XXX FIXME XXX should be testing for unmatched () in proto
+	    # before going to the next line!
+	    last;
+	}
+    }
+
+    # Try to make a complete sentence, including the '.'
+    if ( "$line " !~ /[^.][.]\s/ && $#lines >= 0) {
+	my $next = $lines[0];
+	$line =~ s/\s*$//;  # trim trailing blanks on last
+	$next =~ s/^\s*//;    # trim leading blanks on next
+	$line .= " $next" if "$next " =~ /[^.][.]\s/; # ends the sentence
+    }
+
+    # Tidy up the sentence.
+    chomp $line;          # trim trailing newline, if there is one
+    $line =~ s/^\s*//;    # trim leading blanks on line
+    $line =~ s/([^.][.])\s.*$/$1/; # trim everything after the sentence
+    print "Skipping:\n$desc---\n" if $line eq "";
+
+    # And return it.
+    return $line;
+
+} # 1}}}
+sub shadow_path { # {{{1
+# shadow_path($f) returns true if $f is on a known Octave shadow path
+    my ($file) = @@_;
+    $file =~ s|/[^/]*$||;
+    my @@matches = grep(/^$file$/,@@shadow_paths);
+#    print "looking for $file in @@shadow_paths\n";
+#    print "returns ",@@matches,"\n";
+    return scalar(@@matches) > 0 || $file =~ /alternatives$/;
+    
+} # 1}}}
+sub register_function { # {{{1
+# register the function and its one-line description
+    my ($function,      # in   $index{toolbox}{category} = [functions]
+        $desc,          # in   $toolbox_desc{toolbox} = description
+	$file,
+	$replace_shadow,
+       )      = @@_;
+    ++$n_appearances{$function};
+    if ($n_appearances{$function} > 1) {
+      if ($replace_shadow != 0) {
+	push @@shadowed, "$file:$function" if $file =~ /^$OCTAVE/ 
+	  and !shadow_path($function_description{$function}[0]);
+	        # print "$file:$function appeared previously\n";
+      }
+    } else {
+        ++$n_functions;
+    }
+    if (! ($file =~ /^$OCTAVE/)) {
+	$octave_forge_function{$function} = 1;
+	if (defined $index_by_function{$function} ||
+	    ($function !~ /__/ && $file !~ /test/ 
+	     && $function !~ /^[Cc]ontents?$/
+	     && $function !~ /pre_install/
+	     && $function !~ /post_install/)) {
+	    my $package = $file;
+	    $package =~ s|^\s*([^/]+/[^/]+/).*$|$1|;
+	    push @@{$index_by_package{$package}}, $function;
+	}
+    }
+    if (!defined $index_by_function{$function}) {
+	my $entry = $file;
+	$entry = "$file: $function" if $file !~ /[.]m$/;
+	if ($function =~ /__/ || $file =~ /test/ 
+	    || $function =~ /^[Cc]ontents?$/
+	    || $function =~ /pre_install/ || $function =~ /post_install/) {
+	    push @@skipped, $entry;
+	} else {
+	    push @@uncategorized, $entry;
+	}
+    }
+
+    my $oneline = first_sentence($desc);
+    #printf "%30s %s\n", $function, $oneline;
+    if ($replace_shadow == 0 && defined @@function_description{$function}) {
+      @@function_description{$function} = [ $function_description{$function}[0], $oneline, $desc ];
+    } elsif (!defined @@function_description{$function}) {
+      @@function_description{$function} = [ $file, $oneline, $desc ];
+    }
+#    push @@function_description{$function}}, "$file\n$oneline\n$desc";
+    #printf "%-12s %-20s %s\n", $function,
+    #                           $index_by_function{$function}[0],
+    #                           $index_by_function{$function}[1];
+} # 1}}}
+sub extract_description { # {{{1
+# grab the entire documentation comment from an m-file
+    my ($file) = @@_;
+    my $retval = '';
+
+    if( open( IN, "$file")) {
+	# skip leading blank lines
+	while (<IN>) {
+	    last if /\S/;
+	}
+	if( m/\s*[%\#][\s\#%]* Copyright/) {
+	    # next block is copyright statement, skip it
+	    while (<IN>) {
+		last unless /^\s*[%\#]/;
+	    }
+	}
+	# Skip everything until the next comment block
+	while ( !/^\s*[\#%]/ ) {
+	    $_ = <IN>;
+	    last if not defined $_;
+	}
+        # Return the next comment block as the documentation
+        while (/^\s*[\#%]/) {
+	    s/^[\s%\#]*//;    # strip leading comment characters
+            s/[\cM\s]*$//;   # strip trailing spaces.
+	    $retval .= "$_\n";
+	    $_ = <IN>;
+	    last if not defined $_;
+	}
+        close(IN);
+	return $retval;
+    }
+    else {
+	print STDERR "Could not open file ($file): $!\n";
+    }
+} # 1}}}
+sub load_index { # {{{1
+    my ($file) = @@_;             # in
+    my $toolbox     = "extra";
+    my $category    = "";
+    my $description = "";
+    my $function    = "";
+    open(IN, $file) or die "Cannot read $file:  $!\n";
+    my %map;   # simple macros for use in notes
+    while (<IN>) {
+        next if /^\s*$/; # skip blank lines
+	next if /^\s*\#/; # skip comment lines
+        chomp;
+        if      (/^(.*?)\s*>>\s*(.*?)$/) {
+	    # toolbox lines contain "word >> description"
+            $toolbox     = $1;
+            $description = $2;
+            $category    = "";
+            $TB_description{$toolbox} = $description;
+	} elsif (/^\s*\$(\w+)\s*=\s*(\S.*\S)\s*$/) {
+	    # define a variable as "$var = expansion"
+	    $map{$1} = $2;
+        } elsif (/^(\w.*?)\s*$/) {
+	    # category lines start in the left most column
+            $category    = $1;
+        } elsif (/^\s+(\S.*?[^=~!><])=\s*(\S.*\S)\s*$/) {
+	    # Process "function = notes" explicit descriptions
+	    $function = $1;
+	    $description = $2;
+
+	    # We used ...(\S.*)=... rather than (\S.*\S)\s*= to allow for
+	    # single character function names, but that means we may have
+	    # to trim some extra spaces of the function name.  Single
+	    # character descriptions get the treatment they deserve.
+	    $function =~ s/\s+$//;
+
+	    # expand all $var in the description
+	    my @@parts = split('\$', $description);
+	    foreach my $i ( 1 .. $#parts ) {
+		$parts[$i] =~ /^(\w+)(\W.*)$/ or $parts[$i] =~ /^(\w+)()$/;
+		$parts[$i] = "$map{$1}$2";
+	    }
+	    $description = join("",@@parts);
+
+	    # record the function->description mapping
+	    $index_notes{$function} = $description;
+	    die "Function $function (line $.) has no category" unless $category;
+	    push @@{$index_by_TB_cat{$toolbox}{$category}}, $function;
+	    push @@{$index_by_function{$function}}, [$toolbox, $category];
+	    ++$n_duplicated{$function};
+	    if ($n_duplicated{$function} > 1) {
+		push @@duplicated, "$file:$function";
+	    }
+	} else {
+            s/^\s+//;
+            my @@list = split /\s+/;
+            while ($#list >= 0) {
+                $function    = shift @@list;
+                die "Function $function (line $.) has no category" unless $category;
+                push @@{$index_by_TB_cat{$toolbox}{$category}}, $function;
+                push @@{$index_by_function{$function}}, [$toolbox, $category];
+
+            }
+        }
+    }
+    close(IN);
+} # 1}}}
+sub write_html { # {{{1
+    # make empty html directories
+    unlink <$catdir/*.html>;
+    unlink <$catdir/f/*.html>;
+    mkdir "$catdir";
+    mkdir "$catdir/f";
+
+    #write_main();
+    #write_forgebar();
+    write_index();
+    write_alphabetic_navbar();
+    write_TBnavbar();
+    foreach ( toolbox_list() ) {
+	#write_TBnavbar($_);
+	write_TBdetails($_);
+    }
+    foreach ( package_list() ) {
+	write_package_details($_);
+    }
+
+    # Write one file for each letter.
+    #
+
+    my $Letter = chr(0);
+    foreach my $func ( indexed_funcs() ) {
+	# The source file
+
+	my $body = long_desc($func);
+	if ($body ne "") {
+	    # XXX FIXME XXX this will die if the punctuation is too wild
+	    open FUNC, ">$catdir/f/$func.in" or die "Could not open $func.in";
+	    print FUNC "__DOC_HEADER__([[[Function Reference: $func]]])\n";
+	    print FUNC "<div class=\"func\"><b>$func</b>\n";
+	    # The toolboxes to which it belongs
+	    foreach my $pair ( @@{$index_by_function{$func}} ) {
+		my ( $TB, $cat ) = @@{$pair};
+		print FUNC "    ", cat_ref_up($TB, $cat, "[$TB]"), "\n";
+	    }
+	    print FUNC "</div>\n";
+	    print FUNC "<div class=\"flink\">",download_ref($func),"</div>\n";
+	    print FUNC "<div class=\"ftext\">\n";
+	    print FUNC "$body\n";
+	    print FUNC "</div>\n";
+	    print FUNC "__TRAILER__";
+            close FUNC;
+	}
+
+	# Check if need to go to the next letter
+	# This is particularly complicated because we
+	# want to include all punctuation in the 
+	my $next = uc(substr($func, 0, 1));
+	if ($next ne $Letter) {
+	    if ($Letter =~ /[A-Y]/) {
+		print OUT "</div>\n__TRAILER__\n";
+		close OUT;
+	    } else {
+		print OUT "</div>\n";
+	    }
+	    if ($Letter =~ /[\0A-Y]/) {
+		my $head = "";
+		if ( $next =~ /[A-Z]/ ) {
+		    $head = $next;
+		} elsif ( $next lt "A" ) {
+		    $head = "A";
+		} else {
+		    $head = "Z";
+		}
+		my $file = ">$catdir/$head.in";
+		open(OUT, $file) or die "Cannot write $file";
+		print OUT "__DOC_HEADER__([[[Function Reference: $head]]])";
+	    }
+	    $Letter = $next;
+	    print OUT "<h2><a name=\"$Letter\">$Letter</a></h2>\n";
+	    print OUT "<div>\n";
+	}
+
+	# Function reference
+	print OUT "<div class=\"func\"><b>",func_ref($func,$func),"</b>\n";
+	# The toolboxes to which it belongs
+	foreach my $pair ( @@{$index_by_function{$func}} ) {
+	    my ( $TB, $cat ) = @@{$pair};
+	    print OUT "    ", cat_ref($TB, $cat, "[$TB]"), "\n";
+	}
+	print OUT "</div>\n";
+	print OUT "<div class=\"flink\">",download_ref($func),"</div>\n";
+
+	# column 3:  the function description
+	# XXX FIXME XXX multiple functions???
+	print OUT "    <div class=\"ftext\">",html_desc($func),"</div>\n";
+    }
+
+    print OUT "</div>\n__TRAILER__\n";
+    close(OUT);
+} # 1}}}
+sub writenav { # 1{{{
+    my ($cat) = @@_;
+
+} # 1}}}
+sub write_main { # {{{1
+    open(OUT,">$catdir/index.html") or die "Could not open $catdir/index.html";
+    print OUT <<EOF;
+<HTML><HEAD>
+<TITLE>Octave-forge combined index</TITLE>
+</HEAD>
+<FRAMESET rows="50, *">
+  <FRAME src="forgebar.html" noresize frameborder="0">
+  <FRAMESET cols="33%, 67%">
+    <FRAME name=navbar src="categorical.html">
+    <FRAMESET rows="50, *">
+      <FRAME src="alphabetic.html">
+      <FRAME name=content src="intro.html">
+    </FRAMESET>
+  </FRAMESET>
+<NOFRAMES>
+$forgebar
+<H1>Octave-Forge Combined Index</H1>
+<ul>
+<li><A HREF="categorical.html">Categorical index</a>
+<li><A HREF="alphabetic.html">Alphabetic index</a>
+</ul>
+</NOFRAMES>
+</FRAMESET>
+</HTML>
+EOF
+    close OUT;
+} # 1}}}
+sub write_forgebar {
+    open(OUT,">$catdir/forgebar.html") or die "Could not open index/forgebar.html";
+    print OUT <<EOF;
+<html><title>Octave Forge site navigator</title>
+<base target=_top>
+<body>
+$forgebar
+</body></html>
+EOF
+}
+sub download_ref { 
+# download_ref($func,$desc) returns a link to download $func described by $desc
+    my ($func) = @@_;
+
+    my $path = $function_description{$func}[0];
+    if ($path ne "" && $path !~ /^$OCTAVE/) {
+	return "[<a href=\"$FORGESVN$path\?revision=HEAD\&amp;content-type=text/plain\">octave-forge/$path</a>]";
+    } elsif ($path =~ /^$OCTAVE/) {
+	$path =~ s/^$OCTAVE//;
+	return "[<a href=\"$OCTAVEHG$path\?rev=HEAD\&amp;content-type=text/plain\">octave$path</a>]";
+    } else {
+	return "";
+    }
+}
+sub write_index { # 1{{{
+    open(OUT,">$catdir/index.in") or die "Could not open $catdir/index.in";
+    print OUT <<EOF;
+__DOC_HEADER__([[[Function Reference]]])
+<p>This page contains the documentation for individual functions provided by
+Octave and Octave-Forge. The documentation can either be accessed by category or alphabetically.
+Simply use the menus at the left of the page.</p>
+__TRAILER__
+EOF
+    close OUT;
+} # 1}}}
+sub write_TBnavbar { # 1{{{
+    my $openTB = shift;
+    my $file = "menu";
+    $file = "nav$openTB" if $openTB ne "";
+    open(OUT,">$catdir/$file.include") or die "Could not open $catdir/$file.include";
+
+	#print OUT "<a href=\"__BASE_ADDRESS__/index.html\">Home</a>\n";
+	#print OUT "<select name=\"dropdowncat\" size=\"1\" onchange=\"javascript:goto_url(this)\">\n";
+	#print OUT "<option value=\"-1\">Categories</option>\n";
+
+    foreach my $TB (toolbox_list_sorted_by_desc()) {
+	$TB = trim($TB);
+	#print OUT "<option value=\"__BASE_ADDRESS__/doc/$TB.html\">$TB_description{$TB}</option>\n";
+        print OUT "<a href=\"__BASE_ADDRESS__/doc/$TB.html\">$TB_description{$TB}</a><br/>\\\n";
+    }
+    #print OUT "</select>\n";
+    close OUT;
+} # 1}}}
+sub write_TBdetails { # 1{{{
+    my $TB = trim(shift);
+    my $file   = "$catdir/$TB.in";
+    
+    open(OUT, ">$file") or die "Cannot write $file:  $!\n";
+    print OUT <<EOF;
+__DOC_HEADER__([[[$TB]]])
+<h2 class="tbdesc">$TB_description{$TB}</h2>
+EOF
+
+    # summary list of categories
+    print OUT "<ul>\n";
+    foreach my $cat ( cat_list($TB) ) {
+	my $anchor = cat_anchor($cat);
+	print OUT "    <li><a href=\"#$anchor\">$cat</a></li>\n";
+    }
+    print OUT "</ul>\n";
+    
+    # Each category has a table of its functions and their descriptions.
+    foreach my $cat ( cat_list($TB) ) {
+	my $anchor = cat_anchor($cat);
+	print OUT "<h3 class=\"category\"><a name=\"$anchor\">$cat</a></h3>\n";
+	print OUT "<div>\n";
+	foreach my $func ( cat_funcs($TB,$cat) ) {
+	    
+	    # column 1:  the function (x-ref to full description in
+	    #                          cvs-tree's html file)
+	    print OUT "<div class=\"func\"><b>",func_ref($func,$func),"</b></div>\n";
+	    print OUT "    <div class=\"flink\">", download_ref($func), "</div>\n";
+	    # column 2: the description, if it exists
+	    #
+	    print OUT "<div class=\"ftext\">",html_desc($func),"</div>\n";
+	}
+	print OUT "</div>\n";
+    }
+    print OUT "__TRAILER__\n";
+    close(OUT);
+} # 1}}}
+sub write_package_details { # 1{{{
+    my $packdir = shift;
+    my $package;
+    my $title;
+    my $desc = sprintf("%s/DESCRIPTION", $packdir);
+    #open(IN, $desc) or die "Cannot read $desc:  $!\n";
+    open(IN, $desc) or return;
+    while(<IN>) {
+	if (/^[Nn]ame:/) {
+	    chomp;
+	    s/^[Nn]ame:\s*//;
+	    s/\s*$//;
+	    $package = lc($_);
+	} elsif (/^[Tt]itle:/) {
+	    chomp;
+	    s/^[Tt]itle:\s*//;
+	    s/\s*$//;
+	    $title = $_;
+	}
+    }
+    close(IN);
+    my $file   = "$catdir/funref_$package.in";
+    
+    open(OUT, ">$file") or die "Cannot write $file:  $!\n";
+    print OUT <<EOF;
+__DOC_HEADER__([[[$title]]])
+EOF
+    print OUT "<div>\n";
+    foreach my $func ( pack_list($packdir) ) {
+	
+	# column 1:  the function (x-ref to full description in
+	#                          cvs-tree's html file)
+
+	print OUT "<div class=\"func\"><b>",func_ref($func,$func),"</b></div>\n";
+	print OUT "    <div class=\"flink\">", download_ref($func), "</div>\n";
+	
+	# column 2: the description, if it exists
+	#
+	print OUT "<div class=\"ftext\">",html_desc($func),"</div>\n";
+    }
+    print OUT "</div>\n";
+    print OUT "__TRAILER__\n";
+    close(OUT);
+} # 1}}}
+sub write_alphabetic_navbar { # 1{{{
+    open(OUT,">$catdir/alphabetic.include") or die "Could not open $catdir/alphabetic.include";
+
+    my $A_to_Z     = "";
+    foreach (first_letters (indexed_funcs())) {
+        $A_to_Z .= letter_option($_) . "\\\n";
+    }
+    #my $select = "<select name=\"dropdownalpha\" size=\"1\" onchange=\"javascript:goto_url(this)\">";
+    #$select .=  "\n<option value=\"-1\">Alphabetical</option>\n";
+    #print OUT $select . $A_to_Z . "\n</select>\n";    
+    print OUT $A_to_Z;
+    close OUT;
+} # 1}}}
+sub oldnavbar { # 1{{{
+    my $max_TB_across_top = 7;
+    my $all_toolboxes = "<center>\n";
+    my $n = 0;
+
+    foreach my $TB (toolbox_list()) {
+        ++$n;
+        if ($n > $max_TB_across_top) {
+            $n = 0;
+            $all_toolboxes .= "<a href=\"$TB.html\">$TB</a> <br> ";
+        } else {
+            $all_toolboxes .= "<a href=\"$TB.html\">$TB</a> | ";
+        }
+    }
+    $all_toolboxes =~ s/\s+\|\s*$//;  # strip last pipe separator
+    $all_toolboxes .= "<br><br>";
+    my $A_to_Z     = "";
+    foreach (first_letters (indexed_funcs())) {
+        $A_to_Z .= letter_ref($_);
+	$A_to_Z .= " | ";
+    }
+    $A_to_Z         =~ s/\s+\|\s*$//;  # strip last pipe separator
+    my $all_toolboxes_A_Z = $all_toolboxes . "$A_to_Z </center>\n";
+    $all_toolboxes .= "</center>\n";
+
+} # 1}}}
+sub print_missing {
+    my $printmissing = 1;
+    foreach my $TB ( toolbox_list() ) {
+	my $printTB = 1;
+	foreach my $cat ( cat_list($TB) ) {
+            my $printcat = 1;
+            foreach my $func ( cat_funcs($TB,$cat) ) {
+                if (! defined $function_description{$func}[1] && ! defined $index_notes{$func} ) {
+		     print "missing functions:" if $printmissing;
+		     print "\n  [$TB]" if $printTB;
+		     print "\n  $cat\n  >" if $printcat;
+	             print " $func";
+	             $printTB = 0;
+		     $printcat = 0;
+		     $printmissing = 0;
+                }
+            }
+        }
+    }
+    print "\n" unless $printmissing;
+}
+sub write_ascii { # 1{{{
+# output all toolboxes as a contents.m file
+    my ($prefix) = @@_;
+    my $indent = 16 - 3 - length($prefix);
+
+    # XXX FIXME XXX add an option to spit out contents.m
+    # XXX FIXME XXX what if there is no toolbox?
+    # XXX FIXME XXX preserve category order
+    foreach my $TB ( toolbox_list() ) {
+	print wrap($prefix,$prefix,$TB_description{$TB}),"\n$prefix\n";
+	foreach my $cat ( cat_list($TB) ) {
+	    print wrap($prefix,$prefix,$cat), "\n";
+	    foreach my $func ( cat_funcs($TB,$cat) ) {
+		my $entry = sprintf("%-*s %s",$indent,$func,ascii_desc($func));
+		print wrap("$prefix","$prefix\t\t","  $entry"), "\n";
+	    }
+	    print "$prefix\n";
+	}
+    } 
+} # 1}}}
+sub cat_ref { # 1{{{
+# cat_ref($TB,$cat,$ref) returns an html link to $cat described by $ref
+    my ($TB,$cat,$ref) = @@_;
+    my $anchor = cat_anchor($cat);
+    return "<a href=\"$TB.html#$anchor\">$ref</a>";
+} # 1}}}
+sub cat_ref_up { # 1{{{
+# cat_ref($TB,$cat,$ref) returns an html link to $cat described by $ref
+    my ($TB,$cat,$ref) = @@_;
+    my $anchor = cat_anchor($cat);
+    return "<a href=\"../$TB.html#$anchor\">$ref</a>";
+} # 1}}}
+sub cat_anchor { # 1{{{
+# cat_anchor($cat) returns the anchor word generated for category $cat
+    my ($cat) = @@_;
+    $cat =~ s/\W+//g;
+    return $cat;
+} # 1}}}
+sub func_ref { # 1{{{
+# func_ref($func) returns an html link to $func described by $ref
+    my ($func,$ref) = @@_;
+    if ( defined $function_description{$func}[2] &&
+	 $function_description{$func}[2] ne "") {
+	my $ret = $ref;
+	$ret =~ s|<|&lt;|g;
+	$ret =~ s|>|&gt;|g;
+	return "<a href=\"f/$func.html\">$ret</a>";
+    } elsif ( $ref ne $func ) {
+	# XXX FIXME XXX do we want "$ref ($func)"? Check how it is called.
+	my $ret = $ref;
+	$ret =~ s|<|&lt;|g;
+	$ret =~ s|>|&gt;|g;
+	return $ret;
+    } else {
+	my $ret = $ref;
+	$ret =~ s|<|&lt;|g;
+	$ret =~ s|>|&gt;|g;
+	return $ret;
+    }
+} # 1}}}
+sub split_long_name { # 1{{{
+# html magic to break long variable/function names
+    # XXX FIXME XXX this function is probably not used
+    my ( $nicefunc ) = @@_;
+    # $nicefunc =~ s/([^_])_([^_])/$1_ $2/g;
+    return $nicefunc;
+} # 1}}}
+sub first_letters { # 1{{{
+# return a list of all first letters in the arguments
+# The argument list must come sorted with a case-insensitive sort.
+    my $Letter = chr(0);
+    my @@ret = ();
+    foreach my $name ( @@_ ) {
+	# Check if need to go to the next letter
+	if (uc(substr($name, 0, 1)) ne $Letter) {
+	    $Letter = uc(substr($name, 0, 1));
+	    push @@ret, $Letter;
+	}
+    } 
+    return @@ret;
+} # 1}}}
+sub letter_file { # 1{{{
+    return "$_.html" if /[A-Z]/;
+    return "A.html" if $_ lt "A";
+    return "Z.html";
+} # 1}}}
+sub deping { # 1{{{
+    return "\\'" if $_ eq "'";
+    return "$_";
+} # 1}}}
+sub letter_ref { # 1{{{
+# letter_ref($letter) returns a link to the letter
+    return "<a href=\"" . letter_file($_) . "#$_\">$_</a>";
+} # 1}}}
+sub letter_option { # 1{{{
+# letter_option($letter) returns a link to the letter
+    #return "<option value=\"__BASE_ADDRESS__/doc/" . letter_file($_) . "#$_\">$_</option>";
+    return "<a href=\"__BASE_ADDRESS__/doc/" . letter_file($_) . "#" . deping($_) . "\">" . deping($_) . "</a><br/>";
+} # 1}}}
+sub ascii_desc { # 1{{{
+# ascii_desc($func) returns a decription of $func using ascii markup
+    my ( $func ) = @@_;
+    if (! defined $function_description{$func}[1] ) {
+	my $notes = $index_notes{$func};
+	$notes = "<missing>" if $notes eq "";
+	# convert "<a link>desc</a>" to "desc (link)"
+	$notes =~ s|<a href=\"?([^>]*)\"?>([^<]*)</a>|$2 ($1)|g;
+	# strip all remaining html formatting
+	$notes =~ s|<[^>]*>||g;
+	return $notes;	    
+    } else {
+	my $desc = $function_description{$func}[1];
+	if ($desc eq "") {
+	    return "<no description>";
+	} else {
+	    return $desc;
+	}
+    }
+} #}}}
+sub html_desc { # 1{{{
+# html_desc($func) returns a description of $func using html markup
+    my ( $func ) = @@_;
+    my $notes = $index_notes{$func};
+    if (! defined $function_description{$func}[1] ) {
+	$notes = "not implemented" if $notes eq "";
+	# shut of the bold italics during "code" formatting
+	$notes =~ s|<code>|</i><code>|g;
+	$notes =~ s|</code>|</code><i>|g;
+	$notes =~ s|&|&amp|;
+	$notes =~ s|<f>(\w+)</f>|</i><code><a href="f/$1.html">$1</a></code><i>|g;
+	return "<i>$notes</i>";
+    } else {
+	print "ignoring $func = $notes\n" if $notes ne "";
+	my $desc = $function_description{$func}[1];
+	$desc =~ s|&|&amp;|g;
+	$desc =~ s|>|&gt;|g;
+	$desc =~ s|<|&lt;|g;
+	if ($desc eq "") {
+	    return "<i>no description</i>";
+	} else {
+	    return $desc;
+	}
+    }
+} # 1}}}
+sub long_desc {
+    my ( $func ) = @@_;
+    my $body = $function_description{$func}[2];
+    if ($body =~ /^\s*-[*]- texinfo -[*]-/) {
+	$body = info2html($func, $body);
+    } elsif ($body ne "") {
+	$body = "<pre>$body</pre>";
+    }
+    return $body
+} # 1}}}
+sub info2html_texi2html { # 1{{{
+# run body through texi2html to produce html
+    my ( $func, $body ) = @@_;
+    $body =~ s/^\s*-[*]- texinfo -[*]-//;
+    open(SRC, ">$func.texi");
+    print SRC "\@@macro seealso {args}\n\n\@@noindent\nSee also: \\args\\.\n\@@end macro\n";
+    print SRC "BEGINCUT $body ENDCUT";
+    close SRC;
+    system ("texi2html -expand info $tmpdir/$func.texi");
+    open(SRC, "<$func.html");
+    my @@lines = <SRC>;
+    close SRC;
+    $body = join("",@@lines);
+    my $start = index($body,"BEGINCUT") + 8;
+    my $stop = index($body,"ENDCUT");
+    $body = substr($body,$start,$stop-$start);
+    unlink "$func.texi", "$func.html";
+} # 1}}}
+sub info2html { # 1{{{
+# run body through makeinfo to produce html
+    my ( $func, $body ) = @@_;
+    $body =~ s/^\s*-[*]- texinfo -[*]-//;
+    my $cmd = "makeinfo --fill-column 80 --no-warn --no-validate --force --html --ifinfo -o -";
+    open3(*Writer, *Reader, *Errer, $cmd) or die "Could not run info";
+    #SH# print Writer "\@@macro seealso {args}\n\n\@@noindent\nSee also: \\args\\.\n\@@end macro\n";
+    print Writer "\@@macro seealso{args}\n m4_changequote(`, ')\n seealso(\\args\\)\n m4_changequote([[[, ]]])\n\@@end macro\n";
+    # I have no idea why but makeinfo is introducing some weirdness with <p>
+    # at the front of the document.  The following works for my particular
+    # version but I have little hope for it working in general
+    print Writer "-CUT HERE $body"; close(Writer);
+    my @@lines = <Reader>; close(Reader);
+    my @@err = <Errer>; close(Errer);
+    waitpid(-1,&WNOHANG);
+    # strip everything before <body> and after </body>
+    $body = join("",@@lines);
+    my $start = index($body,"CUT HERE") + 8;
+    my $stop = index($body,"</body");
+    $body = substr($body,$start,$stop-$start);
+    $body =~ s|\@@var\{([^\}]*)\}|<var>$1</var>|g;
+    return $body;
+} # 1}}}
+sub toolbox_list { # 1{{{
+# toolbox_list() returns an ordered list of toolboxes.
+    return sort { uc($a) cmp uc($b) } keys %index_by_TB_cat;
+} # 1}}}
+sub toolbox_list_sorted_by_desc { # 1{{{
+# toolbox_list_sorted_by_desc() returns an ordered list of toolboxes.
+    return sort { uc($TB_description{$a}) cmp uc($TB_description{$b}) } keys %index_by_TB_cat;
+} # 1}}}
+sub package_list { # 1{{{
+# package_list() returns an ordered list of package directories.
+    return sort { uc($a) cmp uc($b) } keys %index_by_package;
+} # 1}}}
+sub cat_list { # 1{{{
+# cat_list($TB) returns an ordered list of categories in a toolbox $TB.
+    my ($TB) = @@_;
+    return sort keys %{$index_by_TB_cat{$TB}};
+} # 1}}}
+sub pack_list { # 1{{{
+# pack_list($package) returns an ordered list of functions in a package directory.
+    my ($package) = @@_;
+    return sort @@{$index_by_package{$package}};
+} # 1}}}
+sub cat_funcs { # 1{{{
+# cat_funcs($TB,$cat) returns an ordered list of functions in $TB,$cat
+    my ($TB,$cat) = @@_;
+    return sort { uc($a) cmp uc($b) } @@{$index_by_TB_cat{$TB}{$cat}}
+} # 1}}}
+sub indexed_funcs { # 1{{{
+# indexed_funcs() returns an ordered list of all functions in the index
+    return sort { uc($a) cmp uc($b) } keys %index_by_function;
+} # 1}}}
+sub forge_funcs { # 1{{{
+# forge_funcs() returns an ordered list of functions only found in octave forge
+    return sort { uc($a) cmp uc($b) } keys %octave_forge_function;
+} # 1}}}
+sub scanned_funcs { # 1{{{
+# scanned_funcs() returns an ordered list of all functions found in m-files and oct-files
+    return sort { uc($a) cmp uc($b) } %function_description;
+} # 1}}}
+sub trim($) {
+# This functions trims spaces from the beginning and end of a string
+	my $string = shift;
+	$string =~ s/^\s+//;
+	$string =~ s/\s+$//;
+	return $string;
+}
+
+__END__
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+You should have received a copy of the GNU General Public License
+along with this program; if not, see <http://www.gnu.org/licenses/>.
+This program is granted to the public domain.
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+@

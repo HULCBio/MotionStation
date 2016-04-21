@@ -1,0 +1,427 @@
+%% $Revision: 1.1.6.2 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract: Logical Operator block target file
+%% Note that code generation for C will work for all built-in data types
+%% even though Simulink currently only supports double and boolean types
+%% for the Logic block. Blah.
+
+%implements Logic "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% Call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% Currently, do not support
+    %%   o multi-chunk math
+    %%   o in.Bias  != 0
+    %%   o out.Bias  != 0
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% Check NON-ZERO bias
+    %%
+    %if y0DT.Bias != 0
+        %%START_ASSERT
+        %openfile errTxt
+        The logic block does not support fixed-point output with a non-zero bias.
+        Block: '%<SLibBlkName(block)>'
+        %closefile errTxt
+        %exit %<errTxt>
+	%%END_ASSERT
+    %endif
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+  %else
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+%% Function: FcnGetLogicOpStr ==================================================
+%%
+%function FcnGetLogicOpStr(block) void
+  %if block.InFixptMode
+    %%
+    %return FixPtLogicOpStr
+  %else
+    %return ParamSettings.Operator
+  %endif  
+%endfunction
+
+%% Function: FcnGetLogicOp ==================================================
+%%
+%function FcnGetLogicOp(block) void
+  %%
+  %assign logicOp = FcnGetLogicOpStr(block)
+  %%
+  %assign ret = ""
+  %%
+  %switch(logicOp)
+    %case "AND"
+      %assign ret = "&&"
+      %break     
+    %case "OR"
+      %assign ret = "||"
+      %break
+    %case "NAND"
+      %assign ret = "&&"
+      %break
+    %case "NOR"
+      %assign ret = "||"
+      %break
+    %case "XOR"
+      %assign ret = "^"
+      %break
+    %case "NOT"
+      %assign ret = ""
+      %break
+      %%START_ASSERT
+    %default
+      %error "invalid logical operator %<logicOp>"
+      %%END_ASSERT
+  %endswitch
+  %%
+  %return ret
+  %%
+%endfunction
+
+%% Function: FcnGetInvert ==================================================
+%%
+%function FcnGetInvert(block) void
+  %%
+  %assign logicOp = FcnGetLogicOpStr(block)
+  %%
+  %assign invert = ""
+  %%
+  %switch(logicOp)
+    %case "AND"
+      %break
+    %case "OR"
+      %break
+    %case "NAND"
+      %assign invert = "!"
+      %break
+    %case "NOR"
+      %assign invert = "!"
+      %break
+    %case "XOR"
+      %break
+    %case "NOT"
+      %assign invert = "!"
+      %break
+      %%START_ASSERT
+    %default
+      %error "invalid logical operator %<logicOp>"
+      %%END_ASSERT
+  %endswitch
+  %%
+  %return invert
+  %%
+%endfunction
+
+%% Function: FcnGetULabel ==================================================
+%%
+%function FcnGetULabel(u, logicOp, uiDT, trivialAssignmentGotcha, portIdx) void
+  %%
+  %assign inputDTypeId = LibGetDataTypeIdAliasedThruToFromId(LibBlockInputSignalDataTypeId(portIdx))
+  %%
+  %if inputDTypeId == tSS_BOOLEAN
+    %%
+    %assign uLabel = u
+    %%
+  %else
+    %%
+    %if logicOp != "XOR" && uiDT.Bias == 0.0 && !trivialAssignmentGotcha
+      %%
+      %assign uLabel = u
+      %%
+    %else
+      %%
+      %assign zero = SLibGetGroundValueFromId(inputDTypeId) 
+      %assign uLabel = "(%<u> != %<zero>)"
+      %%
+    %endif
+    %%
+  %endif
+  %%
+  %return uLabel
+  %%
+%endfunction
+  
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      This block performs the specified logical operation on its inputs.
+%%
+%function Outputs(block, system) Output
+  %%
+  %assign logicOp = FcnGetLogicOpStr(block)
+  %%
+  %if (logicOp == "NOT" || NumDataInputPorts > 1)
+    %%
+    %assign rollVars = ["Y","U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign y = LibBlockOutputSignal(0, "", lcv, sigIdx)
+      %<y> = %<BlockOutputSignal(block, system, 0, "", lcv, sigIdx, "Signal")>;
+    %endroll
+    %%
+  %else
+    %%
+    %assign firstInputWidth = LibBlockInputSignalWidth(0)
+    %%
+    %if firstInputWidth < RollThreshold 
+      %%
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      %<y> = %<BlockOutputSignal(block, system, 0, "", "", 0, "Signal")>;
+      %%
+    %else
+      %%
+      %assign invert = FcnGetInvert(block)
+      %%
+      %assign LogicOp = FcnGetLogicOp(block)
+      %%
+      %assign outputDataType = LibBlockOutputSignalDataTypeName(0, "")
+      %assign outputDTypeId = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+      
+      %%
+      %assign uiDT = FixPt_GetInputDataType(0)
+      %%
+      %% Handle case of the input port being collapsed to a scalar
+      %%
+      %assign u = ""
+      %%
+      %% To make the code look better, unnecessary comparisions to
+      %% zero will be avoided.  For example, instead of putting out
+      %% code
+      %%
+      %%     y = ( A[0] != 0 ) && ( A[1] != 0 ) && ( A[2] != 0 );
+      %%
+      %% the simpler and equivalent
+      %%
+      %%     y = A[0] && A[1] && A[2];
+      %%
+      %% will be output.  This may contradict a MISRA style recommendation.
+      %%
+      %% There is a "gotcha" case.  Suppose there is only one input port
+      %% and that input port is a scalar, and the operation is OR, AND, or XOR.
+      %% If we are not careful, we could output
+      %%
+      %%    y = A;
+      %%
+      %% this would produces numerically wrong results, if A ever had a value
+      %% other than 0 or 1.  Suppose A had value 256, if no overflow occured
+      %% y would also equal 256 (not 1 as it should).  Even worse an overflow
+      %% could occur with y being equal to 0 which logically indicates that
+      %% the input was zero which is totaly FALSE.  To be safe in this case
+      %% we would output
+      %%
+      %%   y = ( A != 0 );
+      %%
+      %assign trivialAssignmentGotcha = firstInputWidth == 1 || invert != ""
+      %%
+      %assign rollVars = ["Y","U"]
+      %%
+      %assign rollRegions1 = LibGetRollRegions1(RollRegions)
+      %%
+      %assign y = LibBlockOutputSignal(0, "", "", 0)
+      %%
+      %assign u = LibBlockInputSignal(0, "", "", 0)
+      %%
+      %assign uLabel = FcnGetULabel(u, logicOp, uiDT, trivialAssignmentGotcha, 0)
+      %%
+      {
+	%if outputDTypeId == tSS_BOOLEAN
+	  %%
+	  %assign yLabel = "%<y>"
+          %assign initCastDTName = outputDataType
+	  %%
+	%else
+	  %%
+	  boolean_T rtTmpY;
+	  %assign yLabel = "rtTmpY"
+          %assign initCastDTName = "boolean_T"
+	  %%
+	%endif
+	%%
+	%<yLabel> = (%<initCastDTName>)(%<uLabel>);
+	%%
+	%roll sigIdx = rollRegions1, lcv = RollThreshold, block, "Roller", rollVars
+	  %%
+	  %assign u = LibBlockInputSignal(0, "", lcv, sigIdx)
+	  %%
+	  %assign uLabel = FcnGetULabel(u, logicOp, uiDT, trivialAssignmentGotcha, 0)
+	  %%
+	  %<yLabel> = %<yLabel> %<LogicOp> %<uLabel>;
+	  %%
+	%endroll
+	%%
+	%if invert == ""
+	  %%
+	  %if outputDTypeId == tSS_BOOLEAN
+	    %% do nothing
+	  %else
+	    %<y> = (%<outputDataType>) %<yLabel>;
+	  %endif
+	  %%
+	%else
+	  %%
+	  %if (outputDTypeId == tSS_BOOLEAN)
+	    %<y> = %<invert>%<yLabel>;
+	  %else
+	    %<y> = (%<outputDataType>)(%<invert>%<yLabel>);
+	  %endif
+	  %%
+	%endif
+      }
+      %%
+    %endif
+    %%
+  %endif
+  %%
+%endfunction
+
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %assign logicOp = FcnGetLogicOpStr(block)
+  %switch retType
+    %case "Signal"
+      %assign outputIsExpr = LibBlockOutputSignalIsExpr(portIdx)
+      %% Determine Operation
+      %%
+      %assign invert = FcnGetInvert(block)
+      %%
+      %assign LogicOp = FcnGetLogicOp(block)
+      %%
+      %assign outputDataType = LibBlockOutputSignalDataTypeName(0, "")
+      %assign outputDTypeId = LibGetDataTypeIdAliasedThruToFromId(LibBlockOutputSignalDataTypeId(0))
+      %assign inputDTypeId = LibGetDataTypeIdAliasedThruToFromId(LibBlockInputSignalDataTypeId(0))
+      %%
+      %if NumDataInputPorts == 1 && logicOp != "NOT"
+	%% Handle case of the input port being collapsed to a scalar
+	%assign u = ""
+	%assign sigWidth = LibBlockInputSignalWidth(0)
+	%%
+	%% To make the code look better, unnecessary comparisions to
+	%% zero will be avoided.  For example, instead of putting out
+	%% code
+	%%
+	%%     y = ( A[0] != 0 ) && ( A[1] != 0 ) && ( A[2] != 0 );
+	%%
+	%% the simpler and equivalent
+	%%
+	%%     y = A[0] && A[1] && A[2];
+	%%
+	%% will be output.  This may contradict a MISRA style recommendation.
+	%%
+	%% There is a "gotcha" case.  Suppose there is only one input port
+	%% and that input port is a scalar, and the operation is OR, AND, or XOR.
+	%% If we are not careful, we could output
+	%%
+	%%    y = A;
+	%%
+	%% this would produces numerically wrong results, if A ever had a value
+	%% other than 0 or 1.  Suppose A had value 256, if no overflow occured
+	%% y would also equal 256 (not 1 as it should).  Even worse an overflow
+	%% could occur with y being equal to 0 which logically indicates that
+	%% the input was zero which is totaly FALSE.  To be safe in this case
+	%% we would output
+	%%
+	%%   y = ( A != 0 );
+	%%
+	%assign trivialAssignmentGotcha = sigWidth == 1 || invert != ""
+	%%
+	%assign u0DT = FixPt_GetInputDataType(0)
+	%%
+	%foreach sigIdx = sigWidth
+	  %assign uI = LibBlockInputSignal(0, "", "", sigIdx)
+	  %%
+	  %assign compareString = FcnGetULabel(uI, logicOp, u0DT, trivialAssignmentGotcha, 0)
+	  %%
+	  %if sigIdx == 0
+	    %assign u = compareString
+	  %else
+	    %assign u = u + " %<LogicOp> %<compareString>"
+	  %endif
+	%endforeach
+	%if invert == ""
+	  %if (outputDTypeId == tSS_BOOLEAN)
+	    %assign exprBuf = u
+	  %else
+	    %if sigWidth > 1
+	      %assign u = "(" + u + ")"
+	    %endif
+            %assign exprBuf = "(%<outputDataType>)%<u>"
+          %endif
+	%else
+	  %if sigWidth > 1
+	    %assign u = "(" + u + ")"
+	  %endif
+	  %if (outputDTypeId == tSS_BOOLEAN)
+	    %assign exprBuf = "%<invert>%<u>"
+	  %else
+            %assign exprBuf = "(%<outputDataType>)(%<invert>%<u>)"
+          %endif
+        %endif
+      %else
+	%assign u = ""
+	%foreach portIdx = NumDataInputPorts
+	  %%
+	  %assign inputDTypeId = LibGetDataTypeIdAliasedThruToFromId(LibBlockInputSignalDataTypeId(portIdx))
+	  %%
+	  %assign uI = LibBlockInputSignal(portIdx, ucv, lcv, idx)
+	  %%
+	  %assign uiDT = FixPt_GetInputDataType(portIdx)
+	  %%
+	  %assign compareString = FcnGetULabel(uI, logicOp, uiDT, 1==0, portIdx)
+	  %%
+	  %if portIdx == 0
+	    %assign u = compareString
+	  %else
+	    %assign u = u + " %<LogicOp> %<compareString>"
+	  %endif
+	%endforeach
+	%if invert == ""
+	  %if (outputDTypeId == tSS_BOOLEAN)
+	    %assign exprBuf = u
+	  %else
+	    %if NumDataInputPorts > 1
+	      %assign u = "(" + u + ")"
+	    %endif
+            %assign exprBuf = "(%<outputDataType>)%<u>"
+  	  %endif
+	%else
+	  %if NumDataInputPorts > 1
+	    %assign u = "(" + u + ")"
+	  %endif
+	  %if (outputDTypeId == tSS_BOOLEAN)
+	    %assign exprBuf = "%<invert>%<u>"
+	  %else
+            %assign exprBuf = "(%<outputDataType>)(%<invert>%<u>)"
+	  %endif
+	%endif
+      %endif
+      %return (outputIsExpr ? "(%<exprBuf>)" : exprBuf)
+      %%START_ASSERT
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction  
+
+
+%% [EOF] logic.tlc

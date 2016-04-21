@@ -1,0 +1,448 @@
+%% $Revision: 1.1.6.2 $ 
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Target file for the data type conversion block.
+
+%implements DataTypeConversion "C"
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%   Set expression folding compliance
+%%
+%function BlockInstanceSetup(block, system) void
+  %if block.InFixptMode
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %<FixPt_LibBlockSetIsExpressionCompliant(block,system)>\
+    %%
+  %else
+    %<LibBlockSetIntegerDowncastUnnecessary(block)>
+    %<LibBlockSetIsExpressionCompliant(block)>
+  %endif
+%endfunction
+
+%% Function: FixptOutputs ==========================================================
+%% Abstract:
+%%   This block can operate only have a single inport and a single outport
+%% and these must be of equal length
+%% Each scalar input is converted to the data type of the output and stored
+%% in the corresponding output scalar
+%%
+%function FixptOutputs(block, system) void
+  %%
+  %assign outputDataTypeId = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign inpDType = LibBlockInputSignalAliasedThruDataTypeId(0)
+  %%
+  %assign uGrdLabel = SLibGetGroundValueFromId(inpDType) 
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %%
+  %assign uiDT  = FixPt_GetInputDataType(0)
+  %%
+  %% create version of Data Types
+  %% that adjust for Stored Integer or Real World Treatment
+  %%
+  %copyrecord y0DTconvert y0DT
+  %copyrecord uiDTconvert uiDT
+  %%
+  %if EqualRealWorld != "TRUE"
+    %%
+    %assign y0DTconvert.FixedExp  = 0
+    %assign y0DTconvert.FracSlope = 1.0
+    %assign y0DTconvert.Bias      = 0.0
+    %%
+    %assign uiDTconvert.FixedExp  = 0
+    %assign uiDTconvert.FracSlope = 1.0
+    %assign uiDTconvert.Bias      = 0.0
+    %%
+    %assign uGrdLabel = "0"
+    %%
+  %endif
+  %%
+  %% create header comment
+  %%
+  %openfile commentBuffer
+  %%
+  * Fixed-Point Conversion Block: %<MaskBlockName>
+  %%
+  %% add general comments
+  %%
+  %<FixPt_GeneralComments()>\
+  %%
+  %if EqualRealWorld == "TRUE"
+    %%
+    * Output's Real World Value should equal 
+    * input's Real World Value, if possible.
+  %else
+    %%
+    * Output's Stored Integer Value should equal 
+    * input's Stored Integer Value, if possible.
+  %endif
+  %%
+  %% END: header comment
+  %%
+  %closefile commentBuffer
+  %%
+  %<LibCacheBlockComment(block,commentBuffer)>\
+  %%
+  %openfile outBuffer
+  %%
+  %% determine if input buffer is identical to output buffer
+  %%
+  %assign uDestPort = LibBlockInputSignalBufferDstPort(0)
+  %%
+  %if (uDestPort == 0) && FixPt_DataTypesSame(y0DTconvert,uiDTconvert)
+    %%
+    /* no operation is necessary because input and output share
+    * the same buffer and the conversion operation is trivial
+    */
+  %else
+    %%
+    %% if input (and Output) are complex then two cases to handle
+    %% otherwise only one
+    %%
+    %assign casesToHandle = 1 + LibBlockOutputSignalIsComplex(0)
+    %%
+    %assign rollVars = ["U", "Y"]
+    %%
+    %assign rollThres = LibBlockGetRollThreshold(block,RollThreshold)
+    %%
+    %roll sigIdx = RollRegions, lcv = rollThres, block, "Roller", rollVars
+      %%
+      %foreach iCase = casesToHandle
+	%%
+	%if iCase == 0
+	  %%
+	  %assign riSigIdx = tRealPart + STRING(sigIdx)
+	%else
+	  %%
+	  %assign riSigIdx = tImagPart + STRING(sigIdx)
+	%endif
+	%%
+	%assign uiLabel = LibBlockInputSignal(0, "", lcv, riSigIdx)
+	%%
+	%assign y0Label = LibBlockOutputSignal(0, "", lcv, riSigIdx)
+	%if outputDataTypeId == tSS_BOOLEAN
+	  %% use boolean routine
+	  %%
+	  %<Fixpt_Fix2Bool(y0Label, uiLabel, uiDTconvert, uGrdLabel)>
+	%else
+	  %%conversion to non-boolean
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(y0Label,y0DTconvert,uiLabel,uiDTconvert,FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	%endif
+      %endforeach
+      %%
+    %endroll
+  %endif
+  %%
+  %% blank line for formating
+  
+  %closefile outBuffer
+  %return outBuffer
+%endfunction  %% FixptOutputs
+
+%% Function: CustomOutputs ==========================================================
+%% Abstract:
+%%    Handle the case that input or output is custom data type
+%% 
+%function CustomOutputs(block, system) Output
+  %assign cacheOptComment = 0 %% assume
+  %assign inpDType = LibBlockInputSignalAliasedThruDataTypeId( 0)
+  %assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+  %if inpDType == outDType && ...
+    (LibBlockInputSignalBufferDstPort(0) == 0)
+    %assign cacheOptComment = 1
+  %else
+    %assign rollVars = ["U", "Y"]
+    %roll idx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+      %assign ur = LibBlockInputSignal( 0,"",lcv,"%<tRealPart>%<idx>")
+      %assign yr = LibBlockOutputSignal(0,"",lcv,"%<tRealPart>%<idx>")
+      %%
+      %if LibBlockInputSignalIsComplex(0)
+	%assign ui = LibBlockInputSignal( 0,"",lcv,"%<tImagPart>%<idx>")
+	%assign yi = LibBlockOutputSignal(0,"",lcv,"%<tImagPart>%<idx>")
+      %endif
+      %%
+      %assign outDTypeName = LibBlockOutputSignalDataTypeName(0,tRealPart)
+      %assign inpDTypeName = LibGetDataTypeNameFromId(inpDType)
+      %%
+      %if ParamSettings.SaturateOnOverflow == "NeededButOff"
+	%<SLibCacheOverflowWarning(block)>\
+      %endif
+      %%
+      %if inpDType == tSS_DOUBLE
+	%assign convertBetweenFcn = ...
+	  LibConvertBetweenTLCFcnName(outDType)
+	%if LibConvertBetweenTLCFcnFile(outDType) != ""
+	  %include "%<LibConvertBetweenTLCFcnFile(outDType)>"
+	%endif
+	%assign status = %<convertBetweenFcn> ...
+	  (outDType,inpDType,ur,"",yr)
+	%if status != 1
+	  %%START_ASSERT
+	  %assign errTxt = ...
+	    "Error: function %<convertBetweenFcn> doesn't support " ...
+	    "converting the input signal from type %<inpDTypeName> " ...
+	    "to %<outDTypeName>."
+	  %<LibBlockReportFatalError(block, errTxt)>
+	  %%END_ASSERT
+	%endif
+	%%
+	%if LibBlockInputSignalIsComplex(0)
+	  %assign status = %<convertBetweenFcn> ...
+	    (outDType,inpDType,ui,"",yi)
+	%endif
+      %elseif outDType == tSS_DOUBLE
+	%assign convertBetweenFcn = ...
+	  LibConvertBetweenTLCFcnName(inpDType)
+	%if LibConvertBetweenTLCFcnFile(inpDType) != ""
+	  %include "%<LibConvertBetweenTLCFcnFile(inpDType)>"
+	%endif
+	%assign status = %<convertBetweenFcn> ...
+	  (outDType,inpDType,ur,"",yr)
+	%if status != 1
+	  %%START_ASSERT
+	  %assign errTxt = ...
+	    "Error: function %<convertBetweenFcn> doesn't support " ...
+	    "converting the input signal from type %<inpDTypeName> " ...
+	    "to type %<outDTypeName>."
+	  %<LibBlockReportFatalError(block, errTxt)>
+	  %%END_ASSERT
+	%endif
+	%%
+	%if LibBlockInputSignalIsComplex(0)
+	  %%
+	  %assign status = %<convertBetweenFcn> ...
+	    (outDType,inpDType,ui,"",yi)
+	%endif
+      %else
+	%% two step conversion, input DT -> double -> output DT
+	%% first step
+	{
+	double  convDblr = 0.0;
+	%if LibBlockInputSignalIsComplex(0)
+	  double  convDbli = 0.0;
+	%endif
+	\
+	%assign convertBetweenFcn = ...
+	  LibConvertBetweenTLCFcnName(inpDType)
+	%if LibConvertBetweenTLCFcnFile(inpDType) != ""
+	  %include "%<LibConvertBetweenTLCFcnFile(inpDType)>"
+	%endif
+	%assign status = %<convertBetweenFcn> ...
+	  (tSS_DOUBLE,inpDType,ur,"","convDblr")
+	%if status != 1
+	  %%START_ASSERT
+	  %assign errTxt = ...
+	    "Error: function %<convertBetweenFcn> doesn't support " ...
+	    "converting the input signal from type %<inpDTypeName> " ...
+	    "to type %<outDTypeName>."
+	  %<LibBlockReportFatalError(block, errTxt)>
+	  %%END_ASSERT
+	%endif
+	%%
+	%if LibBlockInputSignalIsComplex(0)
+	  %assign status = %<convertBetweenFcn> ...
+	    (outDType,inpDType,ui,optionsForConvert,"convDbli")
+	%endif
+	%% second step
+	%assign y0DT = FixPt_GetOutputDataType(0)
+	%if LibIsBuiltInDataType(outDType) || ...
+	  y0DT.IsFixedPoint
+	  %% Convert double to built-in or fixpt data types
+	  %%
+	  %assign y0DT = FixPt_GetOutputDataType(0)
+	  %assign dblDT  = FixPt_GetDataTypeFromIndex(tSS_DOUBLE)
+	  %switch FixPtRoundingMode
+	    %case 0
+	      %assign block.FixPtRoundingMode = "Zero"
+	      %break
+	    %case 1
+	      %assign block.FixPtRoundingMode = "Nearest"
+	      %break
+	    %case 2
+	      %assign block.FixPtRoundingMode = "Ceiling"
+	      %break
+	    %case 3
+	      %assign block.FixPtRoundingMode = "Floor"
+	      %break
+	    %default
+	      %exit Real Time Workshop Fatal: Unknown Rounding Mode: %<FixPtRoundingMode>
+	  %endswitch
+	  %%
+	  %switch FixPtSaturationMode
+	    %case 0
+	      %assign block.FixPtSaturationMode = "Wrap"
+	      %break
+	    %case 1
+	      %assign block.FixPtSaturationMode = "Saturate"
+	      %break
+	    %default
+	      %exit Real Time Workshop Fatal: Unknown Saturation Mode: %<FixPtSaturationMode>
+	  %endswitch
+	  %%
+	  %<FixPt_Fix2FixAlwaysOutput(yr,y0DT,"convDblr", ...
+	    dblDT,FixPtRoundingMode,FixPtSaturationMode)>\
+	  %%
+	  %if LibBlockInputSignalIsComplex(0)
+	    %%
+	    %<FixPt_Fix2FixAlwaysOutput(yi,y0DT,"convDbli", ...
+	      dblDT,FixPtRoundingMode,FixPtSaturationMode)>\
+	    %%
+	  %endif
+	%else
+	  %% Convert double to custom
+	  %assign convertBetweenFcn = ...
+	    LibConvertBetweenTLCFcnName(outDType)
+	  %if LibConvertBetweenTLCFcnFile(outDType) != ""
+	    %include "%<LibConvertBetweenTLCFcnFile(outDType)>"
+	  %endif
+	  %assign status = %<convertBetweenFcn> ...
+	    (outDType,tSS_DOUBLE,"convDblr","",yr)
+	  %if status != 1
+	    %%START_ASSERT
+	    %assign errTxt = ...
+	      "Error: function %<convertBetweenFcn> doesn't support " ...
+	      "converting the input signal from type %<inpDTypeName> " ...
+	      "to type %<outDTypeName>."
+	    %<LibBlockReportFatalError(block, errTxt)>
+	    %%END_ASSERT
+	  %endif
+	  %%
+	  %if LibBlockInputSignalIsComplex(0)
+	    %%
+	    %assign status = %<convertBetweenFcn> ...
+	      (outDType,tSS_DOUBLE,"convDbli","",yi)
+	  %endif
+	%endif
+	}
+      %endif
+    %endroll
+  %endif
+  %% cache optimization comment
+  %if cacheOptComment
+    %openfile commentBuf
+    *   No conversion required
+    %closefile commentBuf
+    %<LibCacheBlockComment(block,commentBuf)>
+  %endif
+
+%endfunction %% CustomOutputs
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%      Compute outputs separately for fixpt and non-fixpt modes
+%%
+%function Outputs(block, system) Output
+  %if block.InFixptMode
+    %% fixpt mode and built-in mode go here
+    %<FixptOutputs(block, system)>
+  %else
+    %% input or output is custom data type
+    %<CustomOutputs(block, system)>
+  %endif
+%endfunction
+
+%% Function: BlockOutputSignal =================================================
+%% Abstract:
+%%      Return an output expression.  This function *may*
+%%      be used by Simulink when optimizing the Block IO data structure.
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %switch retType
+    %case "Signal"
+      %if block.UseFixptExprRoutine
+	%%
+	%assign outputDataTypeId = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	%%
+	%assign inpDType = LibBlockInputSignalAliasedThruDataTypeId(0)
+	%%
+	%assign uGrdLabel = SLibGetGroundValueFromId(inpDType)
+	%%
+	%assign y0DT = FixPt_GetOutputDataType(0)
+	%%
+	%assign uiDT  = FixPt_GetInputDataType(0)
+	%%
+	%% create version of Data Types
+	%% that adjust for Stored Integer or Real World Treatment
+	%%
+	%copyrecord y0DTconvert y0DT
+	%copyrecord uiDTconvert uiDT
+	%%
+	%if EqualRealWorld != "TRUE"
+	  %%
+	  %assign y0DTconvert.FixedExp  = 0
+	  %assign y0DTconvert.FracSlope = 1.0
+	  %assign y0DTconvert.Bias      = 0.0
+	  %%
+	  %assign uiDTconvert.FixedExp  = 0
+	  %assign uiDTconvert.FracSlope = 1.0
+	  %assign uiDTconvert.Bias      = 0.0
+	  %%
+	  %assign uGrdLabel = "0"
+	  %%
+	%endif
+	%%
+	%assign uiLabel = LibBlockInputSignal(0,ucv,lcv,idx)
+	%%
+	%if outputDataTypeId == tSS_BOOLEAN
+	  %% use boolean routine
+	  %%
+	  %assign outExpr = Fixpt_Fix2Bool_Expr(uiLabel, uiDTconvert, uGrdLabel)
+	  %%
+	%else 
+	  %%
+	  %assign outExpr = FixPt_Fix2Fix_Expr(y0DTconvert,uiLabel,uiDTconvert,FixPtRoundingMode,FixPtSaturationMode)
+	  %%
+	%endif
+	%return outExpr
+      %else
+	%assign inpDType = LibBlockInputSignalAliasedThruDataTypeId( 0)
+	%assign outDType = LibBlockOutputSignalAliasedThruDataTypeId(0)
+	%assign u0 = LibBlockInputSignal(0, ucv, lcv, idx)
+	%if (inpDType == outDType)
+	  %return u0
+	%elseif outDType == tSS_BOOLEAN && LibIsBuiltInDataType(inpDType)
+	  %assign zero = SLibGetFormattedValueFromId(inpDType,0)
+	  %return "(%<u0> != %<zero>)"
+	%else
+	  %assign outDTypeName = LibBlockOutputSignalDataTypeName(0,tRealPart)
+	  %if LibIsBuiltInDataType(inpDType)
+	    %if ParamSettings.SaturateOnOverflow == "Needed"
+	      %%START_ASSERT
+	      %<LibReportFatalError("Expressions do not support saturation")>
+	      %%END_ASSERT
+	    %elseif ParamSettings.SaturateOnOverflow == "NeededButOff"
+	      %<SLibCacheOverflowWarning(block)>\
+	      %return "((%<outDTypeName>)%<u0>)"
+	    %else
+	      %return "((%<outDTypeName>)%<u0>)"
+	    %endif
+	  %else
+	    %%
+	    %% handle non builtin types
+	    %%
+	    %%START_ASSERT
+	    %<LibReportFatalError("Expression folding not supported for this type")>
+	    %%END_ASSERT
+	  %endif
+	%endif
+	%%START_ASSERT
+      %endif
+    %default
+      %assign errTxt = "Unsupported return type: %<retType>"
+      %<LibBlockReportError(block,errTxt)>
+      %%END_ASSERT
+  %endswitch
+%endfunction  
+
+%% [EOF] dtypcnvb.tlc

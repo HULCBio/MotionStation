@@ -1,0 +1,692 @@
+%% $RCSfile: sdspdct3.tlc,v $
+%% $Revision: 1.12.4.2 $ 
+%% $Date: 2004/04/12 23:08:21 $
+%%
+%% Abstract: TLC Code generation for Signal Processing Blockset DCT block.
+%%           Generates in-line and function-call code as needed.
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+
+%implements sdspdct3 "C"
+
+%% Function: BlockTypeSetup ====================================================
+%function BlockTypeSetup(block, system) void
+
+    %<Include_rt_header(block,"dspflip_rt")>
+    %<Include_rt_header(block,"dspfft_rt")>
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %assign INPORT   = 0
+  %assign OUTPORT  = 0
+  %assign isIDCT   = SFcnParamSettings.InverseDCT
+  %assign isTBLS   = SFcnParamSettings.TableLookup
+
+  %assign nRows    = getInportSamps(INPORT)
+  %assign nChans   = getInportChans(INPORT)
+  %assign inScalar = (nRows == 1)
+
+  %assign inCplx       = LibBlockInputSignalIsComplex(INPORT)
+  %assign inDTypeId    = LibBlockInputSignalDataTypeId(INPORT)
+  %assign inDTypeName  = getRealOrComplexDataType(inDTypeId, inCplx)
+  %assign inRealDTName = LibBlockInputSignalDataTypeName(INPORT,"%<tRealPart>")
+
+  %assign block = block + INPORT     + OUTPORT     + isIDCT   + isTBLS  ...
+                        + nRows      + nChans      + inScalar + inCplx  ...
+                        + inDTypeId  + inDTypeName + inRealDTName
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+%if isIDCT
+  /* Signal Processing Blockset IDCT (%<ParamSettings.FunctionName>) - '%<Name>'
+%else
+  /* Signal Processing Blockset DCT (%<ParamSettings.FunctionName>) - '%<Name>'
+%endif
+%%
+%if (inScalar)
+   * (scalar input and output -> copy only)
+   */
+  %<LibBlockCopyInputsToOutputs(INPORT, OUTPORT)>
+%else
+  %%
+  %% NON-SCALAR DCT/IDCT cases
+  %%
+  %if isIDCT
+   *
+   * Algorithm: inverse fast cosine transform (IFCT) using radix-2 IFFT
+  %else
+   *
+   * Algorithm: fast cosine transform (FCT) using radix-2 FFT
+  %endif
+  %%
+  %if isTBLS
+   * Weights and twiddle factors: speed optimized lookup tables
+  %else
+   * Weights and twiddle factors: math library fcn calls
+  %endif
+  %%
+   * Number of channels:          %<nChans>
+   * Transform length:            %<nRows>
+   * Data type:                   %<inDTypeName>
+   */
+  {
+    %if isIDCT
+      %%
+      %% IDCT (using inverse fast cosine transform algorithm)
+      %%
+      /* Apply IFCT weights to input */
+      %if isTBLS
+        %<IFCT_TBLS_ApplyWeightsToInput(block)>
+      %else
+        %<IFCT_TRIG_ApplyWeightsToInput(block)>
+      %endif
+
+      /* Perform IFFT */
+      %if isTBLS
+        %<TBLS_CPLX_IFFT(block)>
+      %else
+        %<TRIG_CPLX_IFFT(block)>
+      %endif
+
+      %if inCplx
+        %<IFCTCplxOutputReorderCode(block)>
+      %else
+        %<IFCTRealOutputReorderCode(block)>
+      %endif
+    %else
+      %%
+      %% DCT (using fast cosine transform algorithm)
+      %%
+      /* Reorder input samples */
+      %if inCplx
+        %<FCTCplxInputReorderCode(block)>
+      %else
+        %<FCTRealInputReorderCode(block)>
+      %endif
+
+      /* Perform FFT on re-ordered input data */
+      %if inCplx
+        %%
+        %% Input to FFT is complex
+        %%
+        %<CPLX_FFT(block)>
+      %else
+        %%
+        %% Input to FFT is real
+        %%
+        %<REAL_FFT(block)>
+      %endif
+
+      /* Apply FCT weights to compute DCT output */
+      %if isTBLS
+        %<FCT_TBLS_ApplyWeightsToOutput(block)>
+      %else
+        %<FCT_TRIG_ApplyWeightsToOutput(block)>
+      %endif
+    %endif %% IDCT vs DCT
+    %%
+  }
+%endif %% scalar vs non-scalar
+
+%endfunction %% Outputs
+
+
+%%
+%% The subfunctions in this section are for (forward) DCT
+%%
+
+
+%% Function: FCTRealInputReorderCode ===========================================
+%%
+%function FCTRealInputReorderCode(block) Output
+  {
+    const %<inDTypeName> *inPtr       = (const %<inDTypeName> *)%<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    %<inDTypeName>       *inReordered = (%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+  %if nChans > 1
+    int_T nCh = %<nChans>;
+    while (nCh--) {
+  %endif
+      int_T i;
+      /* For real radix-2 Fast DCT ("FCT") algorithm,
+       * the input samples are re-ordered as follows:
+       *   1) even indices in order,  i.e. inPtr[0,   2,   ..., N-2]
+       *   2) odd indices in reverse, i.e. inPtr[N-1, N-3, ..., 1  ]
+       */
+      for (i=0; i<%<nRows/2>; i++) *inReordered++ = inPtr[2*i];
+      for (i=0; i<%<nRows/2>; i++) *inReordered++ = inPtr[%<nRows - 1> - 2*i];
+  %if nChans > 1
+      inPtr += %<nRows>;
+    }
+  %endif
+  }
+%endfunction %% FCTRealInputReorderCode
+
+
+%% Function: FCTCplxInputReorderCode ===========================================
+%%
+%function FCTCplxInputReorderCode(block) Output
+  {
+    const byte_T *inPtr           = (const byte_T *)%<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    byte_T       *inReordered     = (byte_T *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+    const size_t  bytesPerElement = sizeof(%<inDTypeName>);
+    const size_t  bytesPerChannel = %<nRows> * bytesPerElement;
+  %if nChans > 1
+    int_T nCh = %<nChans>;
+    while (nCh--) {
+  %endif
+      /* For complex radix-2 Fast DCT ("FCT") algorithm,
+       * the input samples are re-ordered as follows:
+       *   1) Full original signal in order,  i.e. inPtr[0,   1,   ..., N-1]
+       *   2) Full original signal flipped,   i.e. inPtr[N-1, N-2, ..., 0  ]
+       */
+      memcpy(inReordered, inPtr, bytesPerChannel);
+      inReordered += bytesPerChannel;
+      MWDSP_FlipVectorOP(inPtr, inReordered, %<nRows>, 1, bytesPerElement);
+  %if nChans > 1
+      inReordered += bytesPerChannel;
+      inPtr       += bytesPerChannel;
+    }
+  %endif
+  }
+%endfunction %% FCTCplxInputReorderCode
+
+
+%% Function: CPLX_FFT ==========================================================
+%%
+%function CPLX_FFT(block) Output
+  %%
+  %% Equivalent to simulation library functions
+  %%   "dspfft_R2_TBLS_Z",
+  %%   "dspfft_R2_TBLS_C",
+  %%   "dspfft_R2_TRIG_Z", or
+  %%   "dspfft_R2_TRIG_C"
+  %%
+  %% Note that FctBuf1 is shared (for in-place FFTs)
+  %%
+  %if inRealDTName == "real_T"
+    %assign dTAbbrv = "Z"
+  %else
+    %assign dTAbbrv = "C"
+  %endif
+  MWDSP_R2BR_%<dTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows> );
+  %if isTBLS
+    MWDSP_R2DIT_TBLS_%<dTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0 );
+  %else
+    MWDSP_R2DIT_TRIG_%<dTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, 0 );
+  %endif
+%endfunction %% CPLX_FFT
+
+
+%% Function: REAL_FFT ==========================================================
+%%
+%function REAL_FFT(block) Output
+  %%
+  %% Equivalent to dspfft_R2_TBLS_D, dspfft_R2_TBLS_R, dspfft_R2_TRIG_D, or dspfft_R2_TRIG_R
+  %%
+  %if inRealDTName == "real_T"
+    %assign cplxDTName  = "creal_T"
+    %assign cplxDTAbbrv = "Z"
+    %assign realDTAbbrv = "D"
+  %else
+    %assign cplxDTName  = "creal32_T"
+    %assign cplxDTAbbrv = "C"
+    %assign realDTAbbrv = "R"
+  %endif
+  %%
+  MWDSP_FFTInterleave_BR_%<realDTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<nRows> );
+  %%
+  %if nChans > 1
+    %if isTBLS
+      MWDSP_R2DIT_TBLS_%<cplxDTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans/2>, %<2*nRows>, %<nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 0 );
+      MWDSP_DblSig_%<cplxDTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows> );
+    %else
+      MWDSP_R2DIT_TRIG_%<cplxDTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans/2>, %<2*nRows>, %<nRows>, 0 );
+      MWDSP_DblSig_%<cplxDTAbbrv>( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows> );
+    %endif
+  %endif
+  %%
+  %if (nChans & 1) == 1
+    {
+    %if nChans == 1
+      %<cplxDTName> *lastCol = (%<cplxDTName> *)%<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>;
+    %else
+      %<cplxDTName> *lastCol = (%<cplxDTName> *)%<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)> + %<nRows * (nChans-1)>;
+    %endif
+    %if isTBLS
+      MWDSP_R2DIT_TBLS_%<cplxDTAbbrv>( lastCol, 1, %<nRows>, %<nRows/2>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 2, 0 );
+      MWDSP_DblLen_TBL_%<cplxDTAbbrv>( lastCol, %<nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1 );
+    %else
+      MWDSP_R2DIT_TRIG_%<cplxDTAbbrv>( lastCol, 1, %<nRows>, %<nRows/2>, 0);
+      MWDSP_DblLen_TRIG_%<cplxDTAbbrv>( lastCol, %<nRows>);
+    %endif
+    }
+  %endif
+%endfunction %% REAL_FFT
+
+
+%% Function: FCT_TBLS_ApplyWeightsToOutput =====================================
+%%
+%function FCT_TBLS_ApplyWeightsToOutput(block) Output
+  {
+        %<inDTypeName>     *outPtr  = (%<inDTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+  %if inCplx
+    %%
+    %% COMPLEX INPUT, COMPLEX FFT, COMPLEX WEIGHT, COMPLEX OUTPUT
+    %%
+        %<inDTypeName>     *fftOut  = (%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+    %if nChans > 1
+        int_T      inpChans = %<nChans>;
+        while(inpChans--) {
+    %endif
+            const %<inDTypeName> *weights = (const %<inDTypeName> *)%<LibBlockParameterAddr(FastDCTWtsTable,"","",0)>;
+            int_T i = %<nRows>;
+            while(i--) {
+                /* Apply weight */
+                (outPtr  )->re = CMULT_RE((*fftOut), (*weights));
+                (outPtr++)->im = CMULT_IM((*fftOut), (*weights));
+                ++fftOut;
+                ++weights;
+            }
+            /* Skip frame of intermediate data */
+            fftOut += %<nRows>;
+    %if nChans > 1
+        }
+    %endif
+  %else
+    %%
+    %% REAL INPUT, COMPLEX FFT, COMPLEX WEIGHT, REAL OUTPUT
+    %%
+        c%<inDTypeName>     *fftOut  = (c%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>;
+    %if nChans > 1
+        int_T      inpChans = %<nChans>;
+        while(inpChans--) {
+    %endif
+            const c%<inDTypeName> *weights = (const c%<inDTypeName> *)%<LibBlockParameterAddr(FastDCTWtsTable,"","",0)>;
+            int_T i = %<nRows>;
+            while(i--) {
+                /* Apply weight and extract real output value */
+                *outPtr++ = CMULT_RE((*fftOut), (*weights));
+                ++fftOut;
+                ++weights;
+            }
+    %if nChans > 1
+        }
+    %endif
+  %endif
+  }
+%endfunction %% FCT_TBLS_ApplyWeightsToOutput
+
+
+%% Function: FCT_TRIG_ApplyWeightsToOutput =====================================
+%%
+%function FCT_TRIG_ApplyWeightsToOutput(block) Output
+  {
+    const %<inRealDTName> piN2    = (((%<inRealDTName>)DSP_PI_OVER_2) / ((%<inRealDTName>)%<nRows>));
+  %if inCplx
+    %%
+    %% COMPLEX INPUT, COMPLEX FFT, COMPLEX WEIGHT, COMPLEX OUTPUT
+    %%
+        const %<inRealDTName> fac     = ((%<inRealDTName>)1.0) / ( (%<inRealDTName>)sqrt((double)(2*%<nRows>)) );
+        const %<inRealDTName> w0_re   = fac / ( (%<inRealDTName>)sqrt(2.0) );
+        %<inDTypeName>     *fftOut  = (%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+        %<inDTypeName>     *outPtr  = (%<inDTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    %if nChans > 1
+        int_T       inpChans = %<nChans>;
+
+        while(inpChans--) {
+    %endif
+            /* Apply weight */
+            (outPtr  )->re = (fftOut->re) * w0_re;
+            (outPtr++)->im = (fftOut->im) * w0_re;
+            ++fftOut;
+            {
+                int_T i;
+                for (i = 1; i < %<nRows>; i++) {
+                    const %<inRealDTName> tmp = ((%<inRealDTName>)i) * piN2;
+                    %<inDTypeName>      weight;
+
+                    /* Comput next weight value */
+                    weight.re =  fac * ( (%<inRealDTName>)cos((double)tmp) );
+                    weight.im = -fac * ( (%<inRealDTName>)sin((double)tmp) );
+
+                    /* Apply weight */
+                    (outPtr  )->re = CMULT_RE((*fftOut), weight);
+                    (outPtr++)->im = CMULT_IM((*fftOut), weight);
+                    ++fftOut;
+                }
+            }
+    %if nChans > 1
+
+            /* Skip frame of intermediate data */
+            fftOut += %<nRows>;
+        }
+    %endif
+  %else
+    %%
+    %% REAL INPUT, COMPLEX FFT, COMPLEX WEIGHT, REAL OUTPUT
+    %%
+        const %<inDTypeName> fac      = ((%<inDTypeName>)2.0) / ( (%<inDTypeName>)sqrt((double)(2*%<nRows>)) );
+        const %<inDTypeName> w0_re    = fac / ( (%<inDTypeName>)sqrt(2.0) );
+        c%<inDTypeName>     *fftOut  = (c%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>;
+        %<inDTypeName>     *outPtr  = (%<inDTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    %if nChans > 1
+        int_T inpChans = %<nChans>;
+
+        while(inpChans--) {
+    %endif
+            /* Apply weight and extract real output value */
+            *outPtr++ = (fftOut->re) * w0_re;
+            ++fftOut;
+            {
+                int_T i;
+                for (i = 1; i < %<nRows>; i++) {
+                    const %<inDTypeName> tmp = ((%<inDTypeName>)i) * piN2;
+                    c%<inDTypeName>      weight;
+
+                    /* Comput next weight value */
+                    weight.re =  fac * ( (%<inDTypeName>)cos((double)tmp) );
+                    weight.im = -fac * ( (%<inDTypeName>)sin((double)tmp) );
+
+                    /* Apply weight and extract real output value */
+                    *outPtr++ = CMULT_RE((*fftOut), weight);
+                    ++fftOut;
+                }
+            }
+    %if nChans > 1
+        }
+    %endif
+  %endif
+  }
+%endfunction %% FCT_TRIG_ApplyWeightsToOutput
+
+
+%%
+%% The subfunctions below this line are for IDCT ONLY
+%%
+
+
+%% Function: IFCT_TBLS_ApplyWeightsToInput =====================================
+%%
+%function IFCT_TBLS_ApplyWeightsToInput(block) Output
+  {
+    const %<inDTypeName> *idctInp = (const %<inDTypeName> *)%<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    c%<inRealDTName>       *ifftInp    = (c%<inRealDTName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+    %if nChans > 1
+      int_T ch = %<nChans>;
+      while (ch--) {
+    %endif
+  %if inCplx
+        /* Initialize idctInpDec to end of current input frame */
+        const %<inDTypeName> *idctInpDec = (const %<inDTypeName> *)idctInp + %<nRows>;
+        const %<inDTypeName> *weights    = (%<inDTypeName> *)%<LibBlockParameterAddr(FastDCTWtsTable,"","",0)>;
+        int_T i;
+
+        /* Initialize beginning of second half of
+         * double-length IFFT input sequence to zero
+         */
+        (ifftInp + %<nRows>)->re = (%<inRealDTName>)0.0;
+        (ifftInp + %<nRows>)->im = (%<inRealDTName>)0.0;
+
+        /* Initialize beginning of double-length IFFT
+         * input sequence using special-case weight w0_re
+         */
+        (ifftInp  )->re = (idctInp->re) * (weights->re);
+        (ifftInp++)->im = (idctInp->im) * (weights->re);
+
+        for (i=1; i<%<nRows>; i++) {
+            %<inDTypeName> weightDec;
+
+            ++weights;
+            ++idctInp;
+
+            (ifftInp  )->re = CMULT_RE((*idctInp),(*weights));
+            (ifftInp++)->im = CMULT_IM((*idctInp),(*weights));
+
+            weightDec.re =  (weights->im);
+            weightDec.im = -(weights->re);
+
+            --idctInpDec;
+            (ifftInp+%<nRows-1>)->re = CMULT_RE((*idctInpDec),weightDec);
+            (ifftInp+%<nRows-1>)->im = CMULT_IM((*idctInpDec),weightDec);
+        }
+    %if nChans > 1
+
+        /* Increment for beginning of next input channel */
+        ++idctInp;
+        ifftInp += %<nRows>;
+    %endif
+  %else
+      const c%<inDTypeName> *weights = (const c%<inDTypeName>*)%<LibBlockParameterAddr(FastDCTWtsTable,"","",0)>;
+      int_T i = %<nRows>;
+      while(i--) {
+          (ifftInp  )->re = (*idctInp  ) *  ((weights  )->re);
+          (ifftInp++)->im = (*idctInp++) *  ((weights++)->im);
+      }
+  %endif
+    %if nChans > 1
+    }
+    %endif
+  }
+%endfunction %% IFCT_TBLS_ApplyWeightsToInput
+
+
+%% Function: IFCT_TRIG_ApplyWeightsToInput =====================================
+%%
+%function IFCT_TRIG_ApplyWeightsToInput(block) Output
+  {
+    const %<inDTypeName> *idctInp = (const %<inDTypeName> *)%<LibBlockInputSignalAddr(INPORT,"","",0)>;
+    c%<inRealDTName>       *ifftInp    = (c%<inRealDTName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+    const %<inRealDTName>  piN2     = ((%<inRealDTName>)DSP_PI_OVER_2) / ((%<inRealDTName>)%<nRows>);
+    const %<inRealDTName>  fac      = (%<inRealDTName>)sqrt((double)%<2*nRows>);
+  %if inCplx
+        const %<inRealDTName>   w0_re      = fac * ( (%<inRealDTName>)sqrt(2.0) );
+    %if nChans > 1
+        int_T           inpChans = %<nChans>;
+        while(inpChans--) {
+    %endif
+            /* Initialize idctInpDec to end of current input frame */
+            const %<inDTypeName> *idctInpDec = idctInp + %<nRows>;
+            int_T i;
+
+            /* Initialize beginning of second half of
+             * double-length IFFT input sequence to zero
+             */
+            (ifftInp + %<nRows>)->re = (%<inRealDTName>)0.0;
+            (ifftInp + %<nRows>)->im = (%<inRealDTName>)0.0;
+
+            /* Initialize beginning of double-length IFFT
+             * input sequence using special-case weight w0_re
+             */
+            (ifftInp  )->re = idctInp->re * w0_re;
+            (ifftInp++)->im = idctInp->im * w0_re;
+
+            for (i=1; i<%<nRows>; i++) {
+                const %<inRealDTName> tmp = ((%<inRealDTName>)i) * piN2;
+                %<inDTypeName> weightInc;
+                %<inDTypeName> weightDec;
+
+                weightInc.re = fac * ( (%<inRealDTName>)cos((double)tmp) );
+                weightInc.im = fac * ( (%<inRealDTName>)sin((double)tmp) );
+
+                ++idctInp;
+                (ifftInp  )->re = CMULT_RE((*idctInp),weightInc);
+                (ifftInp++)->im = CMULT_IM((*idctInp),weightInc);
+
+                weightDec.re =  weightInc.im;
+                weightDec.im = -weightInc.re;
+
+                --idctInpDec;
+                (ifftInp+%<nRows-1>)->re = CMULT_RE((*idctInpDec),weightDec);
+                (ifftInp+%<nRows-1>)->im = CMULT_IM((*idctInpDec),weightDec);
+            }
+    %if nChans > 1
+
+            /* Increment for beginning of next input channel */
+            ++idctInp;
+            ifftInp += %<nRows>;
+        }
+    %endif
+  %else
+        const %<inDTypeName>  w0_re    = fac / ( (%<inDTypeName>)sqrt(2.0) );
+    %if nChans > 1
+        int_T           inpChans = %<nChans>;
+        while(inpChans--) {
+    %endif
+            /* Pre-fill initial weight value */
+            (ifftInp  )->re = (*idctInp++) *  w0_re;
+            (ifftInp++)->im = (%<inRealDTName>)0.0;
+            {
+                int_T i;
+                for (i = 1; i < %<nRows>; i++) {
+                    const %<inDTypeName> tmp = ((%<inDTypeName>)i) * piN2;
+                    c%<inDTypeName>    weight;
+                    weight.re = fac * ( (%<inDTypeName>)cos((double)tmp) );
+                    weight.im = fac * ( (%<inDTypeName>)sin((double)tmp) );
+                    (ifftInp  )->re = (*idctInp  ) *  weight.re;
+                    (ifftInp++)->im = (*idctInp++) *  weight.im;
+                }
+            }
+    %if nChans > 1
+        }
+    %endif
+  %endif
+  }
+%endfunction %% IFCT_TRIG_ApplyWeightsToInput
+
+
+%% Function: TBLS_CPLX_IFFT ====================================================
+%%
+%function TBLS_CPLX_IFFT(block) Output
+  %if inRealDTName == "real_T"
+    %%
+    %% Equivalent to dspifft_R2_TBLS_ZZ
+    %%
+    %if inCplx
+      %% FctBuf1 shared for in-place FFTs
+      MWDSP_R2BR_Z( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows> );
+      MWDSP_R2DIT_TBLS_Z( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 1 );
+      MWDSP_ScaleData_DZ( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<2 * nChans * nRows>, 1.0 / (real_T)%<2*nRows> );
+    %else
+      %% FctBuf1 not shared for FFTs
+      MWDSP_R2BR_Z_OOP( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<nRows>, %<nRows> );
+      MWDSP_R2DIT_TBLS_Z( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows>, %<nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 1 );
+      MWDSP_ScaleData_DZ( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans * nRows>, 1.0 / (real_T)%<nRows> );
+    %endif
+  %else
+    %%
+    %% Equivalent to dspifft_R2_TBLS_CC
+    %%
+    %if inCplx
+      %% FctBuf1 shared for in-place FFTs
+      MWDSP_R2BR_C( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows> );
+      MWDSP_R2DIT_TBLS_C( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 1 );
+      MWDSP_ScaleData_RC( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<2 * nChans * nRows>, 1.0F / (real32_T)%<2*nRows> );
+    %else
+      %% FctBuf1 not shared for FFTs
+      MWDSP_R2BR_C_OOP( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<nRows>, %<nRows> );
+      MWDSP_R2DIT_TBLS_C( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows>, %<nRows>, %<LibBlockParameterAddr(TwiddleTable,"","",0)>, 1, 1 );
+      MWDSP_ScaleData_RC( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans * nRows>, 1.0F / (real32_T)%<nRows> );
+    %endif
+  %endif
+%endfunction %% TBLS_CPLX_IFFT
+
+
+%% Function: TRIG_CPLX_IFFT ====================================================
+%%
+%function TRIG_CPLX_IFFT(block) Output
+  %if inRealDTName == "real_T"
+    %%
+    %% Equivalent to dspifft_R2_TRIG_ZZ
+    %%
+    %if inCplx
+      %% FctBuf1 shared for in-place FFTs
+      MWDSP_R2BR_Z( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows> );
+      MWDSP_R2DIT_TRIG_Z( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, 1 );
+      MWDSP_ScaleData_DZ( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<2 * nChans * nRows>, 1.0 / (real_T)%<2*nRows> );
+    %else
+      %% FctBuf1 not shared for FFTs
+      MWDSP_R2BR_Z_OOP( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<nRows>, %<nRows> );
+      MWDSP_R2DIT_TRIG_Z( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows>, %<nRows>, 1 );
+      MWDSP_ScaleData_DZ( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans * nRows>, 1.0 / (real_T)%<nRows> );
+    %endif
+  %else
+    %%
+    %% Equivalent to dspifft_R2_TRIG_CC
+    %%
+    %if inCplx
+      %% FctBuf1 shared for in-place FFTs
+      MWDSP_R2BR_C( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows> );
+      MWDSP_R2DIT_TRIG_C( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<2*nRows>, %<2*nRows>, 1 );
+      MWDSP_ScaleData_RC( %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<2 * nChans * nRows>, 1.0F / (real32_T)%<2*nRows> );
+    %else
+      %% FctBuf1 not shared for FFTs
+      MWDSP_R2BR_C_OOP( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, %<nChans>, %<nRows>, %<nRows> );
+      MWDSP_R2DIT_TRIG_C( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans>, %<nRows>, %<nRows>, 1 );
+      MWDSP_ScaleData_RC( %<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>, %<nChans * nRows>, 1.0F / (real32_T)%<nRows> );
+    %endif
+  %endif
+%endfunction %% TRIG_CPLX_IFFT
+
+
+%% Function: IFCTRealOutputReorderCode =========================================
+%%
+%function IFCTRealOutputReorderCode(block) Output
+  /* Form real output samples (from re-ordered
+   * real part of complex IFFT output samples)
+   */
+  {
+    c%<inDTypeName> *ifftOut = (c%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf2, "", "", 0)>;
+    %<inDTypeName>  *idctOut = (%<inDTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+  %if nChans > 1
+    int_T ch = %<nChans>;
+    while (ch--) {
+  %endif
+        int_T i;
+        for (i=0; i<%<nRows/2>; i++) {
+            *idctOut++ = (ifftOut + i)->re;
+            *idctOut++ = (ifftOut + %<nRows-1> - i)->re;
+        }
+  %if nChans > 1
+        ifftOut += %<nRows>;
+    }
+  %endif
+  }
+%endfunction %% IFCTRealOutputReorderCode
+
+
+%% Function: IFCTCplxOutputReorderCode =========================================
+%%
+%function IFCTCplxOutputReorderCode(block) Output
+  /* Form complex output samples (from first half of
+   * complex double-length IFFT output samples)
+   */
+  %if nChans > 1
+  {
+    const size_t    numBytesPerCplxFrame = %<nRows> * sizeof(%<inDTypeName>);
+    %<inDTypeName> *ifftOut = (%<inDTypeName> *)%<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>;
+    %<inDTypeName> *idctOut = (%<inDTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T ch = %<nChans>;
+    while (ch--) {
+      memcpy(idctOut, ifftOut, numBytesPerCplxFrame);
+      idctOut += %<nRows>;
+      ifftOut += %<2*nRows>;
+    }
+  }
+  %else
+    memcpy(%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>, %<LibBlockDWorkAddr(FCT_Buf1, "", "", 0)>, (%<nRows>*sizeof(%<inDTypeName>)) );
+  %endif
+%endfunction %% IFCTCplxOutputReorderCode
+
+
+%% [EOF] sdspdct3.tlc
+

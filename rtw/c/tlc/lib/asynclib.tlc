@@ -1,0 +1,190 @@
+%% ==============================================================================
+%% $RCSfile: asynclib.tlc,v $
+%% $Revision $
+%% $Date: 2004/04/23 19:07:38 $
+%%
+%% Abstract:
+%%   Support for implementing Asynchronous source blocks (Interrupt, Task,
+%%   Alarm, etc).
+%%
+%% Copyright 2003-2004 The MathWorks, Inc.
+%%
+
+%if EXISTS("_ASYNCLIB_") == 0
+%assign _ASYNCLIB_ = 1
+%selectfile NULL_FILE
+
+%% =============================================================================
+%% Public functions
+%% =============================================================================
+
+%% DocFunction{Other Useful Functions}: LibGetBlockAttribute ===================
+%% Abstract:
+%%   Get a field value inside a Block record.
+%%
+%% Call syntax:
+%%  %if LibIsEqual(LibGetBlockAttribute(ssBlock,"MaskType"), "Task Block")
+%%    %assign isTaskBlock = 1
+%%  %endif
+%% 
+%% Returns:
+%%   Returns the value of the attribute(field) or empty string if it doesn't exist.
+%function LibGetBlockAttribute(block,attr) void
+  %if ISFIELD(block,attr)
+    %return block.%<attr>
+  %else
+    %return ""
+  %endif
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibGetFcnCallBlock =====================
+%% Abstract:
+%%   Given a s-function block and call index, return the block record for the
+%%   downstream function-call subsystem block.
+%%    
+%% Call syntax:
+%%    
+%%    %assign ssBlock = LibGetFcnCallBlock(block,0)
+%% 
+%% Returns:
+%%   Returns the block record of the downstream f-c subsystem connected to that
+%%   element (call index).
+%%
+
+%function LibGetFcnCallBlock(sfcnblock,callIdx) void
+  %with sfcnblock
+    %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+      %return ""
+    %elseif ISFIELD(sfcnblock,"SFcnSystemOutputCall") && (SIZE(SFcnSystemOutputCall,1) > callIdx)
+      %assign ssSysIdx = SFcnSystemOutputCall[callIdx].BlockToCall[0]
+      %assign ssBlkIdx = SFcnSystemOutputCall[callIdx].BlockToCall[1]
+      %return CompiledModel.System[ssSysIdx].Block[ssBlkIdx]
+    %else
+      %assign errTxt = "Invalid arguments passed to function: 'LibGetFcnCallBLock'."
+      %setcommandswitch "-v1"
+      %<LibReportError(errTxt)>
+    %endif
+  %endwith
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibBlockExecuteFcnCall =================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Calls 
+%%   LibExecuteFcnCall but provides a simplified argument list. See 
+%%   LibExecuteFcnCall for more information.
+%%
+%% Example:
+%%   %foreach callIdx = NumSFcnSysOutputCalls
+%%       %if LibIsEqual(SFcnSystemOutputCall[callIdx].BlockToCall, "unconnected")
+%%          %continue
+%%       %endif
+%% 	 %% call the downstream system
+%%       %<LibBlockExecuteFcnCall(block, callIdx)>\
+%%    %endforeach
+%%
+%%   Returns a string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%function LibBlockExecuteFcnCall(sfcnBlock, callIdx) void
+  %with sfcnBlock
+    %assign tidVal = ParamSettings.SampleTimesToSet[0][1]
+    %assign portEl = SFcnSystemOutputCall[callIdx].FcnPortElement
+  %endwith
+  %assign ssBlock = LibGetFcnCallBlock(sfcnBlock,callIdx)
+  %return LibExecuteFcnCall(ssBlock, portEl, tidVal)
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibSetAsyncCounter =====================
+%% Abstract:
+%%   For use by Async S-Functions with function call outputs. Asynchronous tasks
+%%   can manage their own time and use this function to return the counter
+%%   variable that is to be maintained by the asynchronous task.
+%%
+%% Example:
+%%      %if LibNeedAsyncCounter(block,0)
+%%	  %<LibSetAsyncCounter(block,0), "tickGet()")>
+%%
+%%   Returns a string for the counter variable for the asynchronous task.
+%%
+%function LibSetAsyncCounter(sfcnBlock,callIdx,buf) void
+  %assign ssBlock = LibGetFcnCallBlock(sfcnBlock,callIdx)
+  %assign ssTid = ssBlock.SubsystemTID
+  %return "%<LibGetClockTick(ssTid)> = %<buf>;"
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibNeedAsyncCounter ====================
+%% Abstract:
+%%   For use by Async S-Functions with function call outputs. Asynchronous tasks
+%%   can manage their own time and used this function to determine if there is
+%%   a need to do.
+%%
+%% Example:
+%%      %if LibNeedAsyncCounter(block,0)
+%%	  %<LibSetAsyncCounter(block,0), "tickGet()")>
+%%
+%%   Returns TLC_TRUE if a asynchronous counter is needed, otherwise TLC_FALSE.
+%%
+%function LibNeedAsyncCounter(sfcnBlock,callIdx) void
+  %% Get TID of downstream f-c ss, this sfcnblock TID will be for my caller
+  %% which is not the TID the sfcn defines
+  %assign ssBlock = LibGetFcnCallBlock(sfcnBlock,callIdx)
+  %assign ssTid = ssBlock.SubsystemTID
+  %return (CompiledModel.SampleTime[ssTid].NeedAbsoluteTime == "yes"? TLC_TRUE:TLC_FALSE)
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibGetCallerClockTickCounter ===========
+%% Abstract:
+%%   For use by Async S-Functions with function call outputs. Asynchronous tasks
+%%   can manage their own time. This function is used to access a upstream 
+%%   asynchrounous task's time counter. This is preferred when being driven by
+%%   another asynchronous rate (e.g. Interrupt Block driving a Task block) as
+%%   the time the interrupt occurred will be used as apposed to the time the
+%%   Task is allowed to run.
+%%
+%% Example:
+%%   %if LibNeedAsyncCounter(block,0)
+%%      /* Use the upstream clock tick counter for this Task. */
+%%      %<LibSetAsyncCounter(block,0, LibGetCallerClockTickCounter(block))>\
+%%   %endif
+%%
+%%   Returns a string for the counter variable for the upstream asynchronous
+%%   task.
+%%
+%function LibGetCallerClockTickCounter(sfcnBlock) void
+  %assign callerTid = sfcnBlock.TID
+  
+  %assert CompiledModel.SampleTime[callerTid].NeedAbsoluteTime == "yes"
+  %return LibGetClockTick(callerTid)
+%endfunction
+
+%% Function FcnGetAsyncPromotedTID 
+%% Abstract:
+%%   This function returns Prompted TID of an asyncTID.
+%%   When an aynchrounous task need synchronize data transfer 
+%% (including time) with its caller. PromptedTID of this async 
+%% task is its caller's TID, othewise, Promoted TID is 
+%% the same as original tid. 
+%%   AsyncPromotpedTID is written to rtw file in function 
+%% WriteSampleTimes.
+%%   AsyncPromotpedTID is used while generating code for output fcn of
+%%  rate transition blocks. Output fcn code of async rate transition
+%%  will be grouped with PromotedTID
+%%  
+%%  However, for Acceleration mode, we don't need 
+%%  synchronize data transfer with its caller. 
+%%  Promoted TID is the original TID
+%%
+%function FcnGetAsyncPromotedTID(tid)
+  %assert(LibAsynchronousTriggeredTID(tid))
+  
+  %if CodeFormat != "Embedded-C"
+    %return tid
+  %else
+    %return SampleTime[tid].AsyncPromotedTID
+  %endif
+
+%endfunction
+
+%endif %% _ASYNCLIB__
+
+%% [EOF] asynclib.tlc

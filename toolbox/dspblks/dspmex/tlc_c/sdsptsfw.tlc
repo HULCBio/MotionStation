@@ -1,0 +1,236 @@
+%% $Revision: 1.13.4.2 $ 
+%% $RCSfile: sdsptsfw.tlc,v $
+%% $Date: 2004/04/12 23:09:55 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Target file for the S-Function sdsptsfw.c
+%%           used for the Triggered Signal From Workspace block
+
+%implements "sdsptsfw" "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%function BlockInstanceSetup(block, system) void
+  
+  %<LibRenameParameter(block, P1, "WorkspaceVar")>
+  %<LibRenameParameter(block, P2, "Cyclic")>
+  %<LibRenameParameter(block, P3, "InitCond")>
+  %<LibRenameParameter(block, P4, "TrigType")>
+  
+  %<LibDefineIWork(block, "Tsfw_Trig_State", 1)>
+  %<LibDefineIWork(block, "Row_Idx", 1)>
+  
+%endfunction %% BlockInstanceSetup
+
+%% Start ======================================================================
+%% Abstract: 
+%%      Initialize PWork pointer
+%%
+%function Start(block, system) Output
+  /* Signal Processing Blockset Triggered Signal From Workspace (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %assign OUTPORT    = 0
+  %assign cplx       = LibBlockOutputSignalIsComplex(OUTPORT)
+  %assign ic_cplx    = (TYPE(InitCond.Value[0]) == "Complex")
+  %assign outwidth   = LibDataOutputPortWidth(OUTPORT)
+  %assign ic_numelem = SIZE(InitCond.Value,0) * SIZE(InitCond.Value,1)
+  %%
+  %% Initial ouputs
+  {
+    real_T *y = (real_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+    int_T   N = %<outwidth>;
+
+    %% Scalar or empty initial condition
+    %if (ic_numelem <= 1)
+      %assign ic = LibBlockParameterValue(InitCond,"%<tRealPart>0")
+      %if LibIsEmpty(ic)
+	%assign icre = 0.0
+	%assign icim = 0.0 
+      %else
+	%assign icre = LibBlockParameterValue(InitCond,"%<tRealPart>0")
+	%assign icim = !ic_cplx ? 0.0 : LibBlockParameterValue(InitCond,"%<tImagPart>0")
+      %endif
+      %%
+      while(N-- > 0) {
+	*y++ = %<icre>;
+	%if (cplx)
+	  *y++ = %<icim>;
+	%endif
+      }
+    %else
+      %% Vector for Matrix initial condition
+      real_T *ic = (real_T *)%<LibBlockParameterAddr(InitCond,"","",0)>;
+      while(N-- > 0) {
+	*y++ = *ic++;
+	%if (cplx)
+	  *y++ = *ic++;
+	%endif
+      }        
+    %endif
+  }
+
+  %% Put the workspace data into a static 
+  %%variable and store the address into a PWork.
+  %assign WksPtrIdx  = 0
+  %assign asgnStr    = ""
+  %assign initStr    = ""
+  %assign rows       = CAST("Number",SIZE(WorkspaceVar.Value,0))
+  %assign cols       = CAST("Number",SIZE(WorkspaceVar.Value,1))
+  %assign nterms     = rows * cols
+  %assign BufferName = "SignalData"
+  %assign block      = block + BufferName
+  %%
+  %if TYPE(WorkspaceVar.Value) != "Matrix"
+    %% VECTOR or SCALAR Variable
+    %foreach i = nterms
+	%assign tui = CAST("Real",REAL(WorkspaceVar.Value[i]))
+	%if !LibIsFinite(tui)
+	  %assign asgnStr = asgnStr + "%<BufferName>[%<i>] = %<tui>;\n"
+	  %assign tui = 0.0
+	%endif
+	%assign suffix = (!cplx && i==nterms-1) ? "" : ","
+	%assign initStr = initStr + "%<tui>%<suffix>\n"
+	
+	%if cplx
+	  %assign tui = CAST("Real",IMAG(WorkspaceVar.Value[i]))
+	  %if !LibIsFinite(tui)
+	    %assign asgnStr = asgnStr + "%<BufferName>[%<i>] = %<tui>;\n"
+	    %assign tui = 0.0
+	  %endif
+	  %assign suffix = (i == nterms-1) ? "" : ","
+	  %assign initStr = initStr + "%<tui>%<suffix>\n"
+	%endif      
+    %endforeach
+  %else
+    %% MATRIX Variable
+    %foreach j =cols
+      %foreach i = rows
+	%assign tui = CAST("Real",REAL(WorkspaceVar.Value[i][j]))
+	%if !LibIsFinite(tui)
+	  %assign asgnStr = asgnStr + "%<BufferName>[%<i+j>] = %<tui>;\n"
+	  %assign tui = 0.0
+	%endif
+	%assign suffix = (!cplx && i==nterms-1) ? "" : ","
+	%assign initStr = initStr + "%<tui>%<suffix>\n"
+	
+	%if cplx
+	  %assign tui = CAST("Real",IMAG(WorkspaceVar.Value[i][j]))
+	  %if !LibIsFinite(tui)
+	    %assign asgnStr = asgnStr + "%<BufferName>[%<i+j>] = %<tui>;\n"
+	    %assign tui = 0.0
+	  %endif
+	  %assign suffix = (i == nterms-1) ? "" : ","
+	  %assign initStr = initStr + "%<tui>%<suffix>\n"
+	%endif
+      %endforeach
+    %endforeach
+  %endif
+  %%
+  %% Data can be declared constant if there are no non-finite values
+  %%
+  %if WHITE_SPACE(asgnStr)
+    %assign prefix = "const"
+  %else
+    %assign prefix = ""
+  %endif
+  %if cplx
+    %assign nterms = 2 * nterms
+  %endif
+  {
+    static %<prefix> real_T %<BufferName>[%<nterms>] = {
+      %<initStr>
+    };
+    %%
+    %% Cache non-finite assignments
+    %%
+    %if asgnStr != ""
+      
+      /* (re)initialize non-finites */
+      %<asgnStr>
+    %endif
+    
+    %<LibBlockPWork(WksPtrIdx,"","",0)> = (void *) &%<BufferName>[0];
+  }
+  %% Initialize state:
+  %<LibBlockIWork(Tsfw_Trig_State, "", "", 0)> = UNINITIALIZED_ZCSIG;
+  %<LibBlockIWork(Row_Idx, "", "", 0)>    = 0;
+
+%endfunction
+
+
+%% Output =====================================================================
+%% Abstract:
+%%      Output data from matrix in Workspace
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Triggered Signal From Workspace (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %assign OUTPORT    = 0
+  %assign INPORT     = 0
+  %assign WksPtrIdx  = 0
+  %assign cplx       = LibBlockOutputSignalIsComplex(OUTPORT)
+  %assign cyclic     = LibBlockParameterValue(Cyclic,   0) != 0
+  %assign trigtype   = LibBlockParameterValue(TrigType, 0)
+  %assign N          = LibDataOutputPortWidth(OUTPORT)
+  %%
+  %assign RISING  = 1
+  %assign FALLING = 2
+  %assign EITHER  = 3
+  %%
+  %if trigtype==RISING 
+    %assign zc_dir = "RISING_ZERO_CROSSING"
+  %elseif trigtype==FALLING 
+    %assign zc_dir = "FALLING_ZERO_CROSSING"
+  %else                
+    %assign zc_dir = "ANY_ZERO_CROSSING"
+  %endif
+
+  if(rt_ZCFcn(%<zc_dir>, (ZCSigState *)(&%<LibBlockIWork(Tsfw_Trig_State, "", "", 0)>),
+  %<LibBlockInputSignal(INPORT,"","",0)>) != NO_ZCEVENT) {	
+  
+  real_T *y       = (real_T *)%<LibBlockOutputSignalAddr(OUTPORT,"","",0)>;
+  int_T  outIdx   = %<LibBlockIWork(Row_Idx, "", "", 0)>;
+  %assign  Mwks   = !cplx ? SIZE(WorkspaceVar.Value,0) : 2*SIZE(WorkspaceVar.Value,0)
+
+  
+  if(outIdx < %<Mwks>) {	
+    /* Output next matrix row. */
+    real_T *pwks = (real_T *)%<LibBlockPWork(WksPtrIdx,"","",0)>;
+    int_T i;
+    %%
+    for (i = 0; i < %<N>; i++) {
+      *y++ = *(pwks + outIdx + i*%<Mwks>);
+      %if cplx
+	*y++ = *(pwks + outIdx+1 + i*%<Mwks>);  /* Complex part. */
+      %endif
+    }
+    %%
+    %if cyclic
+      }
+    %else
+      } else {
+	%%
+	/* Zero extend output: */
+	int_T i;
+	for (i = 0; i < %<cplx ? 2*N : N>; i++) {
+	  *y++ = 0.0;
+	}
+      }
+    %endif
+    %%
+    /* Update row index for next read: */
+    %<LibBlockIWork(Row_Idx, "", "", 0)>++; 
+    %if cplx
+      %<LibBlockIWork(Row_Idx, "", "", 0)>++; 
+    %endif
+    %%
+    %if cyclic
+      /* Cyclic */
+      if(%<LibBlockIWork(Row_Idx, "", "", 0)> == %<Mwks>) {
+	%<LibBlockIWork(Row_Idx, "", "", 0)> = 0;
+      }
+    %endif  
+  }
+  
+%endfunction
+
+%% [EOF] sdsptsfwks.tlc

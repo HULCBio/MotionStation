@@ -1,0 +1,3841 @@
+%% $RCSfile: commonreglib.tlc,v $
+%% $Revision: 1.151.4.24 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Library to support the various forms of model registration.
+%%
+
+%if EXISTS("_REGLIB_") == 0
+%assign _REGLIB_ = 1
+
+%% ============================================================================
+%% Create global cache variable to hold S-function registration code
+%% ============================================================================
+
+%<LibAddToCompiledModel("SFunctionRegistration", 0)>
+
+
+%% Function: LibDumpModelInitializeSizes ======================================
+%% Abstract:
+%%   Dumps the declaration statements required for MdlInitializeSizes.
+%%   Supports these code formats
+%%     o RealTime
+%%     o RealTimeMalloc
+%%
+%function LibDumpModelInitializeSizes() Output
+  %<RTMSet("NumContStates", NumContStates)>; /* Number of continuous states */
+  %<RTMSet("NumY", NumModelOutputs)>;  /* Number of model outputs */
+  %<RTMSet("NumU", NumModelInputs)>;    /* Number of model inputs */
+  %if DirectFeedthrough == "yes"
+    %<RTMSet("DirectFeedThrough", 1)>;  /* The model is direct feedthrough */
+  %else
+    %<RTMSet("DirectFeedThrough", 0)>;  /* The model is not direct feedthrough */
+  %endif
+  %<RTMSet("NumSampleTimes", NumSynchronousSampleTimes)>;   /* Number of sample times */
+  %<RTMSet("NumBlocks", NumNonVirtBlocksInModel)>; /* Number of blocks */
+  %if NumBlockSignals > 0
+    %<RTMSet("NumBlockIO", BlockOutputs.NumGlobalBlockOutputs)>; ...
+      /* Number of block outputs */
+  %endif
+  %if !LibParametersStructIsEmpty()
+    %assign nPrms = ::CompiledModel.NumPrmStructElements
+    %<RTMSet("NumBlockParams", nPrms)>;  /* Sum of parameter "widths" */
+  %endif
+%endfunction
+
+
+%% Function: LibDumpModelInitializeSampleTimes ================================
+%% Abstract:
+%%   Dumps the code required to register the models sample times
+%function LibDumpModelInitializeSampleTimes() Output
+  %if CodeFormat == "S-Function" && AllSampleTimesInherited == "yes"
+    %<RTMSetIdxed("SampleTime", 0, "INHERITED_SAMPLE_TIME")>;
+    %<RTMSetIdxed("OffsetTime", 0, "0.0")>;
+  %else
+    /* task periods */
+    %foreach tidIdx = NumSynchronousSampleTimes
+      %assign period = SampleTime[tidIdx].PeriodAndOffset[0]
+      %<RTMSetIdxed("SampleTime", tidIdx, period)>;
+    %endforeach
+
+    /* task offsets */
+    %foreach tidIdx = NumSynchronousSampleTimes
+      %assign offset = SampleTime[tidIdx].PeriodAndOffset[1]
+      %<RTMSetIdxed("OffsetTime", tidIdx, offset)>;
+    %endforeach
+  %endif
+%endfunction
+
+
+%% Function SLibBooleanTriggerTest =============================================
+%% Abstract:
+%%   Generates the appropriate zero-crossing test for boolean trigger signals.
+%%
+%function SLibBooleanTriggerTest(zcDir, trigSignal, prevZC,castRequired) void
+
+  %assign cast = castRequired ? "(ZCEventType) " : ""
+  %switch zcDir
+    %case "RISING_ZERO_CROSSING"
+      %return "%<cast>(%<trigSignal> && !%<prevZC>)"
+    %case "FALLING_ZERO_CROSSING"
+      %return "%<cast>(!%<trigSignal> && %<prevZC>)"
+    %case "ANY_ZERO_CROSSING"
+      %return "%<cast>((%<trigSignal> != %<prevZC>) &&\n(%<prevZC> != UNINITIALIZED_ZCSIG))"
+  %endswitch
+
+%endfunction
+
+
+%% Function SLibUnsignedTriggerTest =============================================
+%% Abstract:
+%%   Generates the appropriate zero-crossing test for unsigned trigger signals.
+%%
+%function SLibUnsignedTriggerTest(zcDir, trigSignal, prevZC,castRequired) void
+
+  %assign cast = castRequired ? "(ZCEventType) " : ""
+  %switch zcDir
+    %case "RISING_ZERO_CROSSING"
+      %return "%<cast>((%<trigSignal> > 0) && (%<prevZC> == 0))"
+    %case "FALLING_ZERO_CROSSING"
+      %return "%<cast>((%<trigSignal> == 0) && (%<prevZC> > 0))"
+    %case "ANY_ZERO_CROSSING"
+      %return "%<cast>(((%<trigSignal> > 0) != (%<prevZC> > 0)) &&\n(%<prevZC> != UNINITIALIZED_ZCSIG))"
+  %endswitch
+
+%endfunction
+
+
+%% Function SLibInitPrevZCState ================================================
+%% Abstract:
+%%   Initialize the previous zero-crossing state for a block.  Note that it
+%%   is initialized to a value that guarantees that the trigger is never true
+%%   at time zero.  Since the registration code sets previous zc's to
+%%   UNINITIALIZED_ZCSIG, only overwrite when necessary (i.e., rising/falling
+%%   triggers for unsigned and boolean data types).
+%%
+%function SLibInitPrevZCStates(style) void
+
+  %if style != "static" && style != "dynamic"
+    %assign errTxt = "Unknown style: %<style>"
+    %<LibReportFatalError(errTxt)>
+  %endif
+  %assign baseSystemIdx = GetBaseSystemIdx()
+
+  %assign comma = ""
+  %assign linefeed = ""
+  %assign staticBuf = ""
+  %assign tmpBuf = ""
+
+  %with System[baseSystemIdx] %% base system
+    %openfile tmpBuf
+    /* Zero-crossing state initialization */
+    %foreach zcIdx = ZCEvents.NumZCEvents
+      %assign zc = ZCEvents.ZCEvent[zcIdx]
+      %assign zcDir = LibConvertZCDirection(zc.ZCEventEl[0].Direction)
+      %if zc.UnsignedSigSrc
+	%switch zcDir
+	  %case "RISING_ZERO_CROSSING"
+	    %assign value = "POS_ZCSIG"
+	    %break
+	  %case "FALLING_ZERO_CROSSING"
+	    %assign value = "ZERO_ZCSIG"
+	    %break
+	  %default
+	    %assign value = "UNINITIALIZED_ZCSIG"
+	    %break
+	%endswitch
+      %else
+	%assign value = "UNINITIALIZED_ZCSIG"
+      %endif
+      %%
+      %if (style == "static")
+	%foreach trigIdx = zc.Width
+	  %assert zcDir == LibConvertZCDirection(zc.ZCEventEl[trigIdx].Direction)
+	  %assign staticBuf = staticBuf + comma + linefeed + value
+	  %assign comma = ","
+	  %assign linefeed = "\n"
+	%endforeach
+      %elseif zc.Width >= RollThreshold  
+	{
+	  int idx;
+	  for (idx = 0; idx < %<zc.Width>; idx ++) {
+	    %<SLibPrevZCState(zc,"","","idx")> = %<value>;
+	  }
+	}
+      %else
+	%foreach trigIdx = zc.Width
+	  %assert zcDir == LibConvertZCDirection(zc.ZCEventEl[trigIdx].Direction)
+	  %<SLibPrevZCState(zc,"","",trigIdx)> = %<value>;
+	%endforeach
+      %endif
+    %endforeach
+    %closefile tmpBuf
+  %endwith %% root system
+  %return (style == "static") ? staticBuf : tmpBuf
+%endfunction
+
+
+%% Function: LibDumpModelInitializePrevZCStates ===============================
+%% Abstract:
+%%   Dumps the code required to initialize the previous zero crossing events
+%function LibDumpModelInitializePrevZCStates() Output
+  /* previous zero-crossing states */
+  {
+    %if UsingMalloc
+      ZCSigState *zc = (ZCSigState *) malloc(sizeof(%<tPrevZCStateType>));
+      %<RTMChkMemAndReturnIfErr("zc")>;
+    %else
+      %assign addr = MultiInstanceERTCode ? "" : "&"
+      ZCSigState *zc = (ZCSigState *) %<addr>%<tPrevZCState>;
+    %endif
+    %<RTMSet("PrevZCSigState", "zc")>;
+
+    %if UsingMalloc
+      {
+	%<tPrevZCStateType> *%<tPrevZCState> = (%<tPrevZCStateType> *) \
+	%<RTMGet("PrevZCSigState")>;
+	%<SLibInitPrevZCStates("dynamic")>\
+      }
+    %else
+      %<SLibInitPrevZCStates("dynamic")>\
+    %endif
+  }
+%endfunction
+
+
+%% Function: FcnLogStateSetup =================================================
+%% Abstract:
+%%   Setup states for structure logging
+%%
+%function FcnLogStateSetup(dlo) Output
+  %<LibResetBlockFcnAccessed()>\
+  %assign cr           = ""
+  %assign qt           = "\""
+  %assign comma        = ""
+  %assign sigPtrsStr   = ""
+  %assign widthStr     = ""
+  %assign dimsStr      = ""
+  %assign numDimsStr   = ""
+  %assign dTypeStr     = ""
+  %assign cmplxStr     = ""
+  %assign labelStr     = ""
+  %assign labelLenStr  = ""
+  %assign blkNameStr   = ""
+  %assign crossMdlStr  = ""
+  %assign blkNameLenStr= ""
+  %assign dataTypeConvertInitStr = ""
+  %assign idx          = 0
+
+  %with CompiledModel.ContStates
+    %assign dTypeId    = tSS_DOUBLE
+    %assign cmpxSig    = 0
+    %assign label      = "CSTATE"
+    %%
+    %if LibIsBuiltInDataType(dTypeId)
+      %%
+      %assign needConvert = 0
+      %assign dTypeEnum = LibGetDataTypeEnumFromId(dTypeId)
+      %assign dTypeStorageEnum = dTypeEnum
+      %assign fSlope = 1.0
+      %assign fixExp = 0
+      %assign bias   = 0.0
+    %else
+      %assign needConvert = 1
+      %assign curDT = FixPt_GetDataTypeFromIndex(dTypeId)
+      %assign dTypeEnum        = LibGetDataTypeEnumFromId(tSS_DOUBLE)
+      %assign dTypeStorageEnum = LibGetDataTypeEnumFromId(curDT.StorageId)
+      %assign fSlope = curDT.FracSlope
+      %assign fixExp = curDT.FixedExp
+      %assign bias   = curDT.Bias
+    %endif
+    %%
+    %foreach i = NumContStates
+      %assign cs         = ContState[i]
+      %assign sigAddr    = "&" + SLibContinuousState(cs, "", "", 0,NumSystems-1)
+      %assign width      = cs.Width
+      %assign blkName    = SLibMangledGrBlockPath(cs.GrSrc)
+      %assign lhs_eq     = "rt_LoggedStateSignalPtrs[%<idx>] = "
+      %%
+      %assign sigPtrsStr   = sigPtrsStr + lhs_eq + "(void*)" + sigAddr + ";\n"
+      %assign widthStr     = widthStr      + comma + cr + "%<width>"
+      %assign numDimsStr   = numDimsStr    + comma + cr + "1"
+      %assign dimsStr      = dimsStr       + comma + cr + "%<width>"
+      %assign dTypeStr     = dTypeStr      + comma + cr + "%<dTypeEnum>"
+      %assign cmplxStr     = cmplxStr      + comma + cr + "%<cmpxSig>"
+      %assign labelStr     = labelStr      + comma + cr + qt + label + qt
+      %assign blkNameStr   = blkNameStr    + comma + cr + qt + STRING(blkName) + qt
+      %assign crossMdlStr  = crossMdlStr   + comma + cr + "0"
+      %%
+      %assign dataTypeConvertInitStr = dataTypeConvertInitStr + comma + cr + ...
+                "{ %<needConvert>, %<dTypeEnum>, %<dTypeStorageEnum>, %<fSlope>, %<fixExp>, %<bias>}"
+      %%
+      %assign comma = ", "
+      %assign cr = "\n"
+      %assign idx = idx + 1
+    %endforeach
+  %endwith
+
+  %with CompiledModel.DWorks
+    %assign label = "DSTATE"
+    %foreach i = NumDWorks
+      %if DWork[i].UsedAs == "DSTATE"
+	%assign ds  = DWork[i]
+	%addtorecord ds FirstRootIdx i
+	%assign block     = System[ds.SigSrc[0]].Block[ds.SigSrc[2]]
+	%with System[NumSystems-1]
+	  %with block
+	    %assign sigAddr = LibBlockDWorkAddr(ds,"","",0)
+	  %endwith
+	%endwith %% System[NumSystems-1]
+	%assign width     = ds.Width
+	%assign dTypeId   = LibGetDataTypeIdAliasedThruToFromId(...
+	  LibGetRecordDataTypeId(ds))
+	%assign cmpxSig   = (ds.ComplexSignal == "yes")
+        %%
+        %if LibIsBuiltInDataType(dTypeId)
+          %%
+          %assign needConvert = 0
+          %assign dTypeEnum = LibGetDataTypeEnumFromId(dTypeId)
+          %assign dTypeStorageEnum = dTypeEnum
+          %assign fSlope = 1.0
+          %assign fixExp = 0
+          %assign bias   = 0.0
+        %else
+          %assign needConvert = 1
+          %assign curDT = FixPt_GetDataTypeFromIndex(dTypeId)
+          %assign dTypeEnum        = LibGetDataTypeEnumFromId(tSS_DOUBLE)
+          %assign dTypeStorageEnum = LibGetDataTypeEnumFromId(curDT.StorageId)
+          %assign fSlope = curDT.FracSlope
+          %assign fixExp = curDT.FixedExp
+          %assign bias   = curDT.Bias
+        %endif
+        %%
+	%%% ============================================================
+	%assign blkName   = LibGetBlockPath(ds)
+	%assign lhs_eq    = "rt_LoggedStateSignalPtrs[%<idx>] = "
+	%%
+	%assign sigPtrsStr   = sigPtrsStr + lhs_eq + "(void*)" + sigAddr + ";\n"
+	%assign widthStr     = widthStr      + comma + cr + "%<width>"
+	%assign numDimsStr   = numDimsStr    + comma + cr + "1"
+	%assign dimsStr      = dimsStr       + comma + cr + "%<width>"
+	%assign dTypeStr     = dTypeStr      + comma + cr + "%<dTypeEnum>"
+	%assign cmplxStr     = cmplxStr      + comma + cr + "%<cmpxSig>"
+	%assign labelStr     = labelStr      + comma + cr + qt + label + qt
+	%assign blkNameStr   = blkNameStr    + comma + cr + qt + STRING(blkName) + qt
+	%assign crossMdlStr  = crossMdlStr   + comma + cr + "0"
+        %%
+        %assign dataTypeConvertInitStr = dataTypeConvertInitStr + comma + cr + ...
+                  "{ %<needConvert>, %<dTypeEnum>, %<dTypeStorageEnum>, %<fSlope>, %<fixExp>, %<bias>}"
+        %%
+	%assign comma = ", "
+	%assign cr = "\n"
+	%assign idx = idx + 1
+      %endif
+    %endforeach
+  %endwith
+  %%
+  %if dlo.NumLoggedStates < 1
+    %return ""
+  %endif
+  %assign typeQ = "static "
+  {
+    %<typeQ> int_T rt_LoggedStateWidths[] =\
+    {
+      %<widthStr>
+    };
+
+    %<typeQ> int_T rt_LoggedStateNumDimensions[] =\
+    {
+      %<numDimsStr>
+    };
+
+    %<typeQ> int_T rt_LoggedStateDimensions[] =\
+    {
+      %<dimsStr>
+    };
+
+    %<typeQ> BuiltInDTypeId rt_LoggedStateDataTypeIds[] =\
+    {
+      %<dTypeStr>
+    };
+
+    %<typeQ> int_T rt_LoggedStateComplexSignals[] =\
+    {
+      %<cmplxStr>
+    };
+
+    %<typeQ> const char_T  *rt_LoggedStateLabels[] = {
+    %<labelStr>};
+
+    %<typeQ> const char_T *rt_LoggedStateBlockNames[] = {
+    %<blkNameStr>};
+      
+    %<typeQ> boolean_T rt_LoggedStateCrossMdlRef[] =\
+    {
+      %<crossMdlStr>
+    };
+
+    %<typeQ> RTWLogDataTypeConvert rt_RTWLogDataTypeConvert[] =\
+    {
+      %<dataTypeConvertInitStr>
+    };
+
+    %<typeQ> RTWLogSignalInfo rt_LoggedStateSignalInfo =\
+    {
+      %<dlo.NumLoggedStates>,
+      rt_LoggedStateWidths,
+      rt_LoggedStateNumDimensions,
+      rt_LoggedStateDimensions,
+      rt_LoggedStateDataTypeIds,
+      rt_LoggedStateComplexSignals,
+      NULL,
+      rt_LoggedStateLabels,
+      NULL,
+      NULL,
+      NULL,
+      rt_LoggedStateBlockNames,
+      rt_LoggedStateCrossMdlRef,
+      rt_RTWLogDataTypeConvert
+    };
+
+    %<RTMLoggingSet("LogXSignalInfo", "&rt_LoggedStateSignalInfo")>
+  }
+
+  {
+    %if UsingMalloc
+      %<LibDeclareAllAccessedSimStructVars()>\
+      void **rt_LoggedStateSignalPtrs = ...
+	(void **)malloc(sizeof(void *) * %<dlo.NumLoggedStates>);
+
+      %<RTMChkMemAndReturnIfErr("rt_LoggedStateSignalPtrs")>;
+
+      %<sigPtrsStr>\
+    %else
+      static void * rt_LoggedStateSignalPtrs[%<dlo.NumLoggedStates>];
+      %<sigPtrsStr>\
+    %endif
+    %<RTMLoggingSet("LogXSignalPtrs", ...
+      "(LogSignalPtrsType) rt_LoggedStateSignalPtrs")>
+  }
+%endfunction  %% FcnLogStateSetup
+
+
+%% Function: FcnLogOutputSetup =================================================
+%% Abstract:
+%%   Setup outputs for structure logging
+%%
+%function FcnLogOutputSetup(dlo) Output
+  %<LibResetBlockFcnAccessed()>\
+  %%
+  %assign typeQ        = "static "
+  %assign nOutportBlks = ExternalOutputs.NumExternalOutputs
+  %assign comma        = ""
+  %assign sigPtrsStr   = ""
+  %%
+  %foreach idx = nOutportBlks
+    %assign extOut = ExternalOutputs.ExternalOutput[idx]
+    %assign sysIdx = extOut.Block[0]
+    %assign blkIdx = extOut.Block[1]
+    %assign outportBlock = System[sysIdx].Block[blkIdx]
+    %%
+    %with outportBlock
+      %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(...
+	LibBlockInputSignalDataTypeId(0))
+      %if LibIsDataTypeLogSupported(dTypeId)
+	%assign sigLoc  = LibBlockDstSignalLocation("outportblk","","",0)
+	%assign sigAddr = "&%<sigLoc>"
+      %else
+        %assign warnTxt = "Unable to log signal driving this block " ...
+	  "because its data type has not registered a TLC convert between function."
+	%<LibBlockReportWarning(outportBlock, warnTxt)>
+	%assign sigAddr = "NULL"
+      %endif
+    %endwith %% outportBlock
+    %%
+    %if UsingMalloc || MultiInstanceERTCode
+      %assign lhs_eq = "rt_LoggedOutputSignalPtrs[%<idx>] = "
+      %assign sigPtrsStr = sigPtrsStr + lhs_eq + sigAddr + ";\n"
+    %else
+      %assign sigPtrsStr = sigPtrsStr + comma + "\n" + sigAddr
+    %endif
+    %assign comma = ", "
+  %endforeach
+  {
+    %if UsingMalloc
+      %<LibDeclareAllAccessedSimStructVars()>\
+      void **rt_LoggedOutputSignalPtrs = malloc(%<nOutportBlks>*sizeof(void*));
+
+      %<RTMChkMemAndReturnIfErr("rt_LoggedOutputSignalPtrs")>;
+
+      %<sigPtrsStr>\
+    %elseif MultiInstanceERTCode
+      static void * rt_LoggedOutputSignalPtrs[%<nOutportBlks>];
+
+      %<sigPtrsStr>
+    %else
+      static void * rt_LoggedOutputSignalPtrs[] = \
+      {\
+	%<sigPtrsStr>
+      };
+    %endif
+
+    %<RTMLoggingSet("LogYSignalPtrs", ...
+      "((LogSignalPtrsType)rt_LoggedOutputSignalPtrs)")>
+  }
+  %assign cr           = ""
+  %assign qt           = "\""
+  %assign comma        = ""
+  %assign widthStr     = ""
+  %assign numDimsStr   = ""
+  %assign dimsStr      = ""
+  %assign dTypeStr     = ""
+  %assign cmplxStr     = ""
+  %assign labelStr     = ""
+  %assign labelLenStr  = ""
+  %assign blkNameStr   = ""
+  %assign blkNameLenStr= ""
+  %assign logSigInfoInitStr = ""
+  %assign logSigInfoVarsStr = ""
+  %%
+  %assign dataTypeConvertInitStr = ""
+  %%
+  %assign widthVar = "rt_LoggedOutputWidths"
+  %assign numDimsVar = "rt_LoggedOutputNumDimensions"
+  %assign dimsVar = "rt_LoggedOutputDimensions"
+  %assign dTypeVar = "rt_LoggedOutputDataTypeIds"
+  %assign cmplxVar = "rt_LoggedOutputComplexSignals"
+  %assign labelVar = "rt_LoggedOutputLabels"
+  %assign labelLenVar = "rt_LoggedOutputLabelLengths"
+  %assign blkNameVar = "rt_LoggedOutputBlockNames"
+  %assign blkNameLenVar = "rt_LoggedOutputBlockNameLengths"
+  %assign rt_RTWLogDataTypeConvertVar = "rt_RTWLogDataTypeConvert"
+  %%
+  %assign nSignalInfos = 0
+{
+  %assign numDimsRunningCount = 0
+  %%
+  %foreach idx = nOutportBlks
+    %assign extOut = ExternalOutputs.ExternalOutput[idx]
+    %assign sysIdx = extOut.Block[0]
+    %assign blkIdx = extOut.Block[1]
+    %assign outportBlock = System[sysIdx].Block[blkIdx]
+    %%
+    %with outportBlock
+      %assign width     = LibBlockInputSignalWidth(0)
+      %assign numDims   = LibBlockInputSignalNumDimensions(0)
+      %assign dims      = LibBlockInputSignalDimensions(0)
+      %assign dTypeId   = LibGetDataTypeIdAliasedThruToFromId(...
+        LibBlockInputSignalDataTypeId(0))
+      %assign cmpxSig   = LibBlockInputSignalIsComplex(0)
+      %assign label     = extOut.SigLabel
+      %assign blkName   = LibGetBlockPath(outportBlock)
+      %%
+      %if LibIsBuiltInDataType(dTypeId)
+        %%
+        %assign needConvert = 0
+        %assign dTypeEnum = LibGetDataTypeEnumFromId(dTypeId)
+        %assign dTypeStorageEnum = dTypeEnum
+        %assign fSlope = 1.0
+        %assign fixExp = 0
+        %assign bias   = 0.0
+      %else
+        %assign needConvert = 1
+        %assign curDT = FixPt_GetDataTypeFromIndex(dTypeId)
+        %assign dTypeEnum        = LibGetDataTypeEnumFromId(tSS_DOUBLE)
+        %assign dTypeStorageEnum = LibGetDataTypeEnumFromId(curDT.StorageId)
+        %assign fSlope = curDT.FracSlope
+        %assign fixExp = curDT.FixedExp
+        %assign bias   = curDT.Bias
+      %endif
+      %%
+    %endwith %% outportBlock
+    %%
+    %if !LibIsDataTypeLogSupported(dTypeId)
+      %% Cannot log signals that don't have data type convert
+      %% between functions
+      %continue
+    %endif
+    %%
+    %% count the signals that are actually handled
+    %%
+    %assign nSignalInfos = nSignalInfos + 1
+    %%
+    %assign widthStr     = widthStr      + comma + cr + "%<width>"
+    %assign numDimsStr   = numDimsStr    + comma + cr + "%<numDims>"
+    %assign dimsStr      = dimsStr       + comma + cr + "%<dims[0]>"
+    %if numDims > 1
+      %assign dimsStr      = dimsStr     + "," + "%<dims[1]>"
+    %endif
+    %assign dTypeStr     = dTypeStr      + comma + cr + "%<dTypeEnum>"
+    %assign cmplxStr     = cmplxStr      + comma + cr + "%<cmpxSig>"
+    %%
+    %assign dataTypeConvertInitStr = dataTypeConvertInitStr + comma + cr + ...
+      "{ %<needConvert>, %<dTypeEnum>, %<dTypeStorageEnum>, %<fSlope>, %<fixExp>, %<bias>}"
+    %%
+    %assign labelStr     = labelStr   + comma + cr + qt + STRING(label) + qt
+    %assign blkNameStr   = blkNameStr + comma + cr + qt + STRING(blkName) + qt
+    %%
+    %if dlo.NumOutputSaveNames != 1
+      %if nSignalInfos == 1
+        %assign pointerMathAddition     = ""
+        %assign pointerMathAdditionDims = ""
+      %else
+        %assign pointerMathAddition     = "+%<idx>"
+        %assign pointerMathAdditionDims = "+%<numDimsRunningCount>"
+      %endif
+      %assign numDimsRunningCount = numDimsRunningCount + numDims
+      %%
+      %openfile tempBuffer
+      %<typeQ> const char_T *%<labelVar>_%<idx>[] = {"%<STRING(label)>"};
+      %<typeQ> const char_T *%<blkNameVar>_%<idx>[] = {"%<STRING(blkName)>"};
+	
+      %closefile tempBuffer 
+      %assign logSigInfoVarsStr = logSigInfoVarsStr + tempBuffer
+      
+      %openfile tempBuffer
+        %<comma>
+        {
+          1,
+          %<widthVar>%<pointerMathAddition>,
+          %<numDimsVar>%<pointerMathAddition>,
+          %<dimsVar>%<pointerMathAdditionDims>,
+          %<dTypeVar>%<pointerMathAddition>,
+          %<cmplxVar>%<pointerMathAddition>,
+          NULL,
+	  %<labelVar>_%<idx>,
+          NULL,
+          NULL,
+          NULL,
+	  %<blkNameVar>_%<idx>,
+	  NULL,
+          %<rt_RTWLogDataTypeConvertVar>%<pointerMathAddition>
+        }\
+      %closefile tempBuffer
+      %%
+      %assign logSigInfoInitStr = logSigInfoInitStr + tempBuffer
+      %%
+    %endif
+    %%
+    %assign comma = ","
+    %assign cr = "\n"
+    %%
+  %endforeach
+  %%
+  %if nSignalInfos > 0
+
+    %<typeQ> int_T %<widthVar>[] =\
+    {
+      %<widthStr>
+    };
+
+    %<typeQ> int_T %<numDimsVar>[] =\
+    {
+      %<numDimsStr>
+    };
+
+    %<typeQ> int_T %<dimsVar>[] =\
+    {
+      %<dimsStr>
+    };
+
+    %<typeQ> BuiltInDTypeId %<dTypeVar>[] =\
+    {
+      %<dTypeStr>
+    };
+
+    %<typeQ> int_T %<cmplxVar>[] =\
+    {
+      %<cmplxStr>
+    };
+
+    %if dlo.NumOutputSaveNames == 1
+      
+      %<typeQ> const char_T *%<labelVar>[] = {
+        %<labelStr>};
+      
+      %<typeQ> const char_T *%<blkNameVar>[] = {
+        %<blkNameStr>};
+
+    %else
+	%<logSigInfoVarsStr>
+    %endif
+
+    %<typeQ> RTWLogDataTypeConvert %<rt_RTWLogDataTypeConvertVar>[] =\
+    {
+      %<dataTypeConvertInitStr>
+    };
+
+  %else
+    %assign widthVar = "NULL"
+    %assign numDimsVar = "NULL"
+    %assign dimsVar = "NULL"
+    %assign dTypeVar = "NULL"
+    %assign cmplxVar = "NULL"
+    %assign labelVar = "NULL"
+    %assign labelLenVar = "NULL"
+    %assign blkNameVar = "NULL"
+    %assign blkNameLenVar = "NULL"
+    %assign rt_RTWLogDataTypeConvertVar = "NULL"
+  %endif
+
+  %if dlo.NumOutputSaveNames == 1
+    %assign numberOfSignalInfosInEachStruct = nSignalInfos
+  %else
+    %assign numberOfSignalInfosInEachStruct = 1
+  %endif
+
+  %<typeQ> RTWLogSignalInfo rt_LoggedOutputSignalInfo[] =\
+  {
+    %if dlo.NumOutputSaveNames == 1
+      %% Single output name
+      {
+        %<nSignalInfos>,
+	%<widthVar>,
+	%<numDimsVar>,
+	%<dimsVar>,
+	%<dTypeVar>,
+	%<cmplxVar>,
+	NULL,
+	%<labelVar>,
+	NULL,
+	NULL,
+	NULL,
+	%<blkNameVar>,
+	NULL,
+        %<rt_RTWLogDataTypeConvertVar>
+      }
+    %else
+      %% Multiple output names
+      %<logSigInfoInitStr>
+    %endif
+  };
+
+  %<RTMLoggingSet("LogYSignalInfo", "rt_LoggedOutputSignalInfo")>
+}
+
+%endfunction  %% LogOutputSetup
+
+
+%% Function: SLibDumpModelRegDataLoggingSetup ==================================
+%% Abstract:
+%%	Writes the statements need to initialize for MAT file data logging.
+%%      Note, we always do this even if MAT file data logging is turned
+%%      off in the event that another form of data logging exists which
+%%      needs to make use of this information.
+%%
+%function SLibDumpModelRegDataLoggingSetup() Output
+  %assert(!IsModelReferenceTarget())
+  /* Setup for data logging */
+  {
+    %if UsingMalloc
+      RTWLogInfo *rt_DataLoggingInfo = ...
+	(RTWLogInfo *) malloc(sizeof(RTWLogInfo));
+
+      %<RTMChkMemAndReturnIfErr("rt_DataLoggingInfo")>;
+    %else
+      static RTWLogInfo rt_DataLoggingInfo;
+    %endif
+
+    %assign amps = UsingMalloc ? "" : "&"
+    %<RTMLoggingSet("RTWLogInfo", "%<amps>rt_DataLoggingInfo")>
+
+    %assign dlo = CompiledModel.DataLoggingOpts
+    %%
+    %% Miscellaneous attributes like format, max rows, etc.
+    %%
+    %<RTMLoggingSet("LogFormat", dlo.SaveFormat)>
+    %<RTMLoggingSet("LogMaxRows", dlo.MaxRows)>
+    %<RTMLoggingSet("LogDecimation", dlo.Decimation)>
+    %<RTMLoggingSet("LogVarNameModifier", "\"%<LogVarNameModifier>\"")>
+    %<RTMLoggingSet("LogT", "\"%<dlo.TimeSaveName>\"")>
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Setup for Data being logged as "state". This includes continuous and %%
+    %% discretes states which live in the dwork vector.                     %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<RTMLoggingSet("LogX", "\"%<dlo.StateSaveName>\"")>
+    %<RTMLoggingSet("LogXFinal", "\"%<dlo.FinalStateName>\"")>
+
+    %if dlo.StateSaveName != "" || dlo.FinalStateName != ""
+      /*
+       * Set pointers to the data and signal info each state
+       */
+       %if RTWCAPIStates == 0
+        %<FcnLogStateSetup(dlo)>\
+      %else
+	%% Set the pointer to the mmi in the RTWLogInfo
+	%%	
+	%<RTMLoggingSet("MMI", "&(%<RTMGet("DataMapInfo")>.mmi)")>
+      %endif
+      %% If we're using the CAPI then everything is setup in the 
+      %% startDataLogging call
+    %else
+      %<RTMLoggingSet("LogXSignalInfo", "NULL")>
+      %<RTMLoggingSet("LogXSignalPtrs", "NULL")>
+    %endif %% Logging state
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% Setup for logging outputs %%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %<RTMLoggingSet("LogY", "\"%<dlo.OutputSaveName>\"")>
+
+    %if dlo.OutputSaveName != ""
+      /*
+       * Set pointers to the data and signal info for each output
+       */
+      %<FcnLogOutputSetup(dlo)>\
+    %else
+      %<RTMLoggingSet("LogYSignalInfo", "NULL")>
+      %<RTMLoggingSet("LogYSignalPtrs", "NULL")>
+    %endif
+  }
+
+%endfunction %% SLibDumpModelRegDataLoggingSetup
+
+
+%% Function: FcnInitBlockOutputSignal ==========================================
+%% Abstract:
+%%
+%function FcnInitBlockOutputSignal(bo, boSigAddr) Output
+  %%
+  %assign initValue = bo.InitialValue
+  %assign width     = bo.Width
+  %%
+  %foreach idx = width
+    %%
+    %assign idxStr = ""
+    %if width > 1
+      %assign idxStr = "[%<idx>]"
+    %endif
+    %%
+    %if SLibGetRecordIsComplex(bo)
+      %assign rval = SLibGetFormattedValue(bo, REAL(bo.InitialValue[idx]))
+      %<boSigAddr>%<idxStr>.%<tRealPart> = %<rval>;
+      %assign ival = SLibGetFormattedValue(bo, IMAG(bo.InitialValue[idx]))
+      %<boSigAddr>%<idxStr>.%<tImagPart> = %<ival>;
+    %else
+      %assign val = SLibGetFormattedValue(bo, bo.InitialValue[idx])
+      %<boSigAddr>%<idxStr> = %<val>;
+    %endif
+    %%
+  %endforeach
+  %%
+%endfunction %% FcnInitSignal
+
+
+%% Function FcnInitBlockIOWithExternalStorage ==================================
+%% Abstract:
+%%   Helper function for initializing block i/o
+%%
+%function FcnInitBlockIOWithExternalStorage(sc, comment, fieldsep, deref) Output
+
+  %<comment>
+  %foreach boIdx = BlockOutputs.NumExternalBlockOutputs
+    %assign bo = BlockOutputs.ExternalBlockOutput[boIdx]
+    %if (SLibWriteOutInstForSignalRec(bo))
+      %with bo
+	%%
+	%% If a non-empty initial value is provided for this signal then
+	%% initialize it to that value. Initial values are provided for signals
+	%% that have constant sample time but (for various reasons) could not be
+	%% declared invariant and placed in the ConstBlockIO structure
+	%%
+	%if !ISEMPTY(bo.InitialValue)
+	  %assign id = bo.Identifier
+	  %if (StorageClass == "ImportedExternPointer") && (Width == 1)
+	    %assign id = "*%<id>"
+	  %endif
+	  %<FcnInitBlockOutputSignal(bo, id)>
+	  %continue
+	%endif
+	%%
+	%if StorageClass == sc
+	  %assign gndValue = SLibGetGroundValue(bo, tRealPart)
+	  %if Width == 1
+	    %% scalar case
+	    %if ComplexSignal == "yes"
+	      %<Identifier>%<fieldsep>%<tRealPart> = %<gndValue>;
+	      %<Identifier>%<fieldsep>%<tImagPart> = %<gndValue>;
+	    %else
+	      %<deref>%<Identifier> = %<gndValue>;
+	    %endif
+	  %else
+	    %% vector case
+	    {
+	      int_T i;
+	      for (i = 0; i < %<Width>; i++) {
+		%if ComplexSignal == "yes"
+		  %<Identifier>[i]%<fieldsep>%<tRealPart> = %<gndValue>;
+		  %<Identifier>[i]%<fieldsep>%<tImagPart> = %<gndValue>;
+		%else
+		  %<deref>%<Identifier>[i] = %<gndValue>;
+		%endif
+	      }
+	    }
+	  %endif
+	%endif
+      %endwith
+    %endif
+  %endforeach
+%endfunction %% FcnInitBlockIOWithExternalStorage
+
+
+%% Function: SLibInitBlockIO ===================================================
+%% Abstract:
+%%   Initialize the block i/o to zero.
+%%
+%function SLibInitBlockIO(usingStatic, varName) Output
+  %<LibResetBlockFcnAccessed()>\
+  %if !LibBlockIOStructIsEmpty()
+    %openfile csgInitBuffer
+    %openfile dblInitBuffer
+    %openfile sglInitBuffer
+    %%
+    %assign needMemSet          = 0
+    %assign numDoublesInBlockIO = 0
+    %assign numSinglesInBlockIO = 0
+    %assign lastDblSysIdx = -1
+    %assign lastSglSysIdx = -1
+    %assign lastDblInstIdx = -1
+    %assign lastSglInstIdx = -1
+    %assign baseSystemIdx = GetBaseSystemIdx()
+    %%
+    %assign doubleDType = LibGetDataTypeNameFromId(tSS_DOUBLE)
+    %assign doubleGndValue = SLibGetGroundValueFromId(tSS_DOUBLE)
+    %assign singleDType = LibGetDataTypeNameFromId(tSS_SINGLE)
+    %assign singleGndValue = SLibGetGroundValueFromId(tSS_SINGLE)
+    %%
+    %foreach boIdx = BlockOutputs.NumGlobalBlockOutputs
+      %assign bo = BlockOutputs.GlobalBlockOutput[boIdx]
+      %% Required in blockIO and not model reference output
+      %if bo.RequiredInBlockIO[0] == 1 && bo.RequiredInBlockIO[1] == 0
+
+	%assign newSysIdx = System[bo.SigSrc[0]].HStructDeclSystemIdx
+        %assign newInstIdx = bo.SigSrc[1]
+
+	%% If a non-empty initial value is provided for this block output
+	%% then initialize it to that value. Initial values are provided
+        %% for block output signals that have constant sample time but (for
+	%% various reasons) could not be declared invariant and placed in
+	%% the ConstBlockIO structure
+	%if !ISEMPTY(bo.InitialValue)
+	  %assign id = SLibGetBlockOutputIdentifierFromRecord(bo,baseSystemIdx)
+	  %selectfile csgInitBuffer
+	  %<FcnInitBlockOutputSignal(bo, id)>
+	  %continue
+	%endif
+
+	%assign nterms = bo.Width
+        %if bo.ComplexSignal == "yes"
+          %assign nterms  = 2*nterms
+        %endif
+        %if LibGetDataTypeIdAliasedThruToFromId(bo.DataTypeIdx) == tSS_DOUBLE
+          %if (newSysIdx != lastDblSysIdx) || (newInstIdx != lastDblInstIdx)
+            %assign lastDblSysIdx = newSysIdx
+            %assign lastDblInstIdx = newInstIdx
+            %if numDoublesInBlockIO > 0 && InitFltsAndDblsToZero
+              %% Need to set doubles explicitly to 0.0
+              %selectfile dblInitBuffer
+              %if numDoublesInBlockIO >1
+                %<varName> = %<dblStartAddr>;
+                for (i = 0; i < %<numDoublesInBlockIO>; i++) {
+                  ((%<doubleDType>*)%<varName>)[i] = %<doubleGndValue>;
+                }
+              %else
+                ((%<doubleDType>*)%<dblStartAddr>)[0] = %<doubleGndValue>;
+              %endif
+            %endif
+            %assign numDoublesInBlockIO = 0
+            %assign sysIdx = bo.SigSrc[0]
+            %assign blkIdx = bo.SigSrc[2]
+            %assign prtIdx = bo.SigSrc[3]
+            %assign dblStartAddr = SLibGetBlockOutputFromRecord(bo,baseSystemIdx)
+          %endif
+          %assign numDoublesInBlockIO = numDoublesInBlockIO + nterms
+        %elseif LibGetDataTypeIdAliasedThruToFromId(bo.DataTypeIdx) == tSS_SINGLE
+          %if (newSysIdx != lastSglSysIdx) || (newInstIdx != lastDblInstIdx)
+            %assign lastSglSysIdx = newSysIdx
+            %assign lastSglInstIdx = newInstIdx
+            %if numSinglesInBlockIO > 0 && InitFltsAndDblsToZero
+              %selectfile sglInitBuffer
+              %% Need to set singles explicitly to 0.0
+              %if numSinglesInBlockIO > 1
+                %<varName> =%<sglStartAddr>;
+                for (i = 0; i < %<numSinglesInBlockIO>; i++) {
+                  ((%<singleDType>*)%<varName>)[i] = %<singleGndValue>;
+                }
+              %else
+                ((%<singleDType>*)%<sglStartAddr>)[0] = %<singleGndValue>;
+              %endif
+            %endif
+            %assign numSinglesInBlockIO = 0
+            %%
+            %% Find beginning of singles in this block I/O
+            %% for later initialization to ground value (0.0F).
+            %if numSinglesInBlockIO == 0
+              %assign sysIdx = bo.SigSrc[0]
+              %assign blkIdx = bo.SigSrc[2]
+              %assign prtIdx = bo.SigSrc[3]
+              %assign sglStartAddr = SLibGetBlockOutputFromRecord(bo,baseSystemIdx)
+            %endif
+          %endif
+          %assign numSinglesInBlockIO = numSinglesInBlockIO + nterms
+        %else
+          %assign needMemSet = 1
+        %endif
+      %endif
+    %endforeach
+    %% Add the last entries to doubleInitBuffer & singleInitBuffer
+    %if numDoublesInBlockIO > 0 && InitFltsAndDblsToZero
+      %% Need to set doubles explicitly to 0.0
+      %selectfile dblInitBuffer
+      %<varName> =%<dblStartAddr>;
+      for (i = 0; i < %<numDoublesInBlockIO>; i++) {
+        ((%<doubleDType>*)%<varName>)[i] = %<doubleGndValue>;
+      }
+    %endif
+    %if numSinglesInBlockIO > 0 && InitFltsAndDblsToZero
+      %selectfile sglInitBuffer
+      %% Need to set singles explicitly to 0.0
+      %<varName> = %<sglStartAddr>;
+      for (i = 0; i < %<numSinglesInBlockIO>; i++) {
+        ((%<singleDType>*)%<varName>)[i] = %<singleGndValue>;
+      }
+    %endif
+    %closefile csgInitBuffer
+    %closefile dblInitBuffer
+    %closefile sglInitBuffer
+
+    %%
+    %if needMemSet
+      %assign blockIOType = IsModelReferenceTarget() ? ...
+        "rtB%<FcnGetSystemIdentifier(NumSystems-2)>" : tBlockIOType
+      (void)memset(%<varName>, 0, sizeof(%<blockIOType>));
+      %<LibAccessArg(System[baseSystemIdx].Interface.BlockIOArgDef)>
+    %endif
+    %%
+    %if  !WHITE_SPACE(csgInitBuffer) ...
+      || !WHITE_SPACE(dblInitBuffer) ...
+      || !WHITE_SPACE(sglInitBuffer)
+      {
+	%<LibDeclareAllAccessedSimStructVars()>
+	%if  !WHITE_SPACE(dblInitBuffer) ...
+	  || !WHITE_SPACE(sglInitBuffer)
+	  int_T i;
+	  %<dblInitBuffer>
+	  %<sglInitBuffer>
+	%else
+	  (void)%<varName>;
+	%endif
+	%<csgInitBuffer>
+      }
+    %endif
+  %endif
+  %%
+  %% Exported global signals
+  %%
+  %if !LibExportedGlobalSignalsInstanceIsEmpty()
+    %<FcnInitBlockIOWithExternalStorage("ExportedGlobal", ...
+      "/* Exported global signals */", ".", "")>
+  %endif
+  %%
+  %% Custom signals
+  %%
+  %if !SLibCustomDataBufferIsEmpty("Decl")
+
+    %assign commented = 0
+    %foreach boIdx = BlockOutputs.NumExternalBlockOutputs
+      %assign bo = BlockOutputs.ExternalBlockOutput[boIdx]
+      %with bo
+        %if StorageClass == "Custom"
+          %if !commented
+            /* custom signals */
+            %assign commented = 1
+          %endif
+          %assign gndValue = SLibGetGroundValue(bo, tRealPart)
+          %assign width = Width
+          %if width == 1
+            %% scalar case
+            %if bo.ComplexSignal == "yes"
+              %<LibCustomData(bo,"initialize","",tRealPart)>
+              %<LibCustomData(bo,"initialize","",tImagPart)>
+            %else
+              %<LibCustomData(bo,"initialize","","")>
+            %endif
+          %else
+            %% vector case
+	    %openfile initialization
+	    %assign sigIndexer = SLibGet1DArrayIndexer(width, "i", "", 0)
+	    %if bo.ComplexSignal == "yes"
+	      %<LibCustomData(bo,"initialize",sigIndexer,tRealPart)>
+	      %<LibCustomData(bo,"initialize",sigIndexer,tImagPart)>
+	    %else
+	      %<LibCustomData(bo,"initialize",sigIndexer,"")>
+	    %endif
+	    %closefile initialization
+	    %if !WHITE_SPACE(initialization)
+	      {
+		int_T i;
+		for (i = 0; i < %<width>; i++) {
+		  %<initialization>
+		}
+	      }
+	    %endif
+          %endif
+        %endif
+      %endwith
+    %endforeach
+  %endif
+%endfunction %% SLibInitBlockIO
+
+
+%% Function: SLibInitExternalInputs ============================================
+%% Abstract:
+%%   Initialize the external inputs structure
+%%
+%function SLibInitExternalInputs(usingStatic) Output
+  %<LibResetBlockFcnAccessed()>\
+  %if ((NumModelInputs > 0) && ...
+       (!IsModelReferenceTarget()))
+    %foreach idx = ExternalInputs.NumExternalInputs
+      %assign extInp  = ExternalInputs.ExternalInput[idx]
+      %assign width   = extInp.Width
+      %assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(...
+	SLibGetRecordDataTypeId(extInp))
+      %assign structType = LibIsStructDataType(dTypeId)
+      %assign ic      = SLibGetGroundValue(extInp,tRealPart)
+      %if extInp.StorageClass == "Auto"
+	%% Signal is in the external inputs structure
+        %assign varName = "%<tInput>%<UQualifier>%<extInp.Identifier>"
+	%if MultiInstanceERTCode && ...
+	  structType && ...
+	  !RootIOStructures
+	  %assign varName = "(*%<varName>)"
+	%endif
+	%assign ::BlockFcnAccessed.U = 1
+      %elseif extInp.StorageClass == "ExportedGlobal"
+	%assign varName = extInp.Identifier
+      %endif
+      %%
+      %if width == 1
+	%if extInp.ComplexSignal == "yes"
+          %if extInp.StorageClass == "Auto" || ...
+              extInp.StorageClass == "ExportedGlobal"
+  	    %<varName>.%<tRealPart> = %<ic>;
+	    %<varName>.%<tImagPart> = %<ic>;
+	  %elseif extInp.StorageClass != "ImportedExtern" && ...
+                  extInp.StorageClass != "ImportedExternPointer"
+            %<LibCustomData(extInp,"initialize","",tRealPart)>
+            %<LibCustomData(extInp,"initialize","",tImagPart)>
+          %endif
+	%else
+          %if extInp.StorageClass == "Auto" || ...
+              extInp.StorageClass == "ExportedGlobal"
+  	    %<varName> = %<ic>;
+	  %elseif extInp.StorageClass != "ImportedExtern" && ...
+                  extInp.StorageClass != "ImportedExternPointer"
+            %assign sigIndexer = SLibGet1DArrayIndexer(width, "", "", 0)
+            %<LibCustomData(extInp,"initialize",sigIndexer,"")>
+          %endif
+	%endif
+      %else
+        %%
+        %assign storageDataType = ...
+          LibGetDataTypeStorageIdFromId(...
+          LibGetDataTypeIdAliasedThruToFromId(dTypeId))
+        %%
+        %if storageDataType == tSS_DOUBLE || ...
+	    storageDataType == tSS_SINGLE || ...
+            extInp.StorageClass == "Custom"
+	  %openfile initialization
+	  %if extInp.ComplexSignal == "yes"
+	    %if extInp.StorageClass == "Auto" || ...
+	      extInp.StorageClass == "ExportedGlobal"
+	      %<varName>[i].%<tRealPart> = %<ic>;
+	      %<varName>[i].%<tImagPart> = %<ic>;
+	    %elseif extInp.StorageClass != "ImportedExtern" && ...
+	      extInp.StorageClass != "ImportedExternPointer"
+	      %assign sigIndexer = SLibGet1DArrayIndexer(width, "i", "", 0)
+	      %<LibCustomData(extInp,"initialize",sigIndexer,tRealPart)>
+	      %<LibCustomData(extInp,"initialize",sigIndexer,tImagPart)>
+	    %endif
+	  %else
+	    %if extInp.StorageClass == "Auto" || ...
+	      extInp.StorageClass == "ExportedGlobal"
+	      %<varName>[i] = %<ic>;
+	    %elseif extInp.StorageClass != "ImportedExtern" && ...
+	      extInp.StorageClass != "ImportedExternPointer"
+	      %assign sigIndexer = SLibGet1DArrayIndexer(width, "i", "", 0)
+	      %<LibCustomData(extInp,"initialize",sigIndexer,"")>
+	    %endif
+	  %endif
+	  %closefile initialization
+	  %if !WHITE_SPACE(initialization)
+	    {
+	      int_T i;
+	      for (i = 0; i < %<width>; i++) {
+		%<initialization>
+	      }
+	    }
+	  %endif
+	%else
+	  %assign dTypeName = LibGetDataTypeNameFromId(dTypeId)
+	  %if extInp.ComplexSignal == "yes"
+	    %assign width = 2*width
+	  %endif
+          %if extInp.StorageClass == "Auto" || ...
+            extInp.StorageClass == "ExportedGlobal"
+  	    (void)memset(%<varName>, %<ic>, %<width>*sizeof(%<dTypeName>));
+	  %endif
+	%endif
+      %endif
+      %if extInp.Padding > 0
+	%assign charPad = "(void)memset(%<tInput>%<UQualifier>"
+	%assign charPad = charPad + "pad_%<extInp.Identifier>, 'a', "
+	%assign charPad = charPad + "%<extInp.Padding>*sizeof(char));"
+	%<charPad>
+      %endif
+    %endforeach
+  %endif
+%endfunction  %% SLibInitExternalInputs
+
+
+%% Function: SLibInitExternalOutputs ============================================
+%% Abstract:
+%%   Initialize the external outputs structure
+%%
+%function SLibInitExternalOutputs(usingStatic) Output
+  %<LibResetBlockFcnAccessed()>\
+  %with System[NumSystems-1]
+  %if NumModelOutputs > 0
+    %foreach idx = ExternalOutputs.NumExternalOutputs
+      %assign extOut       = ExternalOutputs.ExternalOutput[idx]
+      %assign sysIdx       = extOut.Block[0]
+      %assign blkIdx       = extOut.Block[1]
+      %assign outportBlock = System[sysIdx].Block[blkIdx]
+      %with outportBlock
+	%assign rPart   = "%<tRealPart>0"
+	%assign iPart   = "%<tImagPart>0"
+	%assign width   = LibBlockInputSignalWidth(0)
+	%assign dTypeId = LibGetDataTypeIdAliasedThruToFromId(...
+	  LibBlockInputSignalDataTypeId(0))
+        %assign uIsComplex = LibBlockInputSignalIsComplex(0)
+	%%
+	%if width == 1
+	  %if SLibExternalOutputIsVirtual(outportBlock)
+       	    %assign sc = LibBlockInputSignalStorageClass(0,0)
+            %if sc == "Custom"
+              %assign signal = SLibGetSourceRecord(DataInputPort[0], 0)
+              %<LibCustomData(signal,"initialize","",(uIsComplex?tRealPart:""))>
+	    %elseif sc != "ImportedExtern" && sc != "ImportedExternPointer"
+	      %assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+	      %<LibBlockInputSignal(0,"","",rPart)> = %<initVal>;
+	    %endif
+          %else
+	    %assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+            %<LibBlockDstSignalLocation("outportblk","","",rPart)> =  %<initVal>;
+	  %endif
+	  %if uIsComplex
+  	    %if SLibExternalOutputIsVirtual(outportBlock)
+              %assign sc = LibBlockInputSignalStorageClass(0,0)
+              %if sc == "Custom"
+                %assign signal = SLibGetSourceRecord(DataInputPort[0], 0)
+                %<LibCustomData(signal,"initialize","",tImagPart)>
+	      %elseif sc != "ImportedExtern" && sc != "ImportedExternPointer"
+		%assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+                %<LibBlockInputSignal(0,"","",iPart)>  = %<initVal>;
+  	      %endif
+            %else
+	      %assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+              %<LibBlockDstSignalLocation("outportblk","","",iPart)> = %<initVal>;
+	    %endif
+	  %endif
+	%else
+	  %if SLibExternalOutputIsVirtual(outportBlock)
+	    %assign rollVars = []
+	    %<SLibRollInputIsWritable(1)>
+	    %roll idx = RollRegions, lcv = RollThreshold, outportBlock, "Roller", rollVars
+	      %assign sc = LibBlockInputSignalStorageClass(0,idx)
+	      %assign signal = SLibGetSourceRecord(DataInputPort[0], idx)
+	      %assign sigWidth = LibGetDataWidth(signal)
+	      %assign portObj  = FcnGetInputPortRecord(0)
+	      %assign sigRecAndMapInfo = ...
+		SLibGetSourceRecordAndMapInfo(portObj, idx, TLC_TRUE)
+	      %assign sigOffset = sigRecAndMapInfo.signalOffset
+	      %assign sigIdx = SLibGet1DArrayIndexer(sigWidth, "", lcv, sigOffset)
+	      %assign reSuf = uIsComplex?tRealPart:""
+	      %if sc == "Custom"
+		%<LibCustomData(signal,"initialize",sigIdx,reSuf)>
+		%if uIsComplex
+		  %<LibCustomData(signal,"initialize",sigIdx,tImagPart)>
+		%endif
+	      %elseif sc != "ImportedExtern" && sc != "ImportedExternPointer"
+		%assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+		%if uIsComplex
+		  %<LibGetRecordIdentifier(signal)>%<sigIdx>.%<reSuf> = %<initVal>;
+		  %<LibGetRecordIdentifier(signal)>%<sigIdx>.%<tImagPart> = %<initVal>;
+		%else
+		  %<LibGetRecordIdentifier(signal)>%<sigIdx> = %<initVal>;
+		%endif
+	      %endif
+	    %endroll
+	    %<SLibRollInputIsWritable(0)>
+          %else
+           %%
+           %assign storageDataType = ...
+             LibGetDataTypeStorageIdFromId(...
+             LibGetDataTypeIdAliasedThruToFromId(dTypeId))
+           %%
+           %if storageDataType == tSS_DOUBLE || ...
+               storageDataType == tSS_SINGLE
+	    %openfile initialization
+	    %assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+	    %<LibBlockDstSignalLocation("outportblk","i","",rPart)> = %<initVal>;
+	    %if uIsComplex
+	      %<LibBlockDstSignalLocation("outportblk","i","",iPart)> = %<initVal>;
+	    %endif
+	    %closefile initialization
+	    %if !WHITE_SPACE(initialization)
+	      {
+		int_T i;
+		for (i = 0; i < %<width>; i++) {
+		  %<initialization>
+		}
+	      }
+	    %endif
+	  %else
+	    %assign dtName  = LibGetDataTypeNameFromId(dTypeId)
+            %if SLibExternalOutputIsVirtual(outportBlock)
+              %assign srcLoc = LibBlockInputSignal(0,"","",0)
+            %else
+   	      %assign srcLoc = LibBlockDstSignalLocation("outportblk","","",0)
+	    %endif
+	    %if uIsComplex
+	      %assign width = 2*width
+	    %endif
+	    %assign initVal = SLibGetGroundValue(DataInputPort, tRealPart)
+	    (void)memset(&%<srcLoc>, %<initVal>, %<width>*sizeof(%<dtName>));
+	   %endif
+          %endif
+	%endif
+	%%
+      %endwith %% outportBlock
+    %endforeach
+  %endif
+  %endwith %% System[NumSystems-1]
+%endfunction  %% SLibInitExternalOutputs
+
+
+%% Function: FcnInitStatesWithExternalStorage ==================================
+%% Abstract:
+%%   Helper function to Initialize the states with external storage class
+%%
+%function FcnInitStatesWithExternalStorage(sc, comment, fieldsep, addressof, deref) Output
+
+  %<comment>
+  %foreach dwIdx = DWorks.NumDWorks
+    %assign dwRec  = DWorks.DWork[dwIdx]
+    %with dwRec
+      %assign dTypeId = DataTypeIdx
+      %if StorageClass == sc
+	%assign gndValue = SLibGetGroundValue(dwRec, tRealPart)
+	%assign width = Width
+	%if width == 1
+	  %% scalar case
+	  %if ComplexSignal == "yes"
+	    %<Identifier>%<fieldsep>%<tRealPart> = %<gndValue>;
+	    %<Identifier>%<fieldsep>%<tImagPart> = %<gndValue>;
+	  %else
+	    %<deref>%<Identifier> = %<gndValue>;
+	  %endif
+	%else
+         %%
+         %assign storageDataType = ...
+           LibGetDataTypeStorageIdFromId(...
+           LibGetDataTypeIdAliasedThruToFromId(dTypeId))
+         %%
+         %if storageDataType == tSS_DOUBLE || ...
+             storageDataType == tSS_SINGLE
+	  %% float vector case
+	  {
+	    int_T i;
+	    for (i = 0; i < %<width>; i++) {
+	      %if ComplexSignal == "yes"
+		%<Identifier>[i]%<fieldsep>%<tRealPart> = %<gndValue>;
+		%<Identifier>[i]%<fieldsep>%<tImagPart> = %<gndValue>;
+	      %else
+		%<deref>%<Identifier>[i] = %<gndValue>;
+	      %endif
+	    }
+	  }
+         %else
+	  %if ComplexSignal == "yes"
+	    %assign width = 2*width
+	  %endif
+	  %assign dtName = LibGetDataTypeNameFromId(dTypeId)
+	  (void)memset(%<addressof>%<Identifier>, %<gndValue>, %<width>*sizeof(%<dtName>));
+         %endif
+        %endif
+      %endif
+    %endwith
+  %endforeach
+%endfunction %% FcnInitStatesWithExternalStorage
+
+%% Function: SLibInitStatesWithExternalStorage =================================
+%% Abstract:
+%%   Initialize the states with external storage class
+%%
+%function SLibInitStatesWithExternalStorage(usingStatic) Output
+  %<LibResetBlockFcnAccessed()>\
+  %%
+  %% Exported global states
+  %%
+  %if !SLibExportedGlobalDWorkIsEmpty()
+    %<FcnInitStatesWithExternalStorage("ExportedGlobal", ...
+      "/* exported global states */", ".", "&", "")>
+  %endif
+  %%
+  %% Custom states
+  %%
+  %openfile customStateBuffer
+    %foreach dwIdx = DWorks.NumDWorks
+      %assign dwRec  = DWorks.DWork[dwIdx]
+      %with dwRec
+	%if StorageClass == "Custom"
+	  %assign gndValue = SLibGetGroundValue(dwRec, tRealPart)
+          %assign width = dwRec.Width
+	  %if width == 1
+	    %% scalar case
+	    %if dwRec.ComplexSignal == "yes"
+	      %<LibCustomData(dwRec,"initialize","",tRealPart)>
+	      %<LibCustomData(dwRec,"initialize","",tImagPart)>
+	    %else
+	      %<LibCustomData(dwRec,"initialize","","")>
+	    %endif
+	  %else
+	    %% vector case
+	    %assign sigIndexer = SLibGet1DArrayIndexer(width, "i", "", 0)
+	    %openfile initialization
+	    %if dwRec.ComplexSignal == "yes"
+	      %<LibCustomData(dwRec,"initialize",sigIndexer,tRealPart)>
+	      %<LibCustomData(dwRec,"initialize",sigIndexer,tImagPart)>
+	    %else
+	      %<LibCustomData(dwRec,"initialize",sigIndexer,"")>
+	    %endif
+	    %closefile initialization
+	    %if !WHITE_SPACE(initialization)
+	      {
+		int_T i;
+		for (i = 0; i < %<width>; i++) {
+		  %<initialization>
+		}
+	      }
+	    %endif
+	  %endif
+	%endif
+      %endwith
+    %endforeach
+  %closefile customStateBuffer
+  %if !WHITE_SPACE(customStateBuffer)
+    /* custom states */
+    %<customStateBuffer>
+  %endif
+%endfunction  %% SLibInitStatesWithExternalStorage
+
+
+%% Function: SLibInitDWork =====================================================
+%% Abstract:
+%%   Initialize DWork to zero.
+%%   Memset entire DWork structure to 0 if non-floating elements exist.
+%%   Assign double and single floating-point elements to 0.0
+%%
+%%   This function returns vector with three values [numeric, numeric, string]:
+%%     haveFloat  - found at least one floating-point region
+%%     needMemset - found at least one non-floating-point region
+%%     initBuffer - buffer with floating-point assignments to 0.0
+%%
+%function SLibInitDWork() void
+  %assign prevDataTypeIdx = -1
+  %assign haveFloat  = 0
+  %assign initCount  = 0
+  %assign needMemset = 0
+  %assign baseSystemIdx = GetBaseSystemIdx()
+  %openfile initBuffer
+  %foreach dwIdx = DWorks.NumDWorks
+    %assign dwRec  = DWorks.DWork[dwIdx]
+    %if dwRec.StorageClass == "Auto"
+      %assign nterms = dwRec.Width
+      %assign isComplex  = dwRec.ComplexSignal == "yes"
+      %if prevDataTypeIdx != dwRec.DataTypeIdx
+        %if initCount > 0
+	  %assign haveFloat = 1
+	  %% Need to set floating-point dworks explicitly to 0.0
+	  %assign dType = LibGetDataTypeNameFromId(prevDataTypeIdx)
+	  %assign gndValue = SLibGetGroundValueFromId(prevDataTypeIdx)
+	  %if initCount == 1
+	    %<contents> = %<gndValue>;
+	  %else
+	    {
+	      int_T i;
+	      %<dType> *dwork_ptr = (%<dType> *) %<baseAddr>;
+
+	      for (i = 0; i < %<initCount>; i++) {
+		dwork_ptr[i] = %<gndValue>;
+	      }
+	    }
+	  %endif
+	  %assign initCount = 0
+        %endif
+        %assign prevDataTypeIdx = dwRec.DataTypeIdx
+        %if (LibGetDataTypeIdAliasedThruToFromId(prevDataTypeIdx) == tSS_DOUBLE || ...
+	  LibGetDataTypeIdAliasedThruToFromId(prevDataTypeIdx) == tSS_SINGLE)
+	  %if InitFltsAndDblsToZero
+	    %assign name       = FcnGetDWorkIdentifier(dwRec, baseSystemIdx)
+	    %assign dataLayout = SLibGetDataLayout(dwRec)
+	    %assign reim       = isComplex ? ".%<tRealPart>" : ""
+	    %assign initCount  = isComplex ? nterms * 2 : nterms
+	    %assign contents   = "%<name>%<dataLayout[3]>%<reim>"
+	    %assign baseAddr   = "&%<contents>"
+	  %endif
+        %elseif prevDataTypeIdx > 1
+          %assign needMemset = 1
+        %endif
+      %else
+        %if LibGetDataTypeIdAliasedThruToFromId(prevDataTypeIdx) == tSS_DOUBLE ...
+	  || LibGetDataTypeIdAliasedThruToFromId(prevDataTypeIdx) == tSS_SINGLE
+	  %if InitFltsAndDblsToZero
+	    %assign nterms = isComplex ? nterms * 2 : nterms
+	    %assign initCount = initCount + nterms
+	  %endif
+        %endif
+      %endif
+    %endif
+  %endforeach
+  %if initCount > 0
+    %assign haveFloat = 1
+    %% Need to set floating-point dworks explicitly to 0.0
+    %assign dType = LibGetDataTypeNameFromId(prevDataTypeIdx)
+    %assign gndValue = SLibGetGroundValueFromId(prevDataTypeIdx)
+    %if initCount == 1
+      %<contents> = %<gndValue>;
+    %else
+      {
+	int_T i;
+	%<dType> *dwork_ptr = (%<dType> *) %<baseAddr>;
+
+	for (i = 0; i < %<initCount>; i++) {
+	  dwork_ptr[i] = %<gndValue>;
+	}
+      }
+    %endif
+  %endif
+  %closefile initBuffer
+  %if needMemset
+    %<LibAccessArg(System[baseSystemIdx].Interface.DWorkArgDef)>
+  %endif
+  %return [%<haveFloat>, %<needMemset>, "%<STRING(initBuffer)>"]
+
+%endfunction  %% SLibInitDWork
+
+
+%% Function: SLibDumpModelDataInitialization ===================================
+%% Abstract:
+%%   Dump all data initialization for model.
+%%
+%function SLibDumpModelDataInitialization(usingStatic) Output
+
+  /*
+  * initialize model vectors and cache them in SimStruct
+  */
+  %%
+  %% Block I/O
+  %%
+  %assign varName = "b"
+  %openfile tmpBuf
+  %if !LibBlockIOStructIsEmpty()
+    %if usingStatic
+      void *%<varName> = (void *) &%<tBlockIO>;
+    %else
+      void *%<varName> = malloc(sizeof(%<tBlockIOType>));
+      %<RTMChkMemAndReturnIfErr(varName)>;
+    %endif
+    %<RTMSet("BlockIO", varName)>;
+  %endif
+
+  %<SLibInitBlockIO(usingStatic, varName)>\
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf)
+
+    /* block I/O */
+    {
+      %<tmpBuf>
+    }
+  %endif
+  %%
+  %% U
+  %%
+  %openfile tmpBuf
+  %if !LibExternalInputsStructIsEmpty()
+    %if usingStatic
+      %<RTMSet("U", "((void*) &%<tInput>)")>;
+    %else
+      %<tInputType> *%<tInput> = ...
+	(%<tInputType> *) malloc(sizeof(%<tInputType>));
+      %<RTMChkMemAndReturnIfErr(tInput)>;
+      %<RTMSet("U", "((void*) %<tInput>)")>;
+    %endif
+  %endif
+
+  %<SLibInitExternalInputs(usingStatic)>\
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf)
+
+    /* external inputs */
+    {
+      %<tmpBuf>\
+    }
+  %endif
+  %%
+  %% Y
+  %%
+  %if !LibExternalOutputsStructIsEmpty()
+
+    /* external outputs */
+    {
+      %if usingStatic
+	%<RTMSet("Y", "&%<tOutput>")>;
+      %else
+        %<tOutputType> *%<tOutput> = ...
+	  (%<tOutputType> *) malloc(sizeof(%<tOutputType>));
+	%<RTMChkMemAndReturnIfErr(tOutput)>;
+	%<RTMSet("Y", tOutput)>;
+      %endif
+
+      %<SLibInitExternalOutputs(usingStatic)>\
+    }
+  %endif
+  %%
+  %% Invariant Block Outputs
+  %%
+  %if !LibConstBlockIOStructIsEmpty() && !usingStatic
+
+    /* constant block I/O */
+    %<RTMuSet("ConstBlockIO", "&%<tInvariantSignals>")>;
+  %endif
+
+  %%
+  %% Parameters
+  %%
+  %if !LibParametersStructIsEmpty()
+
+    /* parameters */
+    %if usingStatic
+      %<RTMSet("DefaultParam", "(real_T *) &%<tParameters>")>;
+    %else
+      {
+	%<tParametersType> *p;
+	static int_T pSeen = FALSE;
+
+	/* only malloc on multiple model instantiation */
+	if( pSeen == TRUE ) {
+	  p = (%<tParametersType> *) malloc(sizeof(%<tParametersType>));
+	  %<RTMChkMemAndReturnIfErr("p")>;
+	  (void)memcpy(p, &%<tDefaultParameters>, sizeof(%<tParametersType>));
+	} else {
+	  p = &%<tDefaultParameters>;
+	  pSeen = TRUE;
+	}
+	%<RTMSet("DefaultParam", "(real_T *) p")>;
+      }
+    %endif
+  %endif
+  %%
+  %% States
+  %%
+  %if (NumContStates) > 0
+
+    /* states */
+    {
+      int_T i;
+      %if usingStatic
+	real_T *x = (real_T *) &%<tContState>;
+      %else
+	real_T *x = (real_T *) malloc(sizeof(%<tContStateType>));
+	%<RTMChkMemAndReturnIfErr("x")>;
+      %endif
+      %% Always setup continuous states so ssGetX in logging code works
+      %<RTMSet("ContStates", "x")>;
+      for(i = 0; i < (int_T)(sizeof(%<tContStateType>)/sizeof(real_T)); i++) {
+	x[i] = 0.0;
+      }
+    }
+  %endif
+  %%
+  %% DWork
+  %%
+  %if NumNonExternalDWork > 0
+
+    /* data type work */
+    {
+      %assign initVars = SLibInitDWork()
+      %if usingStatic
+        void *dwork = (void *) &%<tDWork>;
+      %else
+        void *dwork = (void *) malloc(sizeof(%<tDWorkType>));
+        %if initVars[0]
+          %<tDWorkType> *%<tDWork> = (%<tDWorkType> *) dwork;
+        %endif
+        %<RTMChkMemAndReturnIfErr("dwork")>;
+      %endif
+      %<RTMSet("RootDWork", "dwork")>;
+      %if initVars[1]
+        (void)memset((char_T *) dwork, 0, sizeof(%<tDWorkType>));
+      %endif
+      %if initVars[0]
+        %<initVars[2]>
+      %endif
+    }
+
+  %endif
+  %openfile tmpBuf
+  %<SLibInitStatesWithExternalStorage(usingStatic)>\
+  %closefile tmpBuf
+  %if !WHITE_SPACE(tmpBuf)
+    %<tmpBuf>\
+  %endif
+  %%
+  %% PrevZCStates
+  %%
+  %if NumZCEvents > 0
+     %<LibDumpModelInitializePrevZCStates()>
+  %endif
+  %%
+  %% Multi-Instance Stateflow chart initialization
+  %%
+  %% dboissy & vijay say:
+  %% Don't need this
+  %%<SLibDumpSFLibraryBlockInitialization()>\
+  %%
+%endfunction %% SLibDumpModelDataInitialization
+
+
+%% Function: SLibDumpTimingInfoRegistration ====================================
+%% Abstract:
+%%   Dump all timing info
+%%
+%function SLibDumpTimingInfoRegistration(usingStatic) Output
+  %%
+  %% Timing Info.  Supports these code formats
+  %%     o RealTime
+  %%     o RealTimeMalloc
+
+  /* timing info */
+  {
+    %assign nTs = "NSAMPLE_TIMES"
+    %if usingStatic
+      %assign nTs = CodeFormat == "Embedded-C" ? ...
+      NumSynchronousSampleTimes : "NSAMPLE_TIMES"
+      static time_T mdlPeriod[%<nTs>];
+      static time_T mdlOffset[%<nTs>];
+      static time_T mdlTaskTimes[%<nTs>];
+      static int_T  mdlTsMap[%<nTs>];
+      static int_T  mdlSampleHits[%<nTs>];
+      %if EXISTS("_RSIM_FULL_")  %% assert !IsModelReferenceTarget
+	static boolean_T  mdlTNextWasAdjustedPtr[%<nTs>];
+	static int_T mdlPerTaskSampleHits[%<nTs> * %<nTs>];
+	%if NumVariableSampleTimes > 0
+	  static real_T mdlVarNextHitTimesList[%<NumVariableSampleTimes>];
+	%endif
+      %endif
+    %else
+      time_T *mdlPeriod;
+      time_T *mdlOffset;
+      time_T *mdlTaskTimes;
+      int_T  *mdlTsMap;
+      int_T  *mdlSampleHits;
+
+      mdlPeriod = (time_T *) malloc(%<NumSynchronousSampleTimes> * sizeof(time_T));
+      %<RTMChkMemAndReturnIfErr("mdlPeriod")>;
+      mdlOffset = (time_T *) malloc(%<NumSynchronousSampleTimes> * sizeof(time_T));
+      %<RTMChkMemAndReturnIfErr("mdlOffset")>;
+      mdlTaskTimes = (time_T *) malloc(%<NumSynchronousSampleTimes> * sizeof(time_T));
+      %<RTMChkMemAndReturnIfErr("mdlTaskTimes")>;
+      mdlTsMap  = (int_T *) malloc(%<NumSynchronousSampleTimes> * sizeof(int_T));
+      %<RTMChkMemAndReturnIfErr("mdlTsMap")>;
+      mdlSampleHits = (int_T *) ...
+	malloc(%<NumSynchronousSampleTimes> * sizeof(int_T));
+      %<RTMChkMemAndReturnIfErr("mdlSampleHits")>;
+    %endif
+
+    {
+      int_T i;
+
+      for(i = 0; i < %<nTs>; i++) {
+	mdlPeriod[i] = 0.0;
+	mdlOffset[i] = 0.0;
+	mdlTaskTimes[i] = 0.0;
+	mdlTsMap[i] = i;
+        %if SLibSingleTasking()
+	  mdlSampleHits[i] = 1;
+	%endif
+      }
+    }
+    %if !SLibSingleTasking()
+      mdlSampleHits[0] = 1;
+    %endif
+
+    %<RTMSet("SampleTimePtr",       "&mdlPeriod[0]")>;
+    %<RTMSet("OffsetTimePtr",       "&mdlOffset[0]")>;
+    %<RTMSet("SampleTimeTaskIDPtr", "&mdlTsMap[0]")>;
+    %<RTMSet("TPtr",                "&mdlTaskTimes[0]")>;
+    %<RTMSet("SampleHitPtr",        "&mdlSampleHits[0]")>;
+    %if EXISTS("_RSIM_FULL_") %% assert !IsModelReferenceTarget
+      %<RTMSet("TNextWasAdjustedPtr", "&mdlTNextWasAdjustedPtr[0]")>;
+      %<RTMSet("PerTaskSampleHitsPtr", "&mdlPerTaskSampleHits[0]")>;
+      %if NumVariableSampleTimes > 0
+	%<RTMSet("VarNextHitTimesListPtr", "&mdlVarNextHitTimesList[0]")>;
+	{
+	  int_T i;
+	  for(i = 0; i < %<NumVariableSampleTimes>; i++) {
+	    mdlVarNextHitTimesList[i] = DISABLED_VARIABLE_NEXT_TIME;
+	  }
+	}
+      %endif
+    %endif
+  }
+  %if CompiledModel.SolverType == "FixedStep"
+    %if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+      {
+	%if usingStatic
+	  static int_T mdlPerTaskSampleHits[%<nTs> * %<nTs>];
+	%else
+	  int_T *mdlPerTaskSampleHits = (int_T *)
+	  malloc(%<NumSynchronousSampleTimes> * %<NumSynchronousSampleTimes> * sizeof(int_T));
+	  %<RTMChkMemAndReturnIfErr("mdlPerTaskSampleHits")>;
+	%endif
+
+	(void)memset((char_T *)&mdlPerTaskSampleHits[0], 0,
+	%<NumSynchronousSampleTimes> * %<NumSynchronousSampleTimes> * sizeof(int_T));
+	%<RTMSet("PerTaskSampleHitsPtr", "&mdlPerTaskSampleHits[0]")>;
+      }
+      %<RTMSolverSet("SolverMode", "SOLVER_MODE_MULTITASKING")>;
+    %else
+      %<RTMSolverSet("SolverMode", "SOLVER_MODE_SINGLETASKING")>;
+    %endif
+  %else  %% Variable-Step solver
+    %<RTMSolverSet("SolverMode", "SOLVER_MODE_SINGLETASKING")>;
+  %endif
+%endfunction %% SLibDumpTimingInfoRegistration
+
+
+%% Function: SLibDumpModelRegRSimSetup =========================================
+%% Abstract:
+%%   Registration code need for the RSim target.
+%%
+%function SLibDumpModelRegRSimSetup() Output
+  {
+    static ssSolverInfo slvrInfo;
+
+    %if NumContStates > 0
+      %if ModelHasProjections == "yes"
+        static struct _ssSFcnModelMethods2 mdlMethods2;
+      %endif
+      static boolean_T contStatesDisabled[%<NumContStates>];
+    %endif
+    %if SolverType == "VariableStep"
+      %assign nOutTimes = SIZE(VariableStepOpts.OutputTimes,1)
+      %assign outTimes  = (nOutTimes == 0) ? "NULL" : "outputTimes"
+      %assign nDU       = SolverResetInfo.NumNonContDerivSignals
+      %assign dU        = (nDU == 0) ? "NULL" : "nonContDerivSigInfo"
+
+      %if NumContStates > 0
+	static real_T solverAbsTol[%<NumContStates>] = {\
+	  %assign comma = ""
+	  %foreach idx = NumContStates
+	    %<comma>%<VariableStepOpts.AbsTol[idx]>\
+	    %assign comma = ", "
+	  %endforeach
+	};
+	static boolean_T solverAutoAbsTol[%<NumContStates>] = {\
+	  %assign comma = ""
+	  %foreach idx = NumContStates
+	    %<comma>%<VariableStepOpts.AutoAbsTol[idx]>\
+	    %assign comma = ", "
+	  %endforeach
+	};
+      %endif
+      %if NumNonsampledZCs > 0
+	static unsigned char zcSignalDirs[%<NumNonsampledZCs>];
+	static ZCDirection nonsampledZCDirs[%<NumNonsampledZCs>] = {\
+	%assign comma = ""
+	%foreach idx = NonsampledZCs.NumNonsampledZCs
+	  %assign zc = NonsampledZCs.NonsampledZC[idx]
+	  %foreach jdx = zc.Width
+	    %assign zcDir = LibConvertZCDirection(zc.NSZCEl[jdx].Direction)
+	    %<comma>%<zcDir>\
+	    %assign comma = ", "
+	  %endforeach
+	%endforeach
+        };
+      %endif
+
+      %if nOutTimes > 0
+	static real_T %<outTimes>[%<nOutTimes>] = {\
+	  %assign comma = ""
+	  %foreach idx = nOutTimes
+	    %<comma>%<VariableStepOpts.OutputTimes[idx]>\
+	    %assign comma = ", "
+	  %endforeach
+	};
+      %endif
+
+      %if nDU > 0
+	static ssNonContDerivSigInfo %<dU>[%<nDU>] = {
+	  %assign comma = ""
+	  %foreach idx = nDU
+	    %%
+	    %assign sigSrc = SolverResetInfo.NonContDerivSignal[idx].SigSrc
+	    %assign startEl = SolverResetInfo.NonContDerivSignal[idx].StartEl
+	    %assign regLen = SolverResetInfo.NonContDerivSignal[idx].RegionLen
+	    %%
+	    %assign idNum = IDNUM(sigSrc)
+	    %assert (idNum[0] == "B")
+	    %assign bo = BlockOutputs.GlobalBlockOutput[idNum[1]]
+	    %assert (bo.Width >= regLen)
+	    %assert (bo.Width > startEl)
+	    %assert (bo.Invariant == "no")
+	    %assert (bo.ComplexSignal == "no")
+	    %%
+	    %assign boPath = FcnGetLocalBlockIOPath(bo.SigSrc[0], ...
+	                                            bo.SigSrc[1], ...
+	                                            NumSystems-1)
+            %assign name = "%<boPath>%<bo.Identifier>"
+	    %assign opW  = (bo.Width == 1) ? "" : "[%<startEl>]"
+	    %assign addr = "&%<name>%<opW>"
+	    %%
+	    %assign dType = LibGetDataTypeNameFromId(bo.DataTypeIdx)
+	    %assign sizeInBytes = "%<regLen>*sizeof(%<dType>)"
+	    %%
+	    %<comma>{ %<sizeInBytes>, (char*)(%<addr>), NULL }
+	    %assign comma = ", "
+	  %endforeach
+	};
+      %endif
+
+      %if NumContStates > 0
+	%<RTMSolverSet("SolverRelTol", "%<VariableStepOpts.RelTol>")>;
+	%<RTMSolverSet("SolverAbsTol", "solverAbsTol")>;
+	%<RTMSolverSet("SolverAutoAbsTol", "solverAutoAbsTol")>;
+      %endif
+      %<RTMSet("StepSize", "%<VariableStepOpts.InitialStep>")>;
+      %<RTMSolverSet("MinStepSize", "%<VariableStepOpts.MinStep>")>;
+      %<RTMSolverSet("MaxStepSize", "%<VariableStepOpts.MaxStep>")>;
+      %<RTMSolverSet("SolverMaxOrder", "%<VariableStepOpts.MaxOrder>")>;
+
+      %<RTMSolverSet("SolverRefineFactor", "%<VariableStepOpts.Refine>")>;
+      %<RTMSet("OutputTimes", "%<outTimes>")>;
+      %<RTMSet("NumOutputTimes", "%<nOutTimes>")>;
+      %if VariableStepOpts.OutputTimesOption == "specified"
+	%<RTMSet("OutputTimesOnly", "1")>;
+      %else
+	%<RTMSet("OutputTimesOnly", "0")>;
+      %endif
+      %<RTMSet("OutputTimesIndex", "0")>;
+      %%
+      %<RTMSet("ZCCacheNeedsReset", "%<SolverResetInfo.ZCCacheNeedsReset>")>;
+      %<RTMSet("DerivCacheNeedsReset", "%<SolverResetInfo.DerivCacheNeedsReset>")>;
+      %<RTMSet("NumNonContDerivSigInfos", "%<nDU>")>;
+      %<RTMSet("NonContDerivSigInfos", "%<dU>")>;
+      %%
+    %endif %% SolverType == VariableStep
+    %%
+    %<RTMSet("SolverInfo", "&slvrInfo")>;
+    %<RTMSolverSet("SolverName", "\"%<Solver>\"")>;
+    %assign isVarStepSolver = ISEQUAL(SolverType,"VariableStep")
+    %<RTMSolverSet("VariableStepSolver", "%<isVarStepSolver>")>;
+    %assign consCheck = ISEQUAL(SolverConsistencyChecking,"yes")
+    %<RTMSet("SolverConsistencyChecking", "%<consCheck>")>;
+    %assign advZc = ISEQUAL(SolverZeroCrossDetection,"advanced")
+    %<RTMSet("SolverAdvancedZcDetection", "%<advZc>")>;
+    %%	
+    %assign hasProj = ISEQUAL(ModelHasProjections, "yes")	
+    %<RTMSet("SolverStateProjection", "%<hasProj>")>;
+    %if hasProj
+      (void)memset(&mdlMethods2, 0, sizeof(mdlMethods2));
+      %<RTMSet("ModelMethods2", "&mdlMethods2")>;
+      %<RTMSet("ModelProjection", "MdlProjection")>;
+    %endif
+    %%		
+    %<RTMSet("ModelOutputs", "MdlOutputs")>;
+    %<RTMSet("ModelLogData", "rt_UpdateTXYLogVars")>;
+    %<RTMSet("ModelUpdate", "MdlUpdate")>;
+    %if NumContStates > 0
+      %<RTMSet("ModelDerivatives", "MdlDerivatives")>;
+    %endif
+    %if NumNonsampledZCs > 0
+      %<RTMSet("NonsampledZCDirs", "nonsampledZCDirs")>;
+      %<RTMSet("SolverNumZcSignals", "%<NumNonsampledZCs>")>;
+      %<RTMSet("SolverZcSignalDirs", "zcSignalDirs")>;
+      %<RTMSet("ModelZeroCrossings", "MdlZeroCrossings")>;
+    %endif
+    %<RTMSet("TNextTid","INT_MIN")>;
+    %<RTMSet("TNext", LibRealNonFinite("-inf"))>;
+    %<RTMSetSolverNeedsReset()>;
+    %<RTMSet("NumNonsampledZCs", "%<NumNonsampledZCs>")>;
+    %if NumContStates > 0
+      %<RTMSet("ContStateDisabled", "contStatesDisabled")>;
+    %endif
+  }
+
+%endfunction %% SLibDumpModelRegRSimSetup
+
+
+%% Function: SLibGetSubsystemActiveVector =====================================
+%% Abstract:
+%%   Returns a string corresponding to the specified subsystem block's
+%%   external mode active dwork.  External mode uses this dwork to determine
+%%   whether a subsystem is active or inactive.
+%%
+%function SLibGetSubsystemActiveVector(dwIdx) void
+  %assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+  %assign block = System[dwRec.SigSrc[0]].Block[dwRec.SigSrc[2]]
+
+  %assert (block.Type == "SubSystem")
+
+  %% Update FcnNonRollingDWork
+  %if EXISTS("ExtMode") && ExtMode == 1
+    %createrecord optionalArgs { ...
+      IsMode   TLC_FALSE ...
+      StartIdx 0         ...
+      DotName  ""        ...
+      Name     SLibGetNameOfExtModeActiveDWork() ...
+    }
+  %else
+    %createrecord optionalArgs { ...
+      IsMode   TLC_FALSE ...
+      StartIdx 0         ...
+      DotName  ""        ...
+      Name     SLibGetNameOfSubsysRanBCDWork() ...
+    }
+  %endif      
+  %with FcnLoopInfo("", "", 0)
+    %assign active = FcnNonRollingDWork(dwRec, dwIdx, dwRec.Width, optionalArgs)
+  %endwith
+  %return active
+%endfunction %% SLibGetSubsystemActiveVector
+
+%% Function: SLibDumpExtModeReg ================================================
+%% Abstract:
+%%   Dump external mode registration:
+%%    - Create the RTWExtModeInfo object
+%%    - Initialize its fields
+%%    - Put RTWExtModeInfo into the rtModel/SimStruct
+%%
+%function SLibDumpExtModeReg() Output
+  %%
+  %% Loop through all the systems and cache the active vector locations
+  %% so that updown.c can determine if a given system is enabled.
+  %%
+  %if EXISTS("ExtMode") && ExtMode == 1
+    {
+      %% rtAlwaysEnabled is int8_T because the extmode active dwork is int8_T.
+      static const int8_T rtAlwaysEnabled = EXTMODE_SUBSYS_ALWAYS_ENABLED;
+      %assign vecActive = SubsystemActiveVector.ActiveVector
+      %assign nElem     = SIZE(vecActive,1)
+
+      %<LibResetBlockFcnAccessed()>
+      %openfile activeVecBuff
+      %foreach i = nElem
+	%assign  dwIdx = vecActive[i]
+	%switch dwIdx
+	  %case -1
+	    %assign sigAddr = "&rtAlwaysEnabled"
+	    %break
+	  %case -2
+	    %assign sigAddr = "NULL"
+	    %break
+	  %default
+	    %assert  (dwIdx >= 0)
+            %with System[NumSystems-1]
+              %assign  active  = SLibGetSubsystemActiveVector(dwIdx)
+            %endwith
+	    %assign  sigAddr = "&"+ active
+	%endswitch
+	sysActives[%<i>] = %<sigAddr>;
+      %endforeach
+      %closefile activeVecBuff
+
+      %if UsingMalloc
+	RTWExtModeInfo *rt_ExtModeInfo = ...
+	  (RTWExtModeInfo *) malloc(sizeof(RTWExtModeInfo));
+
+	const void **sysActives = malloc( %<nElem> * sizeof(int_T*) );
+
+	%<LibDeclareAllAccessedSimStructVars()>
+
+	%<RTMChkMemAndReturnIfErr("rt_ExtModeInfo")>;
+	%<RTMChkMemAndReturnIfErr("sysActives")>;
+
+      %else
+	static RTWExtModeInfo rt_ExtModeInfo;
+	static const void *sysActives[%<nElem>];
+      %endif
+
+      %assign amps  = UsingMalloc ? "" : "&"
+      %assign rteiO = "%<amps>rt_ExtModeInfo"
+      %<RTMSet("RTWExtModeInfo", "%<rteiO>")>;
+      rteiSetSubSystemActiveVectorAddresses(%<rteiO>, sysActives);
+
+      %<activeVecBuff>
+
+      rteiSetModelMappingInfoPtr(%<rteiO>, ...
+	&%<RTMGet("ModelMappingInfo")>);
+
+      rteiSetChecksumsPtr(%<rteiO>, ...
+	%<RTMGet("Checksums")>);
+
+      rteiSetTPtr(%<rteiO>, %<RTMGet("TPtr")>);
+    }
+  %endif
+%endfunction %% SLibDumpExtModeReg
+
+
+%% Function: SLibDumpModelChecksumReg ==========================================
+%% Abstract:
+%%   Dump the regisration of the model checksums.
+%%
+%function SLibDumpModelChecksumReg () Output
+  %%
+  %% Initialize Model checksum in sizes.
+  %%
+  %<RTMSetIdxed("ChecksumVal", 0, ModelChecksum[0])>;
+  %<RTMSetIdxed("ChecksumVal", 1, ModelChecksum[1])>;
+  %<RTMSetIdxed("ChecksumVal", 2, ModelChecksum[2])>;
+  %<RTMSetIdxed("ChecksumVal", 3, ModelChecksum[3])>;
+%endfunction
+
+
+%% Function: FcnDumpSolverInfoObjectCreation ===================================
+%% Abstract:
+%%   Dump the creation of the solver info object that lives in the rtModel.
+%%
+%function FcnDumpSolverInfoObjectCreation() Output
+  %if GenRTModel
+    {
+      /* Setup solver object */
+      %if UsingMalloc
+	RTWSolverInfo *rt_SolverInfo = ...
+	  (RTWSolverInfo *) malloc(sizeof(RTWSolverInfo));
+
+	%<RTMChkMemAndReturnIfErr("rt_SolverInfo")>;
+      %else
+        %%TCW: eventually migrate SolverInfo into rtModel for all formats
+        %if CodeFormat != "Embedded-C"
+          static RTWSolverInfo rt_SolverInfo;
+        %endif
+      %endif
+      %assign amps = UsingMalloc ? "" : "&"
+      %if CodeFormat != "Embedded-C"
+        %<RTMSet("RTWSolverInfo", "%<amps>rt_SolverInfo")>;
+      %endif
+
+      %assign stptr = "&%<RTMGet("SimTimeStep")>"
+      %<RTMSolverSet("SimTimeStepPtr", stptr)>;
+      %assign tptr = "&%<RTMGet("TPtr")>"
+      %<RTMSolverSet("TPtr", tptr)>;
+      %if RTMStepSizeForTIDIsReqFcn(0)
+        %assign sptr = "&%<RTMGet("StepSize0")>"
+        %<RTMSolverSet("StepSizePtr", sptr)>;
+      %elseif RTMStepSizeIsReqFcn()
+        %assign sptr = "&%<RTMGet("StepSize")>"
+        %<RTMSolverSet("StepSizePtr", sptr)>;
+      %endif
+      %if CodeFormat != "Embedded-C" || NumContStates > 0
+        %assign dxptr = "&%<RTMGet("dX")>"
+        %<RTMSolverSet("dXPtr", dxptr)>;
+        %assign csptr = "&%<RTMGet("ContStates")>"
+        %<RTMSolverSet("ContStatesPtr", csptr)>;
+        %assign ncsptr = "&%<RTMGet("NumContStates")>"
+        %<RTMSolverSet("NumContStatesPtr", ncsptr)>;
+      %endif
+      %assign esptr = "&%<RTMGetErrStat()>"
+      %<RTMSolverSet("ErrorStatusPtr", esptr)>;
+      %if UsingMalloc
+        %assign mmptr = "&%<RTMGet("RTWRTModelMethodsInfo")>"
+        %<RTMSolverSet("ModelMethodsPtr", mmptr)>;
+      %endif
+
+      %<RTMSolverSet("RTModelPtr", tSimStruct)>;
+    }
+  %endif
+%endfunction %% FcnDumpSolverInfoObjectCreation
+
+
+%% Function: LibCacheModelRegistration =========================================
+%% Abstract:
+%%   Cache the model registration code.  Supports these code formats
+%%     o RealTime
+%%     o RealTimeMalloc
+%%
+%function LibDumpModelRegistration(usingStatic) Output
+
+  %assert(!IsModelReferenceTarget())
+  %%
+  %% Solver info
+  %%
+  %<FcnDumpSolverInfoObjectCreation()>\
+  %%
+  %% Timing engine
+  %%
+  %<SLibDumpTimingInfoRegistration(usingStatic)>\
+  %%
+  %% Initialize internal data
+  %%
+  %<SLibDumpModelDataInitialization(usingStatic)>\
+  %%
+  %%
+  %% Dump calls to model reference registration functions.
+  %%
+  %if EXISTS(CompiledModel.ModelReferenceBlocks)
+    %<CallModelrefBlockRegFcns(CompiledModel.ModelReferenceBlocks)>
+  %endif
+  %%
+  %% Model mapping info
+  %%
+  %<SLibDumpModelMappingInfo()>\
+  %%
+  %% Model specifics
+  %%
+
+  /* Model specific registration */
+  %assign rootSSreg = RTMSet("RootSS", RTMGetModelSS())
+  %if !WHITE_SPACE(rootSSreg)
+    %<rootSSreg>;
+  %endif
+
+  %assign verStr = RTMSet("Version", "SIMSTRUCT_VERSION_LEVEL2")
+  %if !WHITE_SPACE(verStr)
+    %<verStr>;
+  %endif
+  %<RTMSet("ModelName", "\"%<Name>\"")>;
+  %<RTMSet("Path",      "\"%<Name>\"")>;
+
+  %<RTMSet("TStart", StartTime)>;
+  %if EXISTS("_RSIM_FULL_") %%assert !IsModelReferenceTarget
+    %assign stopTime = StopTime
+  %else
+    %if ISINF(StopTime)
+      %assign stopTime = "-1"
+    %elseif !ISFINITE(StopTime)
+      %assign errTxt = "Stop time must be 0.0, inf, or finite: %<StopTime>"
+      %<LibReportFatalError(errTxt)>
+    %else
+      %assign stopTime = StopTime
+    %endif
+  %endif
+  %<RTMSet("TFinal", stopTime)>;
+  %if CompiledModel.SolverType == "FixedStep"
+    %<RTMSet("StepSize", FixedStepOpts.FixedStep)>;
+    %<RTMSolverSet("FixedStepSize", FixedStepOpts.FixedStep)>;
+  %endif
+  %%
+  %if Solver == "ode14x"
+    %<RTMSolverSet("SolverExtrapolationOrder", "%<FixedStepOpts.ExtrapolationOrder>")>;
+    %<RTMSolverSet("SolverNumberNewtonIterations", "%<FixedStepOpts.NumberNewtonIterations>")>;
+  %endif
+  %%
+  %% Data logging setup (tell rtwlog or any other entity what we need)
+  %%
+  %if MatFileLogging
+    %<SLibDumpModelRegDataLoggingSetup()>
+  %endif
+
+  %%
+  %% Setup code for the RSim target.
+  %%
+  %if EXISTS("_RSIM_FULL_") %%assert !IsModelReferenceTarget
+    %<SLibDumpModelRegRSimSetup()>
+  %endif
+
+  %<SLibDumpModelChecksumReg()>
+  %%
+  %% Dump external mode registration
+  %%
+  %<SLibDumpExtModeReg()>
+  %%
+  %% Cache function pointers, if necessary
+  %%
+  %if UsingMalloc
+
+    %<RTMModelMthsSet("mdlInitializeSizes",       "MdlInitializeSizes")>;
+    %<RTMModelMthsSet("mdlInitializeSampleTimes", "MdlInitializeSampleTimes")>;
+    %<RTMModelMthsSet("mdlStart",                 "MdlStart")>;
+    %<RTMModelMthsSet("mdlOutputs",               "MdlOutputs")>;
+    %<RTMModelMthsSet("mdlUpdate",                "MdlUpdate")>;
+    %if NumContStates > 0
+      %<RTMModelMthsSet("mdlDerivatives", "MdlDerivatives")>;
+      %<RTMModelMthsSet("mdlProjection",  "MdlProjection")>;
+    %else
+      %<RTMModelMthsSet("mdlDerivatives", "NULL")>;
+      %<RTMModelMthsSet("mdlProjection",  "NULL")>;
+    %endif
+    %<RTMModelMthsSet("mdlTerminate", "MdlTerminate")>;
+    %if GenRTModel
+      %<RTMModelMthsSet("RTModelPtr", tSimStruct)>;
+    %endif
+  %endif
+%endfunction %% LibDumpModelRegistration
+
+
+%% Function: FcnSetupChildSFcnRTWInfoPtr =======================================
+%% Abstract:
+%%   Setup the child S-function's mdlInfo pointer. The function is
+%%   responsible for setting up all the fields that bridge the gap between
+%%   a child S-function's SimStruct and the rtModel.
+%%
+%function FcnSetupChildSFcnRTWInfoPtr(childSS, childIdx) Output
+  {
+    %if !UsingMalloc
+      %if CodeFormat != "Embedded-C"
+        static struct _ssBlkInfo2 _blkInfo2;
+        struct _ssBlkInfo2 *blkInfo2 = &_blkInfo2;
+        ssSetBlkInfo2Ptr(%<childSS>, blkInfo2);
+      %else
+        %assign nonInlSfcns = "%<RTMGet("NonInlinedSFcns")>"
+        ssSetBlkInfo2Ptr(%<childSS>, &%<nonInlSfcns>.blkInfo2[%<childIdx>]);
+      %endif
+    %else
+      struct _ssBlkInfo2 *blkInfo2 = ...
+	(struct _ssBlkInfo2 *) malloc(sizeof(struct _ssBlkInfo2));
+      %<RTMChkMemAndReturnIfErr("blkInfo2")>;
+      ssSetBlkInfo2Ptr(%<childSS>, blkInfo2);
+    %endif
+    ssSetRTWSfcnInfo(%<childSS>, %<RTMGet("RTWSfcnInfo")>);
+  }
+%endfunction %% FcnSetupChildSFcnRTWInfoPtr
+
+
+%% Function: FcnSetupSFcnRTWInfo ===============================================
+%% Abstract:
+%%
+%function FcnSetupSFcnRTWInfo() Output
+  {
+    %if UsingMalloc
+      RTWSfcnInfo *sfcnInfo = (RTWSfcnInfo *) ...
+	malloc(sizeof(RTWSfcnInfo));
+      %<RTMChkMemAndReturnIfErr("sfcnInfo")>;
+    %else
+      %if CodeFormat == "Embedded-C"
+        RTWSfcnInfo *sfcnInfo = &%<RTMGet("NonInlinedSFcns")>.sfcnInfo;
+      %else
+        static RTWSfcnInfo _sfcnInfo;
+        RTWSfcnInfo *sfcnInfo = &_sfcnInfo;
+      %endif
+    %endif
+
+    %<RTMSet("RTWSfcnInfo", "sfcnInfo")>;
+
+    rtssSetErrorStatusPtr(sfcnInfo, &%<RTMGetErrStat()>);
+    rtssSetNumRootSampTimesPtr(sfcnInfo, &%<RTMGet("NumSampleTimes")>);
+    rtssSetTPtrPtr(sfcnInfo,          &%<RTMGet("TPtr")>);
+    rtssSetTStartPtr(sfcnInfo,        &%<RTMGet("TStart")>);
+    %if CodeFormat != "Embedded-C"
+      rtssSetTFinalPtr(sfcnInfo,        &%<RTMGet("TFinal")>);
+    %endif
+    rtssSetTimeOfLastOutputPtr(sfcnInfo, ...
+      &%<RTMGet("TimeOfLastOutput")>);
+    rtssSetStepSizePtr(sfcnInfo,      &%<RTMGet("StepSize")>);
+    rtssSetStopRequestedPtr(sfcnInfo, &%<RTMGetStopRequested()>);
+    rtssSetDerivCacheNeedsResetPtr(sfcnInfo, ...
+      &%<RTMGet("DerivCacheNeedsReset")>);
+    rtssSetZCCacheNeedsResetPtr(sfcnInfo, ...
+      &%<RTMGet("ZCCacheNeedsReset")>);
+    rtssSetBlkStateChangePtr(sfcnInfo, ...
+      &%<RTMGet("BlkStateChangeFlag")>);
+    rtssSetSampleHitsPtr(sfcnInfo,    &%<RTMGet("SampleHitPtr")>);
+    rtssSetPerTaskSampleHitsPtr(sfcnInfo, ...
+      &%<RTMGet("PerTaskSampleHitsPtr")>);
+    rtssSetSimModePtr(sfcnInfo,  &%<RTMGet("SimMode")>);
+    %if CodeFormat == "Embedded-C"
+      rtssSetSolverInfoPtr(sfcnInfo,  &%<RTMGet("RTWSolverInfoPtr")>);
+    %else
+      rtssSetSolverInfoPtr(sfcnInfo,  &%<RTMGet("RTWSolverInfo")>);
+    %endif
+  }
+%endfunction %% FcnSetupSFcnRTWInfo
+
+
+%% Function: LibCacheChildSFunctionRegistration ===============================
+%% Abstract:
+%%   Cache the child S-Function registration code. Supports these code
+%%   formats.
+%%
+%%   o RealTime
+%%   o RealTimeMalloc
+%%   o S-Function
+%%
+%function LibCacheChildSFunctionRegistration(s, modelName) void
+  %% No S-functions to register
+  %if NumChildSFunctions == 0
+    %assign ::CompiledModel.SFunctionRegistration = ""
+    %return ""
+  %endif
+
+  %% Check code format
+  %assign usingStatic = !UsingMalloc && (CodeFormat != "Embedded-C")
+  %if CodeFormat == "S-Function" || IsModelReferenceSimTarget()
+    %assign underScore = "_"
+  %else
+    %assign underScore = ""
+  %endif
+
+  %%
+  %% Declare all child SimStructs
+  %%
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %with System[baseSysIdx]
+  %openfile sfunctionRegBuffer
+  %%
+  %% Setup RTWSfcnInfo for cases where rtModel is being generated
+  %%
+  %if GenRTModel && !IsModelReferenceTarget()
+    %<FcnSetupSFcnRTWInfo()>
+  %endif
+
+  %<RTMSet("NumSFunctions", NumChildSFunctions)>;
+
+  /* register each child */
+  {
+    %if usingStatic
+      static SimStruct childSFunctions[%<NumChildSFunctions>];
+      static SimStruct *childSFunctionPtrs[%<NumChildSFunctions>];
+
+      (void)memset((char_T *)&childSFunctions[0], 0, sizeof(childSFunctions));
+      %if CodeFormat == "S-Function"
+        %<RTMuSet("SFunctions", "&childSFunctionPtrs[0]")>;
+      %else
+        %<RTMSet("SFunctions", "&childSFunctionPtrs[0]")>;
+      %endif
+    %elseif CodeFormat == "Embedded-C"
+      %assign nonInlSfcns = "%<RTMGet("NonInlinedSFcns")>"
+      (void)memset((char_T *)&%<nonInlSfcns>.childSFunctions[0], \
+          0, %<NumChildSFunctions>*sizeof(SimStruct));
+      %<RTMSet("SFunctions", "&%<nonInlSfcns>.childSFunctionPtrs[0]")>;
+    %else
+      SimStruct *childSFunctions;
+      SimStruct **childSFunctionPtrs;
+
+      childSFunctions = (SimStruct *) ...
+	malloc(%<NumChildSFunctions> * sizeof(SimStruct));
+      %<RTMChkMemAndReturnIfErr("childSFunctions")>;
+      (void)memset((char_T *)childSFunctions, 0, %<NumChildSFunctions> * ...
+	sizeof(SimStruct));
+
+      childSFunctionPtrs = (SimStruct **) ...
+	malloc(%<NumChildSFunctions> * sizeof(SimStruct *));
+      %<RTMChkMemAndReturnIfErr("childSFunctionPtrs")>;
+
+      %if CodeFormat == "S-Function"
+	%<RTMuSet("SFunctions", "childSFunctionPtrs")>;
+      %else
+	%<RTMSet("SFunctions", "childSFunctionPtrs")>;
+      %endif
+    %endif
+    {
+      int_T i;
+
+      for(i = 0; i < %<NumChildSFunctions>; i++) {
+	%if CodeFormat == "S-Function"
+	  %<RTMuSetIdxed("SFunction", "i", "&childSFunctions[i]")>;
+        %elseif CodeFormat == "Embedded-C"
+	  %<RTMSetIdxed("SFunction", "i", "&%<nonInlSfcns>.childSFunctions[i]")>;
+	%else
+	  %<RTMSetIdxed("SFunction", "i", "&childSFunctions[i]")>;
+	%endif
+      }
+    }
+    %%
+    %% Initialize each child SimStruct
+    %%
+    %foreach childIdx = NumChildSFunctions
+      %assign thisBlock = ChildSFunctionList[childIdx]
+      %with thisBlock
+	%assign sfuncName = ParamSettings.FunctionName
+	%openfile tmpChildRegBuffer
+	/* timing info */
+	%%
+	%% Timing Info
+	%%
+	%assign numSfcnSampleTimes = SIZE(TID, 1)
+	%if usingStatic
+	  static time_T sfcnPeriod[%<numSfcnSampleTimes>];
+	  static time_T sfcnOffset[%<numSfcnSampleTimes>];
+	  static int_T  sfcnTsMap[%<numSfcnSampleTimes>];
+        %elseif CodeFormat == "Embedded-C"
+	  %assign SfcnIdx = "%<nonInlSfcns>.Sfcn%<childIdx>"
+	  time_T *sfcnPeriod = %<SfcnIdx>.sfcnPeriod;
+	  time_T *sfcnOffset = %<SfcnIdx>.sfcnOffset;
+	  int_T *sfcnTsMap = %<SfcnIdx>.sfcnTsMap;
+	%else
+	  time_T *sfcnPeriod;
+	  time_T *sfcnOffset;
+	  int_T *sfcnTsMap;
+
+	  sfcnPeriod = (time_T *) ...
+	    malloc(%<numSfcnSampleTimes> * sizeof(time_T));
+	  %<RTMChkMemAndReturnIfErr("sfcnPeriod")>;
+	  sfcnOffset = (time_T *) ...
+	    malloc(%<numSfcnSampleTimes> * sizeof(time_T));
+	  %<RTMChkMemAndReturnIfErr("sfcnOffset")>;
+	  sfcnTsMap = (int_T  *) ...
+	    malloc(%<numSfcnSampleTimes> * sizeof(int_T ));
+	  %<RTMChkMemAndReturnIfErr("sfcnTsMap")>;
+	%endif
+
+	{
+	  int_T i;
+
+	  for(i = 0; i < %<numSfcnSampleTimes>; i++) {
+	    sfcnPeriod[i] = sfcnOffset[i] = 0.0;
+	  }
+	}
+	ssSetSampleTimePtr(%<s>, &sfcnPeriod[0]);
+	ssSetOffsetTimePtr(%<s>, &sfcnOffset[0]);
+	%<underScore>ssSetSampleTimeTaskIDPtr(%<s>, sfcnTsMap);
+
+	/* Set up the mdlInfo pointer */
+	%if  (CodeFormat == "S-Function")
+	  # ifdef USE_RTMODEL
+	  %<FcnSetupChildSFcnRTWInfoPtr(s, childIdx)>
+	  # else
+	  %<underScore>ssSetMdlInfoPtr(%<s>, %<RTMGet("MdlInfoPtr")>);
+	  # endif /* USE_RTMODEL */
+	%else
+	  %if GenRTModel
+	    %<FcnSetupChildSFcnRTWInfoPtr(s, childIdx)>
+            %if IsModelReferenceSimTarget()
+	      %<underScore>ssSetMdlInfoPtr(%<s>, ssGetMdlInfoPtr(%<tMdlRefSfcnS>));
+            %endif
+	  %else
+	    %<underScore>ssSetMdlInfoPtr(%<s>, %<RTMGet("MdlInfoPtr")>);
+	  %endif
+	%endif
+	%%
+	%% allocate memory for  ModelMethods2
+	%%
+	%if ParamSettings.FunctionLevel == 2
+	  /* Allocate memory of model methods 2 */
+	  {
+	    %if usingStatic
+	      static struct _ssSFcnModelMethods2 methods2;
+	      ssSetModelMethods2(%<s>, &methods2);
+            %elseif CodeFormat == "Embedded-C"
+	      ssSetModelMethods2(%<s>, &%<nonInlSfcns>.methods2[%<childIdx>]);
+	    %else
+	      struct _ssSFcnModelMethods2 *methods2 = ...
+		(struct _ssSFcnModelMethods2 *) ...
+		malloc(sizeof(struct _ssSFcnModelMethods2));
+	      %<RTMChkMemAndReturnIfErr("methods2")>;
+	      ssSetModelMethods2(%<s>, methods2);
+	    %endif
+	  }
+	%endif
+	%%
+	%% Inputs
+	%%
+	%if (CodeFormat == "S-Function" && UsingMalloc && ...
+	  ParamSettings.FunctionLevel == 2) ||            ...
+          IsModelReferenceSimTarget()
+	  %% Always setup function pointer for _mid.h since level 2
+	  %% child s-f dll will use it.
+	  ssSetRegNumInputPortsFcn(%<s>, ...
+	    (_ssRegNumInputPortsFcn)RegNumInputPorts);
+	  ssSetRegNumInputPortsFcnArg(%<s>,%<s>);
+	%endif
+	%if NumDataInputPorts > 0
+
+	  /* inputs */
+	  %switch ParamSettings.FunctionLevel
+	    %case 1
+	      %%
+	      %% Level 1 S-function
+	      %%
+	      %assign uWidth = DataInputPort.Width
+	      %assign inputsContiguous = ...
+		(ParamSettings.InputContiguous == "yes")
+	      %assign usingUPtrs = (ParamSettings.UsingUPtrs == "yes")
+	      %if usingUPtrs
+		{
+		  %%
+		  %% Using UPtrs
+		  %%
+		  %if usingStatic
+		    static real_T const *sfcnUPtrs[%<uWidth>];
+                  %elseif CodeFormat == "Embedded-C"
+	            real_T const **sfcnUPtrs = \
+                        (real_T const **) &%<SfcnIdx>.UPtrs;
+		  %else
+		    real_T const **sfcnUPtrs =
+		    (real_T const **) malloc(%<uWidth> * sizeof(real_T *));
+		    %<RTMChkMemAndReturnIfErr("sfcnUPtrs")>;
+		  %endif
+		  %assign rollVars = ["U"]
+		  %roll idx = RollRegions, lcv = RollThreshold, thisBlock, ...
+		    "Roller", rollVars
+		    %assign lhs = LibGetIndexedElement("sfcnUPtrs", ...
+		      uWidth, lcv, idx)
+		    %<lhs> = %<LibBlockInputSignalAddr(0, "", lcv, idx)>;
+		  %endroll
+		  %<underScore>ssSetUPtrs(%<s>, &sfcnUPtrs[0]);
+		}
+	      %elseif !inputsContiguous
+		%assign errTxt = "Level 1 S-function not using uPtrs and " ...
+		  "inputs are not contiguous"
+		%<LibBlockReportFatalError(thisBlock,errTxt)>
+	      %else
+		%%
+		%% Not using uPtrs and inputs are contiguous.
+		%% Set pointer to start of input signal.
+		%%
+		%<underScore>ssSetU(%<s>, (void *)...
+		  %<LibBlockInputSignalAddr(0,"","",0)>);
+	      %endif
+	      %break
+
+	    %case 2
+	      %%
+	      %% Level 2 S-Function
+	      %%
+	      {
+		%%
+		%% InputPortInfo
+		%%
+		%if usingStatic
+                  static struct _ssPortInputs inputPortInfo[%<NumDataInputPorts>];
+		  _ssSetNumInputPorts(%<s>, %<NumDataInputPorts>);
+                  ssSetPortInfoForInputs(%<s>, &inputPortInfo[0]);
+                %elseif CodeFormat == "Embedded-C"
+		  _ssSetNumInputPorts(%<s>, %<NumDataInputPorts>);
+		  ssSetPortInfoForInputs(%<s>, &%<SfcnIdx>.inputPortInfo[0]);
+		%else
+		  struct _ssPortInputs *inputPortInfo =
+		  (struct _ssPortInputs *) calloc(%<NumDataInputPorts>, ...
+		    sizeof(struct _ssPortInputs));
+		  %<RTMChkMemAndReturnIfErr("inputPortInfo")>;
+		  _ssSetNumInputPorts(%<s>, %<NumDataInputPorts>);
+		  ssSetPortInfoForInputs(%<s>, &inputPortInfo[0]);
+		%endif
+		%%
+		%% Setup the following for each input port:
+		%%
+		%%   o) InputSignal or
+		%%      InputSignalPtrs
+		%%
+		%%   o) InputPortRequiredContiguous
+		%%
+		%%   o) InputPort dimensional data memory and one of
+		%%      InputPortVectorDimension (info) or
+		%%      InputPortMatrixDimensions (info)
+		%%
+		%foreach ipIdx = NumDataInputPorts
+
+		  /* port %<ipIdx> */
+		  {
+		    %assign ip    = DataInputPort[ipIdx]
+		    %assign dtype = SLibGetRecordDataTypeName(ip,"")
+		    %assign width = LibBlockInputSignalWidth(ipIdx)
+		    %assign dims  = LibBlockInputSignalDimensions(ipIdx)
+		    %assign nDims = LibBlockInputSignalNumDimensions(ipIdx)
+		    %if ParamSettings.UsingUPtrs[ipIdx] == "yes"
+		      %if usingStatic
+                        static %<dtype> const *sfcnUPtrs[%<width>];
+			%if %<nDims> >= matrixDimensionThreshhold
+			  static int_T dimensions[%<nDims>];
+			%endif
+                      %elseif CodeFormat == "Embedded-C"
+	                %<dtype> const **sfcnUPtrs = \
+                        (%<dtype> const **) &%<SfcnIdx>.UPtrs%<ipIdx>;
+                        %if nDims >= matrixDimensionThreshhold
+                          int_T *dimensions = (int_T *)  &%<SfcnIdx>.iDims%<ipIdx>;
+                        %endif
+		      %else
+			%if %<nDims> >= matrixDimensionThreshhold
+			  %if CodeFormat == "S-Function"
+			    #if defined(MATLAB_MEX_FILE)
+			    /* If the child S-function defines its port dimensions
+			     * as DYNAMIC_DIMENSION Simlulink will free this memory
+			     * and reallocate it. Therefor it must be allocated
+			     * using utMalloc .
+			     */
+			     int_T *dimensions = (int_T *) ...
+			       utMalloc(%<nDims> * sizeof(int_T));
+			    #else
+			     int_T *dimensions = (int_T *) ...
+			       malloc(%<nDims> * sizeof(int_T));
+			    #endif
+			  %else
+			    int_T *dimensions = (int_T *) ...
+			      malloc(%<nDims> * sizeof(int_T));
+			  %endif %% CodeFormat == "S-Function"
+			%endif %% nDims >= matrixDimensionThreshhold
+			%<dtype> const **sfcnUPtrs = (%<dtype> const **)
+			malloc(%<width> * sizeof(%<dtype> *));
+			%if %<nDims> >= matrixDimensionThreshhold
+			  %<RTMChkMemAndReturnIfErr("dimensions")>;
+			%endif
+			%<RTMChkMemAndReturnIfErr("sfcnUPtrs")>;
+		      %endif
+		      %if CodeFormat == "S-Function"
+			%foreach sigIdx = width
+			  %assign rec = ...
+			    SLibGetSourceRecordAndMapInfo(ip, sigIdx, TLC_TRUE)
+			  %if rec.mapSrc == "U"
+			    %% When setting up Input Pointers for child
+			    %% s-functions of a parent model being generated as
+			    %% an s-function,
+			    %% need to use the Input Ptrs already
+			    %% setup for the parent.  Otherwise, they will get
+			    %% setup by getting the address of the first Input
+			    %% Ptr of the parent using
+			    %% LibDeclareAllAccessedSimStructVars and then
+			    %% using the External Inputs structure names(via
+			    %% LibBlockInputSignal) to walk through the
+			    %% ptrs for
+			    %% all the child s-functions.  That is incorrect
+			    %% since the inputs ptrs are NOT contiguous in
+			    %% memory for the parent model, but are setup
+			    %% according to their ports.
+			    %assign u = RTMGetIdxed("InputPortSignalPtrs", ...
+			      rec.mapIdx) + "[%<rec.signalOffset>]"
+			    sfcnUPtrs[%<sigIdx>] = %<u>;
+			  %else
+			    %assign u = ...
+			      LibBlockInputSignalAddr(ipIdx, "", "", sigIdx)
+			    sfcnUPtrs[%<sigIdx>] = %<u>;
+			  %endif
+			%endforeach %% sigIdx = width
+		      %else
+			%assign rollVars = ["u%<ipIdx>"]
+			%with ip
+			  %assign rollRegion = RollRegions
+			%endwith
+			%roll idx = rollRegion, lcv = RollThreshold, ...
+			  thisBlock, "Roller", rollVars
+			  %assign lhs = LibGetIndexedElement("sfcnUPtrs", ...
+			    width,lcv,idx)
+			  %<lhs> = %<LibBlockInputSignalAddr(ipIdx,"",lcv,idx)>;
+			%endroll
+		      %endif
+		      %<underScore>ssSetInputPortSignalPtrs(%<s>, %<ipIdx>, ...
+			(InputPtrsType)&sfcnUPtrs[0]);
+		    %else %% Level 2, not using uPtrs
+		      %if ParamSettings.InputContiguous[ipIdx] == "yes"
+			%if %<nDims> >= matrixDimensionThreshhold
+			  %if usingStatic
+			    %if %<nDims> >= matrixDimensionThreshhold
+			      static int_T dimensions[%<nDims>];
+			    %endif
+                          %elseif CodeFormat == "Embedded-C"
+			    %if nDims >= matrixDimensionThreshhold
+			      int_T *dimensions = \
+                                (int_T *)  &%<SfcnIdx>.iDims%<ipIdx>;
+			    %endif
+			  %else
+			    %if CodeFormat == "S-Function"
+			      #if defined(MATLAB_MEX_FILE)
+			      /* If the child S-function defines its port dimensions
+			       * as DYNAMIC_DIMENSION Simlulink will free this memory
+			       * and reallocate it. Therefor it must be allocated
+			       * using utMalloc.
+			       */
+			       int_T *dimensions = (int_T *) ...
+				 utMalloc(%<nDims> * sizeof(int_T));
+			      #else
+			       int_T *dimensions = (int_T *) ...
+				 malloc(%<nDims> * sizeof(int_T));
+			      #endif
+			    %else
+			      int_T *dimensions = (int_T *) ...
+				malloc(%<nDims> * sizeof(int_T));
+			    %endif
+			    %<RTMChkMemAndReturnIfErr("dimensions")>;
+			  %endif
+			%endif
+			%assign sigAddr = LibBlockInputSignalAddr(ipIdx,"","",0)
+			ssSetInputPortRequiredContiguous(%<s>, %<ipIdx>, 1);
+		      %<underScore>ssSetInputPortSignal(%<s>, %<ipIdx>, ...
+			%<sigAddr>);
+		      %else
+			%assign errTxt = "Level 2 S-function not using " ...
+			  "uPtrs and inputs are not contiguous"
+			%<LibBlockReportFatalError(thisBlock,errTxt)>
+		      %endif
+		    %endif
+		    %% Set dimensional info values
+		    %if %<nDims> >= matrixDimensionThreshhold
+		      %if %<nDims> >= matrixDimensionThreshhold
+			%roll Idx = [0:%<nDims-1>], lcv=4, thisBlock
+			  dimensions[%< lcv == "" ? Idx : lcv>] = %<dims[Idx]>;
+			%endroll
+		      %endif
+		      _ssSetInputPortDimensionsPtr(%<s>, %<ipIdx>, dimensions);
+		    %endif
+		    _ssSetInputPortNumDimensions(%<s>, %<ipIdx>, %<nDims>);
+		    ssSetInputPortWidth(%<s>, %<ipIdx>, %<width>);
+		  }
+		%endforeach
+	      }
+	      %break
+	  %endswitch
+	%endif  %% NumDataInputPorts > 0
+	%%
+	%% Outputs
+	%%
+	%if (CodeFormat == "S-Function" && UsingMalloc && ...
+	  ParamSettings.FunctionLevel == 2) ||            ...
+          IsModelReferenceSimTarget()
+	  %% Always setup function pointer for _mid.h since level 2
+	  %% child s-f dll will use it.
+	  ssSetRegNumOutputPortsFcn(%<s>, ...
+	    (_ssRegNumOutputPortsFcn)RegNumOutputPorts);
+	  ssSetRegNumOutputPortsFcnArg(%<s>,%<s>);
+	%endif
+
+	%if NumDataOutputPorts > 0
+
+	  /* outputs */
+	  %switch ParamSettings.FunctionLevel
+	    %case 1
+	      %assign op = FcnGetOutputPortRecord(0)
+	      %assign idNum = IDNUM(op.SignalSrc[0])
+	      %if idNum[0] == "F" %%FcnCall
+		%<underScore>ssSetY(%<s>, NULL);
+	      %else
+		%assign dt = LibBlockOutputSignalDataTypeName(0, "")
+		%<underScore>ssSetY(%<s>, ...
+		  ((%<dt> *) %<LibBlockOutputSignalAddr(0,"","",0)>));
+	      %endif
+	      %break
+
+	    %case 2
+	      {
+		%if usingStatic
+		  static struct _ssPortOutputs outputPortInfo[%<NumDataOutputPorts>];
+		  ssSetPortInfoForOutputs(%<s>, &outputPortInfo[0]);
+                %elseif CodeFormat == "Embedded-C"
+		  ssSetPortInfoForOutputs(%<s>, &%<SfcnIdx>.outputPortInfo[0]);
+		%else
+		  struct _ssPortOutputs *outputPortInfo = ...
+		    (struct _ssPortOutputs *)
+		  calloc(%<NumDataOutputPorts>, ...
+		    sizeof(struct _ssPortOutputs));
+		  %<RTMChkMemAndReturnIfErr("outputPortInfo")>;
+		  ssSetPortInfoForOutputs(%<s>, &outputPortInfo[0]);
+		%endif
+		_ssSetNumOutputPorts(%<s>, %<NumDataOutputPorts>);
+		%foreach opIdx = NumDataOutputPorts
+		  /* port %<opIdx> */
+		  {
+		    %assign oWidth = LibBlockOutputSignalWidth(opIdx)
+		    %assign oNumDims = LibBlockOutputSignalNumDimensions(opIdx)
+		    %assign oDims    = LibBlockOutputSignalDimensions(opIdx)
+		    %if %<oNumDims> >= matrixDimensionThreshhold
+		      %if usingStatic
+                        %if %<oNumDims> >= matrixDimensionThreshhold
+                          static int_T dimensions[%<oNumDims>];
+                        %endif
+                      %elseif CodeFormat == "Embedded-C"
+                        %if oNumDims >= matrixDimensionThreshhold
+                          int_T *dimensions = (int_T *)  &%<SfcnIdx>.oDims%<opIdx>;
+                        %endif
+		      %else
+			%if CodeFormat == "S-Function"
+			  #if defined(MATLAB_MEX_FILE)
+			  /* If the child S-function defines its dimensions as
+			   * DYNAMIC_DIMENSION Simlulink will free this memory
+			   * and reallocate it. Therefor it must be allocated
+			   * using utMalloc .
+			   */
+			   int_T *dimensions = (int_T *) ...
+			     utMalloc(%<oNumDims> * sizeof(int_T));
+			  #else
+			   int_T *dimensions = (int_T *) ...
+			     malloc(%<oNumDims> * sizeof(int_T));
+			  #endif
+			%else
+			  int_T *dimensions = (int_T *) ...
+			    malloc(%<oNumDims> * sizeof(int_T));
+			%endif
+		      %endif
+		      %roll Idx = [0:%<oNumDims-1>], lcv=4, thisBlock
+			dimensions[%< lcv == "" ? Idx : lcv>] = %<oDims[Idx]>;
+		      %endroll
+		      _ssSetOutputPortDimensionsPtr(%<s>, %<opIdx>, dimensions);
+		    %endif
+		    _ssSetOutputPortNumDimensions(%<s>, %<opIdx>, %<oNumDims>);
+		    ssSetOutputPortWidth(%<s>, %<opIdx>, %<oWidth>);
+		    %assign op = FcnGetOutputPortRecord(opIdx)
+		    %assign idNum = IDNUM(op.SignalSrc[0])
+		    %if idNum[0] == "F" %%FcnCall
+		      %<underScore>ssSetOutputPortSignal(%<s>, %<opIdx>, NULL);
+		    %else
+		      %assign dt = LibBlockOutputSignalDataTypeName(opIdx, "")
+		      %assign yAddr = LibBlockOutputSignalAddr(opIdx, "", "", 0)
+		      %<underScore>ssSetOutputPortSignal(%<s>, ...
+			%<opIdx>, ((%<dt> *) %<yAddr>));
+		    %endif
+		  }
+		%endforeach
+	      }
+	      %break
+	  %endswitch
+	%endif  %% NumDataOutputPorts
+	%%
+	%% States
+	%%
+	%assign numDiscStates = DiscStates[0]
+	%assign numContStates = ContStates[0]
+	%assign nStates = numDiscStates + numContStates
+	%if nStates > 0
+
+	  /* states */
+	  %switch ParamSettings.FunctionLevel
+	    %case 1
+	      %%
+	      %% Level 1 S-Function
+	      %%
+	      %if StatesDiscontiguous == 1
+		%% states are discontiguous
+		{
+		  int_T i;
+		  %if usingStatic
+		      static real_T sfcnX[%<nStates>];
+                  %elseif CodeFormat == "Embedded-C"
+		      real_T *sfcnX = (real_T *) &%<SfcnIdx>.X[0];
+		  %else
+		    real_T *sfcnX = (real_T *) ...
+		      malloc(%<nStates> * sizeof(real_T));
+		    %<RTMChkMemAndReturnIfErr("sfcnX")>;
+		  %endif
+		  for(i = 0; i < %<nStates>; i++) {
+		    sfcnX[i] = 0.0;
+		  }
+		  %<underScore>ssSetContStates(%<s>, &sfcnX[0]);
+		}
+	      %elseif numContStates > 0
+		%% s-function has only continuous states
+		%<underScore>ssSetContStates(%<s>, ...
+		  &%<LibBlockContinuousState("", "", 0)>);
+	      %else
+		%% s-function has only discrete states
+		%<underScore>ssSetContStates(%<s>, ...
+		  &%<LibBlockDiscreteState("", "", 0)>);
+	      %endif
+	      %break
+
+	    %case 2
+	      %%
+	      %% Level 2 S-Function
+	      %%
+	      %if numContStates > 0
+		%% s-function has only continuous states
+		%<underScore>ssSetContStates(%<s>, ...
+		  &%<LibBlockContinuousState("", "", 0)>);
+	      %endif
+	      %if numDiscStates > 0
+		%% s-function has only discrete states
+		%<underScore>ssSetDiscStates(%<s>, ...
+		  (real_T *) &%<LibBlockDiscreteState("", "", 0)>);
+	      %endif
+	      %break
+	  %endswitch
+	%endif  %% nStates > 0
+	%%
+	%% Path, model name, parent SimStruct, and root SimStruct
+	%%   G30779 -- Model name was not set correctly
+	%%
+	/* path info */
+	%if CodeFormat == "S-Function" || IsModelReferenceSimTarget()
+	  %<underScore>ssSetModelName(%<s>, ...
+	    "%<thisBlock.ParamSettings.FunctionName>");
+	%else
+	  %if EXISTS("thisBlock.SLName")
+	    %assign sysName = SYSNAME(SLName)
+	  %else
+	    %assign sysName = SYSNAME(Name)
+	  %endif
+	  %<underScore>ssSetModelName(%<s>, "%<STRING(sysName[1])>");
+	%endif
+	%assign pathName = LibMangledPathName(thisBlock.Name)
+	%<underScore>ssSetPath(%<s>, "%<pathName>");
+        %if GenRTModel
+          %if !IsModelReferenceSimTarget()
+            %%
+            %% There is no root SimStruct
+            %%
+            ssSetRTModel(%<s>,%<tSimStruct>);
+            %<underScore>ssSetParentSS(%<s>, NULL);
+            %<underScore>ssSetRootSS(%<s>, %<s>);
+          %else
+            ssSetRTModel(%<s>,%<tSimStruct>);
+            %<underScore>ssSetParentSS(%<s>, NULL);
+            %<underScore>ssSetRootSS(%<s>, ssGetRootSS(%<tMdlRefSfcnS>));
+          %endif
+	%else
+	  if (ssGetRTModel(%<tSimStruct>) == NULL) {
+	    %<underScore>ssSetParentSS(%<s>, %<RTMGetModelSS()>);
+	    %<underScore>ssSetRootSS(%<s>, %<RTMGet("RootSS")>);
+	  } else {
+	    ssSetRTModel(%<s>,ssGetRTModel(%<tSimStruct>));
+	    %<underScore>ssSetParentSS(%<s>, NULL);
+	    %<underScore>ssSetRootSS(%<s>, %<s>);
+	  }
+	%endif
+	%if ParamSettings.FunctionLevel == 1
+	  ssSetVersion(%<s>, SIMSTRUCT_VERSION_LEVEL1);
+	%else
+	  ssSetVersion(%<s>, SIMSTRUCT_VERSION_LEVEL2);
+	%endif
+	%%
+	%% S-Function parameters
+	%%
+	%assign numArgs = Parameters[0] / 2
+	%if numArgs > 0
+	  %%
+	  %% Set S-function parameters to point to model rtP / rtcP parameters
+	  %%
+	  %openfile tmpBuffer
+	  %foreach argIdx = numArgs
+	    %assign paramIdx  = argIdx + 1
+	    %assign paramName = "P%<paramIdx>Size"
+	    %assign paramAddr = LibBlockParameterAddr(%<paramName>,"","",0)
+	    %<underScore>ssSetSFcnParam(%<s>, %<argIdx>, (mxArray*)%<paramAddr>);
+	  %endforeach
+	  %closefile tmpBuffer
+	  %%
+	  %%
+
+	  /* parameters */
+	  {
+	    %if usingStatic
+              static mxArray *sfcnParams[%<numArgs>];
+            %elseif CodeFormat == "Embedded-C"
+	      mxArray **sfcnParams = \
+                        (mxArray **) &%<SfcnIdx>.params;
+	    %else
+	      mxArray **sfcnParams = malloc(%<numArgs> * sizeof(mxArray *));
+	      %<RTMChkMemAndReturnIfErr("sfcnParams")>;
+	    %endif
+
+	    %<underScore>ssSetSFcnParamsCount(%<s>, %<numArgs>);
+	    %<underScore>ssSetSFcnParamsPtr(%<s>, &sfcnParams[0]);
+
+	    %if CodeFormat == "S-Function" || IsModelReferenceSimTarget()
+	      %%
+	      %% This is a non-inlined user (hand-written) S-Function that
+	      %% is being embedded into an RTW generated S-Function.
+	      %%
+	      %% Need to setup the support structure _ssSFcnParams
+	      %% so that the underlying (level 2) S-functions can make
+	      %% calls to ssSetSFcnParamNotTunable, etc.
+	      %%
+	      %if LibSFunctionLevel() == "Level2"
+		#if defined(MATLAB_MEX_FILE)
+		{
+		  %if usingStatic
+		    static uint_T attribs[%<numArgs>];
+                  %elseif CodeFormat == "Embedded-C"
+		    uint_T *attribs = (uint_T *) &%<SfcnIdx>.attribs;
+		  %else
+		    uint_T *attribs;
+		    attribs = (uint_T *) ...
+		      mxCalloc(%<numArgs>, sizeof(uint_T));
+		    mexMakeMemoryPersistent(attribs);
+		  %endif
+
+		  ssSetSFcnParamAttribsPtr(%<s>, &attribs[0]);
+		  (void)memset((char_T *) &attribs[0], 0, ...
+		    %<numArgs> * sizeof(uint_T));
+		}
+		#endif
+	      %endif
+	      %%
+	      %% For non-inlined user s-functions need to make pararmeters an
+	      %% MATLAB mxArray, not the simplified mxArray version of RTW.
+	      %% Only when MATLAB_MEX_FILE since the dll has been compiled
+	      %% for the MATLAB version of an mxArray.
+	      %%
+	      #if defined(MATLAB_MEX_FILE)
+	      {
+		mxArray *param;
+		int_T i;
+		real_T *vals;
+
+		%foreach argIdx = numArgs
+		  %assign paramIdx = argIdx + 1
+		  %assign paramVal  = "P%<paramIdx>"
+		  %assign mSize = CAST("Number", Parameter[argIdx*2].Value[0])
+		  %assign nSize = CAST("Number", Parameter[argIdx*2].Value[1])
+		  %assign data = ...
+		    LibBlockMatrixParameterAddr(%<paramVal>, "", "", ...
+		    0, "", "", 0)
+		  %if SLibGetBlockParameterStorageClass(%<paramVal>) == "Auto_SFCN"
+		    %% Point this childs parameter to the tunable parameter
+		    %% directly.  This is only when the child s-function in not
+		    %% an expression.
+		    %assign tunableParam = ...
+		      SLibGetBlockParameterIdentifier(%<paramVal>)
+		    %<underScore>ssSetSFcnParam(%<s>, %<argIdx>, \
+		    %<tunableParam>(%<RTMGetModelSS()>));
+		  %else
+		    param = mxCreateDoubleMatrix(%<mSize>,%<nSize>,mxREAL);
+		    mexMakeArrayPersistent(param);
+                    %if mSize+nSize > 0
+		      vals = (real_T *) %<data>;
+		      for(i=0;i< %<mSize> * %<nSize>;i++) {
+		        mxGetPr(param)[i] = vals[i];
+		      }
+                    %endif
+		    %<underScore>ssSetSFcnParam(%<s>, %<argIdx>, param);
+		  %endif
+
+		%endforeach
+	      }
+	      #else
+	      %<tmpBuffer>\
+	      #endif
+	    %else
+	      %%
+	      %% Not S-Function code format
+	      %%
+	      %<tmpBuffer>\
+	    %endif
+	  }
+	%endif  %% numArgs > 0
+	%%
+	%% RWork, IWork, PWork, DWork and Mode
+	%%
+	%assign numRWorks = RWork[0]
+	%assign numIWorks = IWork[0]
+	%assign numPWorks = PWork[0]
+	%assign numDWorks = thisBlock.NumDWork
+	%assign numModes  = ModeVector[0]
+	%openfile tmpBuffer
+	%if numRWorks > 0
+	  %<underScore>ssSetRWork(%<s>, (real_T *) ...
+	    &%<LibBlockRWork(RWork, "", "", 0)>);
+	%endif
+	%if numIWorks > 0
+	  %<underScore>ssSetIWork(%<s>, (int_T *) ...
+	    &%<LibBlockIWork(IWork, "", "", 0)>);
+	%endif
+	%if numPWorks > 0
+	  %<underScore>ssSetPWork(%<s>, (void **) ...
+	    &%<LibBlockPWork(PWork, "", "", 0)>);
+	%endif
+	%if numDWorks > 0
+	  {
+	    %if usingStatic
+	      static struct _ssDWorkRecord dWorkRecord[%<numDWorks>];
+            %elseif CodeFormat == "Embedded-C"
+	      struct _ssDWorkRecord *dWorkRecord = \
+                (struct _ssDWorkRecord *) &%<SfcnIdx>.dWork;
+	    %else
+	      struct _ssDWorkRecord *dWorkRecord = ...
+		malloc(%<numDWorks> * sizeof(struct _ssDWorkRecord));
+	      %<RTMChkMemAndReturnIfErr("dWorkRecord")>;
+	    %endif
+
+	    ssSetSFcnDWork(%<s>, dWorkRecord);
+	    _ssSetNumDWork(%<s>, %<numDWorks>);
+
+	    %foreach idx = numDWorks
+	      %assign dwork = DWork[idx]
+              %assign dtIdCurDWork = LibGetDataTypeIdAliasedThruToFromId(...
+                      LibBlockDWorkDataTypeId(dwork))
+	      %assign dwRec = CompiledModel.DWorks.DWork[dwork.FirstRootIdx]
+
+	      /* %<dwork.Name> */
+	      ssSetDWorkWidth(%<s>, %<idx>, ...
+		%<LibBlockDWorkWidth(dwork)>);
+              %%
+              %if LibIsBuiltInDataType(dtIdCurDWork)
+                %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurDWork)
+                ssSetDWorkDataType(%<s>, %<idx>,%<dtEnum>);
+              %else
+                %%
+                %assign curDT = FixPt_GetDataTypeFromIndex(dtIdCurDWork)
+                %%
+                %if curDT.IsFixedPoint
+                  {
+                    DTypeId dataTypeIdReg =
+                    %if FixPt_DataTypeIsFloat(curDT)
+                      ssRegisterDataTypeFxpScaledDouble(
+                    %else
+                      ssRegisterDataTypeFxpFSlopeFixExpBias(
+                    %endif
+                    %<s>,
+                    %<curDT.IsSigned>,
+                    %<curDT.RequiredBits>,
+                    %<curDT.FracSlope>,
+                    %<curDT.FixedExp>,
+                    %<curDT.Bias>,
+                    0 /* false means do NOT obey data type override setting for this subsystem */ );
+
+                    ssSetDWorkDataType( %<s>, %<idx>, dataTypeIdReg );
+                  }
+                %else
+                  %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurDWork)
+                  %%
+                  %if dtEnum == "SS_POINTER" || dtEnum == "SS_INTEGER"
+                    ssSetDWorkDataType(%<s>, %<idx>,%<dtEnum>);
+                  %else
+                    %assign errTxt = "User-defined data type " ...
+                      "%<LibGetDataTypeNameFromId(dtIdCurDWork)> is required " ...
+                      "for DWork %<idx>, but the information needed to define this " ...
+                      "data type is unknown.  The generated code that normally " ...
+                      "specifies the data type of this DWork is being omitted. " ...
+                      "If additional custom code does not register this user-define data type " ...
+                      "and set the data type of this DWork, then the generated code " ...
+                      "will be incomplete."
+                    %<LibBlockReportWarning(thisBlock, errTxt)>
+                  %endif
+                %endif
+              %endif
+	      ssSetDWorkComplexSignal(%<s>, %<idx>, ...
+		%<LibBlockDWorkIsComplex(dwork)>);
+	      %if dwRec.UsedAs == "DSTATE"
+		ssSetDWorkUsedAsDState(%<s>, %<idx>, 1);
+	      %endif
+	      %<underScore>ssSetDWork(%<s>, %<idx>, ...
+		%<LibBlockDWorkAddr(dwork, "", "", 0)>);
+	    %endforeach
+	  }
+	%endif
+	%if numModes > 0
+	  %<underScore>ssSetModeVector(%<s>, (int_T *) ...
+	    &%<LibBlockMode("", "", 0)>);
+	%endif
+	%closefile tmpBuffer
+	%if !WHITE_SPACE(tmpBuffer)
+
+	  /* work vectors */
+	  %<tmpBuffer>\
+	%endif
+	%%
+	%%  Function calls
+	%%
+	%if NumSFcnSysOutputCalls > 0
+
+	  /* register function-calls */
+          {
+            %assign pZeroWidth = LibBlockOutputSignalWidth(0)
+            %if usingStatic
+              static int_T callSysOutputs[%<pZeroWidth>];
+              static void *callSysArgs1[%<pZeroWidth>];
+              static int_T callSysArgs2[%<pZeroWidth>];
+              static SysOutputFcn callSysFcns[%<4*pZeroWidth>];
+            %elseif CodeFormat == "Embedded-C"
+              int_T *callSysOutputs = (int_T *) &%<SfcnIdx>.callSysOutputs;
+              void **callSysArgs1 = (void **) &%<SfcnIdx>.callSysArgs1;
+              int_T *callSysArgs2 = (int_T *) &%<SfcnIdx>.callSysArgs2;
+              SysOutputFcn *callSysFcns = (SysOutputFcn *) &%<SfcnIdx>.callSysFcns;
+	    %else
+	      int_T        *callSysOutputs;
+	      void         **callSysArgs1;
+	      int_T        *callSysArgs2;
+	      SysOutputFcn *callSysFcns;
+
+	      callSysOutputs = (int_T *) ...
+		malloc(%<LibBlockOutputSignalWidth(0)> ...
+		* sizeof(int_T));
+	      %<RTMChkMemAndReturnIfErr("callSysOutputs")>;
+
+              callSysArgs1 = (void **) ...
+          	malloc(%<pZeroWidth> * sizeof(void *));
+              %<RTMChkMemAndReturnIfErr("callSysArgs1")>;
+
+              callSysArgs2 = (int_T *) ...
+          	malloc(%<pZeroWidth> * sizeof(int_T));
+              %<RTMChkMemAndReturnIfErr("callSysArgs2")>;
+
+              callSysFcns = (SysOutputFcn *) ...
+          	malloc(%<4*pZeroWidth> * sizeof(SysOutputFcn));
+              %<RTMChkMemAndReturnIfErr("callSysFcns")>;
+
+	    %endif
+
+            {
+              int_T i;
+              for (i = 0; i < %<pZeroWidth>; i++) {
+          	callSysOutputs[i] = 0;
+		callSysFcns[i]                 = (SysOutputFcn) NULL;
+		callSysFcns[%<pZeroWidth>+i]   = (SysOutputFcn) NULL;
+		callSysFcns[2*%<pZeroWidth>+i] = (SysOutputFcn) NULL;
+                %if IsModelReferenceSimTarget()
+                  %% The Model Reference Simulation Target doesn't support
+                  %% Initialization function pointers
+                  %assign enableFcnIdx = 1
+                  %assign disableFcnIdx = 2
+                %else
+                  %assign enableFcnIdx = 2
+                  %assign disableFcnIdx = 3
+		  callSysFcns[3*%<pZeroWidth>+i] = (SysOutputFcn) NULL;
+                %endif
+              }
+            }
+            %<underScore>ssSetCallSystemOutputPtr(%<s>, &callSysOutputs[0]);
+            %<underScore>ssSetCallSystemOutputArg1List(%<s>, ...
+              &callSysArgs1[0]);
+            %<underScore>ssSetCallSystemOutputArg2List(%<s>, ...
+              &callSysArgs2[0]);
+            %<underScore>ssSetCallSystemOutputFcnList(%<s>, ...
+              &callSysFcns[0]);
+
+            %foreach fcnCallIdx = NumSFcnSysOutputCalls
+              %with SFcnSystemOutputCall[fcnCallIdx]
+          	%if STRING(BlockToCall) != "unconnected"
+          	  %assign  sysIdx = BlockToCall[0]
+          	  %assign  blkIdx = BlockToCall[1]
+		  %assign ssBlock = CompiledModel.System[sysIdx].Block[blkIdx]
+		  %assign  tidVal = ParamSettings.SampleTimesToSet[0][1]
+		  callSysArgs1[%<OutputElement>] = (void *)%<RTMGetModelSS()>;
+          	  callSysArgs2[%<OutputElement>] = %<FcnPortElement>;
+		  %assign fcnCallFNI = LibGetFcnCallFNI(ssBlock,FcnPortElement,tidVal)
+		  %assign fcnInitializeFNI = LibGetFcnInitializeFNI(ssBlock,FcnPortElement,tidVal)
+		  %assign fcnEnableFNI = LibGetFcnEnableFNI(ssBlock,FcnPortElement,tidVal)
+		  %assign fcnDisableFNI = LibGetFcnDisableFNI(ssBlock,FcnPortElement,tidVal)
+		  %assert fcnCallFNI != ""
+          	  callSysFcns[%<OutputElement>]  = (SysOutputFcn) %<fcnCallFNI>;
+                  %if !IsModelReferenceSimTarget()
+		    %if fcnInitializeFNI != ""
+		      callSysFcns[%<pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) \
+		      %<fcnInitializeFNI>;
+		    %else
+		      callSysFcns[%<pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+		    %endif
+                  %endif
+		  %if fcnEnableFNI != ""
+		    callSysFcns[%<enableFcnIdx*pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) \
+		    %<fcnEnableFNI>;
+		  %else
+		    callSysFcns[%<enableFcnIdx*pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+		  %endif
+		  %if fcnDisableFNI != ""
+		    callSysFcns[%<disableFcnIdx*pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) \
+		    %<fcnDisableFNI>;
+		  %else
+		    callSysFcns[%<disableFcnIdx*pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+		  %endif
+          	  callSysOutputs[%<OutputElement>] = 1;
+          	%else
+		  /* Unconnected function-call */
+          	  callSysArgs1[%<OutputElement>] = (void *)NULL;
+          	  callSysArgs2[%<OutputElement>] = 0;
+          	  callSysFcns[%<OutputElement>]  = (SysOutputFcn) NULL;
+          	  callSysFcns[%<pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+          	  callSysFcns[2*%<pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+                  %if !IsModelReferenceSimTarget()
+          	    callSysFcns[3*%<pZeroWidth>+%<OutputElement>]  = (SysOutputFcn) NULL;
+                  %endif
+          	%endif
+              %endwith
+            %endforeach
+            %undef sysIdx, blkIdx, ssIdx
+          }
+	%endif  %% NumSFcnSysOutputCalls > 0
+	%%
+	%% Call child's initialization routines
+	%%
+
+	/* registration */
+	%if (CodeFormat == "S-Function" && !usingStatic) || ...
+             IsModelReferenceSimTarget()
+
+	  #if defined(MATLAB_MEX_FILE)
+	  {
+	    int_T i;
+	    mxArray *plhs[1];
+	    mxArray *prhs[4];
+	    double *pr;
+	    int_T *intS   = (int_T *)&%<s>;
+	    int_T addrlen = sizeof(SimStruct *);
+	    int_T m       = addrlen/sizeof(int_T) + 1;
+
+	    prhs[0] = mxCreateDoubleMatrix(0,0,mxREAL);
+	    prhs[1] = mxCreateDoubleMatrix(m,1,mxREAL);
+
+	    pr = mxGetPr(prhs[1]);
+	    for (i = 0; i < m - 1; i++) {
+	      pr[i] = (double)intS[i];
+	    }
+	    pr[i] = (double)SIMSTRUCT_VERSION_LEVEL2;
+
+	    prhs[2] = mxCreateDoubleMatrix(0,0,mxREAL);
+	    prhs[3] = mxCreateDoubleMatrix(1,1,mxREAL);
+
+	    /* Reset port dimensions info functions because the S-function
+	     * and accelerator mex-files explicitly set their dimensions,
+	     * i.e., they are not dynamically sized. For this case, the
+	     * mex-file is responsible for the dimensions info memory
+	     * and Simulink should not free it. This is achieved by
+	     * setting the following two methods to NULL.
+	     */
+
+	    ssSetRegInputPortDimensionInfoFcn(%<s>, NULL);
+	    ssSetRegOutputPortDimensionInfoFcn(%<s>, NULL);
+
+	    /*
+	     * Setup function pointers and call mdlInitializeSizes via
+	     * simulink.c
+	     */
+
+	    mexCallMATLAB(1, plhs, 4, prhs, "%<sfuncName>");
+
+            mxDestroyArray(plhs[0]);
+            mxDestroyArray(prhs[0]);
+            mxDestroyArray(prhs[1]);
+            mxDestroyArray(prhs[2]);
+            mxDestroyArray(prhs[3]);
+
+	  }
+	  #else
+	  %<sfuncName>(%<s>);
+	  sfcnInitializeSizes(%<s>);
+	  #endif
+
+	  %if PortBasedSampleTimes == "no"
+	    sfcnInitializeSampleTimes(%<s>);
+	  %endif
+	%else
+	  %<sfuncName>(%<s>);
+
+	  sfcnInitializeSizes(%<s>);
+	  %if PortBasedSampleTimes == "no"
+	    sfcnInitializeSampleTimes(%<s>);
+	  %endif
+	%endif
+	%%
+	%% May need to adjust the sample times
+	%%
+	%openfile tempBuffer
+	%foreach idx = SIZE(ParamSettings.SampleTimesToSet, 0)
+	  %assign sfcnTID = ParamSettings.SampleTimesToSet[idx][0]
+	  %assign mdlTID = ParamSettings.SampleTimesToSet[idx][1]
+	  %assign period = ...
+	    CAST("Real",CompiledModel.SampleTime[mdlTID].PeriodAndOffset[0])
+	  %assign offset = ...
+	    CAST("Real",CompiledModel.SampleTime[mdlTID].PeriodAndOffset[1])
+	  ssSetSampleTime(%<s>, %<sfcnTID>, %<period>);
+	  ssSetOffsetTime(%<s>, %<sfcnTID>, %<offset>);
+	%endforeach
+	%foreach idx = SIZE(ParamSettings.SampleTimesToSet, 0)
+	  %assign sfcnTID = ParamSettings.SampleTimesToSet[idx][0]
+	  %assign mdlTID = ParamSettings.SampleTimesToSet[idx][1]
+          %% If this is model reference, we need to get the global
+          %% TID from a parent model, which is passed in to the reg
+          %if IsModelReferenceTarget()
+            %% Guard against using the mdlref_TID when its not defined
+            %if !MdlRefIsConstSampleBlock() && ...
+              MdlRefDisallowSampleTimeInheritance()
+              sfcnTsMap[%<sfcnTID>] = mdlref_TID%<mdlTID>;
+            %else
+              %assert SIZE(ParamSettings.SampleTimesToSet, 0) == 1
+              sfcnTsMap[%<sfcnTID>] = 0;
+            %endif
+          %else
+            sfcnTsMap[%<sfcnTID>] = %<mdlTID>;
+          %endif
+	%endforeach
+	%closefile tempBuffer
+	%if !WHITE_SPACE(tempBuffer)
+
+	  /* adjust sample time */
+	  %<tempBuffer>\
+	%endif
+	%%
+	%% Need to explicitly reset anything that was dynamically sized
+	%%
+	%assign dsSize = SIZE(ParamSettings.DynamicallySizedVectors,1)
+	%if dsSize > 0
+
+	  /* set compiled values of dynamic vector attributes */
+	  %if ParamSettings.FunctionLevel == 1
+	    %foreach idx = dsSize
+	      %assign dsVar = ParamSettings.DynamicallySizedVectors[idx]
+	      %switch dsVar
+		%case "U"
+		  %if EXISTS("_RSIM_FULL_") %% assert !IsModelReferenceTarget()
+		    ssSetNumU(%<s>, %<LibBlockInputSignalWidth(0)>);
+		  %else
+		    ssSetNumInputs(%<s>, %<LibBlockInputSignalWidth(0)>);
+		  %endif
+		  %break
+		%case "Y"
+		  %if EXISTS("_RSIM_FULL_") %% assert !IsModelReferenceTarget()
+		    ssSetNumY(%<s>, %<LibBlockOutputSignalWidth(0)>);
+		  %else
+		    ssSetNumOutputs(%<s>, %<LibBlockOutputSignalWidth(0)>);
+		  %endif
+		  %break
+		%case "Xc"
+		  ssSetNumContStates(%<s>, %<numContStates>);
+		  %break
+		%case "Xd"
+		  ssSetNumDiscStates(%<s>, %<numDiscStates>);
+		  %break
+		%case "RWork"
+		  ssSetNumRWork(%<s>, %<RWork[0]>);
+		  %break
+		%case "IWork"
+		  ssSetNumIWork(%<s>, %<IWork[0]>);
+		  %break
+		%case "PWork"
+		  ssSetNumPWork(%<s>, %<PWork[0]>);
+		  %break
+		%case "Modes"
+		  ssSetNumModes(%<s>, %<ModeVector[0]>);
+		  %break
+		%case "NonsampledZCs"
+		  ssSetNumNonsampledZCs(%<s>, %<NumNonsampledZCs>);
+		  %break
+		%default
+                  %assign errTxt = "No case for dynamically sizing: %<dsVar>"
+		  %<LibReportFatalError(errTxt)>
+	      %endswitch
+	    %endforeach
+	  %else
+	    %foreach idx = dsSize
+	      %assign dsVar = ParamSettings.DynamicallySizedVectors[idx]
+	      %assign idNum = IDNUM(dsVar)
+	      %assign num = idNum[1]
+
+	      %switch idNum[0]
+		%case "U"
+		  %assign u = DataInputPort[num]
+		  ssSetInputPortWidth(%<s>, %<num>, %<u.Width>);
+                  %%
+                  %assign dtIdCurInput = LibGetDataTypeIdAliasedThruToFromId(...
+                    SLibGetRecordDataTypeId(u))
+                  %%
+                  %if LibIsBuiltInDataType(dtIdCurInput)
+                    %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurInput)
+                    ssSetInputPortDataType(%<s>, %<num>, %<dtEnum>);
+                  %else
+                    %%
+                    %assign curDT = FixPt_GetDataTypeFromIndex(dtIdCurInput)
+                    %%
+                    %if curDT.IsFixedPoint
+                      {
+                        DTypeId dataTypeIdReg =
+                        %if FixPt_DataTypeIsFloat(curDT)
+                          ssRegisterDataTypeFxpScaledDouble(
+                        %else
+                          ssRegisterDataTypeFxpFSlopeFixExpBias(
+                        %endif
+                        %<s>,
+                        %<curDT.IsSigned>,
+                        %<curDT.RequiredBits>,
+                        %<curDT.FracSlope>,
+                        %<curDT.FixedExp>,
+                        %<curDT.Bias>,
+                        0 /* false means do NOT obey data type override setting for this subsystem */ );
+
+                        ssSetInputPortDataType(%<s>, %<num>, dataTypeIdReg );
+                      }
+                    %else
+                      %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurInput)
+                      %%
+                      %if dtEnum == "SS_POINTER" || dtEnum == "SS_INTEGER"
+                        ssSetInputPortDataType(%<s>, %<num>, %<dtEnum>);
+                      %else
+                        %assign errTxt = "User-defined data type " ...
+                          "%<LibGetDataTypeNameFromId(dtIdCurInput)> is required " ...
+                          "for Root Level Input %<num>, but the information needed to define this " ...
+                          "data type in the generated S-Function code format is unknown."
+                        %<LibBlockReportError(thisBlock, errTxt)>
+                      %endif
+                    %endif
+                  %endif
+                  %%
+		  ssSetInputPortComplexSignal(%<s>, %<num>, ...
+		    %<SLibGetRecordIsComplex(u)>);
+                  ssSetInputPortFrameData(%<s>, %<num>, ...
+		    %<LibBlockInputSignalIsFrameData(num)>);
+		  %break
+		%case "Y"
+		  %assign yWidth = LibBlockOutputSignalWidth(num)
+		  %assign op = FcnGetOutputPortRecord(0)
+		  %assign sigRec = SLibGetSourceRecord(op, 0)
+		  ssSetOutputPortWidth(%<s>, %<num>, %<yWidth>);
+		  %if !ISEMPTY(sigRec)
+                    %%
+                    %assign dtIdCurOutput = LibGetDataTypeIdAliasedThruToFromId(...
+                      SLibGetRecordDataTypeId(sigRec))
+                    %%
+                    %if LibIsBuiltInDataType(dtIdCurOutput)
+                      %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurOutput)
+                      ssSetOutputPortDataType(%<s>, %<num>, %<dtEnum>);
+                    %else
+                      %%
+                      %assign curDT = FixPt_GetDataTypeFromIndex(dtIdCurOutput)
+                      %%
+                      %if curDT.IsFixedPoint
+                        {
+                          DTypeId dataTypeIdReg =
+                          %if FixPt_DataTypeIsFloat(curDT)
+                            ssRegisterDataTypeFxpScaledDouble(
+                          %else
+                            ssRegisterDataTypeFxpFSlopeFixExpBias(
+                          %endif
+                          %<s>,
+                          %<curDT.IsSigned>,
+                          %<curDT.RequiredBits>,
+                          %<curDT.FracSlope>,
+                          %<curDT.FixedExp>,
+                          %<curDT.Bias>,
+                          0 /* false means do NOT obey data type override setting for this subsystem */ );
+
+                          ssSetOutputPortDataType(%<s>, %<num>, dataTypeIdReg );
+                        }
+                      %else
+                        %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurOutput)
+                        %%
+                        %if dtEnum == "SS_POINTER" || dtEnum == "SS_INTEGER"
+                          ssSetOutputPortDataType(%<s>, %<num>,%<dtEnum>);
+                        %else
+                          %assign errTxt = "User-defined data type " ...
+                            "%<LibGetDataTypeNameFromId(dtIdCurOutput)> is required " ...
+                            "for Root Level Output %<num>, but the information needed to define this " ...
+                            "data type in the generated S-Function code format is unknown."
+                          %<LibBlockReportError(thisBlock, errTxt)>
+                        %endif
+                      %endif
+                    %endif
+                    %%
+		    ssSetOutputPortComplexSignal(%<s>, %<num>, ...
+		      %<SLibGetRecordIsComplex(sigRec)>);
+		    ssSetOutputPortFrameData(%<s>, %<num>, ...
+		      %<LibBlockOutputSignalIsFrameData(num)>);
+		  %endif
+		  %break
+		%case "Xc"
+		  ssSetNumContStates(%<s>, %<numContStates>);
+		  %break
+		%case "Xd"
+		  ssSetNumDiscStates(%<s>, %<numDiscStates>);
+		  %break
+		%case "RWork"
+		  ssSetNumRWork(%<s>, %<RWork[0]>);
+		  %break
+		%case "IWork"
+		  ssSetNumIWork(%<s>, %<IWork[0]>);
+		  %break
+		%case "PWork"
+		  ssSetNumPWork(%<s>, %<PWork[0]>);
+		  %break
+		%case "DWork"
+		  _ssSetNumDWork(%<s>, %<numDWorks>);
+		  %break
+		%case "D"
+		  %assign dwork = thisBlock.DWork[num]
+		  ssSetDWorkWidth(%<s>, %<num>, ...
+		    %<LibBlockDWorkWidth(dwork)>);
+                    %%
+                    %assign dtIdCurDWork = LibGetDataTypeIdAliasedThruToFromId(...
+                      LibBlockDWorkDataTypeId(dwork))
+                    %%
+                    %if LibIsBuiltInDataType(dtIdCurDWork)
+                      %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurDWork)
+                      ssSetDWorkDataType(%<s>, %<num>, %<dtEnum>);
+                    %else
+                      %%
+                      %assign curDT = FixPt_GetDataTypeFromIndex(dtIdCurDWork)
+                      %%
+                      %if curDT.IsFixedPoint
+                        {
+                          DTypeId dataTypeIdReg =
+                          %if FixPt_DataTypeIsFloat(curDT)
+                            ssRegisterDataTypeFxpScaledDouble(
+                          %else
+                            ssRegisterDataTypeFxpFSlopeFixExpBias(
+                          %endif
+                          %<s>,
+                          %<curDT.IsSigned>,
+                          %<curDT.RequiredBits>,
+                          %<curDT.FracSlope>,
+                          %<curDT.FixedExp>,
+                          %<curDT.Bias>,
+                          0 /* false means do NOT obey data type override setting for this subsystem */ );
+
+                          ssSetDWorkDataType(%<s>, %<num>, dataTypeIdReg );
+                        }
+                      %else
+                        %assign dtEnum = LibGetDataTypeEnumFromId(dtIdCurDWork)
+                        %%
+                        %if dtEnum == "SS_POINTER" || dtEnum == "SS_INTEGER"
+                          ssSetDWorkDataType(%<s>, %<num>,%<dtEnum>);
+                        %else
+                          %assign errTxt = "User-defined data type " ...
+                            "%<LibGetDataTypeNameFromId(dtIdCurDWork)> is required " ...
+                            "for DWork %<num>, but the information needed to define this " ...
+                            "data type in the generated S-Function code format is unknown. " ...
+                            "The generated code that normally " ...
+                            "specifies the data type of this DWork is being omitted. " ...
+                            "If additional custom code does not register this user-define data type " ...
+                            "and set the data type of this DWork, then the generated code " ...
+                            "will be incomplete."
+                          %<LibBlockReportWarning(thisBlock, errTxt)>
+                        %endif
+                      %endif
+                    %endif
+                    %%
+		  ssSetDWorkComplexSignal(%<s>, %<num>, ...
+		    %<LibBlockDWorkIsComplex(dwork)>);
+		  %break
+		%case "Modes"
+		  ssSetNumModes(%<s>, %<ModeVector[0]>);
+		  %break
+		%case "NonsampledZCs"
+		  ssSetNumNonsampledZCs(%<s>, %<NumNonsampledZCs>);
+		  %break
+		%default
+		  %assign errTxt = "No case for dynamically sizing: %<dsVar>"
+                  %<LibReportFatalError(errTxt)>
+	      %endswitch
+	    %endforeach
+	  %endif %% FunctionLevel == 1
+	%endif   %% dsSize > 1
+	%%
+	%if ParamSettings.FunctionLevel == 2
+          /* Update connectivity flags for each port */
+	  %foreach ipIdx = NumDataInputPorts
+            _ssSetInputPortConnected(%<s>, %<ipIdx>, ...
+	      %<LibBlockInputSignalConnected(ipIdx)>);
+	  %endforeach
+	  %foreach ipIdx = NumDataOutputPorts
+            _ssSetOutputPortConnected(%<s>, %<ipIdx>, ...
+ 	      %<LibBlockOutputSignalConnected(ipIdx)>);
+	  %endforeach
+	  %foreach ipIdx = NumDataOutputPorts
+            _ssSetOutputPortBeingMerged(%<s>, %<ipIdx>, ...
+ 	      %<LibBlockOutputSignalBeingMerged(ipIdx)>);
+	  %endforeach
+	  /* Update the BufferDstPort flags for each input port */
+	  %foreach ipIdx = NumDataInputPorts
+	    %assign bufDst = LibBlockInputSignalBufferDstPort(ipIdx)
+	    %<underScore>ssSetInputPortBufferDstPort(%<s>, %<ipIdx>, %<bufDst>);
+	  %endforeach
+          %if PortBasedSampleTimes == "yes"
+	    /* Update port-based sample time attributes */
+ 	    %foreach ipIdx = NumDataInputPorts
+              _ssSetInputPortSampleTimeIndex(%<s>, %<ipIdx>, ...
+	      %<LibBlockInputSignalLocalSampleTimeIndex(ipIdx)>);
+	      ssSetInputPortSampleTime(%<s>, %<ipIdx>, ...
+              %<LibBlockInputSignalSampleTime(ipIdx)>);
+              ssSetInputPortOffsetTime(%<s>, %<ipIdx>, ...
+              %<LibBlockInputSignalOffsetTime(ipIdx)>);
+	    %endforeach
+ 	    %foreach opIdx = NumDataOutputPorts
+              _ssSetOutputPortSampleTimeIndex(%<s>, %<opIdx>, ...
+	      %<LibBlockOutputSignalLocalSampleTimeIndex(opIdx)>);
+	      ssSetOutputPortSampleTime(%<s>, %<opIdx>, ...
+              %<LibBlockOutputSignalSampleTime(opIdx)>);
+              ssSetOutputPortOffsetTime(%<s>, %<opIdx>, ...
+              %<LibBlockOutputSignalOffsetTime(opIdx)>);
+	    %endforeach
+	    sfcnInitializeSampleTimes(%<s>);
+	  %endif
+	%endif %% FunctionLevel == 2
+	%%
+	%% RTW Generated S-Function's require data instance
+	%%
+	%if LibSFunctionLevel() == "RTWLevel2"
+	  %if IsModelReferenceTarget()
+	    %% ModelRef doesn't support RTW Generated
+	    %% non-inline s-function
+	    %assign errTxt = "\n\nModel reference does not support " ...
+	      "RTW generated non-inlined s-functions.  "
+	    %<LibReportError(errTxt)>
+	  %endif
+	  %if !UsingMalloc
+	    %assign funcName = STRING(ParamSettings.FunctionName)
+	    %assign end = SIZE(funcName,1) - 3
+	    %assign origName = ""
+	    %foreach idx = end
+	      %assign origName = origName + funcName[idx]
+	    %endforeach
+	    %assign sidInc = "./%<origName>_sfcn_rtw/%<origName>_sid.h"
+	    %if EXISTS("CompiledModel.RTWGenSettings")
+	      %if EXISTS("CompiledModel.RTWGenSettings.BuildDirSuffix")
+		%assign sidInc = "." + sidInc
+	      %endif
+	    %endif
+	    /* Instance data for RTW S-Function: %<origName> */
+	    %if CodeFormat == "S-Function"
+	      {
+		SimStruct *rts = childS;
+		#include "%<sidInc>"
+	      }
+	    %else
+	      #include "%<sidInc>"
+	    %endif
+	  %endif %% !UsingMalloc
+	%endif %% RTWLevel2
+	%closefile tmpChildRegBuffer
+
+	%% Adding one record each to CompiledModel everytime we cache an
+	%% sfunction extern prototype
+	%assign varName = "SFcn_%<ParamSettings.FunctionName>_PrototypeCached"
+
+	%if !EXISTS("CompiledModel.%<varName>")
+	  %addtorecord CompiledModel %<varName> 1
+	  %openfile fcnPrototype
+	  extern void %<ParamSettings.FunctionName>(SimStruct *%<s>);
+	  %closefile fcnPrototype
+	  %<LibCacheFunctionPrototype(fcnPrototype)>\
+	%endif
+
+	/* %<TypeLevel> Block: %<modelName>%<"/">%<Name> (%<sfuncName>) */
+	{
+	  SimStruct *%<s> = %<RTMGetIdxed("SFunction", childIdx)>;
+	  %<LibDeclareAllAccessedSimStructVars()>\
+	  %<tmpChildRegBuffer>\
+	}
+      %endwith   %% thisBlock
+    %endforeach  %% NumChildSFunctions
+    %%
+    %% cache registration code
+    %%
+  }
+  %closefile sfunctionRegBuffer
+  %endwith %% System[NumSystems-1]
+  %assign ::CompiledModel.SFunctionRegistration = sfunctionRegBuffer
+
+%endfunction %% LibCacheChildSFunctionRegistration
+
+
+%% Function: LibSFunctionRegistrationIsEmpty ==================================
+%% Abstract:
+%function LibSFunctionRegistrationIsEmpty() void
+  %<LibTrapCacheAssert(SFunctionRegistration)>
+  %return WHITE_SPACE(SFunctionRegistration)
+%endfunction
+
+
+%% Function: LibDumpSFunctionRegistration =====================================
+%% Abstract:
+%function LibDumpSFunctionRegistration() Output
+  %<LibTrapCacheAssert(SFunctionRegistration)>\
+  %if !WHITE_SPACE(SFunctionRegistration)
+
+    /* child S-Function registration */
+    %<SFunctionRegistration>\
+  %endif
+%endfunction
+
+%endif %% _REGLIB_
+
+%% [EOF] commonreglib.tlc

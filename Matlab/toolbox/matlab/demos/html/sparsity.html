@@ -1,0 +1,300 @@
+<html xmlns:mwsh="http://www.mathworks.com/namespace/mcode/v1/syntaxhighlight.dtd">
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+   
+      <!--
+This HTML is auto-generated from an M-file.
+To make changes, update the M-file and republish this document.
+      -->
+      <title>Sparse Matrices</title>
+      <meta name="generator" content="MATLAB 7.0">
+      <meta name="date" content="2004-04-21">
+      <meta name="m-file" content="sparsity"><style>
+body {
+  background-color: white;
+  margin:10px;
+}
+h1 {
+  color: #990000; 
+  font-size: x-large;
+}
+h2 {
+  color: #990000;
+  font-size: medium;
+}
+p.footer {
+  text-align: right;
+  font-size: xx-small;
+  font-weight: lighter;
+  font-style: italic;
+  color: gray;
+}
+
+pre.codeinput {
+  margin-left: 30px;
+}
+
+span.keyword {color: #0000FF}
+span.comment {color: #228B22}
+span.string {color: #A020F0}
+span.untermstring {color: #B20000}
+span.syscmd {color: #B28C00}
+
+pre.showbuttons {
+  margin-left: 30px;
+  border: solid black 2px;
+  padding: 4px;
+  background: #EBEFF3;
+}
+
+pre.codeoutput {
+  color: gray;
+  font-style: italic;
+}
+pre.error {
+  color: red;
+}
+
+/* Make the text shrink to fit narrow windows, but not stretch too far in 
+wide windows.  On Gecko-based browsers, the shrink-to-fit doesn't work. */ 
+p,h1,h2,div {
+  /* for MATLAB's browser */
+  width: 600px;
+  /* for Mozilla, but the "width" tag overrides it anyway */
+  max-width: 600px;
+  /* for IE */
+  width:expression(document.body.clientWidth > 620 ? "600px": "auto" );
+}
+
+    </style></head>
+   <body>
+      <h1>Sparse Matrices</h1>
+      <introduction>
+         <p>This demonstration shows that reordering the rows and columns of a sparse matrix S can affect the time and storage required
+            for a matrix operation such as factoring S into its Cholesky decomposition, S=L*L'.
+         </p>
+      </introduction>
+      <h2>Contents</h2>
+      <div>
+         <ul>
+            <li><a href="#1">Visualizing a sparse matrix</a></li>
+            <li><a href="#2">Computing the Cholesky factor</a></li>
+            <li><a href="#3">Reordering to speed up the calculation</a></li>
+            <li><a href="#4">Using the reverse Cuthill-McKee</a></li>
+            <li><a href="#6">Using column count</a></li>
+            <li><a href="#8">Using minimum degree</a></li>
+            <li><a href="#10">Summarizing the results</a></li>
+         </ul>
+      </div>
+      <h2>Visualizing a sparse matrix<a name="1"></a></h2>
+      <p>A SPY plot shows the nonzero elements in a matrix.</p>
+      <p>This spy plot shows a SPARSE symmetric positive definite matrix derived from a portion of the Harwell-Boeing test matrix "west0479",
+         a matrix describing connections in a model of a diffraction column in a chemical plant.
+      </p><pre class="codeinput">load(<span class="string">'west0479.mat'</span>)
+A = west0479;
+S = A * A' + speye(size(A));
+pct = 100 / prod(size(A));
+
+spy(S), title(<span class="string">'A Sparse Symmetric Matrix'</span>)
+nz = nnz(S);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.3f%%)'</span>,nz,nz*pct));
+</pre><img vspace="5" hspace="5" src="sparsity_01.png"> <h2>Computing the Cholesky factor<a name="2"></a></h2>
+      <p>Now we compute the Cholesky factor L, where S=L*L'. Notice that L contains MANY more nonzero elements than the unfactored
+         S, because the computation of the Cholesky factorization creates "fill-in" nonzeros.  This slows down the algorithm and increases
+         storage cost.
+      </p><pre class="codeinput">tic, L = chol(S)'; t(1) = toc;
+spy(L), title(<span class="string">'Cholesky decomposition of S'</span>)
+nc(1) = nnz(L);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.2f%%)   time=%.2f sec'</span>,nc(1),nc(1)*pct,t(1)));
+</pre><img vspace="5" hspace="5" src="sparsity_02.png"> <h2>Reordering to speed up the calculation<a name="3"></a></h2>
+      <p>By reordering the rows and columns of a matrix, it may be possible to reduce the amount of fill-in created by factorization,
+         thereby reducing time and storage cost.
+      </p>
+      <p>We will now try three different orderings supported by MATLAB.</p><pre> * reverse Cuthill-McKee
+ * column count
+ * minimum degree</pre><h2>Using the reverse Cuthill-McKee<a name="4"></a></h2>
+      <p>The SYMRCM command uses the reverse Cuthill-McKee reordering algorithm to move all nonzero elements closer to the diagonal,
+         reducing the "bandwidth" of the original matrix.
+      </p><pre class="codeinput">p = symrcm(S);
+spy(S(p,p)), title(<span class="string">'S(p,p) after Cuthill-McKee ordering'</span>)
+nz = nnz(S);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.3f%%)'</span>,nz,nz*pct));
+</pre><img vspace="5" hspace="5" src="sparsity_03.png"> <p>The fill-in produced by Cholesky factorization is confined to the band, so that factorization of the reordered matrix takes
+         less time and less storage.
+      </p><pre class="codeinput">tic, L = chol(S(p,p))'; t(2) = toc;
+spy(L), title(<span class="string">'chol(S(p,p)) after Cuthill-McKee ordering'</span>)
+nc(2) = nnz(L);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.2f%%)   time=%.2f sec'</span>, nc(2),nc(2)*pct,t(2)));
+</pre><img vspace="5" hspace="5" src="sparsity_04.png"> <h2>Using column count<a name="6"></a></h2>
+      <p>The COLPERM command uses the column count reordering algorithm to move rows and columns with higher nonzero count towards
+         the end of the matrix.
+      </p><pre class="codeinput">q = colperm(S);
+spy(S(q,q)), title(<span class="string">'S(q,q) after column count ordering'</span>)
+nz = nnz(S);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.3f%%)'</span>,nz,nz*pct));
+</pre><img vspace="5" hspace="5" src="sparsity_05.png"> <p>For this example, the column count ordering happens to reduce the time and storage for Cholesky factorization, but this behavior
+         cannot be expected in general.
+      </p><pre class="codeinput">tic, L = chol(S(q,q))'; t(3) = toc;
+spy(L), title(<span class="string">'chol(S(q,q)) after column count ordering'</span>)
+nc(3) = nnz(L);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.2f%%)   time=%.2f sec'</span>,nc(3),nc(3)*pct,t(3)));
+</pre><img vspace="5" hspace="5" src="sparsity_06.png"> <h2>Using minimum degree<a name="8"></a></h2>
+      <p>The SYMAMD command uses the approximate minimum degree algorithm (a powerful graph-theoretic technique) to produce large blocks
+         of zeros in the matrix.
+      </p><pre class="codeinput">r = symamd(S);
+spy(S(r,r)), title(<span class="string">'S(r,r) after minimum degree ordering'</span>)
+nz = nnz(S);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.3f%%)'</span>,nz,nz*pct));
+</pre><img vspace="5" hspace="5" src="sparsity_07.png"> <p>The blocks of zeros produced by the minimum degree algorithm are preserved during the Cholesky factorization.  This can significantly
+         reduce time and storage costs.
+      </p><pre class="codeinput">tic, L = chol(S(r,r))'; t(4) = toc;
+spy(L), title(<span class="string">'chol(S(r,r)) after minimum degree ordering'</span>)
+nc(4) = nnz(L);
+xlabel(sprintf(<span class="string">'nonzeros=%d (%.2f%%)   time=%.2f sec'</span>,nc(4),nc(4)*pct,t(4)));
+</pre><img vspace="5" hspace="5" src="sparsity_08.png"> <h2>Summarizing the results<a name="10"></a></h2><pre class="codeinput">labels={<span class="string">'original'</span>,<span class="string">'Cuthill-McKee'</span>,<span class="string">'column count'</span>,<span class="string">'min degree'</span>};
+
+subplot(2,1,1)
+bar(nc*pct)
+title(<span class="string">'Nonzeros after Cholesky factorization'</span>)
+ylabel(<span class="string">'Percent'</span>);
+set(gca,<span class="string">'xticklabel'</span>,labels)
+
+subplot(2,1,2)
+bar(t)
+title(<span class="string">'Time to complete Cholesky factorization'</span>)
+ylabel(<span class="string">'Seconds'</span>);
+set(gca,<span class="string">'xticklabel'</span>,labels)
+</pre><img vspace="5" hspace="5" src="sparsity_09.png"> <p class="footer">Copyright 1984-2003 The MathWorks, Inc.<br>
+         Published with MATLAB&reg; 7.0<br></p>
+      <!--
+##### SOURCE BEGIN #####
+%% Sparse Matrices
+% This demonstration shows that reordering the rows and columns of a sparse 
+% matrix S can affect the time and storage required for a matrix operation 
+% such as factoring S into its Cholesky decomposition, S=L*L'.
+%
+% Copyright 1984-2003 The MathWorks, Inc.
+% $Revision: 5.18.4.2 $ $Date: 2004/04/10 23:25:46 $
+
+
+%% Visualizing a sparse matrix
+% A SPY plot shows the nonzero elements in a matrix.
+% 
+% This spy plot shows a SPARSE symmetric positive definite matrix derived from 
+% a portion of the Harwell-Boeing test matrix "west0479", a matrix describing 
+% connections in a model of a diffraction column in a chemical plant.
+
+load('west0479.mat')
+A = west0479;
+S = A * A' + speye(size(A));
+pct = 100 / prod(size(A));
+
+spy(S), title('A Sparse Symmetric Matrix')
+nz = nnz(S);
+xlabel(sprintf('nonzeros=%d (%.3f%%)',nz,nz*pct));
+
+
+%% Computing the Cholesky factor
+% Now we compute the Cholesky factor L, where S=L*L'. Notice that L contains
+% MANY more nonzero elements than the unfactored S, because the computation of
+% the Cholesky factorization creates "fill-in" nonzeros.  This slows down the
+% algorithm and increases storage cost.
+
+tic, L = chol(S)'; t(1) = toc;
+spy(L), title('Cholesky decomposition of S')
+nc(1) = nnz(L);
+xlabel(sprintf('nonzeros=%d (%.2f%%)   time=%.2f sec',nc(1),nc(1)*pct,t(1)));
+
+
+%% Reordering to speed up the calculation
+% By reordering the rows and columns of a matrix, it may be possible to reduce
+% the amount of fill-in created by factorization, thereby reducing time and 
+% storage cost.
+% 
+% We will now try three different orderings supported by MATLAB.
+%
+%   * reverse Cuthill-McKee
+%   * column count
+%   * minimum degree
+
+
+%% Using the reverse Cuthill-McKee
+% The SYMRCM command uses the reverse Cuthill-McKee reordering algorithm to 
+% move all nonzero elements closer to the diagonal, reducing the "bandwidth" of
+% the original matrix.
+
+p = symrcm(S);
+spy(S(p,p)), title('S(p,p) after Cuthill-McKee ordering')
+nz = nnz(S);
+xlabel(sprintf('nonzeros=%d (%.3f%%)',nz,nz*pct));
+
+%%
+% The fill-in produced by Cholesky factorization is confined to the band, so 
+% that factorization of the reordered matrix takes less time and less storage.
+
+tic, L = chol(S(p,p))'; t(2) = toc;
+spy(L), title('chol(S(p,p)) after Cuthill-McKee ordering')
+nc(2) = nnz(L);
+xlabel(sprintf('nonzeros=%d (%.2f%%)   time=%.2f sec', nc(2),nc(2)*pct,t(2)));
+
+
+%% Using column count
+% The COLPERM command uses the column count reordering algorithm to move rows
+% and columns with higher nonzero count towards the end of the matrix.
+
+q = colperm(S);
+spy(S(q,q)), title('S(q,q) after column count ordering')
+nz = nnz(S);
+xlabel(sprintf('nonzeros=%d (%.3f%%)',nz,nz*pct));
+
+%%
+% For this example, the column count ordering happens to reduce the time and
+% storage for Cholesky factorization, but this behavior cannot be expected in
+% general.
+
+tic, L = chol(S(q,q))'; t(3) = toc;
+spy(L), title('chol(S(q,q)) after column count ordering')
+nc(3) = nnz(L);
+xlabel(sprintf('nonzeros=%d (%.2f%%)   time=%.2f sec',nc(3),nc(3)*pct,t(3)));
+
+
+%% Using minimum degree
+% The SYMAMD command uses the approximate minimum degree algorithm (a powerful 
+% graph-theoretic technique) to produce large blocks of zeros in the matrix.
+
+r = symamd(S);
+spy(S(r,r)), title('S(r,r) after minimum degree ordering')
+nz = nnz(S);
+xlabel(sprintf('nonzeros=%d (%.3f%%)',nz,nz*pct));
+
+%%
+% The blocks of zeros produced by the minimum degree algorithm are preserved
+% during the Cholesky factorization.  This can significantly reduce time and
+% storage costs.
+
+tic, L = chol(S(r,r))'; t(4) = toc;
+spy(L), title('chol(S(r,r)) after minimum degree ordering')
+nc(4) = nnz(L);
+xlabel(sprintf('nonzeros=%d (%.2f%%)   time=%.2f sec',nc(4),nc(4)*pct,t(4)));
+
+
+%% Summarizing the results
+
+labels={'original','Cuthill-McKee','column count','min degree'};
+
+subplot(2,1,1)
+bar(nc*pct)
+title('Nonzeros after Cholesky factorization')
+ylabel('Percent');
+set(gca,'xticklabel',labels)
+
+subplot(2,1,2)
+bar(t)
+title('Time to complete Cholesky factorization')
+ylabel('Seconds');
+set(gca,'xticklabel',labels)
+
+##### SOURCE END #####
+-->
+   </body>
+</html>

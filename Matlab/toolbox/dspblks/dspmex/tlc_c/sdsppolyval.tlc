@@ -1,0 +1,647 @@
+%% $RCSfile: sdsppolyval.tlc,v $
+%% $Revision: 1.7.4.2 $ 
+%% $Date: 2004/04/12 23:09:24 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Polynomial evaluation S-function block for sdsppolyval.c
+%%
+
+%implements "sdsppolyval" "C"
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Function: Outputs ===========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset Polyval (%<ParamSettings.FunctionName>) - %<Name> - Output */
+{
+    %%
+    %% Check the following things in order to determine the proper code
+    %% to generate: (1) If the coeffs are block param constants or an input,
+    %% (2) Coeffs complexity, (3) Input complexity, (4) Target type (TBD)
+    %% (5) Data types - double/single/fixed-point (TBD)
+    %%
+    %assign INPORT1 = 0
+    %assign INPORT2 = 1
+    %%
+    %% First input port always exists - do all error checking and
+    %% common setup of code gen variables based on INPORT1 here
+    %%
+    %assign cplxInSig  = (LibBlockInputSignalIsComplex(INPORT1) != 0)
+    %assign dtypeInSig = cplxInSig ? "creal_T" : "real_T"
+    %%
+    %<dtypeInSig> inputToPower; /* used for running-product (x^n) calculations */
+
+    %%
+    %% Second input port does not always exist. Check if it is used here
+    %% and perform error checking and setup of code gen vbles appropriately.
+    %%
+    %assign useParamCoeffs = SFcnParamSettings.UseConstCoeffsNotInport
+    %%
+    %if useParamCoeffs
+        %%
+        %% This is the case for when the block parameter is to be used
+        %% for the coefficients source (THERE IS NO INPORT2 for this case).
+        %% The coefficients may be real or complex.
+        %%
+        %assign coeffsAreComplex = SFcnParamSettings.CoeffsAreComplex
+        %assign numCoeffs        = SFcnParamSettings.NumCoeffs
+        %%
+        const int a0_Index = %<(numCoeffs-1)>; /* index of a0 in the coeffs array */
+
+        %if !coeffsAreComplex
+            /* Real coeffs location */
+            const real_T realCoeffs[%<numCoeffs>] = {
+            %% Array initialization: if non-scalar,
+            %% first generate all but last coeff value
+            %if numCoeffs > 1
+                %foreach cnt = (numCoeffs-1)
+                    %<SFcnParamSettings.pReCoeffs[cnt]>,
+                %endforeach
+            %endif
+            %% Finally add the last coefficient value to end of array init.
+            %% Note: this also handles the single scalar (real) coefficient.case
+                %<SFcnParamSettings.pReCoeffs[(numCoeffs-1)]>
+            };
+
+            %if !cplxInSig
+                %% Real coeffs, Real input sig
+                %<GenCodeForRlCfPrmRlInpSig(block)>
+            %else
+                %% Real coeffs, Cplx input sig
+                %<GenCodeForRlCfPrmCpInpSig(block)>
+            %endif
+        %else
+            /* Complex coeffs location */
+            const creal_T cplxCoeffs[%<numCoeffs>] = {
+            %% Array initialization: if non-scalar, first generate all but last coeff value
+            %if numCoeffs > 1
+                %foreach cnt = (numCoeffs-1)
+                    { %<SFcnParamSettings.pReCoeffs[cnt]>, %<SFcnParamSettings.pImCoeffs[cnt]> },
+                %endforeach
+            %endif
+            %% Finally add the last coefficient value to end of array init.
+            %% Note: this also handles the single scalar (complex) coeff case.
+                { %<SFcnParamSettings.pReCoeffs[(numCoeffs-1)]>, %<SFcnParamSettings.pImCoeffs[(numCoeffs-1)]> }
+            };
+
+            %if !cplxInSig
+                %% Cplx coeffs, Real input sig
+                %<GenCodeForCpCfPrmRlInpSig(block)>
+            %else
+                %% Cplx coeffs, Cplx input sig
+                %<GenCodeForCpCfPrmCpInpSig(block)>
+            %endif
+        %endif
+    %else
+        %%
+        %% This is the case for when the block's INPORT2 is to be used for
+        %% the coefficients source. The coefficients may be real or complex.
+        %%
+        %assign coeffsAreComplex = (LibBlockInputSignalIsComplex(INPORT2) != 0)
+        %assign numCoeffs        = LibDataInputPortWidth(INPORT2)
+        %%
+        %if IsInputPortContiguous(block,INPORT2)
+            const int a0_Index = %<(numCoeffs-1)>; /* index of a0 in the coeffs array */
+        %endif
+
+        %if !coeffsAreComplex
+            %if IsInputPortContiguous(block,INPORT2)
+                const real_T *realCoeffs = %<LibBlockInputSignalAddr(INPORT2, "", "", 0)>; /* coeffs input location */
+            %endif
+
+            %if !cplxInSig
+                %% Real coeffs, Real input sig
+                %<GenCodeForRlCfIn2RlInpSig(block)>
+            %else
+                %% Real coeffs, Cplx input sig
+                %<GenCodeForRlCfIn2CpInpSig(block)>
+            %endif
+        %else
+            %if IsInputPortContiguous(block,INPORT2)
+                const creal_T *cplxCoeffs = %<LibBlockInputSignalAddr(INPORT2, "", "", 0)>; /* coeffs input location */
+            %endif
+
+            %if !cplxInSig
+                %% Cplx coeffs, Real input sig
+                %<GenCodeForCpCfIn2RlInpSig(block)>
+            %else
+                %% Cplx coeffs, Cplx input sig
+                %<GenCodeForCpCfIn2CpInpSig(block)>
+            %endif
+        %endif
+    %endif
+}
+%endfunction %% Outputs
+
+
+%% -----------------------------------------------------------------------------
+%% SUBFUNCTIONS FOR POLY BLOCKS CONTAINING ONLY ONE INPORT (COEFFS AS PARAMS)
+%% -----------------------------------------------------------------------------
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForRlCfPrmRlInpSig ======================================
+%%
+%function GenCodeForRlCfPrmRlInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign OUTPORT = 0
+    %%
+    int     j; /* counter variable associated with number of coefficients  */
+    real_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        /* Reset initial (input^power) value to unity */
+        inputToPower = 1;
+
+        /* Initialize accumulated real result to a0 (constant) value */
+        *y = realCoeffs[a0_Index];
+
+        /* Get next input value */
+        %assign u = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+        /* Loop through each coefficient beginning with a1 */
+        for (j = (a0_Index - 1); j >= 0; j--)
+        {
+            inputToPower = inputToPower * (%<u>);
+
+            *y += ( realCoeffs[j] * inputToPower );
+        }
+
+        /* Increment output pointer for next time through loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForRlCfPrmRlInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForRlCfPrmCpInpSig ======================================
+%%
+%function GenCodeForRlCfPrmCpInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign OUTPORT = 0
+    %%
+    int      j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        /* Reset initial (input^power) value to unity */
+        inputToPower.re = 1;
+        inputToPower.im = 0;
+
+        /* Initialize accumulated complex result to a0 (constant) value */
+        y->re = realCoeffs[a0_Index];
+        y->im = 0;
+
+        /* Get next input value */
+        %assign u = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+        /* Loop through each coefficient beginning with a1 */
+        for (j = (a0_Index - 1); j >= 0; j--)
+        {
+            real_T reInputProduct;
+            real_T imInputProduct;
+
+            /* NOTE: Need to use temp variable to not change intermediate */
+            /*       value of "inputToPower" for this calculation.        */
+            reInputProduct = CMULT_RE( inputToPower, %<u> );
+            imInputProduct = CMULT_IM( inputToPower, %<u> );
+
+            inputToPower.re = reInputProduct;
+            inputToPower.im = imInputProduct;
+
+            y->re += ( realCoeffs[j] * (inputToPower.re) );
+            y->im += ( realCoeffs[j] * (inputToPower.im) );
+        }
+
+        /* Increment output pointer for next time through loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForRlCfPrmCpInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForCpCfPrmRlInpSig ======================================
+%%
+%function GenCodeForCpCfPrmRlInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign OUTPORT = 0
+    %%
+    int      j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        /* Reset initial (input^power) value to unity */
+        inputToPower = 1;
+
+        /* Initialize accumulated complex result to a0 (constant) value */
+        y->re = ( cplxCoeffs[a0_Index].re );
+        y->im = ( cplxCoeffs[a0_Index].im );
+
+        /* Get next input value */
+        %assign u = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+        /* Loop through each coefficient beginning with a1 */
+        for (j = (a0_Index - 1); j >= 0; j--)
+        {
+            inputToPower = inputToPower * (%<u>);
+
+            y->re += ( (cplxCoeffs[j].re) * inputToPower );
+            y->im += ( (cplxCoeffs[j].im) * inputToPower );
+        }
+
+        /* Increment output pointers for next time through loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForCpCfPrmRlInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForCpCfPrmCpInpSig ======================================
+%%
+%function GenCodeForCpCfPrmCpInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign OUTPORT = 0
+    %%
+    int      j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars = ["U"]
+    %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+        /* Reset initial (input^power) value to unity */
+        inputToPower.re = 1;
+        inputToPower.im = 0;
+
+        /* Initialize accumulated complex result to a0 (constant) value */
+        y->re = cplxCoeffs[a0_Index].re;
+        y->im = cplxCoeffs[a0_Index].im;
+
+        /* Get next input value */
+        %assign u = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+        /* Loop through each coefficient beginning with a1 */
+        for (j = (a0_Index - 1); j >= 0; j--)
+        {
+            real_T reInputProduct;
+            real_T imInputProduct;
+
+            /* NOTE: Need to use temp variable to not change intermediate */
+            /*       value of "inputToPower" for this calculation.        */
+            reInputProduct = CMULT_RE( inputToPower, %<u> );
+            imInputProduct = CMULT_IM( inputToPower, %<u> );
+
+            inputToPower.re = reInputProduct;
+            inputToPower.im = imInputProduct;
+
+            y->re += ( (cplxCoeffs[j].re) * (inputToPower.re)
+                         - (cplxCoeffs[j].im) * (inputToPower.im) );
+
+            y->im += ( (cplxCoeffs[j].re) * (inputToPower.im)
+                         + (cplxCoeffs[j].im) * (inputToPower.re) );
+        }
+
+        /* Increment output pointer for next time through loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForCpCfPrmCpInpSig
+
+
+%% -----------------------------------------------------------------------------
+%% SUBFUNCTIONS FOR POLY BLOCKS CONTAINING TWO INPUT PORTS (COEFFS AS INPORT2)
+%% -----------------------------------------------------------------------------
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForRlCfIn2RlInpSig ======================================
+%%
+%function GenCodeForRlCfIn2RlInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign INPORT2 = 1
+    %assign OUTPORT = 0
+    %%
+    int     j; /* counter variable associated with number of coefficients  */
+    real_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars0 = ["u0"]
+    %roll sigIdx = DataInputPort[INPORT1].RollRegions, lcv = RollThreshold, block, "Roller", rollVars0
+        /* Reset initial (input^power) value to unity */
+        inputToPower = 1;
+
+        %if IsInputPortContiguous(block,INPORT2)
+            /* Initialize accumulated real result to a0 (constant) value */
+            *y = realCoeffs[a0_Index];
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Loop through each coefficient beginning with a1 */
+            for (j = (a0_Index - 1); j >= 0; j--)
+            {
+                inputToPower = inputToPower * (%<u0>);
+
+                *y += ( realCoeffs[j] * inputToPower );
+            }
+        %else
+            /* Initialize accumulated real result to ZERO */
+            *y = 0;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Initialize the (input^power) variable to maximum coefficient order + 1 */
+            for (j = 0; j < %<LibDataInputPortWidth(INPORT2)>; j++) {
+                inputToPower = inputToPower * (%<u0>);
+            }
+
+            %assign rollVars1 = ["u1"]
+            %roll sigIdx1 = DataInputPort[INPORT2].RollRegions, lcv1 = RollThreshold, block, "Roller", rollVars1
+            {
+                /* Calculate (input^power) for this coefficient index */
+                inputToPower = inputToPower / (%<u0>);
+
+                /* Get next coefficient value */
+                %assign u1 = LibBlockInputSignal(INPORT2, "", lcv1, sigIdx1)
+
+                *y += ( (%<u1>) * inputToPower );
+            }
+            %endroll
+        %endif
+
+        /* Increment output pointer for next time through outer loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForRlCfIn2RlInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForRlCfIn2CpInpSig ======================================
+%%
+%function GenCodeForRlCfIn2CpInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign INPORT2 = 1
+    %assign OUTPORT = 0
+    %%
+    int     j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars0 = ["u0"]
+    %roll sigIdx = DataInputPort[INPORT1].RollRegions, lcv = RollThreshold, block, "Roller", rollVars0
+        /* Reset initial (input^power) value to unity */
+        inputToPower.re = 1;
+        inputToPower.im = 0;
+
+        %if IsInputPortContiguous(block,INPORT2)
+            /* Initialize accumulated complex result to a0 (constant) value */
+            y->re = realCoeffs[a0_Index];
+            y->im = 0;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Loop through each coefficient beginning with a1 */
+            for (j = (a0_Index - 1); j >= 0; j--)
+            {
+                real_T reInputProduct;
+                real_T imInputProduct;
+
+                /* NOTE: Need to use temp variable to not change intermediate */
+                /*       value of "inputToPower" for this calculation.        */
+                reInputProduct = CMULT_RE( inputToPower, %<u0> );
+                imInputProduct = CMULT_IM( inputToPower, %<u0> );
+
+                inputToPower.re = reInputProduct;
+                inputToPower.im = imInputProduct;
+
+                y->re += ( realCoeffs[j] * (inputToPower.re) );
+                y->im += ( realCoeffs[j] * (inputToPower.im) );
+            }
+        %else
+            /* Initialize accumulated complex result to ZERO */
+            y->re = 0;
+            y->im = 0;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Initialize the (input^power) variable to maximum coefficient order + 1 */
+            for (j = 0; j < %<LibDataInputPortWidth(INPORT2)>; j++) {
+                real_T reInputProduct;
+                real_T imInputProduct;
+
+                /* NOTE: Need to use temp variable to not change intermediate */
+                /*       value of "inputToPower" for this calculation.        */
+                reInputProduct = CMULT_RE( inputToPower, %<u0> );
+                imInputProduct = CMULT_IM( inputToPower, %<u0> );
+
+                inputToPower.re = reInputProduct;
+                inputToPower.im = imInputProduct;
+            }
+
+            %assign rollVars1 = ["u1"]
+            %roll sigIdx1 = DataInputPort[INPORT2].RollRegions, lcv1 = RollThreshold, block, "Roller", rollVars1
+            {
+                /* Calculate (input^power) for this coefficient index */
+                {
+                    creal_T cplxDivRslt;
+
+                    CDIV( inputToPower, %<u0>, cplxDivRslt );
+
+                    inputToPower.re = cplxDivRslt.re;
+                    inputToPower.im = cplxDivRslt.im;
+                }
+
+                /* Get next coefficient value */
+                %assign u1 = LibBlockInputSignal(INPORT2, "", lcv1, sigIdx1)
+
+                y->re += ( (%<u1>) * (inputToPower.re) );
+                y->im += ( (%<u1>) * (inputToPower.im) );
+            }
+            %endroll
+        %endif
+
+        /* Increment output pointer for next time through outer loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForRlCfIn2CpInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForCpCfIn2RlInpSig ======================================
+%%
+%function GenCodeForCpCfIn2RlInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign INPORT2 = 1
+    %assign OUTPORT = 0
+    %%
+    int     j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars0 = ["u0"]
+    %roll sigIdx = DataInputPort[INPORT1].RollRegions, lcv = RollThreshold, block, "Roller", rollVars0
+        /* Reset initial (input^power) value to unity */
+        inputToPower = 1;
+
+        %if IsInputPortContiguous(block,INPORT2)
+            /* Initialize accumulated complex result to a0 (constant) value */
+            y->re = (cplxCoeffs + a0_Index)->re;
+            y->im = (cplxCoeffs + a0_Index)->im;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Loop through each coefficient beginning with a1 */
+            for (j = (a0_Index - 1); j >= 0; j--)
+            {
+                inputToPower = inputToPower * (%<u0>);
+
+                y->re += ( ((cplxCoeffs + j)->re) * inputToPower );
+                y->im += ( ((cplxCoeffs + j)->im) * inputToPower );
+            }
+        %else
+            /* Initialize accumulated complex result to ZERO */
+            y->re = 0;
+            y->im = 0;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Initialize the (input^power) variable to maximum coefficient order + 1 */
+            for (j = 0; j < %<LibDataInputPortWidth(INPORT2)>; j++) {
+                inputToPower = inputToPower * (%<u0>);
+            }
+
+            %assign rollVars1 = ["u1"]
+            %roll sigIdx1 = DataInputPort[INPORT2].RollRegions, lcv1 = RollThreshold, block, "Roller", rollVars1
+            {
+                /* Calculate (input^power) for this coefficient index */
+                inputToPower = inputToPower / (%<u0>);
+                
+                /* Get next coefficient value */
+                %assign u1 = LibBlockInputSignal(INPORT2, "", lcv1, sigIdx1)
+
+                y->re += ( (%<u1>.re) * inputToPower );
+                y->im += ( (%<u1>.im) * inputToPower );
+            }
+            %endroll
+        %endif
+
+        /* Increment output pointer for next time through outer loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForCpCfIn2RlInpSig
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenCodeForCpCfIn2CpInpSig ======================================
+%%
+%function GenCodeForCpCfIn2CpInpSig(block) Output
+    %%
+    %assign INPORT1 = 0
+    %assign INPORT2 = 1
+    %assign OUTPORT = 0
+    %%
+    int     j; /* counter variable associated with number of coefficients  */
+    creal_T *y = %<LibBlockOutputSignalAddr(OUTPORT, "", "",0)>; /* polynomial output location */
+
+    /* Loop through each input value and calculated polynomial fcn output */
+    %assign rollVars0 = ["u0"]
+    %roll sigIdx = DataInputPort[INPORT1].RollRegions, lcv = RollThreshold, block, "Roller", rollVars0
+        /* Reset initial (input^power) value to unity */
+        inputToPower.re = 1;
+        inputToPower.im = 0;
+
+        %if IsInputPortContiguous(block,INPORT2)
+            /* Initialize accumulated complex result to a0 (constant) value */
+            y->re = (cplxCoeffs + a0_Index)->re;
+            y->im = (cplxCoeffs + a0_Index)->im;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Loop through each coefficient beginning with a1 */
+            for (j = (a0_Index - 1); j >= 0; j--)
+            {
+                real_T reInputProduct;
+                real_T imInputProduct;
+
+                /* NOTE: Need to use temp variable to not change intermediate */
+                /*       value of "inputToPower" for this calculation.        */
+                reInputProduct = CMULT_RE( inputToPower, %<u0> );
+                imInputProduct = CMULT_IM( inputToPower, %<u0> );
+
+                inputToPower.re = reInputProduct;
+                inputToPower.im = imInputProduct;
+
+                y->re += ((cplxCoeffs + j)->re) * (inputToPower.re)
+                            - ((cplxCoeffs + j)->im) * (inputToPower.im);
+
+                y->im += ((cplxCoeffs + j)->re) * (inputToPower.im)
+                            + ((cplxCoeffs + j)->im) * (inputToPower.re);
+            }
+        %else
+            /* Initialize accumulated complex result to ZERO */
+            y->re = 0;
+            y->im = 0;
+
+            /* Get next input value */
+            %assign u0 = LibBlockInputSignal(INPORT1, "", lcv, sigIdx)
+
+            /* Initialize the (input^power) variable to maximum coefficient order + 1 */
+            for (j = 0; j < %<LibDataInputPortWidth(INPORT2)>; j++) {
+                real_T reInputProduct;
+                real_T imInputProduct;
+
+                /* NOTE: Need to use temp variable to not change intermediate */
+                /*       value of "inputToPower" for this calculation.        */
+                reInputProduct = CMULT_RE( inputToPower, %<u0> );
+                imInputProduct = CMULT_IM( inputToPower, %<u0> );
+
+                inputToPower.re = reInputProduct;
+                inputToPower.im = imInputProduct;
+            }
+
+            %assign rollVars1 = ["u1"]
+            %roll sigIdx1 = DataInputPort[INPORT2].RollRegions, lcv1 = RollThreshold, block, "Roller", rollVars1
+            {
+                /* Calculate (input^power) for this coefficient index */
+                {
+                    creal_T cplxDivRslt;
+
+                    CDIV( inputToPower, %<u0>, cplxDivRslt );
+
+                    inputToPower.re = cplxDivRslt.re;
+                    inputToPower.im = cplxDivRslt.im;
+                }
+
+                /* Get next coefficient value */
+                %assign u1 = LibBlockInputSignal(INPORT2, "", lcv1, sigIdx1)
+
+                y->re += CMULT_RE( %<u1>, inputToPower );
+                y->im += CMULT_IM( %<u1>, inputToPower );
+            }
+            %endroll
+        %endif
+
+        /* Increment output pointer for next time through outer loop */
+        y++;
+    %endroll
+%endfunction %% GenCodeForCpCfIn2CpInpSig
+
+
+%% [EOF] sdsppolyval.tlc

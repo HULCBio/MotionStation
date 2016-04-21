@@ -1,0 +1,23 @@
+
+autoload ("AF_UNIX", "sockets.oct");
+autoload ("AF_LOCAL", "sockets.oct");
+autoload ("AF_INET", "sockets.oct");
+autoload ("AF_APPLETALK", "sockets.oct");
+autoload ("SOCK_STREAM", "sockets.oct");
+autoload ("SOCK_DGRAM", "sockets.oct");
+autoload ("SOCK_SEQPACKET", "sockets.oct");
+autoload ("SOCK_RAW", "sockets.oct");
+autoload ("SOCK_RDM", "sockets.oct");
+autoload ("MSG_PEEK", "sockets.oct");
+autoload ("MSG_DONTWAIT", "sockets.oct");
+autoload ("MSG_WAITALL", "sockets.oct");
+autoload ("socket", "sockets.oct");
+autoload ("connect", "sockets.oct");
+autoload ("disconnect", "sockets.oct");
+autoload ("gethostbyname", "sockets.oct");
+autoload ("send", "sockets.oct");
+autoload ("recv", "sockets.oct");
+autoload ("bind", "sockets.oct");
+autoload ("listen", "sockets.oct");
+autoload ("accept", "sockets.oct");
+autoload ("load_socket_constants", "sockets.oct");

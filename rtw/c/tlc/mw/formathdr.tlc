@@ -1,0 +1,484 @@
+%% ============================================================================
+%% $RCSfile: formathdr.tlc,v $
+%% $Revision: 1.28.4.17 $
+%% $Date: 2004/04/14 23:48:16 $
+%%
+%% Abstract:
+%%   This file formats header information into CompiledModel.ModelFiles fields
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%% 
+%selectfile NULL_FILE
+
+%% ============================================================================
+%% Create the header files for the model.
+%% ============================================================================
+
+
+%if EXISTS("_FORMATHDR_") == 0
+%include "formatrtm.tlc"
+  
+%assign _FORMATHDR_ = 1
+
+%assert !IsModelReferenceTarget()
+
+%realformat "CONCISE"
+
+%% Function: SLibFormatHdr =====================================================
+%% Abstract:
+%%   Function to create and cache definitions and defines in model.h
+%%   and model_private.h file sections.
+%%
+%function SLibFormatHdr() void
+  %% ============================================================================
+  %% Non-virtual, Non-Inlined subsystems 
+  %%
+  %assign nonVirtSubsbys = DumpAllSystemHeadersExcludingRootSystem()
+  
+  %assign rootIdx    = NumSystems-1
+  %assign rootSystem = System[rootIdx]
+  
+  
+  %% ============================================================================
+  %% Common Includes
+  %%
+  %<LibRegCommonIncludes(rootIdx)>
+  %openfile rtwCommonIncludesBuffer
+  %<LibDumpSystemIncludes(rootSystem)>
+  %if !WHITE_SPACE(nonVirtSubsbys)
+    %<nonVirtSubsbys>\
+  %endif
+  %undef nonVirtSubsbys
+  
+  %closefile rtwCommonIncludesBuffer
+  
+  %% ============================================================================
+  %% Defines
+  %%
+  %if RootHdrGenericDefines
+    %openfile rtwDefinesBuffer
+    
+    %if CodeFormat == "RealTimeMalloc"
+      #ifndef _RTW_COMBINE_MULTIPLE_MODELS
+    %endif
+    
+    %<LibDeclareGenericModelDefines()>
+    %<LibDeclareNCSTATES()>
+    
+    %if CodeFormat == "RealTimeMalloc"
+      #endif       /* _RTW_COMBINE_MULTIPLE_MODELS */
+    %endif
+    
+    %closefile rtwDefinesBuffer
+  %endif
+
+  
+  %% ========================================================================
+  %% Code Identifier bridge for grt interface
+  %%
+  %openfile tmpBuf
+  %if GenerateGRTWrapper && PrefixModelToStructs
+    %if !LibBlockIOStructIsEmpty()
+      #define rtB              %<tBlockIO>
+      #define BlockIO          %<tBlockIOType>
+    %endif
+    %%
+    %if !LibExternalInputsStructIsEmpty()
+      #define rtU              %<tInput>
+      #define ExternalInputs   %<tInputType>
+    %endif
+    %%
+    %if !LibContStatesStructIsEmpty()
+      #define rtX              %<tContState>
+      #define ContinuousStates %<tContStateType>
+    %endif
+    %%
+    %if LibCStatesDerivStructIsEmpty()
+      #define rtXdot           %<tXdot>
+      #define StateDerivatives %<tXdotType>
+    %endif
+    %%
+    %if LibContStatesDisabledStructIsEmpty()
+      #define tXdis            %<tXdis>
+      #define StateDisabled    %<tXdisType>
+    %endif
+    %%
+    %if !LibExternalOutputsStructIsEmpty()
+      #define rtY              %<tOutput>
+      #define ExternalOutputs  %<tOutputType>
+    %endif
+    %%
+    %if !LibParametersStructIsEmpty()
+      #define rtP              %<tParameters>
+      #define Parameters       %<tParametersType>
+    %endif
+    %%
+    %if !LibDWorkStructIsEmpty()
+      #define rtDWork          %<tDWork>
+      #define D_Work           %<tDWorkType>
+    %endif
+    %%
+    %if !LibConstBlockIOStructIsEmpty()
+      #define tConstBlockIOType %<tConstBlockIOType>
+      #define rtC               %<tConstBlockIOStruct>
+    %endif
+    %%
+    %if !SLibPrmBufferIsEmpty("Const", "Typedef")
+      #define ConstParam        %<tConstParamType>
+      #define rtcP              %<tConstParamStruct>
+    %endif
+    %%
+    %if !SLibPrmBufferIsEmpty("ConstWithInit", "Typedef")
+      #define ConstParamWithInit %<tConstParamWithInitType>
+      #define rtcWithInitP       %<tConstParamWithInitStruct>
+    %endif
+    %%
+    %if !LibPrevZCStatesStructIsEmpty()
+      #define rtPrevZCSigState   %<tPrevZCState>
+      #define PrevZCSigStates    %<tPrevZCStateType>
+    %endif
+    %%
+    %if !LibNonSampledZCStructIsEmpty()
+      #define rtNonsampledZC     %<tNonsampledZC>
+      #define NonsampledZCs      %<tNonsampledZCType>
+    %endif
+  %endif
+  %closefile tmpBuf
+  
+  %openfile rtwGRTIdentifierBridgeBuffer
+  %if !WHITE_SPACE(tmpBuf)
+  
+    /* Backward compatible GRT Identifiers */
+    %<tmpBuf>\
+    
+  %endif
+  %closefile rtwGRTIdentifierBridgeBuffer
+  
+  %% ============================================================================
+  %% typedef's
+  %%
+  
+  %openfile intgDataTypedefsBuf
+  %if (NumContStates > 0) && (CodeFormat == "Embedded-C")
+    %<SLibCacheIntgStructDef()>\
+  %endif
+  %closefile intgDataTypedefsBuf
+  
+  
+  %% ============================================================================
+  %% Const params
+  %%
+  %openfile constParamsBuffer
+  %if !SLibPrmBufferIsEmpty("Const", "Typedef")
+  
+    /* Constant parameters (auto storage) */
+    %<SLibGetPrmBuffer("Const", "Typedef")>\
+  %endif
+  %%
+  %if !SLibPrmBufferIsEmpty("ConstWithInit", "Typedef")
+  
+    /* Constant parameters with dynamic initialization (auto storage) */
+    %<SLibGetPrmBuffer("ConstWithInit", "Typedef")>\
+  %endif
+  %closefile constParamsBuffer
+  
+  
+  
+  %% ============================================================================
+  %% External inputs structure
+  %%
+  %openfile rtwExternalInputsBuffer
+  %if !LibExternalInputsStructIsEmpty() && ...
+    (!MultiInstanceERTCode || RootIOStructures)
+    
+    /* External inputs (root inport signals with auto storage) */
+    %<SLibAddPreStructTypedefPragma(tInputType)>\
+    typedef struct _%<tInputType>_tag {
+      %<LibDumpExternalInputsStructDefinition()>\
+    } %<tInputType>;
+    %<SLibAddPostStructTypedefPragma(tInputType)>\ 
+  %endif
+  %closefile rtwExternalInputsBuffer
+  
+  %% ============================================================================
+  %% External outputs structure
+  %%
+  %openfile rtwExternalOutputsBuffer
+  %if !LibExternalOutputsStructIsEmpty() && ...
+    (!MultiInstanceERTCode || RootIOStructures)
+  
+    /* External outputs (root outports fed by signals with auto storage) */
+    %<SLibAddPreStructTypedefPragma(tOutputType)>\
+    typedef struct _%<tOutputType>_tag {
+      %<LibDumpExternalOutputsStructDefinition()>\
+    } %<tOutputType>;
+    %<SLibAddPostStructTypedefPragma(tOutputType)>\
+  %endif
+  %closefile rtwExternalOutputsBuffer
+  
+  
+  %% ============================================================================
+  %% Externs
+  %%
+  %openfile tmpBuf
+  
+  %if CodeFormat != "RealTime" && CodeFormat != "Embedded-C"
+    %% ground
+    %<LibDumpGroundExterns()>\
+  %endif
+  %if ((CodeFormat == "RealTimeMalloc") || EXISTS("_RSIM_"))
+    extern const char *RT_MEMORY_ALLOCATION_ERROR; 
+  %endif  
+  %assign rootSystem = System[NumSystems-1]
+  %assign reqInsts   = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+  %if HaveSeparateSourceFiles
+    %if CodeFormat == "RealTime"
+      %% ground
+      %<LibDumpGroundExterns()>\
+      %if !LibBlockIOStructIsEmpty()
+        extern %<tBlockIOType> %<tBlockIO>; /* block i/o */
+      %endif
+      %if !LibContStatesStructIsEmpty()
+        extern %<tContStateType> %<tContState>; /* continuous states */
+      %endif
+      %if !LibDWorkStructIsEmpty()
+        extern %<tDWorkType> %<tDWork>; /* data type work */
+      %endif
+      %if !LibPrevZCStatesStructIsEmpty()
+        extern %<tPrevZCStateType> %<tPrevZCState>; /* prev zc states*/
+      %endif
+      %if !LibNonSampledZCStructIsEmpty()
+        extern %<tNonsampledZCType> %<tNonsampledZC>; /* zero crossings */
+      %endif
+      %if !LibExternalInputsStructIsEmpty()
+        extern %<tInputType> %<tInput>; /* external inputs */
+      %endif
+      %if !LibExternalOutputsStructIsEmpty()
+        extern %<tOutputType> %<tOutput>; /* external outputs */
+      %endif
+    %elseif CodeFormat == "Embedded-C"
+      %% ground
+      %<LibDumpGroundExterns()>\
+      %if reqInsts.PrevZCStatesInst && !LibPrevZCStatesStructIsEmpty()
+  
+        /* Zero-crossing (trigger) state */
+        extern %<tPrevZCStateType> %<tPrevZCState>;
+      %endif
+    %endif
+  %endif
+  
+  %% Extern declarations for profiler
+  %<SLibGenProfGlbExtData()>\
+  
+  %closefile tmpBuf
+  
+  %openfile rtwExternsBuffer
+  %if !WHITE_SPACE(tmpBuf)
+  
+    /* External data declarations for dependent source files */
+    %<tmpBuf>\
+  %endif
+  %undef tmpBuf
+  %closefile rtwExternsBuffer
+  
+  %% Parameters and const blockio is defined in model_data.c
+  %% so it must always be externed if it exists.
+  %openfile reqrtwExternsBuffer
+    %%
+    %% rtP parameter structures
+    %%
+    %if !LibParametersStructIsEmpty()
+  
+      %if CodeFormat == "RealTime"
+        extern %<tParametersType> %<tParameters>; /* parameters */
+      %elseif Accelerator
+        extern %<tParametersType> %<tDefaultParameters>; /* parameters */
+      %endif
+    %endif  
+    %%
+    %% Constant BlockIO
+    %%
+    %if !LibConstBlockIOStructIsEmpty()
+      
+      %if ((CodeFormat == "RealTime") || (CodeFormat == "Embedded-C"))
+        extern %<tConstBlockIOType> %<tConstBlockIOStruct>; /* constant block i/o */
+      %elseif Accelerator
+        extern %<tConstBlockIOType> %<tInvariantSignals>; /* constant block i/o */
+      %endif
+    %endif    
+    %%  
+    %% - Constant parameters
+    %% ===> ALL CODE FORMATS
+    %%
+    %if !SLibPrmBufferIsEmpty("Const", "Typedef")
+  
+      /* Constant parameters (auto storage) */
+      extern const %<tConstParamType> %<tConstParamStruct>;
+    %endif
+    %%
+    %% - Constant parameters (with initialization)
+    %% ===> ALL CODE FORMATS
+    %%
+    %if !SLibPrmBufferIsEmpty("ConstWithInit", "Typedef")
+      
+      /* Constant parameters with dynamic initialization (auto storage) */
+      extern %<tConstParamWithInitType> %<tConstParamWithInitStruct>; /* constant parameters */
+    %endif
+  %closefile reqrtwExternsBuffer
+  
+  %openfile publicExternGblStructs
+  %if CodeFormat == "Embedded-C"
+    %% ============================================================================
+    %% Embedded-C exports more symbols - Externs
+    %%
+    %if reqInsts.ParamsInst && !LibParametersStructIsEmpty()
+
+      /* Block parameters (auto storage) */
+      extern %<tParametersType> %<tParameters>;
+    %endif
+    %if reqInsts.BlockIOInst && !LibBlockIOStructIsEmpty()
+      
+      /* Block signals (auto storage) */
+      extern %<tBlockIOType> %<tBlockIO>;
+    %endif
+    %if reqInsts.ContStatesInst && !LibContStatesInstanceIsEmpty()
+  
+      /* Continuous states (auto storage) */
+      extern %<tContStateType> %<tContState>;
+    %endif
+    %if reqInsts.DworkInst && !LibDWorkStructIsEmpty()
+      
+      /* Block states (auto storage) */
+      extern %<tDWorkType> %<tDWork>;
+    %endif
+    %if reqInsts.ExtInpsInst && !LibExternalInputsStructIsEmpty()
+      
+      /* External inputs (root inport signals with auto storage) */
+      extern %<tInputType> %<tInput>;
+    %endif
+    %if reqInsts.ExtOutputsInst && !LibExternalOutputsStructIsEmpty()
+      
+      /* External outputs (root outports fed by signals with auto storage) */
+      extern %<tOutputType> %<tOutput>;
+    %endif
+  %endif
+  %closefile publicExternGblStructs
+  
+  %% =============================================================================
+  %% Reduced blocks
+  %%
+  %openfile rtwReducedBlocksBuffer
+  %<LibDeclareReducedBlocks()>\
+  %closefile rtwReducedBlocksBuffer
+  
+  %% ============================================================================
+  %% Model hierarchy
+  %%
+  %openfile rtwSystemHierarchyBuffer
+  %if !Accelerator && GenerateComments
+    %<LibDeclareSystemHierarchy()>\
+  %endif
+  %closefile rtwSystemHierarchyBuffer
+  
+  %% ============================================================================
+  %% Requirements
+  %%
+  %openfile requirementsBuffer
+  %if !Accelerator && GenerateComments
+    %<LibDeclareSystemRequirements()>\
+  %endif
+  %closefile requirementsBuffer
+  
+  %% ============================================================================
+  %% Dump buffers to output file
+  %%
+  %assign rootFileName = GetRootSystemFileName()
+  %assign pubFile  = SLibAddModelFile("SystemHeader","Simulink",rootFileName)
+  %assign privFile = SLibAddModelFile("SystemHeader","Simulink", "%<Name>_private")
+  
+  %openfile bannerBuf
+  /*
+  * %<Name>.h
+  *
+  %<SLibCommonHeaderInfo()>\
+  */
+  %closefile bannerBuf
+  
+  %<SLibSetModelFileAttribute(pubFile, "Banner", bannerBuf)>
+  %undef bannerBuf
+  %if EXISTS(rtwDefinesBuffer)
+    %<SLibSetModelFileAttribute(pubFile, "Defines", rtwDefinesBuffer)>
+    %undef rtwDefinesBuffer
+  %endif
+  %<SLibSetModelFileAttribute(pubFile, "Documentation", rtwReducedBlocksBuffer)>
+  %undef rtwReducedBlocksBuffer
+  %<SLibSetModelFileAttribute(pubFile, "Documentation", rtwSystemHierarchyBuffer)>
+  %undef rtwSystemHierarchyBuffer
+  %<SLibSetModelFileAttribute(pubFile, "Documentation", requirementsBuffer)>
+  %undef requirementsBuffer
+  
+  %% ===========================================================================
+  %% Information related to the rtModel
+  %%
+  %if CodeFormat == "Embedded-C" && !GenerateGRTWrapper
+    %assign rtmIncludes = ""
+  %else
+    %assign rtmIncludes = SLibGenRTMIncludes()
+  %endif
+  
+  
+  %if !WHITE_SPACE(rtmIncludes)
+    %<SLibSetModelFileAttribute(pubFile, "Includes", rtmIncludes)>
+  %endif
+  %undef rtmIncludes
+  
+  %openfile commIncludes
+  %<SLibDumpCommonIncludes(rootSystem)>
+  %closefile commIncludes
+  
+  %openfile typesIncludesBuf
+  #include "%<Name>_types.h"
+  %closefile typesIncludesBuf
+  
+  %<SLibSetModelFileAttribute(pubFile,  "Includes", commIncludes)>
+  %undef commIncludes
+  %<SLibSetModelFileAttribute(pubFile,  "Includes", rtwCommonIncludesBuffer)>
+  %undef rtwCommonIncludesBuffer
+  %<SLibSetModelFileAttribute(pubFile,  "Includes", typesIncludesBuf)>
+  %undef typesIncludesBuf
+  
+  %if CodeFormat != "Embedded-C"  %% definition goes into rtwtypes.h for ERT
+  %% do nothing
+  %else                           %% declare UNUSED_PARAMETER comes from rtwtypes.h for ERT
+    %if (::NeedUNUSED_PARAMETERDeclaration == 1)
+      %<SLibSetModelFileAttribute(privFile, "Defines", SLibDeclareUnusedParameter(rootSystem))>
+    %endif
+  %endif
+  %% Primitive types
+  %<SLibSetModelFileAttribute(pubFile, "PrimitiveTypedefs", SLibDeclarePrimitiveTypedefs())>
+  
+  %<SLibSetModelFileAttribute(pubFile, "Typedefs", intgDataTypedefsBuf)>
+  %undef intgDataTypedefsBuf
+  %<SLibSetModelFileAttribute(pubFile,  "Typedefs", constParamsBuffer)>
+  %undef constParamsBuffer
+  %<SLibSetModelFileAttribute(pubFile,  "Typedefs", rtwExternalInputsBuffer)>
+  %undef rtwExternalInputsBuffer
+  %<SLibSetModelFileAttribute(pubFile,  "Typedefs", rtwExternalOutputsBuffer)>
+  %undef rtwExternalOutputsBuffer
+  %<SLibSetModelFileAttribute(pubFile, "Typedefs", rtwGRTIdentifierBridgeBuffer)>
+  %undef rtwGRTIdentifierBridgeBuffer
+  
+  %if CodeFormat == "Embedded-C"
+    %<SLibSetModelFileAttribute(pubFile, "ExternData", publicExternGblStructs)>
+    %undef publicExternGblStructs
+  %endif
+
+  %<SLibSetModelFileAttribute(pubFile, "ExternFcns", rtwExternsBuffer)>
+  %undef rtwExternsBuffer
+  %<SLibSetModelFileAttribute(pubFile, "ExternData", reqrtwExternsBuffer)>
+  
+%endfunction
+
+%endif %% _FORMATHDR_
+
+%% [EOF] formathdr.tlc

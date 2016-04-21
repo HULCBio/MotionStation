@@ -1,0 +1,1132 @@
+%% ============================================================================
+%% $RCSfile: capi.tlc,v $
+%% $Revision: 1.1.6.16 $
+%%
+%% Abstract:
+%%      This system file creates C API files model_capi.c and model_capi.h.
+%%      The API facilitates Block IO Signal monitoring and/or Parameter Tuning.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+
+%if EXISTS("_CAPI_") == 0
+%assign _CAPI_ = 1
+
+%include "capilib.tlc"
+
+%% Create a record for storing the maps.  The record will be accessed and
+%% updated during the generation of Signal/Parameter maps and
+%% DataType/DimensionMap/DimensionArray/DataAddr/FixPt maps. Here is a
+%% brief on what the fields represent
+%%     xyzMap -  buffer array containing elements of xyz Structure
+%%     xyzMapComments - comments on the elements in the xyz structure
+%%     Numfield - Counter to count the number of "fields" for maps
+%%     xyzKeys  - Hash tables for xyz structure
+%% Notes:
+%%     During Initialization
+%%     o bufer arrays and comments are empty
+%%     o counters (Numxxx) are zero except NumFixPoint. NumFixPoint=1 as
+%%       the first element in rtFixPt structure is RESERVED for non-fixed
+%%       point data
+%%     o keys are empty records
+
+%createrecord                 \
+InstMap {                     \
+  DataTypeMap            [];  \
+  DimensionMap           [];  \
+  AddrMap                [];  \
+  AddrMapComments        [];  \
+  FixPointMap            [];  \
+  LogSignalsBuf          [];  \
+  DimArray               [];  \
+  DimArrayComments       [];  \
+  ElemMap                [];  \
+  SampleTimeMap          [];  \
+  DoublesMap             [];  \
+  NumBlockParams          0;  \
+  NumVariableParams       0;  \
+  NumBIOSignals           0;  \
+  NumBlockStates          0;  \
+  NumFixPoint             1;  \
+  NumDataTypes            0;  \
+  NumDimensionMaps        0;  \
+  NumDimArray             0;  \
+  NumDataAddr             0;  \
+  NumLogSignals           0;  \
+  NumElements             1;  \
+  NumSampleTimes          0;  \
+  NumDoubles              0;  \
+  FxpKeys {                   \
+    }                         \
+  DTypeKeys  {                \
+    }                         \
+  DimKeys    {                \
+    }                         \
+  DimArrayKeys {              \
+    }                         \
+  ElementKeys {               \
+    }                         \
+  STimeKeys {                 \
+    }                         \
+  DoubleKeys {                \
+  }                           \
+}
+%assign im = InstMap
+
+%selectfile NULL_FILE
+%realformat "CONCISE"
+
+%% Put necessary includes in model.h file
+%assign baseHFile = GetBaseFile("SystemHeader")
+%openfile includesBuf
+#include "rtw_modelmap.h"
+%closefile includesBuf
+%<SLibSetModelFileAttribute(baseHFile, "Includes", includesBuf)>
+
+%% Put necessary includes in model.c file
+%assign baseCFile = GetBaseFile("SystemBody")
+%if (RTWCAPIStates==1) && MatFileLogging
+  %<LibAddToModelSources("rt_logging_mmi")>
+  %<LibAddToModelSources("rtw_modelmap_utils")>
+%endif
+%openfile includesBuf
+%if (RTWCAPIStates==1) && MatFileLogging
+  #include "rt_logging_mmi.h"
+%endif
+#include "%<Name>_capi.h"
+%closefile includesBuf
+%<SLibSetModelFileAttribute(baseCFile, "Includes", includesBuf)>
+
+%with CompiledModel
+  %<SLibMapData()>  %% Generate Interface API for non custom storage class data
+  %assign stdText = "### Writing  C API source file %<Name>_capi.c"
+  %<LibWriteToStandardOutput(stdText)>
+  %with GlobalMemoryMap
+
+  %% MODEL_capi.c =============================================================
+  %% create model_capi.c and write Signals/parameters and data maps
+  %%
+  %openfile modelCAPIdotC = "%<Name>_capi.c"
+  /*
+   * %<Name>_capi.c
+   *
+   %<SLibCommonHeaderInfo()>\
+   */
+
+   %assign baseSysIdx = GetBaseSystemIdx()
+   %assign baseName   = SLibGetSystemOutputFileBaseName(System[baseSysIdx])
+
+   %assign baseSysIdx = GetBaseSystemIdx()
+   %assign baseName   = SLibGetSystemOutputFileBaseName(System[baseSysIdx])
+
+  #include "%<baseName>.h"
+  #include "rtw_capi.h"
+  %% imported signals are declared in model_private.h
+  #include "%<Name>_private.h"
+
+  %% Multi Instance storage qualifier
+  %assign constKeyword =  IsMultiInsatnceERTOrModelReference() ? "" : "const"
+
+  %% Check if model Name has to be prefixed to structs
+  %assign prefix       =  PrefixModelToStructs ? "%<Name>_" : ""
+
+  %% BlockHierarchyMap Loop ==================================================
+  %% The BlockHierarchyMap provides a in memory representation of the
+  %% graphical model.
+  %% For details refer to matlabroot/rtw/c/tlc/mw/graphmaplib.tlc
+  %% The BlockSignal and BlockTuning structures are produced by looping
+  %% through the Block records in BlockHierarchyMap.
+
+  %% Begin BlockHierarchy Loop
+  %with BlockHierarchyMap
+    %if RTWCAPISignals == 1
+
+ 	%% Internal testing facility
+      	%if EXISTS("capiSigTestFile")
+		%include "%<capiSigTestFile>"
+      	%endif
+  /* Block output signal information */
+  static %<constKeyword> %<tBlockSignalsType> %<tBlockSignals>[] = {
+
+    /* addrMapIndex, sysNum, blockPath,
+     * signalLabel, portNumber, dataTypeIndex, dimIndex, fxpIndex, sampTimeIndex
+     */
+
+    %createrecord portObj { SignalSrc [-1] SignalOffset [-1] Width 1 }
+    %foreach subsysIdx = NumSubsystems
+      %with Subsystem[subsysIdx]
+	%foreach blkIdx = NumBlocks
+	  %with Block[blkIdx]
+	    %% Loop through Data Output Ports & write signal data to
+	    %% BlockIOSignals structure
+	    %assign virtBlock = (Block[blkIdx].Virtual > 0) %%0:nonvirt 1:virt 2:post comp virt
+	    %if !virtBlock || IsModelReferenceSimTarget()
+	      %foreach portIdx = NumDataOutputPorts
+		%with DataOutputPort[portIdx]
+		  %foreach regIdx = NumRegions
+		    %%
+		    %% Skip non-testpointed virtual sigs.
+		    %%
+		    %if (virtBlock && (TestPoint == 0))
+		      %continue
+		    %endif
+		    %assign portObj.SignalSrc = Region[regIdx]._Source
+		    %assign sigRec = SLibGetSourceRecord(portObj, 0)
+		    %%
+		    %% Skip external inputs.
+		    %%
+		    %assign idNum = IDNUM(portObj.SignalSrc[0])
+		    %if idNum[0] == "U"
+		      %continue
+		    %endif
+		    %% Skip function-call outputs
+		    %% See geck
+		    %if !(ISEMPTY(sigRec))
+		      %if (RTWCAPITestPtSignals == 1) && ...
+			(sigRec.TestPoint !="yes")
+			%continue
+		      %endif
+		      %if (sigRec.Invariant == "yes") && ...
+			!IsMultiInsatnceERTOrModelReference()
+			%assign constString = "(void *) "
+		      %else
+			%assign constString = ""
+		      %endif
+		      %if TYPE(sigRec.TID) != "Number" && ...
+			TYPE(sigRec.TID) == "String"
+			%% Check for non-sampled signals
+			%if sigRec.TID != "constant" && sigRec.TID != "trigger"
+			  %% Skip signals other than constant and triggered
+			  %continue
+			%endif
+		      %endif
+		      %if sigRec.MemoryMapIdx[2] == -1
+			%% Skip  Local or reuse data
+			%continue
+		      %else
+			%assign structIdx  = sigRec.MemoryMapIdx[0]
+			%assign secIdx     = sigRec.MemoryMapIdx[1]
+			%assign dataIdx    = sigRec.MemoryMapIdx[2]
+			%if secIdx == -1
+			  %% Unstructured data
+			  %assign data        = UnstructuredData.Data[dataIdx]
+			  %assign isComplex   = data.IsComplex
+			  %assign dataTypeIdx = data.DataTypeIdx
+			  %assign dataAccess  = data.Access
+			  %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+			%elseif structIdx == -1
+			  %% Custom data
+			  %assign data      =  CustomData[secIdx].Data[dataIdx]
+			  %assign isComplex = data.IsComplex
+			  %assign dataTypeIdx = data.DataTypeIdx
+			  %assign dataAccess  = data.Access
+			  %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+			%else
+			  %% Structured data
+			  %assign section     = ...
+			    StructuredData[structIdx].Section[secIdx]
+			  %assign data        = section.Data[dataIdx]
+			  %assign dataTypeIdx = section.DataTypeIdx
+			  %assign isComplex   = section.IsComplex
+			  %assign isPointer   = TLC_FALSE
+			  %assign dataAccess  = "direct" 
+			%endif
+		      %endif
+		      %if data.Class == "other"
+			%% Skip data of unknown layout
+			%continue
+		      %endif
+		      %if dataAccess == "unknown"
+			%% Skip data if DataAccess is unknown - R13 CSC's
+			%continue
+		      %endif
+		      %% Address
+		      %assign addrMapIdx     = im.NumDataAddr
+		      %if isPointer 
+			%assign sigAddress   = data.BaseAddr
+			%assign im.AddrMapComments = im.AddrMapComments + ...
+			    "%<im.NumDataAddr>: Signal Pointer"
+			%else
+			%assign sigAddress   = constString + data.BaseAddr
+			%assign im.AddrMapComments = im.AddrMapComments + ...
+			  "%<im.NumDataAddr>: Signal"
+		      %endif
+		      %assign im.AddrMap     = im.AddrMap + sigAddress
+		      %assign im.NumDataAddr = im.NumDataAddr + 1
+		      %% Block Path
+		      %assign grBlkIdx       = [%<subsysIdx>, %<blkIdx>]
+		      %assign blkPath        = SLibMangledGrBlockPath(grBlkIdx)
+		      %assign blkPath        = STRING(blkPath)
+		      %% Signal Label
+		      %if sigRec.SigLabel != ""
+			%assign sigLabel     = STRING(sigRec.SigLabel)
+		      %else
+			%assign sigLabel     = "NULL"
+		      %endif
+		      %% Data Type
+		      %assign dataTypeMapIdx = ...
+			FcnGetDataTypeMapIdx(dataTypeIdx,isComplex,isPointer,im)
+		      %% Dimension
+		      %assign dimMapIdx      = FcnGetDimensionMapIdx(data,im)
+		      %% Fixed Point
+		      %if data.IsFixedPoint
+			%assign fxpMapIdx    = FcnGetFxpMapIdx(data,im)
+		      %else
+			%assign fxpMapIdx    = 0
+		      %endif
+		      %% sample time index
+		      %if (sigRec.FrameData == "yes")
+			%assign isFrame =  1
+		      %else
+			%assign isFrame =  0
+		      %endif
+		      %% Assign the ContextTID
+		      %if TYPE(sigRec.ContextTID) == "Number"
+			%assign contextTid = sigRec.ContextTID
+		      %elseif sigRec.ContextTID == "constant"
+			%assign contextTid = -2
+		      %else
+			%% ContextTid should never be trigger
+			%assign errTxt = "Unhandled TID type."
+			%<LibReportError(errTxt)>
+		      %endif
+		      %if TYPE(sigRec.TID) == "Number"
+			%assign tID        = sigRec.TID
+			%assign sTimeIdx = FcnGetSampTimeIdx(tID,contextTid,isFrame,im)
+		      %elseif sigRec.TID == "constant"
+			%assign tID      = -2
+			%assign sTimeIdx = FcnGetSampTimeIdx(tID,contextTid,isFrame,im)
+		      %elseif sigRec.TID == "trigger"
+			%assign tID      = -1
+			%assign sTimeIdx = FcnGetSampTimeIdx(tID,contextTid,isFrame,im)
+		      %else
+			 %assign errTxt = "Unhandled TID type."
+			 %<LibReportError(errTxt)>
+		      %endif
+		      %% get the system number
+		      %assign sysNum = sigRec.SysNum
+		      %% Write data directly to BlockIOSignal structure
+		      {%<addrMapIdx>, %<sysNum>, "%<blkPath>",
+		      "%<sigLabel>", %<portIdx>, %<dataTypeMapIdx>, \
+		      %<dimMapIdx>, %<fxpMapIdx>, %<sTimeIdx>},
+		      %assign im.NumBIOSignals = im.NumBIOSignals + 1
+		    %endif  %% !ISEMPTY(sigRec)
+		  %endforeach  %% regIdx = NumRegions
+		%endwith  %% DataOutputPort[portIdx]
+	      %endforeach  %% portIdx = NumDataOutputPorts
+	    %endif  %% Block[blkIdx].Virtual == 0
+	  %endwith  %% Block[blkIdx]
+	%endforeach  %% blkIdx = NumBlocks
+      %endwith  %% Subsystem[subsysIdx]
+    %endforeach  %%  subsysIdx = NumSubsystems
+    %undef portobj
+    {
+    0, 0, NULL, NULL, 0, 0, 0, 0, 0
+    }
+  };
+    %endif  %% RTWCAPISignals == 1
+
+    %if RTWCAPIParams == 1
+
+      %% Internal testing facility
+      %if EXISTS("ParameterTuningTestFile")
+	%include "%<ParameterTuningTestFile>"
+      %endif
+
+      %if InlineParameters
+  /* Individual block tuning is not valid when inline parameters is *
+   * selected. An empty map is produced to provide a consistent     *
+   * interface independent  of inlining parameters.                 *
+   */
+      %else
+  /* Tunable block parameters */
+      %endif
+
+  static %<constKeyword> %<tBlockParamsType> %<tBlockParams>[] = {
+
+    /* addrMapIndex, blockPath,
+     * paramName, dataTypeIndex, dimIndex, fixPtIdx
+     */
+
+      %if !InlineParameters
+	%% Loop through Parameters and add relevant parameter information
+	%% to BlockParams Structure
+	%foreach subsysIdx = NumSubsystems
+	  %with Subsystem[subsysIdx]
+	    %foreach blkIdx = NumBlocks
+	      %with Block[blkIdx]
+		%foreach paramIdx = NumParameters
+		  %assign mParam  = Parameter[paramIdx]
+                  %if mParam._idx < 0 %% post compile virtual blocks
+                    %continue
+                  %endif
+		  %assign param   = ...
+		    CompiledModel.ModelParameters.Parameter[mParam._idx]
+		  %if (param.MemoryMapIdx[2] == -1) || (param.Tunable == "no")
+		    %% Inaccessible data or non tunable parameter
+		    %continue
+		  %else
+		    %assign structIdx  = param.MemoryMapIdx[0]
+		    %assign secIdx     = param.MemoryMapIdx[1]
+		    %assign dataIdx    = param.MemoryMapIdx[2]
+		    %assign section    = StructuredData[structIdx].Section[secIdx]
+		    %assign data       = section.Data[dataIdx]
+		    %assign dataTypeIdx= section.DataTypeIdx
+		    %assign isComplex  = section.IsComplex
+		    %assign isReadOnly = data.Permission == "ro"
+		    %% Skip certain kinds of data - Read only
+		    %if isReadOnly
+		      %continue
+		    %endif
+		    %if data.Class == "other"
+		      %% Skip data of unknown layout
+		      %continue
+		    %endif
+		    %% Address
+		    %assign addrMapIdx     = im.NumDataAddr
+		    %assign im.AddrMap = im.AddrMap + data.BaseAddr
+		    %assign im.AddrMapComments = im.AddrMapComments + ...
+		      "%<im.NumDataAddr>: Block Parameter"
+		    %assign im.NumDataAddr = im.NumDataAddr + 1
+		    %% Block Path
+		    %assign grBlkIdx       = [%<subsysIdx>, %<blkIdx>]
+		    %assign blkPath        = SLibMangledGrBlockPath(grBlkIdx)
+		    %assign blkPath        = STRING(blkPath)
+		    %% Parameter Name
+		    %assign paramName      = mParam.Name
+		    %% Data Type
+		    %assign isPointer      = TLC_FALSE
+		    %assign dataTypeMapIdx = ...
+		      FcnGetDataTypeMapIdx(dataTypeIdx,isComplex,isPointer,im)
+		    %% Dimensions
+		    %assign dimMapIdx = FcnGetDimensionMapIdx(data, im)
+		    %% Fixed point
+		    %if data.IsFixedPoint
+		      %assign fxpMapIdx    = FcnGetFxpMapIdx(data,im)
+		    %else
+		      %assign fxpMapIdx    = 0
+		    %endif
+		    %% Write data directly to model_capi.c
+    {%<addrMapIdx>, "%<blkPath>",
+      "%<paramName>", %<dataTypeMapIdx>, %<dimMapIdx>, %<fxpMapIdx>},
+		    %assign im.NumBlockParams = im.NumBlockParams + 1
+		  %endif
+		%endforeach
+	      %endwith  %% Block[blkIdx]
+	    %endforeach  %% blkIdx = NumBlocks
+	  %endwith  %% Subsystem[subsysIdx]
+	%endforeach  %%  subsysIdx = NumSubsystems
+      %endif  %% !Inline Parameters
+    {
+      0, NULL, NULL, 0, 0, 0
+    }
+  };
+    %endif  %% RTWCAPIParams == 1
+    
+    %if RTWCAPIStates == 1
+      /* Block states information */
+      static %<constKeyword> %<tBlockStatesType> %<tBlockStates>[] = {
+
+	/* addrMapIndex, blockPath,
+	 * stateName, dWorkIndex, dataTypeIndex, dimIndex, fixPtIdx, sTimeIndex
+	 */
+	 
+      %foreach subsysIdx = NumSubsystems
+	%with Subsystem[subsysIdx]
+	  %foreach blkIdx = NumBlocks
+	    %with Block[blkIdx]
+	      %if Type == "ModelReference"
+		%assert NumDiscStates == 0
+		%continue
+	      %endif
+	      %if Block[blkIdx].Virtual != 0
+		%continue
+	      %endif
+	      %% Block Path
+	      %assign grBlkIdx       = [%<subsysIdx>, %<blkIdx>]
+	      %assign blkPath        = SLibMangledGrBlockPath(grBlkIdx)
+	      %assign blkPath        = STRING(blkPath)
+	      %foreach dStateIdx = NumDiscStates
+		%assign dWorkIdx = DiscState[dStateIdx]._idx
+                %if dWorkIdx < 0 %% post compile virtual blocks
+                  %continue
+                %endif
+		%assert (dWorkIdx < CompiledModel.DWorks.NumDWorks)
+		%assign dWork    = CompiledModel.DWorks.DWork[dWorkIdx]
+		%if TYPE(dWork.TID) != "Number"
+		  %continue
+		%endif
+		%if dWork.MemoryMapIdx[2] == -1
+		  %% Skip  Local or reuse data
+		  %continue
+		%else
+		  %assign structIdx  = dWork.MemoryMapIdx[0]
+		  %assign secIdx     = dWork.MemoryMapIdx[1]
+		  %assign dataIdx    = dWork.MemoryMapIdx[2]
+		  %if secIdx == -1
+		    %% Unstructured data
+		    %assign data        = UnstructuredData.Data[dataIdx]
+		    %assign isComplex   = data.IsComplex
+		    %assign dataTypeIdx = data.DataTypeIdx
+		    %assign dataAccess  = data.Access
+		    %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+		  %elseif structIdx == -1
+		    %% Custom data
+		    %assign data       =  CustomData[secIdx].Data[dataIdx]
+		    %assign isComplex   = data.IsComplex
+		    %assign dataTypeIdx = data.DataTypeIdx
+		    %assign dataAccess  = data.Access
+		    %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+		  %else
+		    %% Structured data
+		    %assign section     = ...
+		      StructuredData[structIdx].Section[secIdx]
+		    %assign data        = section.Data[dataIdx]
+		    %assign dataTypeIdx = section.DataTypeIdx
+		    %assign isComplex   = section.IsComplex
+		    %assign isPointer   = TLC_FALSE
+		    %assign dataAccess  = "direct"
+		  %endif
+		%endif
+		%if data.Class == "other"
+		  %% Skip data of unknown layout
+		  %continue
+		%endif
+		%if dataAccess == "unknown"
+		  %% Skip data if DataAccess is unknown - R13 CSC's
+		  %continue
+		%endif
+		%% State Address
+		%assign addrMapIdx     = im.NumDataAddr
+		%if isPointer
+		  %assign stateAddress       = data.BaseAddr
+		  %assign im.AddrMapComments = im.AddrMapComments + ...
+		    "%<im.NumDataAddr>: Discrete State Pointer"
+		%else
+		  %assign stateAddress       = data.BaseAddr
+		  %assign im.AddrMapComments = im.AddrMapComments + ...
+		    "%<im.NumDataAddr>: Discrete State"
+		%endif
+		%assign im.AddrMap     = im.AddrMap + stateAddress
+		%assign im.NumDataAddr = im.NumDataAddr + 1
+		%% State Name
+		%assign stateName      = dWork.Name
+		%% Data Type
+		%assign dataTypeMapIdx = ...
+		  FcnGetDataTypeMapIdx(dataTypeIdx, isComplex, isPointer, im)
+		%% Dimension
+		%assign dimMapIdx      = FcnGetDimensionMapIdx(data,im)
+		%% Fixed Point
+		%if data.IsFixedPoint
+		  %assign fxpMapIdx    = FcnGetFxpMapIdx(data,im)
+		%else
+		  %assign fxpMapIdx    = 0
+		%endif
+		%% SampleTime
+		%assign tID      = dWork.TID
+		%assign sTimeIdx = FcnGetSampTimeIdx(tID, tID, 0, im)
+		%% Write data directly to BlockStates structure
+                {%<addrMapIdx>, "%<blkPath>",
+		"%<stateName>", 0, %<dataTypeMapIdx>, %<dimMapIdx>, \
+		%<fxpMapIdx>, %<sTimeIdx>},
+		%assign im.NumBlockStates = im.NumBlockStates + 1
+	      %endforeach   %% dStateIdx = NumDiscStates
+	      %%
+	      %% Continuous States
+	      %%
+	      %foreach cStateIdx = NumContStates
+		%assign cSIdx = ContState[cStateIdx]._idx
+		%assert (cSIdx < CompiledModel.ContStates.NumContStates)
+		%assign contState = CompiledModel.ContStates.ContState[cSIdx]
+		%if contState.MemoryMapIdx[2] == -1
+		  %% Skip  Local or reuse data
+		  %continue
+		%else
+		  %assign structIdx  = contState.MemoryMapIdx[0]
+		  %assign secIdx     = contState.MemoryMapIdx[1]
+		  %assign dataIdx    = contState.MemoryMapIdx[2]
+		  %if secIdx == -1
+		    %% Unstructured data
+		    %assign data        = UnstructuredData.Data[dataIdx]
+		    %assign isComplex   = data.IsComplex
+		    %assign dataTypeIdx = data.DataTypeIdx
+		  %elseif structIdx == -1
+		    %% Custom data
+		    %assign data       =  CustomData[secIdx].Data[dataIdx]
+		    %assign isComplex   = data.IsComplex
+		    %assign dataTypeIdx = data.DataTypeIdx
+		  %else
+		    %% Structured data
+		    %assign section     = ...
+		      StructuredData[structIdx].Section[secIdx]
+		    %assign data        = section.Data[dataIdx]
+		    %assign dataTypeIdx = section.DataTypeIdx
+		    %assign isComplex   = section.IsComplex
+		  %endif
+		%endif
+		%% Address
+		%assign addrMapIdx     = im.NumDataAddr
+		%assign im.AddrMap     = im.AddrMap + data.BaseAddr
+		%assign im.AddrMapComments = im.AddrMapComments + ...
+		  "%<im.NumDataAddr>: Continuous State"
+		%assign im.NumDataAddr = im.NumDataAddr + 1
+		%% State Name
+		%assign stateName      = "CSTATE"
+		%% Data Type
+		%assign isPointer      = TLC_FALSE
+		%assign dataTypeMapIdx = ...
+		  FcnGetDataTypeMapIdx(dataTypeIdx,isComplex,isPointer,im)
+		%% Dimension
+		%assign dimMapIdx      = FcnGetDimensionMapIdx(data,im)
+		%% Fixed Point
+		%if data.IsFixedPoint
+		  %assign fxpMapIdx    = FcnGetFxpMapIdx(data,im)
+		%else
+		  %assign fxpMapIdx    = 0
+		%endif
+		%% SampleTime
+		%% %if ISFIELD(Block[blkIdx], "TID")
+		%%   %assign tID = Block[blkIdx].TID
+		%% %else
+		%%   %assign bRef   = Block[blkIdx]._blkref
+		%%   %assign sysBlk = CompiledModel.System[bRef[0]].Block[bRef[2]]
+		%%   %assign tID    = sysBlk.TID
+		%% %endif
+		%assign sTimeIdx = FcnGetSampTimeIdx(0, 0, 0, im)
+		%% Write data directly to BlockStates structure
+                {%<addrMapIdx>, "%<blkPath>",
+		"%<stateName>", 0, %<dataTypeMapIdx>, %<dimMapIdx>, \
+		%<fxpMapIdx>, %<sTimeIdx>},
+		%assign im.NumBlockStates = im.NumBlockStates + 1
+	      %endforeach %% cStateIdx = NumContStates
+	    %endwith
+	  %endforeach   %% blkIdx = NumBlocks
+	%endwith   %% Subsystem[subsysIdx]
+      %endforeach    %% subsysIdx = NumSubsystems
+      {
+	0, NULL, NULL, 0, 0, 0, 0
+      }
+      };
+    %endif
+  %endwith  %% BlockHierarchyMap
+  %% end of BlockHierarchyMap loop ===========================================
+
+  %if RTWCAPIParams ==1
+    %% Tunable Variable Parameters
+    %%
+  /* Tunable variable parameters */
+
+  static %<constKeyword> %<tModelParamsType> %<tModelParams>[] = {
+
+    /* addrMapIndex, varName, dataTypeIndex, dimIndex, fixPtIndex */
+
+    %with ModelParameters
+      %foreach paramIdx = NumModelParameters
+	%assign param = ModelParameter[paramIdx]
+	%foreach instIdx = param.NumInstances
+	  %assign structIdx = param.Instance[instIdx].MemoryMapIdx[0]
+	  %assign secIdx    = param.Instance[instIdx].MemoryMapIdx[1]
+	  %assign dataIdx   = param.Instance[instIdx].MemoryMapIdx[2]
+	  %if secIdx == -1         %% [-1 -1 dataIdx]
+	    %% Unstructured data
+	    %assign data        = UnstructuredData.Data[dataIdx]
+	    %assign dTypeIdx    = data.DataTypeIdx
+	    %assign isComplex   = data.IsComplex
+	    %assign dataAccess  = data.Access
+	    %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+	  %elseif structIdx == -1  %% [-1 secIdx dataIdx]
+	    %% Custom data
+	    %assign data        = CustomData[secIdx].Data[dataIdx]
+	    %assign dTypeIdx    = data.DataTypeIdx
+	    %assign isComplex   = data.IsComplex
+	    %assign dataAccess  = data.Access
+	    %assign isPointer   = dataAccess == "indirect" ? 1 : 0
+	  %else                    %% [structIdx secIdx dataIdx]
+	    %% Structured data
+	    %assign section     = StructuredData[structIdx].Section[secIdx]
+	    %assign data        = section.Data[dataIdx]
+	    %assign dTypeIdx    = section.DataTypeIdx
+	    %assign isComplex   = section.IsComplex
+	    %assign isPointer   = TLC_FALSE
+	    %assign dataAccess  = "direct"
+	  %endif
+	  %if data.Class == "other"
+	    %% Skip data of unknown layout
+	    %continue
+	  %endif
+	  %if dataAccess == "unknown"
+	    %% Skip data if DataAccess is unknown - R13 CSC's
+	    %continue
+	  %endif
+	  %if instIdx == 0
+	    %% Model Parameter Address
+	    %assign addrMapIdx     = im.NumDataAddr
+	    %if isPointer
+	      %assign paramAddress       = data.BaseAddr
+	      %assign im.AddrMapComments = im.AddrMapComments + ...
+		"%<im.NumDataAddr>: Model Parameter Pointer"
+	    %else
+	      %assign paramAddress       = data.BaseAddr
+	      %assign im.AddrMapComments = im.AddrMapComments + ...
+		"%<im.NumDataAddr>: Model Parameter"
+	    %endif
+	    %assign im.AddrMap     = im.AddrMap + paramAddress
+	    %assign im.NumDataAddr = im.NumDataAddr + 1
+	    %% Variable Name
+	    %assign varName       = param.Name
+	    %% Data Type
+	    %assign dataTypeMapIdx = ...
+	      FcnGetDataTypeMapIdx(dTypeIdx, isComplex, isPointer, im)
+	    %% Dimension
+	    %assign dimMapIdx     = FcnGetDimensionMapIdx(data, im)
+	    %% Fixed Point
+	    %if data.IsFixedPoint
+	      %assign fxpMapIdx   = FcnGetFxpMapIdx(data,im)
+	    %else
+	      %assign fxpMapIdx   = 0
+	    %endif
+	    %assign im.NumVariableParams = im.NumVariableParams + 1
+    {%<addrMapIdx>, "%<varName>", %<dataTypeMapIdx>, %<dimMapIdx>, %<fxpMapIdx>},
+	  %endif
+	%endforeach  %% Instance
+      %endforeach  %% Parameter
+    %endwith  %% Model Parameters
+    {0, NULL, 0, 0, 0 }
+    };
+  %endif   %% RTWCAPIParams
+
+  %<LibAddToCompiledModel("NumDataAddrInMap", im.NumDataAddr)>
+  %%
+  %% AddressMap and Initialize function ====================================
+  %%
+  %assign dArg    = ""
+  %assign dDecl   = ""
+  %assign pArg    = ""
+  %assign pDecl   = ""
+  %assign bArg    = ""
+  %assign bDecl   = ""
+  %assign dwArg   = ""
+  %assign dwDecl  = ""
+  %assign xArg    = ""
+  %assign xDecl   = ""
+  %assign systemRanArray = "void *systemRanArray[]"
+    
+  %if !UsingMalloc
+    %if !IsMultiInsatnceERTOrModelReference()
+      /* Declare Data Addresses statically */
+      %if im.NumDataAddr > 0
+	static %<tDataAddrType> %<tDataAddrMap>[] = {
+	%foreach idx = im.NumDataAddr-1
+	  %<im.AddrMap[idx]>, \
+	  /* %<im.AddrMapComments[idx]> */
+	%endforeach
+	%<im.AddrMap[im.NumDataAddr-1]>\
+	/* %<im.AddrMapComments[im.NumDataAddr-1]> */
+      };
+      %else  %% if im.NumDataAddr <=0
+	static %<tDataAddrType> *%<tDataAddrMap> = NULL;
+      %endif  %% if im.NumDataAddr
+    %else   %% if IsMultiInstanceERTorModelReference()
+      %assign dArg    = "void* dataAddr[]"
+      %assign dDecl   = "%<RTMGet("DataMapInfo")>.dataAddress"
+      %assign reqInsts = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+      %if RTWCAPIParams == 1
+	%if !reqInsts.ParamsInst && ...
+                            !SLibPrmBufferIsEmpty("SimulinkGlobal","Instance")
+	  %assign pArg = ", %<tParametersType> *%<tParameters>"
+	  %assign pDecl = ", %<tParameters>"
+	%endif
+      %endif
+      %if RTWCAPISignals == 1
+	%if !reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+	  %if IsModelReferenceTarget()
+	    %assign baseSysIdx = GetBaseSystemIdx()
+	    %assign dataType = "rtB%<FcnGetSystemIdentifier(baseSysIdx)> "
+	    %assign bArg = ", %<dataType> *localB"
+	    %assign bDecl = ", localB"
+	  %else
+	    %assign bArg = ", %<tBlockIOType> *%<tBlockIO>"
+	    %assign bDecl = ", %<tBlockIO>"
+	  %endif
+	%endif
+      %endif
+      %if RTWCAPIStates == 1
+	%if !reqInsts.DworkInst && !LibDWorkInstanceIsEmpty()
+	  %if IsModelReferenceTarget()
+	    %assign baseSysIdx = GetBaseSystemIdx()
+	    %assign dataType = "rtDW%<FcnGetSystemIdentifier(baseSysIdx)> "
+	    %assign dwArg = ", %<dataType> *localDW"
+	    %assign dwDecl = ", localDW"
+	  %else
+	    %assign dwArg = ", %<tDWorkType> *%<tDWork>"
+	    %assign dwDecl = ", %<tDWork>"
+	  %endif
+	%endif
+	%if !reqInsts.ContStatesInst && !LibContStatesInstanceIsEmpty()
+	  %if IsModelReferenceTarget()
+	    %assign baseSysIdx = GetBaseSystemIdx()
+	    %assign dataType   = "rtX%<FcnGetSystemIdentifier(baseSysIdx)> "
+	    %assign xArg       = ", %<dataType> *localX"
+	    %assign xDecl      = ", localX"
+	  %else
+	    %assign xArg  = ", %<tContStateType> *%<tContState>"
+	    %assign xDecl = ", %<tContState>"
+	  %endif
+	%endif
+      %endif
+      %if im.NumDataAddr > 0
+	/* Initialize Data Address */
+	static void %<prefix>InitializeDataAddr(%<dArg>%<bArg>%<pArg>%<dwArg>%<xArg>) {
+	  %foreach idx = im.NumDataAddr
+	    dataAddr[%<idx>] = (void*) (%<im.AddrMap[idx]>);
+	  %endforeach
+	}
+      %endif
+    %endif
+  %endif
+  
+  %%
+  %% SystemRanBC ===============================================================
+  %%
+  %assign vecActive = SubsystemRanBC.ActiveVector
+  %assign nElem     = SIZE(vecActive,1)
+  %assign baseIdx   = GetBaseSystemIdx()
+  
+  %if nElem > 0 && IsModelReferenceSimTarget()
+    /* Initialize the system ran breadcrumbs */
+    static void %<prefix>InitializeSystemRanArray(%<systemRanArray>%<dwArg>) {  
+    static SubSystemRanBCTransition alwaysEnabled = SUBSYS_RAN_BC_ENABLE;
+    
+    %foreach i = nElem
+      %assign  dwIdx = vecActive[i]
+      %if (dwIdx > -1)
+	%assign dwRec = CompiledModel.DWorks.DWork[dwIdx]
+	%with System[baseIdx]
+	  %assign active = SLibGetSubsystemActiveVector(dwIdx)
+	%endwith
+	%assert (dwRec.Name == "SubsysRanBC")
+	%assign  sigAddr = "&"+ active
+	systemRanArray[%<i>] = (void *)%<sigAddr>;
+      %else
+	systemRanArray[%<i>] = (void *)&alwaysEnabled;
+      %endif
+    %endforeach
+  }
+  %endif
+
+  %%
+  %% DataTypeMap ===============================================================
+  %%
+  /* Data Type Map - use dataTypeMapIndex to access this structure */
+  static %<constKeyword> %<tDataTypeMapType> %<tDataTypeMap>[] = {
+
+    /* cName, mwName, numElements, elemMapIndex, dataSize, slDataId, *
+     * isComplex, isPointer */
+
+    %if im.NumDataTypes > 0
+      %foreach idx = im.NumDataTypes - 1
+	%<im.DataTypeMap[idx]>,
+      %endforeach
+      %<im.DataTypeMap[im.NumDataTypes-1]>
+    %else
+      {
+	"", "", 0, 0, 0, 0, 0, 0
+      }
+    %endif
+  };
+
+   %%
+   %% Bus Element Map =========================================================
+   %%
+  /* Structure Element Map - use elemMapIndex to access this structure */
+  static %<constKeyword> %<tElementMapType> %<tElementMap>[] = {
+
+    /* elementName, elementOffset, dataTypeIndex, dimIndex, fxpIndex */
+
+   {NULL, 0, 0, 0, 0},
+   %if im.NumElements > 1
+     %foreach idx = im.NumElements - 2
+       %<im.ElemMap[idx]>,
+     %endforeach
+     %<im.ElemMap[im.NumElements-2]>
+   %endif
+ };
+
+  %%
+  %% DimensionMap ==============================================================
+  %%
+  /* Dimension Map - use dimensionMapIndex to access elements of ths structure*/
+  static %<constKeyword> %<tDimensionMapType> %<tDimensionMap>[] = {
+
+    /* dataOrientation, dimArrayIndex, numDims*/
+
+    %if im.NumDimensionMaps > 0
+      %foreach idx = im.NumDimensionMaps - 1
+	%<im.DimensionMap[idx]>,
+      %endforeach
+      %<im.DimensionMap[im.NumDimensionMaps-1]>
+    %else
+      {
+	rtwCAPI_SCALAR, 0, 0
+      }
+    %endif
+  };
+
+  %%
+  %% DimensionArray ============================================================
+  %%
+  /* Dimension Array- use dimArrayIndex to access elements of this array */
+  %if  im.NumDimArray > 0
+  static %<constKeyword> %<tDimensionArrayType> %<tDimensionArray>[] = {
+    %foreach idx = im.NumDimArray - 1
+      %<im.DimArray[idx]>,\
+      /* %<im.DimArrayComments[idx]> */
+    %endforeach
+    %<im.DimArray[im.NumDimArray-1]> \
+    /* %<im.DimArrayComments[im.NumDimArray-1]> */
+    };
+  %else
+    static %<constKeyword> %<tDimensionArrayType> %<tDimensionArray>[] = {0};
+  %endif
+  
+  %%
+  %% Double Values ============================================================
+  %%
+  /* C-API stores floating point values in an array. The elements of this  *
+   * are unique. This ensures that values which are shared across the model*
+   * are stored in the most efficient way. These values are referenced by  *
+   *           - %<tFixPtMapType>.fracSlopePtr,                            *
+   *           - %<tFixPtMapType>.biasPtr,                                 *
+   *           - %<tSampleTimeMapType>.samplePeriodPtr,                    * 
+   *           - %<tSampleTimeMapType>.sampleOffsetPtr                     */
+   
+   static const real_T rtcapiStoredFloats[] = {
+     %if im.NumDoubles > 0
+       %foreach idx = im.NumDoubles - 1
+	 %<im.DoublesMap[idx]>,\
+       %endforeach
+       %<im.DoublesMap[im.NumDoubles-1]>
+     %else
+       0.0
+     %endif
+   };
+   
+  %%
+  %% Fixed Point Map ==========================================================
+  %%
+  /* Fixed Point Map */
+  static %<constKeyword> %<tFixPtMapType> %<tFixPtMap>[] = {
+
+    /* fracSlopePtr, biasPtr, scaleType, exponent, isSigned */
+
+   {NULL, NULL, rtwCAPI_FIX_RESERVED, 0, 0 },
+   %if im.NumFixPoint > 1
+     %foreach idx = im.NumFixPoint - 2
+       %<im.FixPointMap[idx]>,
+     %endforeach
+     %<im.FixPointMap[im.NumFixPoint-2]>
+   %endif
+  };
+ 
+  %%
+  %% Sample Time Map =========================================================
+  %%
+  /* Sample Time Map - use sampTimeIndex to access elements of ths structure */
+  static %<constKeyword> %<tSampleTimeMapType> %<tSampleTimeMap>[] = {
+
+    /* samplePeriodPtr, sampleOffsetPtr, tid, contextTid, samplingMode */
+
+    %if im.NumSampleTimes > 0
+      %foreach idx = im.NumSampleTimes - 1
+	%<im.SampleTimeMap[idx]>,
+      %endforeach
+      %<im.SampleTimeMap[im.NumSampleTimes - 1]>
+    %else
+      {
+	NULL, NULL, %<CompiledModel.SampleTime[0].TID>,
+	%<CompiledModel.SampleTime[0].TID>, 0
+      }
+    %endif
+  };
+  
+  %if RTWCAPISignals
+    %assign tempBIOSig    = tBlockSignals
+    %assign tempNumBIOSig = im.NumBIOSignals
+  %else
+    %assign tempBIOSig    = "NULL"
+    %assign tempNumBIOSig = 0
+  %endif
+  %if RTWCAPIParams
+    %assign tempBTuning    = tBlockParams
+    %assign tempVTuning    = tModelParams
+    %assign tempNumBTuning = im.NumBlockParams
+    %assign tempNumVTuning = im.NumVariableParams
+  %else
+    %assign tempBTuning    = "NULL"
+    %assign tempVTuning    = "NULL"
+    %assign tempNumBTuning = 0
+    %assign tempNumVTuning = 0
+  %endif
+  %if RTWCAPIStates
+    %assign tempBStates    = tBlockStates
+    %assign tempNumBStates = im.NumBlockStates
+  %else
+    %assign tempBStates    = "NULL"
+    %assign tempNumBStates = 0
+  %endif
+  static rtwCAPI_ModelMappingStaticInfo mmiStatic = { 
+  
+  /* Signals:{signals, numSignals}, 
+   * Params: {blockParameters, numBlockParameters, 
+   *          modelParameters, numModelParameters},
+   * States: {states, numStates},
+   * Maps:   {dataTypeMap, dimensionMap, fixPtMap, 
+   *          elementMap, sampleTimeMap, dimensionArray},
+   * TargetType: targetType
+   */
+   
+   {%<tempBIOSig>, %<tempNumBIOSig>},
+   {%<tempBTuning>, %<tempNumBTuning>, 
+    %<tempVTuning>, %<tempNumVTuning>},
+   {%<tempBStates>, %<tempNumBStates>},
+   {%<tDataTypeMap>, %<tDimensionMap>, %<tFixPtMap>, 
+   %<tElementMap>, %<tSampleTimeMap>, %<tDimensionArray>},
+   "float"
+ };
+      
+   %%
+   %% Initialize DataMapInfo ===================================================
+   %%
+   /* Cache pointers into DataMapInfo substructure of RTModel */
+   void %<CompiledModel.Name>_InitializeDataMapInfo(%<tSimStructType>...
+     *%<RTMGetModelSS()>%<bArg>%<pArg>%<dwArg>%<xArg>) {
+     
+     %if UsingMalloc || CodeFormat == "S-Function"
+       /* run-time setup of addresses */
+       %assign nParams   = im.NumBlockParams+im.NumVariableParams
+       %assign nDataAddr = im.NumDataAddr
+       %assign dAddrType = tDataAddrType
+       %assign localStr  = CodeFormat == "S-Function" ? "Local" : ""
+       %if (nParams) > 0
+	 %<tParametersType> *%<tParameters> = (%<tParametersType> *) ...
+	   %<RTMGet("%<localStr>DefaultParam")>;
+       %endif
+       %if im.NumBIOSignals > 0
+	 %<tBlockIOType> *%<tBlockIO> = (%<tBlockIOType> *) ...
+	   %<RTMGet("%<localStr>BlockIO")>;
+       %endif
+       %if (nDataAddr > 0)
+	 %if UsingMalloc
+	   %<dAddrType> *%<tDataAddrMap>;
+	   %<tDataAddrMap> = (%<dAddrType>*) malloc(%<nDataAddr> * sizeof(%<dAddrType>));
+	 %else
+	   static %<dAddrType> %<tDataAddrMap>[%<nDataAddr>];
+	 %endif
+	 
+	 if((%<tDataAddrMap>) == NULL) {
+	   %<RTMSetErrStat("RT_MEMORY_ALLOCATION_ERROR")>;
+	   return;
+	 }
+       
+	 %foreach idx = nDataAddr
+	   %<tDataAddrMap>[%<idx>] = %<im.AddrMap[idx]>; 
+	 %endforeach
+       %else
+	 static %<tDataAddrType> *%<tDataAddrMap> = NULL;
+       %endif
+     %endif
+     
+     /* Set C-API version */
+     rtwCAPI_SetVersion(%<RTMGet("DataMapInfo")>.mmi, 1);
+     
+     /* Cache static C-API data into the Real-time Model Data structure */
+     rtwCAPI_SetStaticMap(%<RTMGet("DataMapInfo")>.mmi, &mmiStatic);
+     
+     /* Cache C-API Data Addresses into the Real-Time Model Data structure */
+     %if !IsMultiInsatnceERTOrModelReference()
+       rtwCAPI_SetDataAddressMap(%<RTMGet("DataMapInfo")>.mmi, %<tDataAddrMap>);
+     %else
+       %if im.NumDataAddr > 0
+	 %<prefix>InitializeDataAddr(%<dDecl>%<bDecl>%<pDecl>%<dwDecl>%<xDecl>);
+	 rtwCAPI_SetDataAddressMap(%<RTMGet("DataMapInfo")>.mmi, ...
+	   %<RTMGet("DataMapInfo")>.dataAddress);
+       %endif
+       
+       /* Set Instance specific path */
+       rtwCAPI_SetPath(%<RTMGet("DataMapInfo")>.mmi, NULL);
+       rtwCAPI_SetFullPath(%<RTMGet("DataMapInfo")>.mmi, NULL);
+     %endif
+     
+     /* Set Reference to submodels */
+     %if EXISTS(CompiledModel.ModelReferenceBlocks)
+       %assign mdlRefBlks    = CompiledModel.ModelReferenceBlocks
+       %assign nMdlRefBlks   = SIZE(mdlRefBlks,0)
+       rtwCAPI_SetChildMMIArray(%<RTMGet("DataMapInfo")>.mmi, ...
+	 %<RTMGet("DataMapInfo")>.childMMI);
+       rtwCAPI_SetChildMMIArrayLen(%<RTMGet("DataMapInfo")>.mmi, %<nMdlRefBlks>);
+     %else
+       rtwCAPI_SetChildMMIArray(%<RTMGet("DataMapInfo")>.mmi, NULL);
+       rtwCAPI_SetChildMMIArrayLen(%<RTMGet("DataMapInfo")>.mmi, 0);
+       %if !ISEMPTY(dwDecl)
+	 %% for now suppress compiler warning if dw is not used.
+	 %if IsModelReferenceTarget()
+	   (void)localDW;
+	 %else
+	   (void)%<tDWork>;
+	 %endif
+       %endif
+     %endif
+     
+     %assign vecActive = SubsystemRanBC.ActiveVector
+     %assign nElem     = SIZE(vecActive,1)
+     %if nElem > 0 && IsModelReferenceSimTarget()
+       %<prefix>InitializeSystemRanArray(%<RTMGet("DataMapInfo")>.systemRanArray%<dwDecl>);
+       rtwCAPI_SetSystemRanArray(%<RTMGet("DataMapInfo")>.mmi,
+                                 %<RTMGet("DataMapInfo")>.systemRanArray);
+       rtwCAPI_SetSystemRanArrayLen(%<RTMGet("DataMapInfo")>.mmi, %<nElem>);
+     %else
+       rtwCAPI_SetSystemRanArray(%<RTMGet("DataMapInfo")>.mmi, NULL);
+       rtwCAPI_SetSystemRanArrayLen(%<RTMGet("DataMapInfo")>.mmi, 0);
+     %endif
+     
+   }
+
+  /* EOF */
+  %closefile modelCAPIdotC
+  %%
+  %% MODEL_capi.h =============================================================
+  %% Create model_capi.h file and define extern function prototypes
+  %%
+  %assign stdText = "### Writing  C API header file %<Name>_capi.h"
+  %<LibWriteToStandardOutput(stdText)>
+  %openfile modelCAPIdotH = "%<Name>_capi.h"
+  /*
+   * %<Name>_capi.h
+   * Header file for C-API: Interface for Signals and/or Parameters and/or States
+   *
+   %<SLibCommonHeaderInfo()>\
+   */
+
+  #ifndef _%<Name>_capi_HEADER_
+  # define _%<Name>_capi_HEADER_
+
+  %assign baseSysIdx = GetBaseSystemIdx()
+  %assign baseName   = SLibGetSystemOutputFileBaseName(System[baseSysIdx])
+
+  #include "%<baseName>.h"
+
+  extern void %<CompiledModel.Name>_InitializeDataMapInfo(%<tSimStructType>...
+                             *%<RTMGetModelSS()>%<bArg>%<pArg>%<dwArg>%<xArg>);
+
+  #endif
+
+  /* EOF */
+  %closefile modelCAPIdotH
+  %%
+  %%
+ %endwith %% GlobalMemoryMap
+%endwith %% CompiledModel
+%%
+%endif   %% _CAPI_
+
+%% EOF capi.tlc ===============================================================

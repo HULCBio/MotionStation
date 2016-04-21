@@ -1,0 +1,551 @@
+%% ============================================================================
+%% $Revision: 1.32.4.10 $ 
+%%
+%% Abstract:
+%%   This system file creates the model mapping data.
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Pete Szpak
+%% March 11, 1998
+%% 
+%selectfile NULL_FILE
+
+%if EXISTS("_COMMONMAPLIB_") == 0
+%assign _COMMONMAPLIB_ = 1
+
+%realformat "CONCISE"
+
+%% Function: SLibDumpDataTypeSizeTable ========================================
+%% Abstract:
+%%
+%function SLibDumpDataTypeSizeTable() Output
+  %with DataTypes
+    %if NumDataTypes == 0
+      %<LibReportFatalError("NumDataTypes == 0")>
+    %else
+      %% NumDataTypes > 0
+      %foreach idx = NumDataTypes
+	%if idx == tSS_TIMER_UINT32_PAIR
+	  %assign dtSize = "2*sizeof(uint32_T)"
+	%else
+	  %assign dtSize = "sizeof(%<DataType[idx].Name>)"
+	%endif
+	%if UsingMalloc
+	  %% run-time assignment
+	  DataTypeSizes[%<idx>] = %<dtSize>;
+	%else
+	  %% static declaration
+	  %if (idx == NumDataTypes-1)
+	    %<dtSize>
+	  %else
+	    %<dtSize>,
+ 	  %endif
+	%endif
+      %endforeach
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: SLibDumpDataTypeNameTable =========================================
+%% Abstract:
+%%
+%function SLibDumpDataTypeNameTable() Output
+  %with DataTypes
+    %if NumDataTypes == 0
+      %<LibReportFatalError("NumDataTypes == 0")>
+    %else
+      %% NumDataTypes > 0
+      %foreach idx = NumDataTypes
+	%if UsingMalloc
+	  %% run-time assignment
+	  DataTypeNames[%<idx>] = "%<DataType[idx].Name>";
+	%else
+	  %% static declaration
+	  %if (idx == NumDataTypes-1)
+	    "%<DataType[idx].Name>"
+	  %else
+	    "%<DataType[idx].Name>",
+	  %endif
+	%endif
+      %endforeach
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: SLibDumpDataTypeTransitionTable ===================================
+%% Abstract:
+%%   This function dumps the Data Type Transition Table for either signals,
+%%   dworks, or parameters, depending on the input variable.
+%%
+%%   o Creates and dumps the table for structured data (bio, dwork, and rtP).
+%%   o Creates and dumps the table for unstructured data (global signals,
+%%     dwork, and parameters).
+%%   o Creates and dumps the table for custom data (custom signals, dwork,
+%%     and parameters).
+%%
+%function SLibDumpDataTypeTransitionTable(type) Output
+  %with CompiledModel.GlobalMemoryMap
+    %assign dataType  = SLibGetMapStructData(type)
+    %assign comma     = ""
+    %assign lastComma = ""
+    %switch(type)
+      %case "parameter"
+	%assign idx    = 0
+	%assign prefix = "P"
+	%break
+      %case "signal"
+	%assign idx    = 0
+	%assign prefix = "B"
+	%if !FcnNumUploadableDWorksIsEmpty() && !FcnNumAccessibleSignalsIsEmpty()
+	  %assign lastComma = ","
+	%endif
+	%break
+      %case "dwork"
+	%assign idx    = SLibGetMapNumDataSections("signal")
+	%assign prefix = "B"
+	%break
+      %default
+	%assert TLC_FALSE
+	%break
+    %endswitch
+    %%
+    %% dataType is either "signal" or "parameter"
+    %%
+    %if !ISEMPTY(dataType)
+      %foreach sectionIdx = dataType.NumSections
+	%with dataType.Section[sectionIdx]
+	  %if UsingMalloc
+	    %% run-time assignment
+	    %<prefix>Transitions[%<idx>].baseAddr  = (char_T *)(%<BaseAddr>);
+	    %<prefix>Transitions[%<idx>].dataType  = %<DataTypeIdx>;
+	    %<prefix>Transitions[%<idx>].isComplex = %<IsComplex>;
+	    %<prefix>Transitions[%<idx>].nEls      = %<NumElements>;
+	    %assign idx = idx + 1
+	  %else
+	    %% static delaration
+	    %<comma>{(char_T *)(%<BaseAddr>), %<DataTypeIdx>, %<IsComplex>,\
+	    %<NumElements>}\
+	    %assign comma = ",\n"
+	  %endif
+	%endwith
+      %endforeach
+    %endif
+    %%
+    %% nonAuto
+    %%
+    %if ISFIELD(GlobalMemoryMap,"UnstructuredData")
+      %assign nData = UnstructuredData.NumData  
+      %foreach dataIdx = nData
+	%with UnstructuredData.Data[dataIdx]
+	  %if type == SL_ExtModeType
+
+	    %% Any data record without the SL_LogicalSrc field does not
+	    %% correspond to an element of the Simulink BIO or Aggregate
+	    %% Parameter tables and can not be included in the data type
+	    %% tranistion table or the target data map file.  An example
+	    %% is a signal declared as an "exported global".  The function
+	    %% SLibGetMapNumDataSections() in globalmaplib.tlc performs
+	    %% the same check to return the correct number of data sections.
+	    %if ISFIELD(UnstructuredData.Data[dataIdx],"SL_LogicalSrc")
+	      %% Calculate the width (number of elements)
+	      %if NumDimensions > 2
+		%assign nEls = 1
+		%foreach dimIdx = NumDimensions
+		  %assign nEls = nEls * Dimensions[dimIdx]
+		%endforeach
+	      %else
+		%assign nEls = NumCols * NumRows
+	      %endif
+	      %if UsingMalloc
+		%% run-time assignment
+		%<prefix>Transitions[%<idx>].baseAddr  = (char_T *)(%<BaseAddr>);
+		%<prefix>Transitions[%<idx>].dataType  = %<DataTypeIdx>;
+		%<prefix>Transitions[%<idx>].isComplex = %<IsComplex>;
+		%<prefix>Transitions[%<idx>].nEls      = %<nEls>;
+		%assign idx = idx + 1
+	      %else
+		%% static delaration
+		%<comma>{(char_T *)(%<BaseAddr>), %<DataTypeIdx>, %<IsComplex>,%<nEls>}\
+		%assign comma = ",\n"
+	      %endif
+	    %endif
+	  %endif
+	%endwith
+      %endforeach
+    %endif
+    %%
+    %% Custom
+    %%
+    %if ISFIELD(GlobalMemoryMap,"CustomData")
+      %assign nDataRecs = NumCustomData
+      
+      %foreach dataRecIdx = nDataRecs
+	%assign customDataRec = CustomData[dataRecIdx]
+	%assign nData         = customDataRec.NumData
+	
+	%foreach dataIdx = nData
+	  %if nData == 1
+	    %assign data = customDataRec.Data
+	  %else
+	    %assign data = customDataRec.Data[dataIdx]
+	  %endif
+	
+	  %with data
+	    %if type == SL_ExtModeType
+	      %if data.NumDimensions != -1
+	    
+		%% Any data record without the SL_LogicalSrc field does not
+		%% correspond to an element of the Simulink BIO or Aggregate
+		%% Parameter tables and can not be included in the data type
+		%% tranistion table or the target data map file.  An example
+		%% is a signal declared as an "exported global".  The function
+		%% SLibGetMapNumDataSections() in globalmaplib.tlc performs
+		%% the same check to return the correct number of data sections.
+		%if ISFIELD(data,"SL_LogicalSrc")
+		  %% Calculate the width (number of elements)
+		  %if NumDimensions > 2
+		    %assign nEls = 1
+		    %foreach dimIdx = NumDimensions
+		      %assign nEls = nEls * Dimensions[dimIdx]
+		    %endforeach
+		  %else
+		    %assign nEls = NumCols * NumRows
+		  %endif
+		  %if UsingMalloc
+		    %% run-time assignment
+		    %<prefix>Transitions[%<idx>].baseAddr  = (char_T *)(%<BaseAddr>);
+		    %<prefix>Transitions[%<idx>].dataType  = %<DataTypeIdx>;
+		    %<prefix>Transitions[%<idx>].isComplex = %<IsComplex>;
+		    %<prefix>Transitions[%<idx>].nEls      = %<nEls>;
+		    %assign idx = idx + 1
+		  %else
+		    %% static delaration
+		    %<comma>{(char_T *)(%<BaseAddr>), %<DataTypeIdx>, %<IsComplex>,%<nEls>}\
+		    %assign comma = ",\n"
+		  %endif
+		%endif
+	      %else
+		%assign errStr = "External Mode does not support custom storage classes comprised\n" ...
+		                 "of data fields whose addresses are not available.  Enable the\n" ...
+		                 "\"Ignore custom storage classes\" option under \"Code generation options\"\n" ...
+				 "on the \"Real-Time Workshop Options\" page to work around this problem."
+                %exit %<errStr>
+	      %endif
+	    %endif
+	  %endwith
+	%endforeach
+      %endforeach
+    %endif
+    %if !UsingMalloc
+      %<lastComma>
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: SLibDumpMapInfo ===================================================
+%% Abstract:
+%%   This function dumps the map information for either signals
+%%   or parameters, depending on the input variable.
+%%
+%function SLibDumpMapInfo(type) Output
+  %switch(type)
+    %case "parameter"
+      %assign prefix = "P"
+      %assign nTrans = SLibGetParameterMapNumDataSections()
+      %break
+    %case "signal"
+      %assign prefix = "B"
+      %assign nTrans = SLibGetBlockIOMapNumDataSections()
+      %break
+    %default
+      %assert TLC_FALSE
+      %break
+  %endswitch
+  %if UsingMalloc
+    %% run-time assignment
+    %<prefix>TransTable->numTransitions = %<nTrans>U;
+    %<prefix>TransTable->transitions = %<prefix>Transitions;
+  %else
+    %% static declaration
+    %<nTrans>U,
+    rt%<prefix>Transitions
+  %endif
+%endfunction
+
+
+%% Function: SLibDumpBlockIODataTypeTransitionTable ============================
+%% Abstract:
+%%   This function is a wrapper and calls SLibDumpDataTypeTransitionTable()
+%%   with "signal" and "dwork" to dump the BlockIO data type transition table.
+%%   The order of the calls is very important - the BlockIo data type trans
+%%   table consists of the signals portion followed by the dwork portion.
+%%
+%function SLibDumpBlockIODataTypeTransitionTable() Output
+  %<SLibDumpDataTypeTransitionTable("signal")>
+  %<SLibDumpDataTypeTransitionTable("dwork")>
+%endfunction
+
+
+%% Function: FcnNumUploadableDWorksIsEmpty =====================================
+%% Abstract:
+%%   This function returns whether or not there are any available DWorks.
+%%
+%function FcnNumUploadableDWorksIsEmpty() void
+  %return (CompiledModel.DWorks.NumDWorks == 0)
+%endfunction
+
+
+%% Function: FcnNumAccessibleSignalsIsEmpty ====================================
+%% Abstract:
+%%   This function returns whether or not there are any accessible signals.
+%%
+%function FcnNumAccessibleSignalsIsEmpty() void
+  %return (BlockOutputs.NumAccessibleSignals == 0)
+%endfunction
+
+
+%% Function: SLibBlockIODataTypeTransitionTableIsEmpty =========================
+%% Abstract:
+%%   This function is used to check whether we need to create the 
+%%   DataTypeTransiton table for BlockIO (signals).
+%%
+%function SLibBlockIODataTypeTransitionTableIsEmpty() void
+  %return (FcnNumUploadableDWorksIsEmpty() && FcnNumAccessibleSignalsIsEmpty())
+%endfunction
+
+
+%% Function: SLibDumpBlockIOMapInfo ============================================
+%% Abstract:
+%%   This function is a wrapper and calls SLibDumpMapInfo () with "signal".
+%%   SLibDumpMapInfo will dump the map info for signals and dwork because they
+%%   are both written to the BlockIo data type trans table.
+%%
+%function SLibDumpBlockIOMapInfo() Output
+  %if !SLibBlockIODataTypeTransitionTableIsEmpty()
+    %<SLibDumpMapInfo("signal")>
+  %endif
+%endfunction
+
+
+%% Function: SLibDumpParametersDataTypeTransitionTable =========================
+%% Abstract:
+%%   This function is a wrapper and calls SLibDumpDataTypeTransitionTable()
+%%   with "parameter" to dump the Parameter data type transition table.
+%%
+%function SLibDumpParametersDataTypeTransitionTable() Output
+  %<SLibDumpDataTypeTransitionTable("parameter")>
+%endfunction
+
+
+%% Function: SLibParametersDataTypeTransitionTableIsEmpty ======================
+%% Abstract:
+%%   This function is used to check whether we need to create the 
+%%   DataTypeTransiton table for Parameters.
+%%
+%function SLibParametersDataTypeTransitionTableIsEmpty() void
+  %with CompiledModel.ModelParameters
+    %return (NumParameters - NumConstPrms - NumConstPrmsWithInit) == 0.0
+  %endwith
+%endfunction
+
+
+%% Function: SLibDumpParametersMapInfo =========================================
+%% Abstract:
+%%   This function is a wrapper and calls SLibDumpMapInfo() with "parameter" to
+%%   dump the Parameters map info.
+%%
+%function SLibDumpParametersMapInfo() Output
+  %if !SLibParametersDataTypeTransitionTableIsEmpty()
+    %<SLibDumpMapInfo("parameter")>
+  %endif
+%endfunction
+
+
+%% Function: SLibDumpModelMappingInfo ==========================================
+%% Abstract:
+%%   Initializes the model mapping info and attach it to the SimStruct.  This
+%%   function supports these code formats:
+%%   o RealTime
+%%   o RealTimeMalloc
+%%   o Embedded-C
+%%
+%function SLibDumpModelMappingInfo() Output
+  %%
+  %% Generate the setup code
+  %%
+  %assign usingStatic = !UsingMalloc
+  %assign numDataTypes = LibGetNumDataTypesInModel()
+  %if ExtMode == 1 && numDataTypes != -1
+    /* data type transition information (for external mode) */
+    {
+      %if usingStatic
+	%%
+	%% Static memory allocation (instances are generated in model.dt)
+	%%
+	static DataTypeTransInfo dtInfo;
+	
+	(void)memset((char_T *) &dtInfo, 0, sizeof(dtInfo));
+	%<RTMSet("ModelMappingInfo", "&dtInfo")>;
+	
+	%if xPC==1
+	  %<RTMuSet("ReservedForXPC", "(void*) &dtInfo")>;
+	%endif
+	dtInfo.numDataTypes  = %<numDataTypes>;
+	%if numDataTypes > 0
+	  dtInfo.dataTypeSizes = &rtDataTypeSizes[0];
+          dtInfo.dataTypeNames = &rtDataTypeNames[0];
+	%endif
+	%if !SLibBlockIODataTypeTransitionTableIsEmpty()
+	  
+	  /* Block I/O transition table */
+	  dtInfo.B = &rtBTransTable;
+	%endif
+	%if !SLibParametersDataTypeTransitionTableIsEmpty()
+	  
+	  /* Parameters transition table */
+	  dtInfo.P = &rtPTransTable;
+	%endif
+      %else
+	#include "%<Name>_reg_dt.h"
+      %endif  %% usingStatic == 1
+    }
+  %endif      %% DataTypeTrans == 1
+
+  %if BlockIOSignals == 1 || ParameterTuning == 1
+    /* C API for Parameter Tuning and/or Signal Monitoring */
+    {
+      static ModelMappingInfo mapInfo;
+      
+      %if UsingMalloc || CodeFormat == "S-Function"
+	/* run-time setup of ParametersMap and DimensionsMap */
+	%assign nParams   = SIZE(InstanceMap.ParametersMap, 1)
+	%assign nParamEls = (nParams == 0) ? 1 : nParams
+	%assign nDims     = SIZE(InstanceMap.DimensionsMap, 1)
+	%assign nDimEls   = (nDims == 0) ? 1 : nDims
+	%assign pType     = tParametersMapType
+	%assign dType     = tDimensionsMapType
+	%assign localStr  = CodeFormat == "S-Function" ? "Local" : ""
+	%if nParams > 0
+	  %<tParametersType> *%<tParameters> = (%<tParametersType> *) ...
+	    %<RTMGet("%<localStr>DefaultParam")>;
+	%endif
+	%if UsingMalloc
+	  %<pType> *%<tParametersMap>;
+	  %<dType> *%<tDimensionsMap>;
+	  %<tParametersMap> = (%<pType>*) malloc(%<nParamEls> * sizeof(%<pType>));
+	  %<tDimensionsMap> = (%<dType>*) malloc(%<nDimEls> * sizeof(%<dType>));
+	%else
+	  static %<pType> %<tParametersMap>[%<nParamEls>];
+	  static %<dType> %<tDimensionsMap>[%<nElements>];
+	%endif
+
+	%<RTMChkMemAndReturnIfErr("%<tParametersMap>")>;
+	%<RTMChkMemAndReturnIfErr("%<tDimensionsMap>")>;
+
+	%foreach idx = nParams
+	  %<tParametersMap>[%<idx>] = %<InstanceMap.ParametersMap[idx]>; \
+	  /* %<InstanceMap.ParametersMapComments[idx]> */
+	%endforeach
+
+	%foreach idx = nDims
+	  %<tDimensionsMap>[%<idx>] = %<InstanceMap.DimensionsMap[idx]>; \
+	  /* %<InstanceMap.DimensionsMapComments[idx]> */
+	%endforeach
+      %endif
+      
+      memset((char_T *) &mapInfo, 0, sizeof(mapInfo));
+      %if BlockIOSignals == 1
+	
+	/* block signal monitoring map */
+	mapInfo.Signals.blockIOSignals = &%<tBlockIOSignals>[0];
+	mapInfo.Signals.numBlockIOSignals = ...
+	  %<NumBlockIOSignalsInMap>;
+      %endif
+      %if ParameterTuning == 1
+	
+	/* parameter tuning maps */
+	mapInfo.Parameters.blockTuning       = &%<tBlockTuning>[0];
+	mapInfo.Parameters.variableTuning    = &%<tVariableTuning>[0];
+	mapInfo.Parameters.parametersMap     = %<tParametersMap>;
+	mapInfo.Parameters.dimensionsMap     = %<tDimensionsMap>;
+	mapInfo.Parameters.numBlockTuning    = %<InstanceMap.NumBlockParams>;
+	mapInfo.Parameters.numVariableTuning = %<InstanceMap.NumVariableParams>;
+      %endif
+      
+      %<RTMSet("ModelMappingInfo", "&mapInfo")>;
+    }
+    
+  %endif
+  %%
+  %% Add model_initializeDataMapInfo if C API is selected
+  %%
+  %if RTWCAPI
+    %assign pDecl  = ""
+    %assign bDecl  = ""
+    %assign dwDecl = ""
+    %assign xDecl  = ""
+    %assign reqInsts = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+    %if RTWCAPIParams
+      %if !reqInsts.ParamsInst && ...
+                           !SLibPrmBufferIsEmpty("SimulinkGlobal","Instance")
+	%assign pDecl = ", %<tParameters>"
+      %endif
+    %endif
+    %if RTWCAPISignals
+      %% BlockIO
+      %if !reqInsts.BlockIOInst && !LibBlockIOInstanceIsEmpty()
+	%% Need to access 
+	%if IsModelReferenceTarget()
+	  %assign bDecl = ", localB"
+	  %assign baseSysIdx = GetBaseSystemIdx()
+	  %<LibAccessArg(System[baseSysIdx].Interface.BlockIOArgDef)>
+	%elseif !UsingMalloc
+	  %assign bDecl = ", %<tBlockIO>"
+	%endif
+      %endif
+    %endif
+    %if RTWCAPIStates
+      %% DWork
+      %if !reqInsts.DworkInst && !LibDWorkInstanceIsEmpty()
+	%% Need to access 
+	%if IsModelReferenceTarget()
+	  %assign dwDecl = ", localDW"
+	  %assign baseSysIdx = GetBaseSystemIdx()
+	  %<LibAccessArg(System[baseSysIdx].Interface.DWorkArgDef)>
+	%elseif !UsingMalloc
+	  %assign dwDecl = ", %<tDWork>"
+	%endif
+      %endif
+      %if !reqInsts.ContStatesInst && !LibContStatesInstanceIsEmpty()
+	%if IsModelReferenceTarget()
+	  %assign xDecl      = ", localX"
+	  %assign baseSysIdx = GetBaseSystemIdx()
+	  %<LibAccessArg(System[baseSysIdx].Interface.ContStatesArgDef)>
+	%elseif !UsingMalloc
+	  %assign xDecl = ", %<tContState>"
+	%endif
+      %endif
+    %endif
+    /* Initialize DataMapInfo substructure containing ModelMap for C API */
+    %<CompiledModel.Name>_InitializeDataMapInfo(%<RTMGetModelSS()>%<bDecl>%<pDecl>%<dwDecl>%<xDecl>);
+  %endif
+%endfunction  %% SLibDumpModelMappingInfo
+
+%endif %% _COMMONMAPLIB_
+
+%% [EOF] commonmaplib.tlc
+
+
+
+
+
+
+
+
+
+
+

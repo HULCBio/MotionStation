@@ -1,0 +1,364 @@
+%% 
+%% $Revision: 1.1.6.5 $
+%% 
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Description:
+%%   This TLC library file contains function for caching code for RTW shared 
+%%   utilities src directory.
+
+%if EXISTS("_CACHE_SHAREDUTILS_LIB_") == 0
+%assign _CACHE_SHAREDUTILS_LIB_ = 1
+
+%%
+%% Design of global variable ::GlobalSharedUtilsIncludes
+%%
+%%   ::GlobalSharedUtilsIncludes is a vector of vectors.
+%%     It can also be thought of as a ragged two dimensional array.
+%%     Is serves as stack for storing include head file requirements for 
+%%     RTW shared utilities.
+%%
+%%   A typical GlobalSharedUtilsIncludes LOGICALLY looks as following:
+%%      top    newest ["<math.h>", "custom1.h", "custom2.h"]
+%%                   []
+%%      bottom oldest ["math.h", "<float.h>"]
+%%   Note the physical layout is the reverse of the logical layout.  The
+%%   newest items are at the highest row index.
+%%
+%%   Each row of GlobalSharedUtilsIncludes contains the header files that
+%%   will be needed by a function.  This functions can be created in
+%%   a nested manner, hence the need for a stack.  A utility can incrementally
+%%   add additional header files to its row in the stack.
+
+%%   To help developers access the stack, several stack functions are available 
+%%   to operate on ::GlobalSharedUtilsIncludes.
+%%
+%%   LibPushStackSharedUtilsIncludes(inputVector) 
+%%    -- it will push an entire new vector of includes into top of stack, 
+%%       in other words, a new row will be inserted into logical-top
+%%       stack position.
+%%
+%%   LibPushEmptyStackSharedUtils()
+%%    -- it will push an empty vector of includes into top of stack, 
+%%       in other words, a new row will be inserted into logical-top
+%%       stack position and that row will be empty.  This is useful for
+%%       initializing the set of header files required by a utility.
+%%
+%%   LibPopStackSharedUtilsIncludes()
+%%    -- From the logical top of the stack remove an entire row and
+%%       return that vector.
+%%
+%%   LibAddtoSharedUtilsIncludes(incFileName)
+%%    -- Add an individual element to the list of header files at 
+%%       the current logical-top of stack.  The row vector at the
+%%       top of the stack will be checked first.  If the header file
+%%       is already in the list, then nothing changes.  Otherwise,
+%%       the length of the vector at the logical-top of the stack
+%%       will be increased by one using the new header file name.
+%%
+%%   LibAddtoSharedUtilsIncludesVector(inputVet)
+%%    -- Append a vector of header file names to the list of vector of
+%%       header files at that are currently at the logical-top of stack.  
+%%       Repeated header file names will be thrifted out.  The length
+%%       of the vector at the logical-top of the stack will be
+%%       increase enough to hold any new header file names.  Like a
+%%       set union operation.
+%%
+%%   Usage:
+%%     On the begining of shared utilities code generation, we call 
+%%     LibPushEmptyStackSharedUtils to create a new row at the logical-top of stack 
+%%     to record include file requirements.  As the need for an individual header
+%%     file is identified, calls are made to LibAddtoSharedUtilsIncludes to insert
+%%     that file in the row at the logical-top of the stack.  At the end of
+%%     code generation for each utility, authors must call LibPopStackSharedUtilsIncludes 
+%%     to clean up the stack by removing the logical-top.
+%%     In the middle of generating code for one utility, it is common to begin generating
+%%     another required utility.  The stack design support this nested creation of
+%%     utilities.
+%%
+%%     Reading the top of stack requires two function calls.  The first function pops
+%%     the vector from the logical-top of the stack.  A second call is required to
+%%     push that vector back on to the logical-top of the stack.
+%%
+%%     When code generation also return its buffer into upper layer function, we need 
+%%     call pop function first, then use LibAddtoSharedUtilsIncludesVector(inputVet) to
+%%     append the poped layer into head file list for upper layer code generation function.
+
+
+
+%% Function: SLibDumpUtilsSourceCode ===============================================
+%% Abstract:
+%%   Write shared utils source code into disk, as well as add function
+%%   signature into shared utils general include header file.  Includes for the
+%%   header files from the logical-top of the stack ::GlobalSharedUtilsIncludes
+%%   are inserted prior to the body in the c-file.
+%%
+%%   Example:
+%% 	  %openfile buffer
+%% 	  void myfunc(int i) {
+%% 	    i++;
+%% 	  }
+%% 	  %closefile buffer
+%% 	  %<SLibDumpUtilsSourceCode("myfunc","void myfunc(int i)",buffer)>
+%%
+%function SLibDumpUtilsSourceCode(fcnName,funcProto,buffer) void
+%if EXISTS(::GenUtilsSrcInSharedLocation) && (::GenUtilsSrcInSharedLocation == 1)
+    %if !ISFIELD(::CompiledModel, "RTWInfoMatFile")
+        %<LoadRTWInfoMatFileforTLC()>
+    %endif    
+    %assign fileName      = "%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>%<fcnName>"
+    %assign includeFile   = "%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>"
+    %if FILE_EXISTS("%<fileName>") == 0
+      %openfile protectedUtilityDef
+#include "rtwtypes.h"
+%% insert additional include files, such as <math.h>
+%if EXISTS(::GlobalSharedUtilsIncludes)
+  %% read top of stack
+  %assign locGSUIncludesCache = LibPopStackSharedUtilsIncludes()
+  %assign nlocGSUIncludesCache = SIZE(locGSUIncludesCache,1)
+  %foreach idx = nlocGSUIncludesCache
+    %assign incFileName = locGSUIncludesCache[idx]
+    %if incFileName[0] == "<"
+#include %<incFileName>
+    %else
+#include "%<incFileName>"
+    %endif
+  %endforeach
+  %<LibPushStackSharedUtilsIncludes(locGSUIncludesCache)>
+%endif  
+#include "%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>"
+%<buffer>
+        %closefile protectedUtilityDef
+	%openfile bannerBuf
+	/*
+	* %<fileName>.c
+	* 
+	%<SLibCommonHeaderInfo()>\
+	*/
+	%closefile bannerBuf
+	%assign file = LibCreateSourceFile("Source","Simulink",fileName)
+	%<LibSetSourceFileSection(file, "Functions", protectedUtilityDef)>
+	%<LibSetSourceFileSection(file, "Banner", bannerBuf)>
+	%<SLibSetModelFileIndent(file, TLC_TRUE)>
+	%<SLibSetModelFileShared(file, TLC_TRUE)>
+	%openfile fcnSignature
+	#ifndef SHARE_%<fcnName>
+	#define SHARE_%<fcnName>
+	
+	extern %<funcProto>
+	
+	#endif
+        %closefile fcnSignature
+	%openfile bannerBuf
+	/*
+	* %<fileName>.h
+	* 
+	%<SLibCommonHeaderInfo()>\
+	*/
+	%closefile bannerBuf
+	%assign file = LibCreateSourceFile("Header","Simulink",fileName)
+	%<LibSetSourceFileSection(file, "Functions", fcnSignature)>
+	%<LibSetSourceFileSection(file, "Banner", bannerBuf)>
+	%<SLibSetModelFileIndent(file, TLC_TRUE)>
+	%<SLibSetModelFileShared(file, TLC_TRUE)>
+  %endif  
+  %<LibAddToCommonIncludes("%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>")>\
+%else
+    %<SLibCacheSourceCode(buffer)>\
+%endif  
+%endfunction
+
+%% Function: SLibDumpUtilsMacro ===============================================
+%% Abstract:
+%%   Write shared utils macro into disk as ".h" head file, as well as add this
+%%   head file into shared utils general include header file.
+%%
+%%   Example:
+%% 	  %openfile buffer
+%% 	  #define mymacro xyz(int x)
+%% 	  %closefile buffer
+%% 	  %<SLibDumpUtilsMacro("mymacro",buffer)>
+%%
+%function SLibDumpUtilsMacro(fcnName,buffer) void
+%if EXISTS(::GenUtilsSrcInSharedLocation) && (::GenUtilsSrcInSharedLocation == 1)
+  %if !ISFIELD(::CompiledModel, "RTWInfoMatFile")
+      %<LoadRTWInfoMatFileforTLC()>
+  %endif
+  %assign fileName      = "%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>%<fcnName>.h"
+  %if FILE_EXISTS("%<fileName>") == 0
+    %openfile  filebuffer = "%<fileName>"
+    %<buffer>
+    %closefile filebuffer
+    %matlab c_indent("%<fileName>")    
+  %endif
+  %<LibAddToCommonIncludes("%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>")>\
+%else
+  %% add into <model>_private.h
+  %<LibCacheDefine(buffer)>  
+%endif 
+%endfunction
+
+%% Function: SLibDumpSharedUtilsIncludeFile ===============================================
+%% Abstract:
+%%   Create RTW shared utils src general include file on disk. This function will be 
+%% called once for each round of code generation by SLibDumpCommonIncludes.
+%%   Example:
+%% 	  %<SLibDumpSharedUtilsIncludeFile()>
+%%
+%function SLibDumpSharedUtilsIncludeFile() void
+%if EXISTS(::GenUtilsSrcInSharedLocation) && (::GenUtilsSrcInSharedLocation == 1)  
+  %if ISFIELD(::CompiledModel, "RTWInfoMatFile") 
+    %assign headFileList = FEVAL("rtwprivate","modelrefutil", "%<CompiledModel.Name>","getHeadFileList","%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>")
+    %if (!ISEMPTY(headFileList))
+      %assign fileName = "%<::CompiledModel.RTWInfoMatFile.sharedSourcesDir>%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>"
+      %assign nheadFileList = SIZE(headFileList,1)
+      %% decide whether need update sharedUtilsIncludeFile, Note: the 1st one in headFileList is the latest created.
+      %assign needUpdatesharedUtilsIncludeFile = TLC_FALSE
+        %assign cmpHeaderName = "%<headFileList[0]>"
+        %if "%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>" != "%<cmpHeaderName>"
+           %assign needUpdatesharedUtilsIncludeFile = TLC_TRUE
+        %endif
+
+      %if needUpdatesharedUtilsIncludeFile
+        %openfile  includebuffer = "%<fileName>"           
+        /* Shared utilities general include header file.*/
+        %foreach idx=nheadFileList
+          %if "%<headFileList[idx]>" != "%<::CompiledModel.RTWInfoMatFile.sharedUtilsIncludeFile>"
+        #include "%<headFileList[idx]>"
+          %endif
+        %endforeach
+        %closefile includebuffer
+        %matlab c_indent("%<fileName>")    
+      %endif
+    %endif
+  %endif 
+%endif
+%endfunction
+
+%% Function: LibPushStackSharedUtilsIncludes ===============================================
+%% Abstract:                                                                                
+%%   Push vector of header files into logical-top of stack ::GlobalSharedUtilsIncludes.                                            
+%%                                                                                          
+%%   Example:                                                                               
+%% 	  %<LibPushStackSharedUtilsIncludes("")> to push stack an empty layer
+%%                                                                                          
+%function LibPushStackSharedUtilsIncludes(stackVector) void
+  %if !EXISTS(::GlobalSharedUtilsIncludes)                                                  
+    %% initialize ::GlobalSharedUtilsIncludes as vector                                     
+    %assign ::GlobalSharedUtilsIncludes = []                                                
+  %endif                                                                                    
+  %% as TLC doesn't support directly "+" for vector, we needs increase its size by adding 
+  %% an empty string first, then use assignment to "push" vector to stack
+  %assign ::GlobalSharedUtilsIncludes = ::GlobalSharedUtilsIncludes + ""
+  %assign nGlobalSharedUtilsIncludes = SIZE(::GlobalSharedUtilsIncludes,1)
+  %assign ::GlobalSharedUtilsIncludes[nGlobalSharedUtilsIncludes-1] = stackVector
+%endfunction                                                                                
+
+%% Function: LibPushEmptyStackSharedUtils ===============================================
+%% Abstract:                                              
+%%   Push empty vector into logical-top of stack ::GlobalSharedUtilsIncludes 
+%%      This increases depth of stack by 1.
+%%                                                                                          
+%%   Example:                                                                               
+%% 	  %<LibPushEmptyStackSharedUtils()>,.
+%%                                                                                          
+%function LibPushEmptyStackSharedUtils() void
+  %<LibPushStackSharedUtilsIncludes("")>
+%endfunction
+                                                                                            
+%% Function: LibPopStackSharedUtilsIncludes =============================================== 
+%% Abstract:                                                                                
+%%   Pop vector of header files from logical-top of stack ::GlobalSharedUtilsIncludes. 
+%%     It will return the popped vector.    
+%%                                                                                          
+%%   Example:                                                                               
+%% 	  %assign top=LibPopStackSharedUtilsIncludes() to pop top of stack.
+%%                                                                                          
+%function LibPopStackSharedUtilsIncludes() void                                             
+  %if !EXISTS(::GlobalSharedUtilsIncludes)
+    %% do nothing 
+    %return []                                                
+  %endif                                                                                    
+  %assign nGlobalSharedUtilsIncludes = SIZE(::GlobalSharedUtilsIncludes,1)
+  %if nGlobalSharedUtilsIncludes > 0
+    %assign returnVet = ::GlobalSharedUtilsIncludes[nGlobalSharedUtilsIncludes-1]
+    %%remove top of GlobalSharedUtilsIncludes stack
+    %assign tmpBuf = []    
+    %foreach idx = nGlobalSharedUtilsIncludes-1
+      %% By adding "" we increase its size by 1
+      %assign tmpBuf = tmpBuf + ""
+      %assign tmpBuf[idx] = ::GlobalSharedUtilsIncludes[idx]
+    %endforeach
+    %assign ::GlobalSharedUtilsIncludes = tmpBuf
+  %else
+    %assign returnVet = []
+  %endif
+  %return returnVet 
+%endfunction                                                                                
+                                                                                            
+%% Function: LibAddtoSharedUtilsIncludes ===============================================    
+%% Abstract:                                                                                
+%%   Incrementally add include files vector currently at logical-top of stack ::GlobalSharedUtilsIncludes. 
+%%   If the file already exists in vector, it won't be added
+%%                                                                                          
+%%   Example:                                                 
+%%     current stack is ['<math.h>','<float.h>'], after
+%% 	  %<LibAddtoSharedUtilsIncludes("include.h")>  
+%%     current stack becomes ['<math.h>','<float.h>', '"include.h"']                                     
+%%                                                                                          
+%function LibAddtoSharedUtilsIncludes(incFileName) void                                     
+  %if !EXISTS(::GlobalSharedUtilsIncludes) || SIZE(::GlobalSharedUtilsIncludes,1)<1
+    %% push an empty string to create one layer 
+    %<LibPushStackSharedUtilsIncludes("")>
+  %endif                                                                                    
+  %%                                                                                        
+  %% ignore empties                                                                         
+  %%                                                                                        
+  %if incFileName == ""                                                                     
+    %return                                                                                 
+  %endif                                                                                    
+  %%                                                                                        
+  %% scan for duplicates, add if not on any list                                            
+  %%                                                                                        
+  %assign duplicate = 0                                                                     
+  %assign nGlobalSharedUtilsIncludes = SIZE(::GlobalSharedUtilsIncludes,1)
+  %assign tmpBuf = ::GlobalSharedUtilsIncludes[nGlobalSharedUtilsIncludes-1]
+  %if ISEMPTY(tmpBuf)
+    %assign tmpBuf = []
+  %endif 
+  %assign ntmpBuf = SIZE(tmpBuf,1)
+  %foreach idx = ntmpBuf
+    %if (tmpBuf[idx] == incFileName)                                   
+      %assign duplicate = 1                                                                 
+      %break                                                                                
+    %endif                                                                                  
+  %endforeach                                                                               
+  %if (!duplicate)
+      %assign tmpBuf = tmpBuf + incFileName
+      %assign ::GlobalSharedUtilsIncludes[nGlobalSharedUtilsIncludes-1] = tmpBuf
+  %endif                                                                                    
+%endfunction                                                                                
+
+%% Function: LibAddtoSharedUtilsIncludesVector ===============================================    
+%% Abstract:                                                                                
+%%   Vector version of LibAddtoSharedUtilsIncludes. It's adding each element of
+%%   input vector to vector currently at logical-top of stack.   Normally, it's used with 
+%%   LibPopStackSharedUtilsIncludes to combine two layers of stack together.
+%%                                                                                          
+%%   Example:                                                                               
+%%        %assign GSUStackBuf = LibPopStackSharedUtilsIncludes()
+%% 	  %<LibAddtoSharedUtilsIncludesVector(GSUStackBuf)>                                       
+%%                                                                                          
+%function LibAddtoSharedUtilsIncludesVector(inputVet) void
+  %if TYPE(inputVet)=="Vector"
+    %assign ninputVet = SIZE(inputVet,1)
+    %foreach idx=ninputVet
+      %<LibAddtoSharedUtilsIncludes(inputVet[idx])>
+    %endforeach
+  %endif
+%endfunction
+
+%endif %% _CACHE_SHAREDUTILS_LIB_
+
+%% [EOF] cache_sharedutils_lib.tlc

@@ -1,0 +1,522 @@
+%% $RCSfile: sdspvdf2t.tlc,v $
+%% $Revision: 1.10 $ 
+%% $Date: 2002/04/14 21:03:39 $
+%%
+%% Dale Shpak
+%% Copyright 1995-2002 The MathWorks, Inc.
+%%
+%% Abstract: Time-Varying Direct-Form II Transpose filter
+%%
+
+%implements sdspvdf2t "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Name the S-function parameters
+%function BlockInstanceSetup (block, system) void
+    %%
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+    %assign INPORT          = 0
+    %assign COEFF_PORT1     = 1
+    %assign COEFF_PORT2     = 2
+    %assign CONTIG          = (IsInputPortContiguous(block,INPORT) && IsInputPortContiguous(block,COEFF_PORT1))
+    %if NumDataInputPorts == 3
+        %assign CONTIG      = (CONTIG && IsInputPortContiguous(block,COEFF_PORT2))
+    %endif
+    %%
+    %% We do not support discontiguous inputs
+    %if (!CONTIG)
+	%<LibDiscontiguousInputError(block)>
+    %endif
+    %%"Num", "Den", "DataComplex", "FiltComplex", "NumComplex", "DenComplex"
+    %assign COEFFS          = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign NUM_CHANS       = CAST("Number",  SFcnParamSettings.Chans)
+    %assign FILT_COMPLEX    = CAST("Boolean", SFcnParamSettings.FiltComplex)
+    %assign DATA_COMPLEX    = CAST("Boolean", SFcnParamSettings.DataComplex)
+    %assign NUM_FLAG        = CAST("Boolean", SFcnParamSettings.Num)
+    %assign DEN_FLAG        = CAST("Boolean", SFcnParamSettings.Den)
+    %assign IS_COMPLEX      = CAST("Boolean", FILT_COMPLEX || DATA_COMPLEX)
+    %assign FILT_PER_FRAME  = CAST("Boolean", SFcnParamSettings.FiltPerFrame)
+    %assign IC              = SFcnParamSettings.IC
+    %assign IC_COMPLEX      = TYPE(SFcnParamSettings.IC[0]) == "Complex"
+    %assign NUM_IC          = SIZE(SFcnParamSettings.IC, 1)
+    %%
+    %if (IS_COMPLEX)
+        %assign OUT_T       = "creal_T"
+    %else
+        %assign OUT_T       = "real_T"
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = "creal_T"
+    %else
+        %assign FIL_T       = "real_T"
+    %endif
+    %%
+    %if (NUM_FLAG)
+        %assign ORD_NUM     = LibDataInputPortWidth(COEFF_PORT1) - 1
+        %if (DEN_FLAG)
+            %assign ORD_DEN = LibDataInputPortWidth(COEFF_PORT2) - 1
+        %else
+            %assign ORD_DEN = 0
+        %endif
+    %else
+        %assign ORD_NUM     = 0
+        %assign ORD_DEN     = LibDataInputPortWidth(COEFF_PORT1) - 1
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %elseif (FILT_PER_FRAME)
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+        %assign ORD_NUM     = ORD_NUM / FRAME
+        %assign ORD_DEN     = ORD_DEN / FRAME
+    %endif
+    %assign LEN_MIN         = MIN(ORD_NUM, ORD_DEN)
+    %assign NUM_DELAYS      = MAX(ORD_NUM, ORD_DEN) + 1
+    %assign NUM_ELE         = NUM_CHANS * NUM_DELAYS
+    %%
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    /*
+    * Initialize the state buffers with initial conditions.
+    * There is one extra memory element for each channel that is set
+    * to zero.  It simplifies the filtering algorithm.
+    */
+    %if (NUM_IC > 1)
+        %if (IC_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,%<IMAG(SFcnParamSettings.IC[Idx])>},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,%<IMAG(SFcnParamSettings.IC[NUM_IC-1])>}};
+        %elseif (IS_COMPLEX)
+            const creal_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                {%<REAL(SFcnParamSettings.IC[Idx])>,0.0},
+            %endforeach
+            {%<REAL(SFcnParamSettings.IC[NUM_IC-1])>,0.0}};
+        %else
+            const real_T ic[%<NUM_IC>] = {
+            %foreach Idx = NUM_IC-1
+                %<SFcnParamSettings.IC[Idx]>,
+            %endforeach
+            %<SFcnParamSettings.IC[NUM_IC-1]>};
+        %endif
+    %endif
+    %if (IS_COMPLEX)
+        const creal_T zero  = {(real_T)0.0, (real_T)0.0};
+        %assign ZERO        = CAST("String", "zero")
+        %assign STATE_T     = CAST("String", "creal_T")
+    %else
+        %assign ZERO        = CAST("String", "(real_T) 0.0")
+        %assign STATE_T     = CAST("String", "real_T")
+    %endif
+    %<STATE_T> *dlyBuff = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+
+    %if (NUM_IC == 0)
+        int_T j;
+        for (j=0; j < %<NUM_ELE>; j++) *dlyBuff++ = %<ZERO>;
+    %elseif (NUM_IC == 1)
+        /* Single initial condition */
+        %if (IS_COMPLEX)
+            const creal_T ic  = {%<REAL(SFcnParamSettings.IC[0])>,%<IMAG(SFcnParamSettings.IC[0])>};
+        %endif
+        int_T   i, j;
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            %if (IS_COMPLEX)
+                for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = ic;
+            %else
+                for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = %<SFcnParamSettings.IC[0]>;
+            %endif
+            *dlyBuff++ = %<ZERO>;
+        }
+    %elseif (NUM_IC == NUM_DELAYS - 1)
+        /* Same IC's for all channels: */
+        int_T   i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            const %<STATE_T>  *icp = ic;
+            for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = *icp++;
+            *dlyBuff++ = %<ZERO>;
+        }
+    %else
+        /*
+         * Matrix of IC's:
+         * Assume numDELAYS rows and numCHANS columns
+         */
+        const %<STATE_T> *icp = ic;
+        int_T   i, j;
+
+        for (i=0; i < %<NUM_CHANS>; i++) {
+            for (j=0; j < %<NUM_DELAYS - 1>; j++) *dlyBuff++ = *icp++;
+            *dlyBuff++ = %<ZERO>;
+        }
+    %endif %% Number of ICs
+}
+%endfunction
+
+
+%function Outputs(block, system) Output
+    %assign INPORT          = 0
+    %assign OUTPORT         = 0
+    %assign COEFF_PORT1     = 1
+    %assign COEFF_PORT2     = 2
+    %assign COEFFS          = block.DWork[0]
+    %assign STATES	    = block.DWork[1]
+    %assign PORT_WIDTH      = LibDataInputPortWidth(INPORT)
+    %assign FILT_CHECK      = CAST("Number",  SFcnParamSettings.FiltCheck)
+    %assign NUM_CHANS       = CAST("Number",  SFcnParamSettings.Chans)
+    %assign FILT_COMPLEX    = CAST("Boolean", SFcnParamSettings.FiltComplex)
+    %assign DATA_COMPLEX    = CAST("Boolean", SFcnParamSettings.DataComplex)
+    %assign NUM_FLAG        = CAST("Boolean", SFcnParamSettings.Num)
+    %assign DEN_FLAG        = CAST("Boolean", SFcnParamSettings.Den)
+    %assign IS_COMPLEX      = CAST("Boolean", FILT_COMPLEX || DATA_COMPLEX)
+    %assign FILT_PER_FRAME  = CAST("Boolean", SFcnParamSettings.FiltPerFrame)
+    %%
+    %if (IS_COMPLEX)
+        %assign OUT_T       = "creal_T"
+    %else
+        %assign OUT_T       = "real_T"
+    %endif
+    %if (DATA_COMPLEX)
+        %assign DAT_T       = "creal_T"
+    %else
+        %assign DAT_T       = "real_T"
+    %endif
+    %if (FILT_COMPLEX)
+        %assign FIL_T       = "creal_T"
+    %else
+        %assign FIL_T       = "real_T"
+    %endif
+    %%
+    %if (NUM_FLAG)
+        %assign ORD_NUM     = LibDataInputPortWidth(COEFF_PORT1) - 1
+        %assign NUM_PORT    = LibBlockInputSignalAddr(COEFF_PORT1, "", "", 0)
+        %if (DEN_FLAG)
+            %assign ORD_DEN     = LibDataInputPortWidth(COEFF_PORT2) - 1
+            %assign DEN_PORT    = LibBlockInputSignalAddr(COEFF_PORT2, "", "", 0)
+        %else
+            %assign ORD_DEN = 0
+        %endif
+    %else
+        %assign ORD_NUM     = 0
+        %assign ORD_DEN     = LibDataInputPortWidth(COEFF_PORT1) - 1
+        %assign DEN_PORT    = LibBlockInputSignalAddr(COEFF_PORT1, "", "", 0)
+    %endif
+    %%
+    %if (NUM_CHANS == -1)
+        %assign NUM_CHANS   = PORT_WIDTH
+        %assign FRAME       = 1
+    %elseif (FILT_PER_FRAME)
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+    %else
+        %assign FRAME       = PORT_WIDTH / NUM_CHANS
+        %assign ORD_NUM     = ORD_NUM / FRAME
+        %assign ORD_DEN     = ORD_DEN / FRAME
+    %endif
+    %assign LEN_MIN         = MIN(ORD_NUM, ORD_DEN)
+    %assign NUM_DELAYS      = MAX(ORD_NUM, ORD_DEN) + 1
+    %%
+{
+    /* %<Type> Block: '%<Name>' (%<ParamSettings.FunctionName>) */
+    %<DAT_T>    *x          = %<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    %<OUT_T>    *mem_base   = %<LibBlockDWorkAddr(STATES, "", "", 0)>;
+    %<OUT_T>    *y          = %<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+    %if (NUM_FLAG && DEN_FLAG)
+        %assign NUM0    = LibBlockDWorkAddr(COEFFS, "", "", 0)
+        %assign DEN0    = LibBlockDWorkAddr(COEFFS, "", "", ORD_NUM + 1)
+        %assign NUMPORT = COEFF_PORT1
+        %assign DENPORT = COEFF_PORT2
+        %<FIL_T> *num = %<NUM0>;
+        %<FIL_T> *den = %<DEN0>;
+        %<FIL_T> *numPort, *denPort;
+    %elseif (NUM_FLAG)
+        %assign NUM0    = LibBlockDWorkAddr(COEFFS, "", "", 0)
+        %assign NUMPORT = COEFF_PORT1
+        %<FIL_T> *num = %<NUM0>;
+        %<FIL_T> *numPort;
+    %elseif (DEN_FLAG)
+        %assign DEN0    = LibBlockDWorkAddr(COEFFS, "", "", 0)
+        %assign DENPORT = COEFF_PORT1
+        %<FIL_T> *den = %<DEN0>;
+        %<FIL_T> *denPort;
+    %endif
+    %if (FILT_PER_FRAME)
+        /* Get a new filter for this frame */
+        %if (NUM_FLAG)
+            numPort = %<LibBlockInputSignalAddr(NUMPORT, "", "", 0)>;
+            %roll sigIdx3 = [ 0:%<ORD_NUM> ], lcv3 = 3, block, "InlineRoller"
+                *num++ = *numPort++;
+            %endroll
+        %endif
+        %if (DEN_FLAG)
+            denPort = %<LibBlockInputSignalAddr(DENPORT, "", "", 0)>;
+            %roll sigIdx3 = [ 0:%<ORD_DEN> ], lcv3 = 3, block, "InlineRoller"
+                *den++ = *denPort++;
+            %endroll
+        %endif
+    %endif
+    %roll sigIdx1 = [ 0:%<NUM_CHANS - 1> ], lcv1 = 2, block, "InlineRoller"
+        %if (!FILT_PER_FRAME)
+            %if (NUM_FLAG)
+                numPort = %<LibBlockInputSignalAddr(NUMPORT, "", "", 0)>;
+            %endif
+            %if (DEN_FLAG)
+                denPort = %<LibBlockInputSignalAddr(DENPORT, "", "", 0)>;
+            %endif
+        %endif
+        {
+        %roll sigIdx2 = [ 0:%<FRAME - 1> ], lcv2 = 2, block, "InlineRoller"
+            %<DAT_T> u           = *x++;  /* Get next channel input sample */
+            %<OUT_T> *filt_mem   = mem_base;
+            %<OUT_T> *next_mem   = filt_mem + 1;
+            %<OUT_T> out;
+
+            %if (NUM_FLAG)
+                num = %<NUM0>;
+            %endif
+            %if (DEN_FLAG)
+                den = %<DEN0>;
+            %endif
+            %if (!FILT_PER_FRAME)
+                /* Get a new filter for this sample time */
+                %if (NUM_FLAG)
+                    %roll sigIdx3 = [ 0:%<ORD_NUM> ], lcv3 = 3, block, "InlineRoller"
+                        *num++ = *numPort++;
+                    %endroll
+                %endif
+                %if (DEN_FLAG)
+                    %roll sigIdx3 = [ 0:%<ORD_DEN> ], lcv3 = 3, block, "InlineRoller"
+                        *den++ = *denPort++;
+                    %endroll
+                %endif
+                %if (NUM_FLAG)
+                    num = %<NUM0>;
+                %endif
+                %if (DEN_FLAG)
+                    den = %<DEN0>;
+                %endif
+            %endif %% FILT_PER_FRAME
+                
+            /* Compute the output value */
+            %if (DATA_COMPLEX)
+                %if (FILT_COMPLEX)
+                    %if (NUM_FLAG)
+                        out.re = CMULT_RE(u, *num) + filt_mem->re;
+                        out.im = CMULT_IM(u, *num) + filt_mem->im;
+                        ++num;
+                    %else
+                        out.re = u.re + filt_mem->re;
+                        out.im = u.im + filt_mem->im;
+                    %endif
+                    %if (FILT_CHECK && DEN_FLAG)
+                        if (den->re == 0.0 && den->im == 0.0) {
+                            out.re = out.im = 0.0;
+                        } else if (den->re != 1.0 || den->im != 0.0) {
+                            /* Scale filter output by leading denominator coefficient */
+                            /* Use normalized filters to avoid this divide operation */
+                            creal_T tmp = out;
+                            CDIV(tmp, *den, out);
+                        }
+                    %endif
+                    %if (DEN_FLAG)
+                        ++den;
+                    %endif
+                    *y++ = out;
+
+                    %if (LEN_MIN)
+                        /* Update states having both numerator and denominator coeffs */
+                        %roll sigIdx3 = [ 0:%<LEN_MIN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + CMULT_RE(u, *num) - CMULT_RE(out, *den);
+                            filt_mem->im = next_mem->im + CMULT_IM(u, *num) - CMULT_IM(out, *den);
+                            ++filt_mem;  ++next_mem;
+                            ++num;  ++den;
+                        %endroll
+                    %endif
+                    %if (ORD_NUM > LEN_MIN || ORD_DEN > LEN_MIN)
+                        /* Update the rest of the states */
+                    %endif
+                    %if (ORD_NUM > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_NUM - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + CMULT_RE(u, *num);
+                            filt_mem->im = next_mem->im + CMULT_IM(u, *num);
+                            ++filt_mem;  ++next_mem;
+                            ++num;
+                        %endroll
+                    %elseif (ORD_DEN > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_DEN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re - CMULT_RE(out, *den);
+                            filt_mem->im = next_mem->im - CMULT_IM(out, *den);
+                            ++filt_mem;  ++next_mem;
+                            ++den;
+                        %endroll
+                    %endif
+                %else %% Real Filter
+                    %if (NUM_FLAG)
+                        out.re = u.re * *num   + filt_mem->re;
+                        out.im = u.im * *num++ + filt_mem->im;
+                    %else
+                        out.re = u.re + filt_mem->re;
+                        out.im = u.im + filt_mem->im;
+                    %endif
+                    %if (FILT_CHECK && DEN_FLAG)
+                        if (*den == 0.0) {
+                            out.re = out.im = 0.0;
+                        } else if (*den != 1.0) {
+                            /* Scale filter output by leading denominator coefficient */
+                            /* Use normalized filters to avoid this divide operation */
+                            real_T normalize = 1.0 / *den;
+                            out.re *= normalize;
+                            out.im *= normalize;
+                        }
+                    %endif
+                    %if (DEN_FLAG)
+                        ++den;
+                    %endif
+                    *y++ = out;
+
+                    %if (LEN_MIN)
+                        /* Update states having both numerator and denominator coeffs */
+                        %roll sigIdx3 = [ 0:%<LEN_MIN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + u.re * *num   - out.re * *den;
+                            filt_mem->im = next_mem->im + u.im * *num++ - out.im * *den++;
+                            ++filt_mem;  ++next_mem;
+                        %endroll
+                    %endif
+                    %if (ORD_NUM > LEN_MIN || ORD_DEN > LEN_MIN)
+                        /* Update the rest of the states */
+                    %endif
+                    %if (ORD_NUM > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_NUM - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + u.re  * *num;
+                            filt_mem->im = next_mem->im + u.im  * *num++;
+                            ++filt_mem;  ++next_mem;
+                        %endroll
+                    %elseif (ORD_DEN > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_DEN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re - out.re * *den;
+                            filt_mem->im = next_mem->im - out.im * *den++;
+                            ++filt_mem;  ++next_mem;
+                        %endroll
+                    %endif
+                %endif %% FILT_COMPLEX
+            %else %% REAL DATA
+                %if (FILT_COMPLEX)
+                    %if (NUM_FLAG)
+                        out.re = u * num->re     + filt_mem->re;
+                        out.im = u * (num++)->im + filt_mem->im;
+                    %else
+                        out.re = u + filt_mem->re;
+                        out.im = filt_mem->im;
+                    %endif
+                    %if (FILT_CHECK && DEN_FLAG)
+                        if (den->re == 0.0 && den->im == 0.0) {
+                            out.re = out.im = 0.0;
+                        } else if (den->re != 1.0 || den->im != 0.0) {
+                            /* Scale filter output by leading denominator coefficient */
+                            /* Use normalized filters to avoid this divide operation */
+                            creal_T tmp = out;
+                            CDIV(tmp, *den, out);
+                        }
+                    %endif
+                    %if (DEN_FLAG)
+                        ++den;
+                    %endif
+                    *y++ = out;
+
+                    %if (LEN_MIN)
+                        /* Update states having both numerator and denominator coeffs */
+                        %roll sigIdx3 = [ 0:%<LEN_MIN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + u * num->re     - CMULT_RE(out, *den);
+                            filt_mem->im = next_mem->im + u * (num++)->im - CMULT_IM(out, *den);
+                            ++filt_mem;  ++next_mem;
+                            ++den;
+                        %endroll
+                    %endif
+                    %if (ORD_NUM > LEN_MIN || ORD_DEN > LEN_MIN)
+                        /* Update the rest of the states */
+                    %endif
+                    %if (ORD_NUM > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_NUM - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re + u  * num->re;
+                            filt_mem->im = next_mem->im + u  * (num++)->im;
+                            ++filt_mem;  ++next_mem;
+                        %endroll
+                    %elseif (ORD_DEN > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_DEN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            filt_mem->re = next_mem->re - CMULT_RE(out, *den);
+                            filt_mem->im = next_mem->im - CMULT_IM(out, *den);
+                            ++filt_mem;  ++next_mem;
+                            ++den;
+                        %endroll
+                    %endif
+                %else %% Real Filter
+                    %if (NUM_FLAG)
+                        out = u * *num++ + *filt_mem;
+                    %else
+                        out = u + *filt_mem;
+                    %endif
+                    %if (FILT_CHECK && DEN_FLAG)
+                        if (*den == 0.0) {
+                            out = 0.0;
+                        } else if (*den != 1.0) {
+                            /* Scale filter output by leading denominator coefficient */
+                            /* Use normalized filters to avoid this divide operation */
+                            out /= *den;
+                        }
+                    %endif
+                    %if (DEN_FLAG)
+                        ++den;
+                    %endif
+                    *y++ = out;
+
+                    %if (LEN_MIN)
+                        /* Update states having both numerator and denominator coeffs */
+                        %roll sigIdx3 = [ 0:%<LEN_MIN - 1> ], lcv3 = 2, block, "InlineRoller"
+                            *filt_mem++ = *next_mem++ + u * *num++ - out * *den++;
+                        %endroll
+                    %endif
+                    %if (ORD_NUM > LEN_MIN || ORD_DEN > LEN_MIN)
+                        /* Update the rest of the states */
+                    %endif
+                    %if (ORD_NUM > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_NUM - 1> ], lcv3 = 3, block, "InlineRoller"
+                            *filt_mem++ = *next_mem++ + u  * *num++;
+                        %endroll
+                    %elseif (ORD_DEN > LEN_MIN)
+                        %roll sigIdx3 = [ %<LEN_MIN>:%<ORD_DEN - 1> ], lcv3 = 3, block, "InlineRoller"
+                            *filt_mem++ = *next_mem++ - out * *den++;
+                        %endroll
+                    %endif
+                %endif %% FILT_COMPLEX
+            %endif %% DATA_COMPLEX
+        %endroll %% FRAME
+        }
+        %if (NUM_CHANS > 1)
+            mem_base += %<NUM_DELAYS>;
+        %endif
+    %endroll %% CHANNEL
+}
+%endfunction
+%% [EOF] sdspvdf2t.tlc

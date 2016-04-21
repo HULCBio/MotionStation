@@ -1,0 +1,470 @@
+%% $Revision: 1.1.6.6 $
+%%
+%implements RateTransition "C"
+
+%function FcnBlkName() void
+  %return "Rate Transition Block: %<Name>"
+%endfunction
+
+%% Function: BlockInstanceSetup ==============================================
+%% Abstract:
+%%
+%function BlockInstanceSetup(block, system) void
+  %% cache whether or not state and output initialization is required
+  %% for the scalar expanded case
+  %if DataIntegrity && TransitionType=="L2H_PRIORITY"
+    %<SLibSetSkipInitializationFlag(system,block,X0)>
+  %endif
+%endfunction
+
+%% Function: Start ============================================================
+%%
+%function Start(block, system) Output
+  %if DataIntegrity && TransitionType=="L2H_PRIORITY"...
+    && !block.SkipInitialization
+    %% If possible, avoid re-initializing the block outputs to
+    %% zero since they are initialized to zero in the model's registration
+    %% function.
+    %% Set the output to the state.
+    %if LibBlockOutputSignalIsInBlockIO(0)
+      %openfile tmpBuffer
+      %assign icIsComplex = LibBlockParameterIsComplex(X0)
+      %assign yIsComplex  = LibBlockOutputSignalIsComplex(0)
+      %assign x0i = SLibGetFormattedValueFromId(LibBlockParameterDataTypeId(X0),0)
+      %%
+      %assign rollVars = ["P", "Y"]
+      %assign rollRegion = [0:%<LibBlockOutputSignalWidth(0)-1>]
+      %roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	%if SLibXBInitRequired(system, block, X0, "", lcv, idx)
+	  %%
+	  %assign yr  = LibBlockOutputSignal(0, "", lcv, "%<tRealPart>%<idx>")
+	  %assign x0r = LibBlockParameter(X0, "", lcv, "%<tRealPart>%<idx>")
+	  %<yr> = %<x0r>;
+	  %if (yIsComplex)
+	    %assign yi  = LibBlockOutputSignal(0, "", lcv, "%<tImagPart>%<idx>")
+	    %if (icIsComplex)
+	      %assign x0i = LibBlockParameter(X0, "", lcv, "%<tImagPart>%<idx>")
+	    %endif
+	    %<yi> = %<x0i>;
+	  %endif
+	%endif
+      %endroll
+      %closefile tmpBuffer
+      %if (!WHITE_SPACE(tmpBuffer))
+	/* %<Type> Block: %<Name> */
+	%<tmpBuffer>\
+	
+      %endif
+    %endif
+  %endif
+%endfunction %% Start
+
+
+%% Function: InitializeConditions ==============================================
+%% Abstract:
+%%      X[i] = IC[i]
+%%
+%%  Initialize the DWork.
+%%     If the transtion block is lower priority to higher priority rate transition 
+%%  block ensuring data integrity (DirectFeedThrough is false in 
+%%  for this case) and the initial condition is 
+%%  not zero, DWork need to be initialized. Otherwise, not 
+%%  InitializeConditions is needed.5
+%%   
+%function InitializeConditions(block,system) Output
+  %%
+  %%  Initialization is need if the transtion block is lower priority to 
+  %%  higher priority rate transition block ensuring data integrity
+  %%   and the initial condition is not zer
+  %%
+  %if DataIntegrity && TransitionType=="L2H_PRIORITY" ...
+    && !block.SkipInitialization
+    %%
+    %% Create header comment
+    %%
+    /* %<FcnBlkName()> */
+    %%
+    %% For initialization, the roll region is a function of the state
+    %%
+    %assign numStates = LibBlockDWorkWidth(block.Buffer0)
+    %%
+    %assign xRollRegion = [0:%<numStates-1>]
+    %%
+    %% Initialize the states
+    %%
+    %assign dwName = LibBlockDWorkName(block.Buffer0)
+    %assign rollVars = ["<dwork>/%<dwName>", "P"]
+    %%
+    %roll xIdx = xRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+      %% Set the real and imaginary part of the state to the initial value.
+      %assign xr = LibBlockDWork(block.Buffer0, "", xlcv, "%<tRealPart>%<xIdx>")
+      %assign rhs = LibBlockParameter(X0, "", xlcv, "%<tRealPart>%<xIdx>")
+      %<xr> = %<rhs>;
+      %if LibBlockDWorkIsComplex(block.Buffer0)
+	%assign xi = LibBlockDWork(block.Buffer0, "", xlcv, "%<tImagPart>%<xIdx>")
+	%if LibBlockParameterIsComplex(X0)
+	  %assign rhs = LibBlockParameter(X0,"", xlcv, "%<tImagPart>%<xIdx>")
+	%else
+	  %assign rhs = ...
+	    SLibGetFormattedValueFromId(LibBlockParameterDataTypeId(X0), 0)
+	%endif
+	%<xi> = %<rhs>; 
+      %endif
+    %endroll
+    
+  %endif
+%endfunction   
+
+%%-------------------------------------------------------
+%% Function: Update
+%function Update(block,system) Output
+  %% 
+  %% Update function is needed if the rate transition 
+  %% is lower priority to higher priority and ensure date integrity.
+  %%
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  
+  %if LibAsynchronousTriggeredTID(inportTID)
+    %% code for async tid is always rate grouped, 
+    %% we don't generate code for async tid when system generate
+    %% non-rate grouping code.
+    %return 
+  %endif
+  
+  %openfile tmpBuf
+  %<UpdateForTID0(block,system)>
+  %<UpdateForTID1(block,system)>
+  %closefile tmpBuf
+  
+  %if !WHITE_SPACE(tmpBuf)
+    %<FcnGenerateTidGuardOpenCode(inportTID)>
+    %<tmpBuf>
+    %<FcnGenerateTidGuardCloseCode(inportTID)>
+  %endif
+%endfunction
+
+%% Function: UpdateForTID
+%function UpdateForTID(block,system,tid) Output
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+  %if tid == inportTID
+    %switch TransitionType
+      %case "NO_RATETRANS"
+	%% do nothing 
+	%break
+      %case "H2L_PRIORITY"  %% inportTid has higher priority 
+	%<UpdateForTID0(block,system)>
+	%break
+      %case "L2H_PRIORITY"  %% inportTid has lower priority
+	%<UpdateForTID1(block,system)>
+	%break
+      %default 
+	%<LibBlockReportFatalError(ssBlock, ...
+	  "Rate transition block tid priority comarison failed")>
+    %endswitch
+  %endif
+ %endfunction
+
+%% Function: UpdateForTID0
+%function UpdateForTID0(block,system) Output
+  %%
+  %%   update code at higher priority rate 
+  %%
+  %if DataIntegrity && !Deterministic && TransitionType=="H2L_PRIORITY"
+    %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+    %assign width = LibBlockOutputSignalWidth(0)
+    /* %<FcnBlkName()>  */
+    /* rate transiton block             */
+    /* (Higher Priority to lower priority, */
+    /* nondeterministic, */
+    /* ensure data integrity)           */ 
+    %assign semaphoreTaken = LibBlockDWork(block.semaphoreTaken,"","",0)
+    if(!%<semaphoreTaken>) {
+      %if width == 1
+	%<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	  %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	%assign u = LibBlockInputSignalAddr(0, "", "", 0)
+	%assign x  = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	(void) memcpy(%<x>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+    }
+  %endif
+  
+%endfunction
+
+%% Function: UpdateForTID1
+%function UpdateForTID1(block,system) Output
+  %assign width = LibBlockOutputSignalWidth(0)
+  %% 
+  %% Update function is needed only if the rate transition 
+  %% is lower priority to higher priority and ensure date integrity.
+  %%
+  %if DataIntegrity && TransitionType=="L2H_PRIORITY"
+    /* %<FcnBlkName()> */
+    %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+    %assign width = LibBlockOutputSignalWidth(0)
+    %if Deterministic
+      /* Update of lower priority to higher priority determinsitic   */
+      /* rate transition, ensure data integrity */
+      %if width == 1
+	%<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	  %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	%assign x = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	%assign u = LibBlockInputSignalAddr(0, "", "", 0)
+	(void) memcpy(%<x>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+    %else 
+      %%
+      %%  atomic memory copy using double buffer
+      %%
+      /* Update of lower priority to higher priority nondeterminsitic   */
+      /* rate transition, ensure data integrity    */
+      %if width == 1
+	if (%<LibBlockDWork(block.ActiveBufIdx,"","",0)>) {
+	   %<LibBlockDWork(block.Buffer0,"","",0)> = ...
+	    %<LibBlockInputSignal(0,"","",0)> ;
+	}
+	else{
+	  %<LibBlockDWork(block.Buffer1,"","",0)> = ...
+	    %<LibBlockInputSignal(0,"","",0)> ;
+	}
+      %else
+	%assign x0 = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	%assign x1 = LibBlockDWorkAddr(block.Buffer1, "", "", 0)
+	%assign u = LibBlockInputSignalAddr(0, "", "", 0)
+
+	(void) memcpy(...
+	  (%<LibBlockDWork(block.ActiveBufIdx,"","",0)> ? ...
+	  %<x0> : %<x1>), %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+      %<LibBlockDWork(block.ActiveBufIdx,"","",0)> = ...
+	!(%<LibBlockDWork(block.ActiveBufIdx,"","",0)>);
+    %endif
+  %endif
+%endfunction
+
+%%------------------------------------------------------------
+%% Function: Outputs
+%function Outputs(block,system) Output
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+
+  %switch TransitionType
+    %case "NO_RATETRANS" 
+      %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+      %assign width = LibBlockOutputSignalWidth(0)
+      %if width == 1
+	%<LibBlockOutputSignal(0,"","",0)> = %<LibBlockInputSignal(0,"","",0)>;
+      %else
+	%assign u = LibBlockInputSignalAddr(0, "", "", 0)
+	%assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	(void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+      %endif
+      %return
+      %break
+    %case "H2L_PRIORITY"  %% inportTid has higher priority
+      %% higher priority to lower priority
+      %assign IdxTID0 = inportTID
+      %assign IdxTID1 = outportTID
+      %break
+    %case "L2H_PRIORITY"  %% inportTid has lower priority
+      %% lower to higher priority 
+      %assign IdxTID0 = outportTID
+      %assign IdxTID1 = inportTID
+      %break
+    %default  
+      %<LibBlockReportFatalError(ssBlock, ...
+	"Rate transition block tid priority comarison failed")>
+  %endswitch
+  %% code for async tid is always rate grouped, 
+  %% we don't generate code for async tid when system generate
+  %% non-rate grouping code.
+  %if !LibAsynchronousTriggeredTID(IdxTID0)
+    %openfile tmpBuf
+    %<OutputsForTID0(block,system)>
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %<FcnGenerateTidGuardOpenCode(IdxTID0)>
+      %<tmpBuf>\
+      %<FcnGenerateTidGuardCloseCode(IdxTID0)>
+    %endif
+  %endif
+  %if !LibAsynchronousTriggeredTID(IdxTID1)
+    %openfile tmpBuf
+    %<OutputsForTID1(block,system)>
+    %closefile tmpBuf
+    %if !WHITE_SPACE(tmpBuf)
+      %<FcnGenerateTidGuardOpenCode(IdxTID1)>
+      %<tmpBuf>\
+      %<FcnGenerateTidGuardCloseCode(IdxTID1)>
+    %endif 
+  %endif
+  %undef tmpBuf
+%endfunction
+
+%% Function: OutputsForTID
+%function OutputsForTID(block,system,tid) Output
+  %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+  %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+  %switch TransitionType
+    %case "NO_RATETRANS" 
+      %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+      %assign width = LibBlockOutputSignalWidth(0)
+      %if tid == outportTID
+	/* %<FcnBlkName()> */
+	/* (unprotected) rate transition block */
+	%if width == 1
+	  %<LibBlockOutputSignal(0,"","",0)> = %<LibBlockInputSignal(0,"","",0)>;
+	%else
+	  %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+	  %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	  (void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+	%endif
+      %endif
+      %return
+      %break
+    %case "H2L_PRIORITY"  %% inportTid has higher priority
+      %% higher priority to lower priority
+      %assign tid0 = inportTID
+      %assign tid1 = outportTID
+      %break
+    %case "L2H_PRIORITY"  %% inportTid has lower priority
+      %% lower to higher priority 
+      %assign tid0 = outportTID
+      %assign tid1 = inportTID
+      %break
+    %default  
+      %<LibBlockReportFatalError(ssBlock, ...
+	"Rate transition block tid priority comarison failed")>
+  %endswitch
+
+  %if tid == tid0
+    %<OutputsForTID0(block,system)>
+  %elseif tid == tid1
+    %<OutputsForTID1(block,system)>
+  %endif
+%endfunction
+
+%% Function: OutputsForTID0
+%function OutputsForTID0(block,system) Output
+  %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+  %assign width = LibBlockOutputSignalWidth(0)
+  
+  %assert DataIntegrity
+  %%
+  %% RTB ensure data integrity
+  %%
+  %if !Deterministic
+    %%
+    %% nondeterministic, ensure data integrity
+    %%
+    %if TransitionType=="L2H_PRIORITY"
+      /* %<FcnBlkName()> */
+      /* rate transiton block output */
+      /* (Lower Priority to higher priority, ensure data  */
+      /* integrity, undeterminisitic) */
+      %if width == 1
+	if (%<LibBlockDWork(block.ActiveBufIdx,"","",0)>) {
+	  %<LibBlockOutputSignal(0,"","",0)> = ...
+	    %<LibBlockDWork(block.Buffer1,"","",0)>;
+	}
+	else{
+	  %<LibBlockOutputSignal(0,"","",0)> = ...
+	    %<LibBlockDWork(block.Buffer0,"","",0)>;
+	}
+      %else
+	%assign x0 = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	%assign x1 = LibBlockDWorkAddr(block.Buffer1, "", "", 0)
+	%assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	(void) memcpy(%<y>, ...
+	  (%<LibBlockDWork(block.ActiveBufIdx,"","",0)> ? ...
+	  %<x1> : %<x0>), ...
+	  %<width>*sizeof(%<inputDataType>));
+      %endif
+    %endif
+  %else
+    %%
+    %% deterministic, ensure data integrity
+    %%
+    %assign inportTID  = LibBlockInputSignalSampleTimeIndex(0)
+    %assign outportTID = LibBlockOutputSignalSampleTimeIndex(0)
+    %if TransitionType=="L2H_PRIORITY"
+      /* %<FcnBlkName()> */
+      /* rate transiton block output   */
+      /* (Lower Priority to higher priority, deterministic, */
+      /* ensure data integrity)        */
+      if (%<LibIsSpecialSampleHit(inportTID, outportTID)>) {
+	%if width  == 1
+	  %<LibBlockOutputSignal(0,"","",0)> = ...
+	    %<LibBlockDWork(block.Buffer0,"","",0)>;
+	%else
+	  %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	  %assign x = LibBlockDWorkAddr(block.Buffer0,"","",0)
+	  (void) memcpy(%<y>, %<x>, %<width>*sizeof(%<inputDataType>));
+	%endif
+      }
+    %else
+      /* %<FcnBlkName()> */
+      /* rate transiton block          */
+      /* (Higher Priority to lower priority, deterministic, */
+      /* ensure data integrity)        */
+      if (%<LibIsSpecialSampleHit(outportTID, inportTID)>) {
+	%if width == 1
+	  %<LibBlockOutputSignal(0,"","",0)> = ...
+	    %<LibBlockInputSignal(0,"","",0)>;
+	%else
+	  %assign u = LibBlockInputSignalAddr(0, "", "", 0)
+	  %assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	  (void) memcpy(%<y>, %<u>, %<width>*sizeof(%<inputDataType>));
+	%endif
+      }
+    %endif
+  %endif
+
+%endfunction 
+
+%% Function: OutputsForTID1
+%function OutputsForTID1(block,system) Output
+  %assign inputDataType = LibBlockInputSignalDataTypeName(0, "")
+  %assign width = LibBlockOutputSignalWidth(0)
+
+  %assert DataIntegrity
+
+  %% RTB ensure data integrity
+  %%
+  %if !Deterministic
+    %%
+    %% nondeterministic, ensure data integrity
+    %%
+    %if TransitionType=="L2H_PRIORITY"
+      %% no output code required at lower priority rate 
+      %% for lower priority to higher priority case
+    %else
+      /* %<FcnBlkName()> */
+      /* (Higher Priority to lower priority, */ 
+      /* nondeterministic, ensure data integrity) */ 
+      %assign semaphoreTaken = LibBlockDWork    (block.semaphoreTaken,"","",0)
+      %<semaphoreTaken> = 1;
+      %if width == 1
+	%<LibBlockOutputSignal(0,"","",0)> = ...
+	  %<LibBlockDWork(block.Buffer0,"","",0)>;
+      %else
+	%assign x = LibBlockDWorkAddr(block.Buffer0, "", "", 0)
+	%assign y = LibBlockOutputSignalAddr(0, "", "", 0)
+	(void) memcpy(%<y>, %<x>, %<width>*sizeof(%<inputDataType>));
+      %endif
+      %<semaphoreTaken> = 0;
+    %endif
+  %else
+    %% Block act as unit delay or zoh that used 
+    %% rate transition block. 
+    %% deterministic, ensure data integrity
+    %% no output code required at lower priority rate
+    %%
+  %endif
+  
+%endfunction
+
+%% [EOF] rate_transition.tlc

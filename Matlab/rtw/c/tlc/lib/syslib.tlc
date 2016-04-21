@@ -1,0 +1,2904 @@
+%% $Revision: 1.1.6.16 $
+%%
+%% Copyright 1994-2004 The MathWorks, Inc.
+%%
+%% Abstract: 
+%%   This TLC library file contains all the code for generating system output
+%%   code.
+%%
+
+%include "sysarglib.tlc"
+
+%if EXISTS("_SYSLIB_") == 0
+%assign _SYSLIB_ = 1
+
+%%---------------------------------------------------------------%
+%% FunctionRecord - record used for defining function prototypes %
+%%---------------------------------------------------------------%
+%%
+%% Create a record for defining function prototypes.  The identifiers of
+%% FcnRec are used as follows
+%%
+%%   Declaration: void foo(int_T tid);
+%%   Call Syntax: foo(tid);
+%%
+%%   Name    = "foo"
+%%   Returns = "void"
+%%   Params  = "int_T tid"
+%%   Args    = "tid"
+
+%assign FunctionRecord = FcnRec\
+  {\
+    Name       "";\
+    Returns    "";\
+    Params     "";\
+    CommonPrms "";\
+    CommonArgs ""\
+  }
+
+%% Function: FcnResetFunctionRecord ============================================
+%% Abstract:
+%%    A routine to reset the function record.
+%%
+%function FcnResetFunctionRecord() void
+  %assign ::FcnRec.Name       = ""
+  %assign ::FcnRec.Returns    = ""
+  %assign ::FcnRec.Params     = ""
+  %assign ::FcnRec.CommonPrms = ""
+  %assign ::FcnRec.CommonArgs = "" 
+%endfunction
+
+%% Function: FcnAddArgument ====================================================
+%% Abstract:
+%%   Add an argument to the parameter and argument fields of the FcnRec
+%%   record.
+%%
+%%   Arguments:
+%%     type: the type for the argument
+%%      var: the variable name for the argument
+%%
+%function FcnAddArgument(type, var, arg) void
+%if !WHITE_SPACE(::FcnRec.Params)
+    %assign comma  = ", "
+    
+  %else
+    %assign comma = ""
+    
+  %endif
+  %assign ::FcnRec.Params     = ::FcnRec.Params + "%<comma>%<type>%<var>"
+  %assign ::FcnRec.CommonArgs = ::FcnRec.CommonArgs + "%<comma>%<arg>"
+%endfunction
+
+%% Function: FcnAddParameter ===================================================
+%% Abstract:
+%%   Add an argument definition to the parameter field of the FcnRec record.
+%%
+%%   Arguments:
+%%     type: the type for the argument definition
+%%      var: the variable name for the argument definition
+%%
+%function FcnAddParameter(type, var) void
+%if !WHITE_SPACE(::FcnRec.Params)
+    %assign comma = ", "
+  %else
+    %assign comma = ""
+  %endif
+  %assign ::FcnRec.Params     = ::FcnRec.Params + "%<comma>%<type>%<var>"
+%endfunction
+
+%% Function: FcnAddNeededParameter =============================================
+%% Abstract:
+%%   This function adds the needed parameters to the function prototype.
+%%   e.g. "u0, u1, localB, ..."
+%%
+%function FcnAddNeededParameter(sysIdx) void
+  %assign currentTID     = System[sysIdx].CurrentTID
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(System[sysIdx])
+  %with System[sysIdx].Interface
+    %%
+    %% Canonical input argument
+    %%
+    %foreach argIdx=NumCanonicalInputArgDefs
+      %if FcnArgNeeded(CanonicalInputArgDef[argIdx],currentTID,isRateGrouping)
+	%assign ci = CanonicalInputArgDef[argIdx]
+	%assign skipThisArg = 0
+	%if IDNUM(ci.SignalSrc[0])[0] == "F"
+	  %assign skipThisArg = 1
+	%endif	
+	%if IDNUM(ci.SignalSrc[0])[0] == "L"
+	  %if (::BlockFcn != "Output" && ::BlockFcn!= "Update" &&...
+               ::BlockFcn!= "RootUpdate" && ::BlockFcn!= "OutputUpdate")
+	    %assign skipThisArg = 1
+	  %endif
+	%endif
+	%if skipThisArg==0   
+	  %assign identi = ci.Identifier
+	  %assign dataType = SLibGetRecordDataTypeName(ci, "")
+	  %assign optWidth = LibOptionalVectorWidth(ci.Width)
+	  %assign passByPtr = (ci.ScalarPassByRef =="yes")
+	  %assign passConst = (passByPtr || ci.Width > 1)
+	  %assign optConst = passConst ? "const " : ""
+	  %assign optStar  = passByPtr ? "*" : ""
+	  %assign dataType = "%<optConst>%<dataType> "
+	  %assign   argDef = "%<optStar>%<identi>%<optWidth>"
+	  %<FcnAddParameter(dataType, argDef)>
+	%endif
+      %endif %% FcnArgNeeded
+    %endforeach %% argIdx=NumCanonicalInputArgDefs
+    %%
+    %% Canonical output arguments
+    %foreach argIdx=NumCanonicalOutputArgDefs
+      %if FcnArgNeeded(CanonicalOutputArgDef[argIdx],currentTID,isRateGrouping)
+	%assign       co = CanonicalOutputArgDef[argIdx]
+	%assign   identi = co.Identifier
+	%assign dataType = SLibGetRecordDataTypeName(co, "")
+	%assign  optStar = co.Width == 1 ? " *" : " "
+	%assign optWidth = LibOptionalVectorWidth(co.Width)
+	%assign   argDef = optStar + identi + optWidth
+	%<FcnAddParameter(dataType, argDef)>
+      %endif
+    %endforeach
+    %%
+    %% rtModel argument
+    %%
+    %if FcnArgNeeded(RTMArgDef,currentTID,isRateGrouping) 
+      %<FcnAddParameter(tSimStructType, " *%<tSimStruct>")>
+    %endif %% FcnArgNeeded
+    %%
+    %% Block IO argument
+    %%
+    %if FcnArgNeeded(BlockIOArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtB%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localB")>
+    %endif %% FcnArgNeeded
+    %%
+    %% Constant block IO argument
+    %%
+    %if FcnArgNeeded(ConstBlockIOArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtC%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localC")>
+    %endif %% FcnArgNeeded
+    %%
+    %% DWork argument
+    %%
+    %if FcnArgNeeded(DWorkArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtDW%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localDW")>
+    %endif %% FcnArgNeeded
+    %%
+    %% Parameter H-Struct argument
+    %%
+    %if FcnArgNeeded(PrmArgDef,currentTID,isRateGrouping)
+      %%
+      %% Does a passthrough parameter structure argument exists ?
+      %%
+      %if (InlineParameters && PrmArgDef.PassthroughSystemIdx > -1)
+	%assign prmSysIdx = PrmArgDef.PassthroughSystemIdx
+      %else
+	%assign prmSysIdx = sysIdx
+      %endif
+      %if prmSysIdx < NumSystems-1 %% not the root system
+	%assign dataType = ...
+	  "rtP%<FcnGetSystemIdentifier(prmSysIdx)> "
+	%<FcnAddParameter(dataType, "*localP")>
+      %else
+	%%
+	%% The child function has the root parameter structure as
+	%% a passthrough argument
+	%%
+	%assign dataType = tParametersType + " "
+	%<FcnAddParameter(dataType, "*%<tParameters>")>
+      %endif
+    %endif %% FcnArgNeeded
+    %%
+    %% Continuous States argument
+    %%
+    %if FcnArgNeeded(ContStatesArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtX%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localX")>
+    %endif
+    %%
+    %% Continuous States Derivative argument
+    %%
+    %if FcnArgNeeded(ContStatesDerivativeArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtXdot%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localXdot")>
+    %endif
+    %%
+    %% Continuous States Disabled argument
+    %%
+    %if FcnArgNeeded(ContStatesDisabledArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtXdis%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localXdis")>
+    %endif
+    %%
+    %% Non Sampled Zero Crossing argument
+    %%
+    %if FcnArgNeeded(NonsampledZCArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtNSZC%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localNSZC")>
+    %endif    
+    %%
+    %% ZCEvent H-Struct argument
+    %if FcnArgNeeded(ZCEventArgDef,currentTID,isRateGrouping)
+      %assign dataType = "rtZCE%<FcnGetSystemIdentifier(sysIdx)> "
+      %<FcnAddParameter(dataType, "*localZCE")>
+    %endif %% FcnArgNeeded
+    %%
+    %%
+    %% Canonical Parameters
+    %%
+    %foreach argIdx=NumCanonicalPrmArgDefs
+      %assign canPrmDef = CanonicalPrmArgDef[argIdx]
+      %if FcnArgNeeded(canPrmDef,currentTID,isRateGrouping)
+	%assign   identi = canPrmDef.Identifier
+	%assign dataType = SLibGetRecordDataTypeName(canPrmDef, "")
+	%assign    width = LibBlockParameterWidth(canPrmDef)
+	%assign optWidth = LibOptionalVectorWidth(width)
+	%assign optConst = width > 1 ? "const " : ""
+	%assign dataType = "%<optConst>%<dataType> "
+	%<FcnAddParameter(dataType, identi+optWidth)>
+      %endif %% FcnArgNeeded
+    %endforeach %% argIdx=NumCanonicalInputArgDefs
+    %%
+    %% CanonicalDWork
+    %%
+    %foreach argIdx = NumCanonicalDWorkArgDefs
+      %assign canDWork = CanonicalDWorkArgDef[argIdx]
+      %if FcnArgNeeded(canDWork,currentTID,isRateGrouping)
+	%assign dwIdx    = canDWork.FirstSignalSrc %% global idx
+	%assign dwRec    = CompiledModel.DWorks.DWork[dwIdx]
+	%assign dwWidth  = dwRec.Width
+	%assign dwId     = canDWork.Identifier
+	%assign dataType = SLibGetRecordDataTypeName(dwRec, "")
+	%%
+	%% Example:
+	%%   Scalar signal: void foo(real_T *a)
+	%%   Wide signal:   void foo(real_T b[7])
+	%%
+	%if dwWidth == 1
+	  %assign   argDef = " *%<dwId>"
+	%else
+	  %assign   argDef = " %<dwId>[%<dwWidth>]"
+	%endif
+	%<FcnAddParameter(dataType,argDef)>
+      %endif
+    %endforeach
+  
+    %if SysNeedsElapseTimeArg(System[sysIdx], BlockFcn) 
+      %assign dtId = System[sysIdx].ElapseTimeDataTypeId
+      %assign dtName = LibGetDataTypeNameFromId(dtId)
+      %if dtId == tSS_TIMER_UINT32_PAIR
+	%assign dtName = LibGetDataTypeNameFromId(tSS_UINT32)
+	%<FcnAddParameter("%<dtName> ","*rt_elapseTime")>
+      %else
+	%<FcnAddParameter("%<dtName> ","rt_elapseTime")>
+      %endif
+    %endif
+  %endwith
+%endfunction
+
+
+%% Function: FcnGetSfcnFormDefine ==============================================
+%% Abstract:
+%%   Return the # define that is needed in front of root model methods in 
+%%   S-function format
+%% 
+%function FcnGetSfcnFormDefine(sysFcn) void
+  %assign retVal = ""
+  %switch sysFcn
+    %case "Start"
+      %assign retVal = "MDL_START"
+      %break
+    %case "Initialize"
+      %assign retVal = "MDL_INITIALIZE_CONDITIONS"
+      %break
+    %case "Enable"
+      %assign retVal = "RTW_GENERATED_ENABLE"
+      %break
+    %case "Disable"
+      %assign retVal = "RTW_GENERATED_DISABLE"
+      %break
+    %case "Update"
+      %assign retVal = "MDL_UPDATE"
+      %break
+    %case "Derivative"
+      %assign retVal = "MDL_DERIVATIVES"
+      %break
+    %case "Projection"
+      %assign retVal = "MDL_PROJECTION"
+      %break
+    %case "ZeroCrossing"
+      %assign retVal = "MDL_ZERO_CROSSINGS"
+      %break
+    %default
+      %assign retVal = ""
+      %break
+  %endswitch
+  
+  %return retVal
+%endfunction %% FcnGetSfcnFormDefine
+
+
+%<LibAddToCompiledModel("SubsystemPrototypesCache", "")>
+%% Function: LibCacheSubsystemPrototype ========================================
+%% Abstract:
+%%   Cache a function prototype (in case the file splits) 
+%%
+%%   Arguments:
+%%     system: Refers to the system whose prototype we are caching   
+%% 	  fcn: Reference to a FcnRec (see top of file for definition of Record)
+%%
+%%
+%%   Example:
+%% 	   fcn.Returns = "real_T *"
+%% 	   fcn.Name    = "foo"
+%% 	   fcn.Params  = "int_T i"
+%%   
+%% 	   caches: (in 'system.SystemFcnPrototype')
+%% 		  C -
+%% 		   "extern real_T * foo(int_T i);" 
+%% 		   
+%% 		  Ada -
+%% 		    package system is
+%% 		      procedure system_output
+%% 		    end system
+%% 
+%function LibCacheSubsystemPrototype(system,fcn) void
+  %% Cache extern only if the storage class is non-static
+  %assign extern = UsingMalloc == 0 ? "extern " : ""  
+  %assign ssp = "%<extern>%<fcn.FcnPrototype>;\n"
+  %% To avoid warnings, use a different name for the
+  %% rtModel in the function declaration than in the
+  %% function body.
+  %if GenRTModel
+    %assign rtm = " *%<tSimStruct>"
+    %assign lowerrtm = " *rtm"
+    %assign ssp = FEVAL("strrep",ssp, rtm, lowerrtm)
+  %endif
+  %assign fileOwnerSystem = CompiledModel.System[system.FileNameOwnerIdx]
+  %<LibAddToSystemField(fileOwnerSystem, "SystemFcnPrototype", ssp)>
+
+%endfunction %% LibCacheSubsystemPrototype
+
+
+%% Function: LibDumpSystemPrototype ============================================
+%% Abstract:
+%%   Place the system function prototypes in the output stream.
+%%
+%function LibDumpSystemPrototype(system) Output
+  %assign systemFcnPrototype = LibGetSystemField(system,"SystemFcnPrototype")
+  %if !WHITE_SPACE(systemFcnPrototype)
+    %<systemFcnPrototype>\
+  %endif
+%endfunction %% LibDumpSystemPrototype
+
+
+%% Function: LibDumpFcnOpen ====================================================
+%% Abstract:
+%%   Dump the opening (start) of the specified function (e.g. Output).
+%%
+%function LibDumpFcnOpen(system,function) Output
+  %assign fcnInfo = LibGetFcnInfo(system, function, system.CurrentTID)
+  %if fcnInfo.SfcnFormDefine != ""
+    #define %<fcnInfo.SfcnFormDefine>
+  %endif
+  %<fcnInfo.Open>\
+%endfunction %% LibDumpFcnOpen
+
+
+%% Function: LibDumpFcnBegin ===================================================
+%% Abstract:
+%%   Dump the beginning of the function (e.g. Output) code.
+%%
+%function LibDumpFcnBegin(system,function) Output
+  %assign fcnInfo = LibGetFcnInfo(system, function, system.CurrentTID)
+  %<fcnInfo.Begin>\
+%endfunction %%LibDumpFcnBegin
+
+
+%% Function: LibDumpFcnClose ===================================================
+%% Abstract:
+%%   Dump the closing of the specified function (e.g. Output).
+%%
+%function LibDumpFcnClose(system,function) Output
+  %assign fcnInfo = LibGetFcnInfo(system, function, system.CurrentTID)
+  %<fcnInfo.Close>\
+%endfunction %% LibDumpFcnClose
+
+%% Function: FcnSysFcnHasRTM ===================================================
+%% Abstract:
+%%   Returns whether a system fcn needs the real time model as an arg
+%%
+%function FcnSysFcnHasRTM(system, sysFcn) void
+  %assign currentTID     = system.CurrentTID
+  %assign isRateGrouping = ...
+    (SLibIsMultiRateAndRateGrouping(system)&& ...
+    (sysFcn == "Output" || sysFcn == "Update" || sysFcn == "OutputUpdate"))?1:0
+  %with system.Interface
+    %assign origBlockFcn = ::BlockFcn
+    %assign ::BlockFcn = sysFcn
+    %assign hasRTM = FcnArgNeeded(RTMArgDef,currentTID,isRateGrouping) && ...
+      LibSystemIsReusedFcn(system) && ...
+      !LibSystemIsRoot(system)
+    %assign ::BlockFcn = origBlockFcn
+  %endwith
+  %return hasRTM
+%endfunction
+
+%% Function: SLibSystemFcnInfoRecord ===========================================
+%% Abstract:
+%%   Returns the function info record for LibDefineSystemFcn. 
+%%   See LibDefineSystemFcn
+%%
+%function SLibSystemFcnInfoRecord(system, sysFcn) void
+  %<FcnResetFunctionRecord()>
+  %assign fcnname = "%<sysFcn>Fcn"
+  %assign sysIdx  = system.SystemIdx
+  %assign isRoot  = (system.Type == "root")
+  %assign isRateGrouping = ...
+    (SLibIsMultiRateAndRateGrouping(system)&& ...
+    (sysFcn == "Output" || sysFcn == "Update" || sysFcn == "OutputUpdate"))?1:0
+  
+  %if !isRateGrouping
+    %assign ::FcnRec.Name = system.%<fcnname>
+  %else
+    %assign ::FcnRec.Name = system.%<fcnname> + "TID%<system.CurrentTID>"
+  %endif
+  %assign fcnname = "%<sysFcn>Fcn"
+  %if !ISFIELD(system,fcnname)
+    %return
+  %endif 
+
+  %assign ::FcnRec.Returns = "void"
+  %assign OB = "("
+  %assign CB = ")"
+  
+  %% If the system is reusable and it already has rtModel as an
+  %% argument, don't add it again.
+  %assign hasRTM = FcnSysFcnHasRTM(system, sysFcn)
+    
+  %if !hasRTM
+    %if (CodeFormat == "S-Function" || CodeFormat == "RealTimeMalloc")
+      %assign locSS = RTMGetModelSS()
+      %if !FcnSysFcnHasRTM(system, sysFcn)
+	%<FcnAddArgument("%<tSimStructType> *", locSS, locSS)>
+      %endif
+      %% Note: FcnRec.Args cannot be used to call the f-c subsystem since
+      %% the caller needs to put an actual value for tControlPortIdx. Also, when
+      %% the caller is in a separate source file, an actual value needs to be
+      %% used for tid as well.  LibCallFCSS() in syslib.tlc is used to
+      %% properly call a function-call subsystem from TLC.  An example of it's 
+      %% use is in LibSFOutputFcnCall() in sflib.tlc.
+    %elseif LibSystemIsForceNonInline(system) && sysFcn == "OutputUpdate"
+      %if (CodeFormat != "Embedded-C") || LibSystemCalledByNonInlineSfcn(system)
+	%assign locSS = RTMGetModelSS()
+	%assert !FcnSysFcnHasRTM(system, sysFcn)
+	%<FcnAddArgument("%<tSimStructType> *", locSS, locSS)>
+      %endif
+    %endif
+  %endif
+  
+  %if LibSystemFcnNeedsCPI(system,sysFcn)
+    %<FcnAddArgument("int_T ", tControlPortIdx, ...
+      tControlPortIdx)>
+  %endif
+  
+  %if LibSystemFcnNeedsTID(system,sysFcn)
+    %<FcnAddArgument("int_T ",tTID, tTID)>
+  %endif
+  %assign ::FcnRec.CommonPrms = "%<FcnRec.Params>"
+
+  %if !LibSystemIsInlined(system) && !isRoot
+    %<FcnAddNeededParameter(sysIdx)>
+  %endif
+  
+  %assign fcnPrototype = "%<FcnRec.Returns> "
+  %if FcnRec.Params == ""
+    %assign fcnPrototype = fcnPrototype + "%<FcnRec.Name>%<OB>void%<CB>"
+  %else
+    %assign fcnPrototype = fcnPrototype + "%<FcnRec.Name>(%<FcnRec.Params>)"
+  %endif
+  
+  %assign statQual = isRoot ? (RootBodyMthsStatic ? "static " : "") : ""
+  
+  %assign open  = statQual +  fcnPrototype + "\n{\n"
+  %assign begin = ""
+  %assign close = "}"
+  
+  %%
+  %% For root methods in S-function format, we may need a 
+  %% # define before the method. We cache that here
+  %%
+  %assign sfcnFormDefine = ""
+  %if isRoot && (CodeFormat == "S-Function")
+    %assign sfcnFormDefine = FcnGetSfcnFormDefine(sysFcn)
+  %endif
+  
+  %assign name = "%<sysFcn>FcnInfo"
+  %createrecord %<name>\
+          {\
+	  SysFcn         sysFcn;\
+	  Name           FcnRec.Name;\
+	  Returns        FcnRec.Returns;\
+	  Params         FcnRec.Params;\
+	  CommonPrms     FcnRec.CommonPrms;\
+	  CommonArgs     FcnRec.CommonArgs;\
+	  FcnPrototype   fcnPrototype;\
+	  SfcnFormDefine sfcnFormDefine;\
+	  Open           open;\
+	  Begin          begin;\
+	  Close          close\
+	  }
+  %return %<name>
+%endfunction 
+
+%% Function: LibDefineSystemFcn ================================================
+%% Abstract:
+%%   Cache a record in the system scope so that the subsystem block
+%%   (who calls the function) knows the prototyped.          
+%%
+%%   Arguments:
+%%      system: Simulink system
+%%      sysFcn: The system function to define
+%%                  o Initialize
+%%                  o Output
+%%                  o Update
+%%                  o OutputUpdate
+%%                  o Derivative
+%%                  o Enable
+%%                  o Disable
+%%      fcnRec: Reference to fcnRec (see top of file for definition of record)
+%%
+%%
+%%   Example:
+%%      %assign fcnRec.Name    = "foo"
+%%      %assign fcnRec.Returns = "void"
+%%      %assign fcnRec.Params  = "int_T tid"
+%%      %assign fcnRec.Args    = "tid"
+%%
+%%      %<LibDefineSystemFcn(system, "OutputUpdate", fcnRec)>
+%%
+%%      Creates a function information record in the system scope:
+%%
+%%      System {
+%%        :
+%%        OutputUpdateFcnInfo {
+%%          Name         "foo"
+%%          Returns      "void"
+%%          Params       "int_T tid"
+%%          Args         "tid"
+%%          fcnCall      "foo(tid)"
+%%          fcnPrototype "void foo(int_T tid)"
+%%       }
+%%
+%function LibDefineSystemFcn(system, sysFcn) void
+  %assign isRateGrouping = ...
+    (SLibIsMultiRateAndRateGrouping(system) || ...
+    LibAsynchronousTriggeredTID(system.CurrentTID)) && ...
+    (sysFcn == "Output" || sysFcn == "Update" || sysFcn == "OutputUpdate")
+  %assign fcnRecord = SLibSystemFcnInfoRecord(system, sysFcn)
+    
+  %if isRateGrouping && TYPE(system.CurrentTID) == "Number"
+    %% Set up the global vars for this system and function, this
+    %% is needed for nonreusable functions that live in reusable functions
+    %assign globalVars = LibInitializeGlobalVars(system, sysFcn)
+    %<LibSetSystemField(system, ...
+      "Cached%<sysFcn>%<system.CurrentTID>GlobalVars",  globalVars)>
+  
+    %<LibAddToSystem(system,...
+      "%<sysFcn>TID%<system.CurrentTID>FcnInfo", fcnRecord)>
+  %else
+    %% Set up the global vars for this system and function, this
+    %% is needed for nonreusable functions that live in reusable functions
+    %assign globalVars = LibInitializeGlobalVars(system, sysFcn)
+    %<LibSetSystemField(system, "Cached%<sysFcn>GlobalVars",  globalVars)>
+    %<LibAddToSystem(system, "%<sysFcn>FcnInfo", fcnRecord)>
+  %endif
+
+  %if LibSystemIsInlined(system)
+    %% If inlining reassign Open and FcnCall
+    %openfile declarebuf
+    %<LibDumpSystemSSVars(system,sysFcn)>\
+    %if isRateGrouping
+      %<LibDumpSystemLocalBO(system,"%<sysFcn>%<system.CurrentTID>")>\
+    %else
+      %<LibDumpSystemLocalBO(system,sysFcn)>\
+    %endif
+    %<LibDumpSystemUserCode(system,sysFcn,"Header")>\
+    %closefile declarebuf
+    %if LibSystemUserCodeIsEmpty(system,sysFcn,"Header") && ...
+      WHITE_SPACE(declarebuf)
+      %assign needOutputsBrace = 0
+    %else
+      %assign needOutputsBrace = 1
+    %endif
+    %if needOutputsBrace
+      %assign fcnRecord.Open = "{\n"
+      %assign fcnRecord.Begin = "\n"
+      %assign fcnRecord.Close = "}\n"
+    %else
+      %assign fcnRecord.Open  = ""
+      %assign fcnRecord.Begin = ""
+      %assign fcnRecord.Close = ""
+    %endif    
+  %else
+    %if (!LibSystemFcnIsEmpty(system,sysFcn)) || ...
+      (system.Type == "function-call" && sysFcn == "OutputUpdate")
+      %% Only dump the prototype if the caller does not live
+      %% in the same file or it is a Async sfcn.
+      %if (system.Type != "root") && (system.SystemNeedsExtern || ...
+	LibAsynchronousTriggeredTID(system.CurrentTID))
+        %<LibCacheSubsystemPrototype(system,fcnRecord)>\
+      %endif
+    %endif
+  %endif
+%endfunction %% LibDefineSystemFcn
+
+%% Function: LibDefineSystemFcnForTID ==================================
+%% Description:
+%%   Call LibDefineSystemFcn to Cache record(s) in the system scope 
+%%   so that the subsystem block (who calls the function) knows 
+%%   the prototyped. When SLibIsMultiRateAndRateGrouping( is true, records are
+%%   cached very each tid function call.
+%%
+%function LibDefineSystemFcnForTID(system, sysFcn) void
+  %assign system.CurrentTID = ""
+  %<LibDefineSystemFcn(system, sysFcn)>
+  %%
+  %% synchronous sample times
+  %if SLibIsMultiRateAndRateGrouping(system)
+    %foreach tid = NumSynchronousSampleTimes
+      %assign system.CurrentTID = tid
+      %<LibDefineSystemFcn(system, sysFcn)>
+    %endforeach
+    %assign system.CurrentTID = -1
+  %endif
+  %%
+  %% Asynchronous sample times
+  %foreach tid = NumAsynchronousSampleTimes
+    %assign system.CurrentTID = tid + NumSynchronousSampleTimes
+    %<LibDefineSystemFcn(system, sysFcn)>
+  %endforeach
+  %assign system.CurrentTID = -1
+  
+%endfunction %% LibDefineSystemFcnsForTID
+
+%% Function: LibGenSubsystemFcnCall ============================================
+%% Abstract:
+%%   Generates a function call to a system.
+%%
+%% Arguments:
+%%        fcnInfo - contains the function name and the type of the call
+%%                  (e.g. "Start, Output, Update, ...")
+%%   parentSysIdx - location of the system call
+%%                  (Where the function is called)
+%%         sysIdx - system to be called
+%%    callSiteIdx - system instance to be used   
+%%
+%function LibGenSubsystemFcnCall(fcnInfo, parentSysIdx, sysIdx, callSiteIdx) void
+  %assign accessSysIdx = System[parentSysIdx].HStructDeclSystemIdx
+  %assign blkFcn = ::BlockFcn %% backup current block function
+  %assign ::BlockFcn = fcnInfo.SysFcn
+  %assign addArgs = FcnGetAdditionalArgs(sysIdx, accessSysIdx, callSiteIdx)
+  %assign ::BlockFcn = blkFcn %% backup current block function
+  %assign comArgs = fcnInfo.CommonArgs
+  %assign cs = System[sysIdx].CallSites[callSiteIdx]
+  %assign ssBlk = System[cs[2]].Block[cs[3]]
+  %%
+  %assign comma = (WHITE_SPACE(addArgs) || WHITE_SPACE(comArgs)) ? "" : ", "
+  %%
+  %% If one or more of arguments of a function that is passed by address
+  %% is a expression, than the result of this expression has to be stored
+  %% in a temporrary variable. The address of the temporary variable will
+  %% than be passed as the argument of the function call.
+  %%
+  %assign fcnName = fcnInfo.Name 
+  %if ISFIELD(ssBlk, "%<fcnInfo.SysFcn>FcnCallCode")
+    %assign fcnCallCode = GETFIELD(ssBlk, "%<fcnInfo.SysFcn>FcnCallCode")
+    %assign fcnCall = ""
+    %openfile fcnCall
+    {
+      %<fcnCallCode.localPrmDecl>
+      %<fcnCallCode.localExpr>
+      %<fcnName>(%<comArgs>%<comma>%<addArgs>);
+    }
+    %closefile fcnCall
+    %return fcnCall
+  %else
+    %return "%<fcnName>(%<comArgs>%<comma>%<addArgs>);"
+  %endif
+%endfunction
+
+
+%% Function: FcnGetCanDWorkArgs ================================================
+%% Abstract: 
+%%   
+%% Arguments:
+%%         sysIdx   - system function to call
+%%    callSiteIdx   - system instance to call
+%%     accessSysIdx - location of the system call. This can be a function
+%%                    or reusable function.
+%% Note: If the subsystem is using one of its CanonicalDWork,
+%%       and the subsystem is in a reusable function, it must mark 
+%%       the corresponding reusable function arg as Accessed. 
+%%
+%function FcnGetCanDWorkArgs(sysIdx, accessSysIdx, callSiteIdx) void
+  %assign cs    = System[sysIdx].CallSites[callSiteIdx]
+  %assign args  = ""
+  %assign comma = ""
+  
+  %assign errTxt = "Invalid SignalSrc for CanonicalDWork."
+  
+  %with System[sysIdx].Interface
+    %foreach argIdx = NumCanonicalDWorkArgDefs
+      %assign canDWork = CanonicalDWorkArgDef[argIdx]
+      %if FcnArgIsNeeded(canDWork)
+	%% Get the reused function or root
+	%assign  callerHStSystem = SLibCallerHStuctDeclSystem(System[sysIdx], callSiteIdx)
+	
+	%with System[accessSysIdx]
+	  %assign ssBlk = System[cs[2]].Block[cs[3]]
+	  %with ssBlk %% subsystem block
+	    %assign arg    = CallSiteInfo.CanonicalDWorkArg[argIdx]
+	    %assign argSrc = arg.SignalSrc %% Di, di or dpi
+	    %assign idNum  = IDNUM(argSrc)
+	    %%
+	    %assert (idNum[0] == "D" || idNum[0] == "d" || idNum[0] == "dp")
+	    
+	    %if idNum[0] == "dp" %% uses relative idx
+	      %assert (callerHStSystem.SystemIdx == accessSysIdx &&  ...
+		       callerHStSystem.Type != "Root")
+	      %%
+	      %assign callerDWork = callerHStSystem.Interface.CanonicalDWorkArgDef[idNum[1]]
+              %assign callerSysIdx = cs[0]
+              %assign dwArg   = callerDWork.Identifier
+              %<LibAccessArg(callerDWork)>
+              %if System[callerSysIdx].CrossNoArgFcnBound
+                %<LibAccessGlobalArg(callerDWork)>
+                %assign dwArg = "%<GetGlobalPrefix()>_%<dwArg>_%<accessSysIdx>"
+              %endif
+
+	    %else
+	      %assign dwRec = CompiledModel.DWorks.DWork[idNum[1]]
+	      %assign dwId  = dwRec.Identifier
+	      %assign dwWidth = dwRec.Width
+	      
+	      %if idNum[0] == "D"
+		%% Example,
+		%%   Scalar: foo(&DWork.a)
+		%%   Wide:   foo(&DWork.b[0])
+		%%
+		%if dwWidth == 1
+		  %assign dwArg = "&%<tDWork>%<DWorkQualifier>%<dwId>"
+		%else
+		  %assign dwArg = "&%<tDWork>%<DWorkQualifier>%<dwId>[0]"
+		%endif
+		%assign ::BlockFcnAccessed.DWork = 1
+	      %else %% "d"
+		%% Example,
+		%%   Scalar: foo(&localDW->a)
+		%%   Wide:   foo(localDW->b)
+		%%
+                %%  If the caller is crossing a function boundary, use
+                %%  the global variable instead of localDW.
+                %assign callerSysIdx = cs[0]
+                %if System[callerSysIdx].CrossNoArgFcnBound
+                  %<LibAccessGlobalArg(System[accessSysIdx].Interface.DWorkArgDef)>
+                  %if dwWidth == 1
+                    %assign dwArg = "&%<GetGlobalPrefix()>DW_%<accessSysIdx>->%<dwId>"
+                  %else
+                    %assign dwArg = "%<GetGlobalPrefix()>DW_%<accessSysIdx>->%<dwId>"
+                  %endif
+                %else
+                  %if dwWidth == 1
+                    %assign dwArg  = "&localDW->%<dwId>"
+                  %else
+                    %assign dwArg  = "localDW->%<dwId>"
+                  %endif
+                %endif
+	      %endif
+	      %<LibAccessArg(callerHStSystem.Interface.DWorkArgDef)>
+	    %endif
+		
+	    %assign args = "%<args>%<comma>%<dwArg>"
+	    %assign comma = ", "
+	  %endwith %% subsystem block
+	%endwith %% System[accessSysIdx]
+      %endif
+    %endforeach %% argIdx
+    %%
+  %endwith %% System[sysIdx].Interface
+  %return args
+%endfunction %% FcnGetCanDWorkArgs
+
+%% Function: FcnGetAdditionalArgs ==============================================
+%% Abstract: 
+%%   This function generates the arguments needed in for a system function 
+%%   call.
+%%   
+%% Arguments:
+%%         sysIdx - system function to call
+%%    callSiteIdx - system instance to call
+%%     accessSysIdx - location of the system call
+%%
+%function FcnGetAdditionalArgs(sysIdx, accessSysIdx, callSiteIdx) void
+  %%
+  %% CallSite is misleading in this context. The callsite vector is
+  %% defines the memory instances of the function and is
+  %% equal to the number of reused instances of a system.
+  %%
+  %assign cs = System[sysIdx].CallSites[callSiteIdx]
+  %assign args = ""
+  %assign currentTID        = System[sysIdx].CurrentTID
+  %assign needElapseTimeArg = SysNeedsElapseTimeArg(System[sysIdx], BlockFcn)
+  %assign isRateGrouping = SLibIsMultiRateAndRateGrouping(System[sysIdx])
+  %assign genModelRef = IsModelReferenceTarget() && accessSysIdx == NumSystems-1
+  %with System[sysIdx].Interface
+    %assign comma = ""
+    %assign ssBlk = System[cs[2]].Block[cs[3]]
+    %%
+    %assign ssBlk.BlockIdx[1] = accessSysIdx
+    %%
+    %% Canonical input argument
+    %%
+    %foreach argIdx=NumCanonicalInputArgDefs
+      %if FcnArgNeeded(CanonicalInputArgDef[argIdx],currentTID,isRateGrouping)
+        %% We need to be able to access data in the system that
+        %% is writing out this function-call (cs[0].  Previously this was
+        %% %with System[accessSysIdx], but the HStructDeclSystem for
+        %% accessSysIdx and cs[0] is always the same.
+        %assert System[cs[0]].HStructDeclSystemIdx == ...
+          System[accessSysIdx].HStructDeclSystemIdx
+        %with System[cs[0]]
+	  %with ssBlk %% subsystem block
+	    %assign ci = CallSiteInfo.CanonicalInputArg[argIdx]
+	    %assign skipThisArg = 0
+	    %if IDNUM(ci.SignalSrc[0])[0] == "F"
+	      %assign skipThisArg = 1
+	    %endif	
+	    %if IDNUM(ci.SignalSrc[0])[0] == "L"
+	      %if (::BlockFcn != "Output" && ::BlockFcn!= "Update" &&...
+                   ::BlockFcn!= "RootUpdate" && ::BlockFcn!= "OutputUpdate")
+		%assign skipThisArg = 1
+	      %endif
+	    %endif
+	    %if skipThisArg==0   
+	      %if genModelRef
+		%assign passByRef =(ci.Width > 1 || ci.ScalarPassByRef == "yes")
+		%assign ptr = passByRef ? "" : "*"
+		%assign args = "%<args>%<comma>%<ptr>InPort_%<argIdx>"
+	      %else
+		%assign useAddr =  (ci.ScalarPassByRef == "yes")
+		%assign addressOf =  useAddr ? "&" : ""
+		%assign arg = FcnGetCanonicalArg(ci, 0) 
+		%assign args = "%<args>%<comma>%<addressOf>%<arg>"
+	      %endif
+	      %assign comma = ", "
+	    %endif
+	  %endwith %% subsystem block
+	%endwith %% System[sysIdx]
+      %endif %% FcnArgIsNeeded(CanonicalInputArgDef[argIdx])
+    %endforeach %% argIdx=NumCanonicalInputArgDefs
+    %%
+    %% Canonical output argument
+    %%
+    %foreach argIdx=NumCanonicalOutputArgDefs
+      %if FcnArgNeeded(CanonicalOutputArgDef[argIdx],currentTID,isRateGrouping)
+        %% We need to be able to access data in the system that
+        %% is writing out this function-call (cs[0].  Previously this was
+        %% %with System[accessSysIdx], but the HStructDeclSystem for
+        %% accessSysIdx and cs[0] is always the same.
+        %assert System[cs[0]].HStructDeclSystemIdx == ...
+          System[accessSysIdx].HStructDeclSystemIdx
+        %with System[cs[0]]
+	  %with ssBlk %% subsystem block
+	    %assign      co = CallSiteInfo.CanonicalOutputArg[argIdx]
+            %if genModelRef
+              %assign args = "%<args>%<comma>OutPort_%<argIdx>"
+            %else
+              %assign     arg = FcnGetCanonicalArg(co, 0)
+              %assign optAddr = (co.Width == 1) ? "&" : ""
+              %assign    args = "%<args>%<comma>%<optAddr>%<arg>"
+            %endif
+	    %assign   comma = ", "
+	  %endwith %% subsystem block
+	%endwith %% System[sysIdx]
+      %endif %% FcnArgIsNeeded(CanonicalOutputArgDef[argIdx])
+    %endforeach %% argIdx=NumCanonicalOutputArgDefs
+    %%
+    %assign ssBlk.BlockIdx[1] = ssBlk.CallSiteInfo.SystemIdx
+    %%
+    %% rtModel argument
+    %%
+    %if FcnArgNeeded(RTMArgDef,currentTID,isRateGrouping)
+       %if genModelRef
+        %assign args = "%<args>%<comma>&(dw->rtm)"
+      %else
+        %assign rtmArg = FcnUpdateRTModelInterfaceArg(System[accessSysIdx], tSimStruct)
+        %assign args = "%<args>%<comma>%<rtmArg>"
+      %endif
+      %assign comma = ", "
+      %assign callerHStSystem = ...
+	  SLibCallerHStuctDeclSystem(System[sysIdx], callSiteIdx)
+	%<LibAccessArg(callerHStSystem.Interface.RTMArgDef)>
+    %endif
+    %%
+    %% Block IO argument
+    %%
+    %if FcnArgNeeded(BlockIOArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (e.g. "Start") calls a function of the 
+      %% same system (e.g. "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>&(dw->rtb)"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localB"
+        %else
+          %assign identiPath = FcnGetLocalBlockIOPath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% Constant block IO argument
+    %%
+    %if FcnArgNeeded(ConstBlockIOArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (e.g. "Start") calls a function of the 
+      %% same system (e.g. "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args = "%<args>%<comma>&rtc_%<CompiledModel.Name>"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localC"
+        %else
+          %assign identiPath = FcnGetConstBlockIOPath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% DWork IO argument
+    %%
+    %if FcnArgNeeded(DWorkArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (e.g. "Start") calls a function of the 
+      %% same system (e.g. "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>&(dw->rtdw)"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localDW"
+        %else
+          %assign identiPath = FcnGetLocalDWorkPath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% Parameter H-Struct argument
+    %%
+    %if FcnArgNeeded(PrmArgDef,currentTID,isRateGrouping)
+      %if genModelRef
+        %assign args = "%<args>%<comma>&rtp_%<CompiledModel.Name>"
+      %else
+        %%
+        %% Does a passthrough parameter structure argument exists ?
+        %%
+        %if InlineParameters && PrmArgDef.PassthroughSystemIdx > -1
+          %%
+          %% Get the parent callsite vector (pcs)
+          %%
+          %assign pcs = System[sysIdx].CallSites[0]
+          %%
+          %% Mark the parents parameter structure argument as accessed
+          %%
+          %<LibAccessArg(System[pcs[0]].Interface.PrmArgDef)>
+          %assign csPrmArgDef = System[pcs[0]].Interface.PrmArgDef
+          %assign prmAccessSysIdx = PrmArgDef.PassthroughSystemIdx
+          %%
+          %if prmAccessSysIdx == NumSystems-1
+            %assign args = "%<args>%<comma>%<tParameters>"
+          %elseif System[sysIdx].HStructDeclSystemIdx == accessSysIdx || ...
+            csPrmArgDef.PassthroughSystemIdx == prmAccessSysIdx
+            %%
+            %% - not called by a parent system (e.g. enable in start)
+            %% - parent has the same pass through system index
+            %%
+            %assign args = "%<args>%<comma>localP"
+          %else
+            %assign cast = "(rtP%<FcnGetSystemIdentifier(sysIdx)> *)"
+            %assign pssBlk = System[pcs[2]].Block[pcs[3]]
+            %assign identiPath = FcnGetLocalParametersPath( ...
+              pcs[0], pcs[1], csPrmArgDef.PassthroughSystemIdx,0)
+            %assign indenti = pssBlk.CallSiteInfo.StructId
+            %assign args = "%<args>%<comma>%<cast> &%<identiPath>%<indenti>"
+          %endif
+        %elseif System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localP"
+        %else %% normal parameter structure argument
+          %assign cast = "(rtP%<FcnGetSystemIdentifier(sysIdx)> *)"
+          %if InlineParameters
+            %assign pcs = System[sysIdx].CallSites[0]
+            %assign pssBlk = System[pcs[2]].Block[pcs[3]]
+          %else
+            %assign pcs = cs
+            %assign pssBlk = ssBlk
+          %endif
+          %assign identiPath = ...
+            FcnGetLocalParametersPath(pcs[0], pcs[1], accessSysIdx,CrossNoArgFcnBound)
+          %assign indenti = pssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>%<cast> &%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% CState argument
+    %%
+    %if FcnArgNeeded(ContStatesArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (eg "Start") calls a function of the 
+      %% same system (eg "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args = "%<args>%<comma>rtx"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localX"
+        %else
+          %assign identiPath = FcnGetLocalCStatePath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% CState Derivative argument
+    %%
+    %if FcnArgNeeded(ContStatesDerivativeArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (eg "Start") calls a function of the 
+      %% same system (eg "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>rtxdot"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localXdot"
+        %else
+          %assign identiPath = FcnGetLocalCStateDerivativePath(cs[0], cs[1], ...
+            accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% CState Disabled argument
+    %%
+    %if FcnArgNeeded(ContStatesDisabledArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (eg "Start") calls a function of the 
+      %% same system (eg "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>rtxdis"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localXdis"
+        %else
+          %assign identiPath = FcnGetLocalContStateDisabledPath(cs[0], cs[1], ...
+            accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% Non Sampled Zero Crossing argument
+    %%
+    %if FcnArgNeeded(NonsampledZCArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (eg "Start") calls a function of the 
+      %% same system (eg "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>rtnszc"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localNSZC"
+        %else
+          %assign identiPath = FcnGetLocalNonSampledZCPath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif 
+    %%
+    %% ZCEvent argument
+    %%
+    %if FcnArgNeeded(ZCEventArgDef,currentTID,isRateGrouping)
+      %%
+      %% If a system function (eg "Start") calls a function of the 
+      %% same system (eg "Enable"), it has to pass the structured arguments
+      %% without adding a substructure element
+      %%
+      %if genModelRef
+        %assign args =  "%<args>%<comma>&(dw->rtzce)"
+      %else
+        %if System[sysIdx].HStructDeclSystemIdx == accessSysIdx
+          %assign args = "%<args>%<comma>localZCE"
+        %else
+          %assign identiPath = FcnGetLocalZCEPath(cs[0], cs[1], accessSysIdx)
+          %assign indenti = ssBlk.CallSiteInfo.StructId
+          %assign args = "%<args>%<comma>&%<identiPath>%<indenti>"
+        %endif
+      %endif
+      %assign comma = ", "
+    %endif
+    %%
+    %% Canonical parameters
+    %%
+    %foreach argIdx=NumCanonicalPrmArgDefs
+      %assign argDef = CanonicalPrmArgDef[argIdx] 
+      %if FcnArgNeeded(argDef,currentTID,isRateGrouping)
+	%assign childPrmIdx = ...
+	  ssBlk.CallSiteInfo.CanonicalPrmArg[argIdx].ChildPrmArgIdx
+	%assign prm = System[cs[0]].ChildPrmArg[childPrmIdx]
+	%assign prmWidth = LibBlockParameterWidth(argDef)
+	%%
+	%% If one or more of arguments of a function that is passed by address
+	%% is a expression, than the result of this expression has to be stored
+	%% in a temporrary variable. The address of the temporary variable will
+	%% than be passed as the argument of the function call.
+	%%
+	%assign ref = ""
+	%if genModelRef
+	  %% Generating S-Function for model-reference.
+	  %% Always generate parameter argument as "ParamArg_#"
+	  %assign expr = "ParamArg_%<argIdx>"
+	  %if prmWidth == 1
+	    %assign expr = "%<expr>[0]"
+	  %endif
+	%elseif prmWidth > 1
+	  %if LibBlockParameterIsExpression(prm)
+	    %assign ref = "&"
+	    %if !ISFIELD(ssBlk, "%<::BlockFcn>FcnCallCode")
+	      %addtorecord ssBlk %<::BlockFcn>FcnCallCode ...
+		{ localPrmDecl ""; localExpr ""}
+	    %endif
+	    %assign dataType = SLibGetRecordDataTypeName(argDef, "")
+	    %assign  fcnCode = ssBlk.%<::BlockFcn>FcnCallCode
+	    %assign fcnCode.localPrmDecl = fcnCode.localPrmDecl + ...
+	      "%<dataType> %<argDef.Identifier>[%<prmWidth>];\n"
+	    %assign expr = "%<argDef.Identifier>[0]"
+	    %assign rolledExpr = ""
+	    %openfile rolledExpr
+	    %roll idx=[0:%<prmWidth-1>],lcv=RollThreshold,ssBlk,"Roller",""
+	      %<argDef.Identifier>[%<lcv == "" ? idx : lcv>] = ...
+		%<FcnGenParamExprWithCast("", prm, lcv, "", idx)>;
+	    %endroll
+	    
+	    %closefile rolledExpr
+	    %assign fcnCode.localExpr = fcnCode.localExpr + rolledExpr
+	  %elseif prm.ASTNode.IsNonTerminal == 0 && ...
+	    prm.ASTNode.Op == "M_CANPRM_ID"
+	    %assign ref = "&"
+	    %assign expr = FcnGenParamExprWithCast("", prm, "", "", "")
+	  %else
+	    %%
+	    %% Value is needed by LibBlockParameterAddr as a field
+	    %% in the parameter record
+	    %%
+	    %if !ISFIELD(prm, "Value")
+	      %assign prmIdx = prm.ASTNode.ModelParameterIdx
+	      %assign value = ModelParameters.Parameter[prmIdx].Value
+	      %addtorecord prm Value value
+	    %endif
+	    %assign nRows = SIZE(prm.Value, 0)
+	    %if nRows == 1
+	      %assign expr = LibBlockParameterAddr(prm, "", "", 0)	    
+ 	    %else
+	      %assign expr = ...
+		LibBlockMatrixParameterAddr(prm, "", "", 0, "", "", 0)
+	    %endif
+	  %endif
+	%else
+	  %assign expr = FcnGenParamExprWithCast("", prm, "", "", "")
+	%endif
+	%assign args = "%<args>%<comma>%<ref>%<expr>"
+	%assign comma = ", "
+      %endif %% FcnArgNeeded
+    %endforeach %% argIdx=NumCanonicalInputArgDefs
+    %%
+    %% Canonical DWork argument
+    %% 
+    %assign canDWork = FcnGetCanDWorkArgs(sysIdx,accessSysIdx,callSiteIdx)
+    %if canDWork != ""
+      %assign args = "%<args>%<comma>%<canDWork>"
+      %assign comma = ", "
+    %endif
+  %endwith %% System[sysIdx].Interface
+    
+  %if needElapseTimeArg 
+    %assign args = "%<args>%<comma>rt_elapseTime"
+  %endif
+  %return args
+%endfunction %% FcnGetAdditionalArgs
+
+
+%% Function: LibGetFcnCallISR ==================================================
+%% Abstract:
+%%    For use by inlined S-Functions with function call outputs. Returns a
+%%    function call string with a ISR (interupt service routine) compatible
+%%    interface.
+%%    This library function should be used to a attach the generated code
+%%    of a Simulink function call subsystem to a ISR.
+%%
+%function LibGetFcnCallISR(ssBlock, portEl, tidVal) void
+  %return SLibGetFcnEventType(ssBlock, portEl, tidVal, "ISR", "OutputUpdate")
+%endfunction
+
+
+%% Function: LibGetFcnCallFNI ==================================================
+%% Abstract:
+%%    For use by inlined S-Functions with function call outputs. Returns a
+%%    function call string with a FNI (forced non-inlined) compatible
+%%    interface.
+%%    
+%function LibGetFcnCallFNI(ssBlock, portEl, tidVal) void
+  %return SLibGetFcnEventType(ssBlock, portEl, tidVal, "FNI", "OutputUpdate")
+%endfunction
+
+
+%% Function: LibGetFcnInitializeFNI ==================================================
+%% Abstract:
+%%    For use by inlined S-Functions with function call outputs. Returns a
+%%    function call string with a FNI (forced non-inlined) compatible
+%%    interface.
+%%    
+%function LibGetFcnInitializeFNI(ssBlock, portEl, tidVal) void
+  %return SLibGetFcnEventType(ssBlock, portEl, tidVal, "FNI", "Initialize")
+%endfunction
+
+
+%% Function: LibGetFcnEnableFNI ==================================================
+%% Abstract:
+%%    For use by inlined S-Functions with function call outputs. Returns a
+%%    function call string with a FNI (forced non-inlined) compatible
+%%    interface.
+%%    
+%function LibGetFcnEnableFNI(ssBlock, portEl, tidVal) void
+  %return SLibGetFcnEventType(ssBlock, portEl, tidVal, "FNI", "Enable")
+%endfunction
+
+
+%% Function: LibGetFcnDisableFNI ==================================================
+%% Abstract:
+%%    For use by inlined S-Functions with function call outputs. Returns a
+%%    function call string with a FNI (forced non-inlined) compatible
+%%    interface.
+%%    
+%function LibGetFcnDisableFNI(ssBlock, portEl, tidVal) void
+  %return SLibGetFcnEventType(ssBlock, portEl, tidVal, "FNI", "Disable")
+%endfunction
+
+
+%% Function: SLibGenerateISRStubs ==============================================
+%% Abstract:
+%%    This function is called by SLibGetBodyOutputUpdateFcnCache in
+%%    commonbodlib.tlc in order to generate the function call stubs with a
+%%    ISR (interupt service routine) compatible interface.
+%%
+%function SLibGenerateISRStubs(fcnCallSys) void
+  %assign tmpBuffer = ""
+  %assign sysFcnPrototype = ""
+  %assign blkFcnTmp = ::BlockFcn
+  %assign ::BlockFcn = "OutputUpdate"
+  
+  %if LibIsSystemField(fcnCallSys, "NumISROutputUpdateCallSites")
+    %assign NumISRCallSites = ...
+      LibGetSystemField(fcnCallSys, "NumISROutputUpdateCallSites")
+    %assign     ISRCallSite = ...
+      LibGetSystemField(fcnCallSys, "ISROutputUpdateCallSite")
+    %openfile tmpBuffer
+    %foreach idx=NumISRCallSites  
+      %assign  fcnName = ISRCallSite[idx][0]
+      %assign   sysIdx = ISRCallSite[idx][1]
+      %assign    csIdx = ISRCallSite[idx][2]
+      %assign   portEl = ISRCallSite[idx][3]
+      %assign   tidVal = ISRCallSite[idx][4]
+      %assign callSite = CompiledModel.System[sysIdx].CallSites[csIdx]
+      %assign  ssBlock = CompiledModel.System[callSite[2]].Block[callSite[3]]
+      
+      /* 
+       * Interrupt service routine (ISR) function call stub 
+       * for '%<ssBlock.Name>' 
+       */
+      void %<fcnName>(void) {
+	
+	%<SLibCallFCSS(sysIdx,csIdx,NumSystems-1,tSimStruct,portEl,tidVal,0,"OutputUpdate")>
+      }
+      %assign sysFcnPrototype = sysFcnPrototype + ...
+	"extern void %<fcnName>(void);\n"
+    %endforeach
+    %closefile tmpBuffer
+    %assign fileSysIdx = CompiledModel.System[sysIdx].FileNameOwnerIdx
+    %assign fileOwner  = CompiledModel.System[fileSysIdx]
+    %<LibAddToSystemField(fileOwner, "SystemFcnPrototype", sysFcnPrototype)>
+  %endif
+  
+  %assign ::BlockFcn = blkFcnTmp
+  %return tmpBuffer
+%endfunction %% SLibGenerateISRStubs
+
+
+%% Function: FcnGenerateFNIStubsForFcn =========================================
+%% Abstract:
+%%    This function is called by SLibGetBodyOutputUpdateFcnCache in
+%%    commonbodlib.tlc in order to generate the function call stubs with a
+%%    FNI (forced non-inlined) compatible interface.
+%%
+%function FcnGenerateFNIStubsForFcn(fcnCallSys, fcnType) void
+  %assign tmpBuffer = ""
+  %assign sysFcnPrototype = ""
+  %assign blkFcnTmp = ::BlockFcn
+  %assign ::BlockFcn = fcnType
+  
+  %if LibIsSystemField(fcnCallSys, "NumFNI%<fcnType>CallSites")
+    %assign NumFNICallSites = LibGetSystemField(fcnCallSys, "NumFNI%<fcnType>CallSites")
+    %assign     FNICallSite = LibGetSystemField(fcnCallSys, "FNI%<fcnType>CallSite")
+    %openfile tmpBuffer
+    %foreach idx=NumFNICallSites
+      %assign  fcnName = FNICallSite[idx][0]
+      %assign   sysIdx = FNICallSite[idx][1]
+      %assign    csIdx = FNICallSite[idx][2]
+      %assign   portEl = FNICallSite[idx][3]
+      %assign   tidVal = FNICallSite[idx][4]
+      %assign  outInfo = LibGetSystemField(fcnCallSys, "OutputUpdateFcnInfo")
+      %assign  fcnInfo = LibGetSystemField(fcnCallSys, "%<fcnType>FcnInfo")
+      %assign  addArgs = FcnGetAdditionalArgs(sysIdx, NumSystems-1, csIdx)
+      %assign  addArgs = WHITE_SPACE(addArgs) ? "" : ", %<addArgs>"
+      %assign callSite = CompiledModel.System[sysIdx].CallSites[csIdx]
+      %assign  ssBlock = CompiledModel.System[callSite[2]].Block[callSite[3]]
+      %assign  argDefs = outInfo.CommonPrms
+      %% To avoid warnings, use a different name for the
+      %% rtModel in the function declaration than in the
+      %% function body.
+      %if GenRTModel
+	%assign      rtm = " *%<tSimStruct>"
+	%assign lowerrtm = " *rtm"
+	%assign  argDefs = FEVAL("strrep", argDefs, rtm, lowerrtm)
+      %endif
+      
+      /* 
+       * Forced non-inlined (FNI) function call stub 
+       * for '%<ssBlock.Name>' 
+       */
+      %% Model Reference must supply boolean return argument to satisfy
+      %% fcnCallSys macro
+      %if IsModelReferenceSimTarget() && (fcnType != "Initialize")
+        %assign retArg = "boolean_T"
+      %else
+        %assign retArg = "void"
+      %endif
+      %<retArg> %<fcnName>(%<outInfo.CommonPrms>) {
+	%% Make the smarts for whether or not to call the initialize
+	%% function based on state reset here, so the caller (e.g. Stateflow
+	%% or rt_EnableSys can be blissfully and generically unaware of it
+	%% (at runtime)
+	%if fcnType == "OutputUpdate" || ...
+	  fcnType == "Output" || fcnType == "Update"
+	  %assign systemFcnIsEmpty = ...
+	    LibSystemFcnIsEmptyForTID(fcnCallSys, fcnType) 
+	%else
+	   %assign systemFcnIsEmpty = ...
+	    LibSystemFcnIsEmpty(fcnCallSys, fcnType) 
+	%endif
+	%%
+	%assign openCode = ""
+	%openfile openCode
+	%with fcnCallSys
+	  %if fcnType == "Enable"
+	    %<FcnGenerateOpenFCSSEnable(ssBlock, "controlPortIdx", 0, TLC_TRUE)>
+	  %% Don't nest enable open and close when nesting init inside enable 
+	  %% for model reference sim target
+	  %elseif fcnType == "Initialize" && !IsModelReferenceSimTarget() 
+            %<FcnGenerateOpenFCSSEnable(ssBlock, "controlPortIdx", 0, TLC_FALSE)>
+	  %elseif fcnType == "Disable"
+	    %<FcnGenerateOpenFCSSDisable(ssBlock, "controlPortIdx", 0)>
+	  %endif  
+	%endwith
+	%closefile openCode
+	%assign fcnCode = ""
+	%openfile fcnCode
+        %if IsModelReferenceSimTarget() && (fcnType == "Enable")
+          %% The Enable Function must call the Initialize function because
+          %% simulation doesn't cache away the Initialize function pointer
+          %if !LibSystemFcnIsEmpty(fcnCallSys, "Initialize")
+            %assign initFNI = LibGetFcnInitializeFNI(ssBlock,portEl,tidVal)
+	    %if LibSystemCalledByNonInlineSfcn(fcnCallSys)
+	      %<initFNI>(%<tSimStruct>, %<portEl>, %<tidVal>);
+	    %else
+	      %<initFNI>(%<portEl>, %<tidVal>);
+	    %endif
+          %endif
+        %endif
+	%if !systemFcnIsEmpty && ...
+	  (fcnType != "Initialize" || fcnCallSys.TriggerBlkReset)
+	  %<fcnInfo.Name>(%<fcnInfo.CommonArgs>%<addArgs>);
+	%endif
+	%closefile fcnCode
+	%assign closeCode = ""
+	%openfile closeCode
+	%with fcnCallSys
+ 	  %% Don't nest enable open and close when nesting init inside enable 
+	  %% for model reference sim target
+	  %if fcnType == "Enable" || ...
+	    (fcnType == "Initialize" && !IsModelReferenceSimTarget())
+	    %<FcnGenerateCloseFCSSEnable(ssBlock)>
+	  %elseif fcnType == "Disable"
+	    %<FcnGenerateCloseFCSSDisable(ssBlock)>
+	  %endif  
+	%endwith
+	%closefile closeCode
+	%if !WHITE_SPACE(openCode) || !WHITE_SPACE(fcnCode) || !WHITE_SPACE(closeCode)
+	  %<LibDeclareAllAccessedSimStructVars()>
+	%endif
+	%<openCode>
+	%<fcnCode>
+	%<closeCode>
+        %if IsModelReferenceSimTarget() && (fcnType != "Initialize")
+          return (1);
+        %endif
+      }
+      %if ISEMPTY(argDefs) 
+	%assign argDefs = ""
+      %endif
+      %assign sysFcnPrototype = sysFcnPrototype + ...
+	"extern %<retArg> %<fcnName>(%<argDefs>);\n"
+    %endforeach
+    %closefile tmpBuffer
+    %assign fileSysIdx = CompiledModel.System[sysIdx].FileNameOwnerIdx
+    %assign fileOwner  = CompiledModel.System[fileSysIdx]
+    %<LibAddToSystemField(fileOwner, "SystemFcnPrototype", sysFcnPrototype)>
+  %endif
+  
+  %assign ::BlockFcn = blkFcnTmp
+  %return tmpBuffer
+%endfunction
+
+
+%% Function: SLibGenerateFNIStubs =========================================
+%% Abstract:
+%%    This function is called by SLibGetBodyOutputUpdateFcnCache in
+%%    commonbodlib.tlc in order to generate the function call stubs with a
+%%    FNI (forced non-inlined) compatible interface.
+%%
+%function SLibGenerateFNIStubs(fcnCallSys) void
+  %openfile tmpBuf
+  %<FcnGenerateFNIStubsForFcn(fcnCallSys, "OutputUpdate")>\
+  %<FcnGenerateFNIStubsForFcn(fcnCallSys, "Initialize")>\
+  %<FcnGenerateFNIStubsForFcn(fcnCallSys, "Enable")>\
+  %<FcnGenerateFNIStubsForFcn(fcnCallSys, "Disable")>\
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+
+%% Function: SLibGetFcnEventType ================================================
+%% Abstract:
+%%      This function is called by LibGetFcnCallISR and LibGetFcnCallFNI. It
+%%      attaches additional information to the system instance recode that is
+%%      used to generate to generate the function call stubs.
+%%
+%function SLibGetFcnEventType(ssBlock, portEl, tidVal, fcnCallType, fcnType) void
+  %assign       sysIdx = ssBlock.ParamSettings.SystemIdx
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign   fcnCallSys = CompiledModel.System[sysIdx]
+  %if ISFIELD(fcnCallSys, "%<fcnType>Fcn")
+    %assign      fcnName = fcnCallSys.%<fcnType>Fcn + fcnCallType
+    %assign    fieldName = fcnCallType + fcnType + "CallSite"
+    %assign numFieldName = "Num" + fcnCallType + fcnType + "CallSites"
+    
+    %if csIdx > 0 || portEl > 0
+      %assign  fcnName = fcnName + "_%<csIdx>_%<portEl>"
+    %endif
+    
+    %assign callSite = [%<fcnName>, %<sysIdx>, %<csIdx>, %<portEl>, %<tidVal>]
+    %if !LibIsSystemField(fcnCallSys, numFieldName)
+      %assign callSite = Matrix (1,5) [[%<callSite>];]
+      %<LibAddToSystem(fcnCallSys, numFieldName, 1)>
+      %<LibAddToSystem(fcnCallSys, fieldName, callSite)>
+    %else
+      %assign  fcnExists = 0
+      %assign  numFields = LibGetSystemField(fcnCallSys, numFieldName)
+      %assign fieldValue = LibGetSystemField(fcnCallSys, fieldName)
+      %foreach idx=numFields
+	%if fieldValue[idx][0] == fcnName
+	  %assign  fcnExists = 1
+	  %break
+	%endif
+      %endforeach
+      %if !fcnExists
+	%<LibAddToSystemField(fcnCallSys, numFieldName, 1)>
+	%<LibAddToSystemField(fcnCallSys, fieldName, callSite)>
+      %endif
+    %endif
+  
+    %return fcnName
+  %else
+    %return ""
+  %endif
+%endfunction 
+
+
+%% DocFunction{Other Useful Functions}: LibExecuteFcnCall ======================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%% Example:
+%%   %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %<LibExecuteFcnCall(ssBlock, FcnPortElement, ...
+%%                             ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%
+%%     This example is from the file:
+%% 	 matlabroot/toolbox/simulink/blocks/tlc_c/fcncallgen.tlc
+%%
+%function LibExecuteFcnCall(ssBlock, portEl, tidVal) void
+  %assign       sysIdx = ssBlock.ParamSettings.SystemIdx
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = System[sysIdx].CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %return SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+                       tSimStruct, portEl, tidVal, fciCont, "OutputUpdate")
+%endfunction
+
+
+%% DocFunction{Other Useful Functions}: LibExecuteFcnEnable ===================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%% Example:
+%%   %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %<LibExecuteFcnCall(ssBlock, FcnPortElement, ...
+%%                             ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%
+%%     This example is from the file:
+%% 	 matlabroot/toolbox/simulink/blocks/tlc_c/fcncallgen.tlc
+%%
+%function LibExecuteFcnEnable(ssBlock, portEl, tidVal) void
+  %assign       sysIdx = ssBlock.ParamSettings.SystemIdx
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = System[sysIdx].CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %openfile tmpBuf
+  %<FcnGenerateOpenFCSSEnable(ssBlock, "", portEl, TLC_TRUE)>
+  %if ssBlock.ParamSettings.StatesWhenEnabling == "reset"
+    %openfile initBuffer
+    %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+      tSimStruct, portEl, tidVal, fciCont, "Initialize")>
+    %closefile initBuffer
+    %if !WHITE_SPACE(initBuffer)
+      %if ProtectCallInitFcnTwice
+	/* protect against calling initialize function twice at startup */
+	if (!(%<LibIsFirstInitCond()>)) {
+	  %<initBuffer>\
+	}
+      %else  
+	%<initBuffer>\
+      %endif
+    %endif
+  %endif
+  %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+    tSimStruct, portEl, tidVal, fciCont, "Enable")>
+  %<FcnGenerateCloseFCSSEnable(ssBlock)>
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+
+%% DocFunction{Other Useful Functions}: LibExecuteFcnDisable ======================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%% Example:
+%%   %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %<LibExecuteFcnCall(ssBlock, FcnPortElement, ...
+%%                             ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%
+%%     This example is from the file:
+%% 	 matlabroot/toolbox/simulink/blocks/tlc_c/fcncallgen.tlc
+%%
+%function LibExecuteFcnDisable(ssBlock, portEl, tidVal) void
+  %assign       sysIdx = ssBlock.ParamSettings.SystemIdx
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = System[sysIdx].CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %openfile tmpBuf
+  %<FcnGenerateOpenFCSSDisable(ssBlock, "", portEl)>
+  %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+    tSimStruct, portEl, tidVal, fciCont, "Disable")>
+  %<FcnGenerateCloseFCSSDisable(ssBlock)>
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction
+
+
+%% DocFunction{Other Useful Functions}: LibCallFCSS ============================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%%   Note:
+%%     Used by inlined S-functions to make a function-call, LibCallFCSS
+%%     returns the call to the function-call subsystem with the appropriate
+%%     number of arguments or the inlined code.  An S-function can execute
+%%     a function-call subsystem only via its first output port.
+%%  
+%%     See the SFcnSystemOutputCall record in the model.rtw file.
+%%  
+%%     The return string is determined by the current code format.
+%%  
+%%   Example:
+%%     %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %assign sysToCall = System[ssBlock.ParamSettings.SystemIdx]
+%% 	   %<LibCallFCSS(sysToCall, tSimStruct, FcnPortElement, ...
+%% 	     ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%  
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%  
+%%     System is a record within the global CompiledModel record.
+%%  
+%function LibCallFCSS(system, simObject, portEl, tidVal) void
+  %assign       sysIdx = system.SystemIdx
+  %if !EXISTS("BlockToCall")
+    %if EXISTS("SFcnSystemOutputCall")
+      %assign BlockToCall = SFcnSystemOutputCall[0].BlockToCall
+    %else
+      %assign errmsg = ...
+	"LibCallFCSS must be called in a block scope or use LibExecuteFcnCall" + ...
+	"as an alternative."
+      %<LibReportError(errmsg)>
+    %endif
+  %endif
+  %assign      ssBlock = System[BlockToCall[0]].Block[BlockToCall[1]]
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = system.CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %return SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+                       simObject, portEl, tidVal, fciCont, "OutputUpdate")
+%endfunction %% LibCallFCSS
+
+
+%% Function: FcnGenerateOpenFCSSEnable ========================================
+%% Abstract: 
+%%   This function generates the opening guard around calling the enable function
+%% for a function-call subsystem.  If setMode is true, we set the specfied
+%% mode to enabled, otherwise we do not set the mode vector.  Currently, since
+%% Initialize is called before Enable, Initialize does not set the mode, but
+%% Enable does set the mode.
+%function FcnGenerateOpenFCSSEnable(ssBlock, portIdx, portEl, setMode) void
+  %with ssBlock
+  %assign numModes = ModeVector[0]
+  %assign tmpBuffer = ""
+  %if numModes > 0
+    %openfile tmpBuffer
+    if (%<LibBlockMode(portIdx, "", portEl)> == SUBSYS_DISABLED) {
+      CondStates \
+      %assign orOperator = "="
+      %foreach mIdx = numModes
+	%assign blockMode = LibBlockMode("", "", mIdx)
+	enableState %<orOperator> (CondStates) %<blockMode>;
+	%assign orOperator = "|="
+      %endforeach
+      %if setMode
+        %<LibBlockMode(portIdx, "", portEl)> = SUBSYS_ENABLED;
+      %endif
+      if (enableState == SUBSYS_DISABLED) {
+    %closefile tmpBuffer
+  %endif
+  %endwith
+  %return tmpBuffer
+%endfunction
+
+%% Function: FcnGenerateCloseFCSSEnable ========================================
+%% Abstract: 
+%%   This function generates the closing guard around calling the enable function
+%% for a function-call subsystem.
+%function FcnGenerateCloseFCSSEnable(ssBlock) void
+  %with ssBlock
+  %assign numModes = ModeVector[0]
+  %assign tmpBuffer = ""
+  %if numModes > 0
+    %openfile tmpBuffer
+      }
+    }
+    %closefile tmpBuffer
+  %endif
+  %endwith
+  %return tmpBuffer
+%endfunction
+
+
+%% DocFunction{Other Useful Functions}: LibEnableFCSS =========================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%%   Note:
+%%     Used by inlined S-functions to make a function-call, LibCallFCSS
+%%     returns the call to the function-call subsystem with the appropriate
+%%     number of arguments or the inlined code.  An S-function can execute
+%%     a function-call subsystem only via its first output port.
+%%  
+%%     See the SFcnSystemOutputCall record in the model.rtw file.
+%%  
+%%     The return string is determined by the current code format.
+%%  
+%%   Example:
+%%     %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %assign sysToCall = System[ssBlock.ParamSettings.SystemIdx]
+%% 	   %<LibCallFCSS(sysToCall, tSimStruct, FcnPortElement, ...
+%% 	     ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%  
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%  
+%%     System is a record within the global CompiledModel record.
+%%  
+%function LibEnableFCSS(system, simObject, portEl, tidVal) void
+  %assign sysIdx = system.SystemIdx
+  %if !EXISTS("BlockToCall")
+    %if EXISTS("SFcnSystemOutputCall")
+      %assign BlockToCall = SFcnSystemOutputCall[0].BlockToCall
+    %else
+      %assign errmsg = ...
+	"LibEnableFCSS must be called in a block scope or use LibExecuteFcnCall" + ...
+	"as an alternative."
+      %<LibReportError(errmsg)>
+    %endif
+  %endif
+  %assign      ssBlock = System[BlockToCall[0]].Block[BlockToCall[1]]
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = system.CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %openfile tmpBuf
+  %<FcnGenerateOpenFCSSEnable(ssBlock, "", portEl, TLC_TRUE)>
+  %if ssBlock.ParamSettings.StatesWhenEnabling == "reset"
+    %openfile initBuffer
+    %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+      simObject, portEl, tidVal, fciCont, "Initialize")>
+    %closefile initBuffer
+    %if !WHITE_SPACE(initBuffer)
+      %if ProtectCallInitFcnTwice
+	/* protect against calling initialize function twice at startup */
+	if (!(%<LibIsFirstInitCond()>)) {
+	  %<initBuffer>\
+	}
+      %else
+	%<initBuffer>\
+      %endif
+    %endif
+  %endif
+  {
+    %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+      simObject, portEl, tidVal, fciCont, "Enable")>
+  }
+  %<FcnGenerateCloseFCSSEnable(ssBlock)>
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% LibEnableFCSS
+
+
+%% Function: FcnGenerateOpenFCSSDisable ========================================
+%% Abstract: 
+%%   This function generates the opening guard around calling the disable
+%% function for a function-call subsystem. 
+%function FcnGenerateOpenFCSSDisable(ssBlock, portIdx, portEl) void
+  %with ssBlock
+  %assign numModes = ModeVector[0]
+  %assign tmpBuffer = ""
+  %if numModes > 0
+    %openfile tmpBuffer
+    if (%<LibBlockMode(portIdx, "", portEl)> == SUBSYS_ENABLED) {
+      CondStates enableState;
+      %<LibBlockMode(portIdx, "", portEl)> = SUBSYS_DISABLED;
+      %assign orOperator = "="
+      %foreach mIdx = numModes
+	%assign blockMode = LibBlockMode("", "", mIdx)
+	enableState %<orOperator> (CondStates) %<blockMode>;
+	%assign orOperator = "|="
+      %endforeach
+    if (enableState == SUBSYS_DISABLED) {
+    %closefile tmpBuffer
+  %endif
+  %endwith
+  %return tmpBuffer
+%endfunction
+
+%% Function: FcnGenerateCloseFCSSDisable ========================================
+%% Abstract: 
+%%   This function generates the closing guard around calling the disable
+%% function for a function-call subsystem.
+%function FcnGenerateCloseFCSSDisable(ssBlock) void
+  %with ssBlock
+  %assign numModes = ModeVector[0]
+  %assign tmpBuffer = ""
+  %if numModes > 0
+    %openfile tmpBuffer
+      }
+    }
+    %closefile tmpBuffer
+  %endif
+  %endwith
+  %return tmpBuffer
+%endfunction
+
+%% DocFunction{Other Useful Functions}: LibDisableFCSS ========================
+%% Abstract:
+%%   For use by inlined S-Functions with function call outputs. Returns a
+%%   string to either call function-call subsystem with the appropriate number
+%%   of arguments or the generate the subsystem's code right there (inlined).
+%%
+%%   Note:
+%%     Used by inlined S-functions to make a function-call, LibCallFCSS
+%%     returns the call to the function-call subsystem with the appropriate
+%%     number of arguments or the inlined code.  An S-function can execute
+%%     a function-call subsystem only via its first output port.
+%%  
+%%     See the SFcnSystemOutputCall record in the model.rtw file.
+%%  
+%%     The return string is determined by the current code format.
+%%  
+%%   Example:
+%%     %foreach fcnCallIdx = NumSFcnSysOutputCalls
+%% 	 %% call the downstream system
+%% 	 %with SFcnSystemOutputCall[fcnCallIdx]
+%% 	   %% skip unconnected function call outputs
+%% 	   %if ISEQUAL(BlockToCall, "unconnected")
+%% 	     %continue
+%% 	   %endif
+%% 	   %assign sysIdx = BlockToCall[0]
+%% 	   %assign blkIdx = BlockToCall[1]
+%% 	   %assign ssBlock = System[sysIdx].Block[blkIdx]
+%% 	   %assign sysToCall = System[ssBlock.ParamSettings.SystemIdx]
+%% 	   %<LibCallFCSS(sysToCall, tSimStruct, FcnPortElement, ...
+%% 	     ParamSettings.SampleTimesToSet[0][1])>\
+%% 	 %endwith
+%%     %endforeach
+%%  
+%%     BlockToCall and FcnPortElement are elements of the SFcnSystemOutputCall
+%%     record.
+%%  
+%%     System is a record within the global CompiledModel record.
+%%  
+%function LibDisableFCSS(system, simObject, portEl, tidVal) void
+  %assign       sysIdx = system.SystemIdx
+  %if !EXISTS("BlockToCall")
+    %if EXISTS("SFcnSystemOutputCall")
+      %assign BlockToCall = SFcnSystemOutputCall[0].BlockToCall
+    %else
+      %assign errmsg = ...
+	"LibDisableFCSS must be called in a block scope or use LibExecuteFcnCall" + ...
+	"as an alternative."
+      %<LibReportError(errmsg)>
+    %endif
+  %endif
+  %assign      ssBlock = System[BlockToCall[0]].Block[BlockToCall[1]]
+  %assign        csIdx = ssBlock.CallSiteIdx
+  %assign           cs = system.CallSites[csIdx]
+  %assign accessSysIdx = System[cs[0]].HStructDeclSystemIdx
+  %assign      fciCont = SLibIsFcnCallerContinuous(tidVal)
+  %openfile tmpBuf
+  %<FcnGenerateOpenFCSSDisable(ssBlock, "", portEl)>
+  %<SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+    simObject, portEl, tidVal, fciCont, "Disable")>
+  %<FcnGenerateCloseFCSSDisable(ssBlock)>
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %% LibDisableFCSS
+
+
+%% Function: SLibIsFcnCallerContinuous =========================================
+%% Abstract:
+%%     This function determines if calling s-function block has a continous
+%%     sample time.
+%%
+%function SLibIsFcnCallerContinuous(tidVal)
+  %% 
+  %assign fciST = CompiledModel.SampleTime[tidVal].PeriodAndOffset[0]
+  %assign fciOF = CompiledModel.SampleTime[tidVal].PeriodAndOffset[1]
+  %return (fciST == 0.0 && fciOF == 0.0)
+%endfunction
+
+
+%% Function: SLibCallFCSS ======================================================
+%% Abstract:
+%%     This function is called by LibCallFCSS and LibExecuteFcnCall
+%%     and friends
+%%     It either returns the generated code for inlined 
+%%     or a function call to a non-inlined fuction call subsystem.
+%%    
+%%     See LibCallFCSS and LibExecuteFcnCall for further documentation.
+%%
+%function SLibCallFCSS(sysIdx, csIdx, accessSysIdx, ...
+                       simObject, portEl, tidVal, fciCont, callType) void
+  %assign      fcnCallSys = CompiledModel.System[sysIdx]
+  %assign accelGuardStart = ""
+  %assign   accelGuardEnd = ""
+  %assign        callSite = fcnCallSys.CallSites[csIdx]
+  %assign    callerSystem = CompiledModel.System[callSite[0]]
+  
+  %assign fcnCallSys.CurrentTID = FcnGetSubsystemTID(fcnCallSys)
+  
+  %if fciCont && callerSystem.RunFcnCallSSInMinorStep == "no"
+    %assign fciCont = 0
+    %%
+    %% For Simulink accelerator, do not execute function-call subsystem
+    %% code when a function-call initiator is continuous (e.g., an async ISR
+    %% pseudo source) and we are in the Simulink consistency check stage.
+    %%
+    %if Accelerator
+      %assign accelGuardStart = "if (!%<RTMSolverAssertCheck()>) {"
+      %assign accelGuardEnd   = "}"
+    %endif
+  %endif
+  
+  %assign inlinedFCSS = LibSystemIsInlined(fcnCallSys)
+  
+  %% If not inlined, percolate explicit and induced args (e.g.
+  %% initialize induces enable args for systems with reset) before
+  %% bailing out in case explicit function is empty yet induced args
+  %% are not.  Also if the callType is Initialize, we know that this
+  %% is only called from the Enable Fcn, so we need to mark the enable
+  %% as accessed also.
+  %if !inlinedFCSS
+    %assign orgSysFcns = LibGetGlobalSysFcnsForArgAccess()
+    %assign   blockFcn = ::BlockFcn
+    %assign ::BlockFcn = callType
+    %if callType == "Initialize"
+      %assign sysFcns = orgSysFcns + "Enable"
+      %<LibSetGlobalSysFcnsForArgAccess(sysFcns)>
+    %endif
+    %assign    addArgs = FcnGetAdditionalArgs(sysIdx, accessSysIdx, csIdx)
+    %assign ::BlockFcn = blockFcn
+    %<LibSetGlobalSysFcnsForArgAccess(orgSysFcns)>
+  %endif
+    
+  %% Return nothing if empty
+  %if LibSystemFcnIsEmptyForTID(fcnCallSys,callType) 
+    %assign fcnCallSys.CurrentTID = -1
+    %return ""
+  %endif
+  %%
+  %% 1. RealTimeMalloc and S-Function always have SimStruct.
+  %% 2. RealTime only has SimStruct if it is forced to be a function call
+  %%    (because it has a non-inlined s-function calling it)
+  %% 3. Embedded-C never needs SimStruct.
+  %%
+  %assign argList = []
+  %assign numArgs = 0
+  %if (inlinedFCSS)
+    %%
+    %if (CodeFormat == "RealTimeMalloc" || CodeFormat == "S-Function")
+      %if RTMGetModelSS() != simObject
+	%assign argList = argList + ...
+	  "%<tSimStructType> *%<RTMGetModelSS()> = %<simObject>"
+	%assign numArgs = numArgs + 1
+      %endif
+    %endif
+    %if LibSystemFcnNeedsCPI(fcnCallSys,callType)
+      %assign argList = argList + "int_T %<tControlPortIdx> = %<portEl>"
+      %assign numArgs = numArgs + 1
+    %endif	  
+    %if LibSystemFcnNeedsTID(fcnCallSys,callType)
+      %assign argList = argList + "int_T %<tTID> = %<tidVal>"
+      %assign numArgs = numArgs + 1
+    %endif
+  %else
+    %% Non-inlined FCSS
+    %assign hasRTM = FcnSysFcnHasRTM(fcnCallSys, callType)
+    %if !hasRTM && ...
+      (CodeFormat == "RealTimeMalloc" || CodeFormat == "S-Function" || ...
+      (CodeFormat == "RealTime" && LibSystemIsForceNonInline(fcnCallSys)))
+      %assign argList = argList + "%<simObject>"
+      %assign numArgs = numArgs + 1
+    %endif
+    %if LibSystemFcnNeedsCPI(fcnCallSys, callType)
+      %assign argList = argList + "%<portEl>"
+      %assign numArgs = numArgs + 1
+    %endif
+    %if LibSystemFcnNeedsTID(fcnCallSys, callType)
+      %assign argList = argList + "%<tidVal>"
+      %assign numArgs = numArgs + 1
+    %endif
+  %endif
+  %%
+  %assign fcnInfo = LibGetSystemField(fcnCallSys, "%<callType>FcnInfo")
+  %openfile callBuffer
+  %if inlinedFCSS
+    %assign needBrace = (numArgs > 0) || ...
+      SysNeedsElapseTime(fcnCallSys) && SysMaintainsElapseTime(fcnCallSys)
+    %if (needBrace > 0)
+      {
+    %endif
+    %if (numArgs > 0)
+      %foreach argIdx = numArgs
+	%<argList[argIdx]>;
+      %endforeach
+    %endif
+    %assign fcnCache = "SLibGetBody%<callType>FcnCache"
+    %assign fcnCacheBuf = %<fcnCache>(fcnCallSys)
+    %if fciCont
+      if (%<RTMIs("MajorTimeStep")>) {
+      %<fcnCacheBuf>
+      }
+    %else
+      %<accelGuardStart>
+      %<fcnCacheBuf>
+      %<accelGuardEnd>
+    %endif
+    %if (needBrace > 0)
+      }
+    %endif
+  %else
+    %% Dump the args array to a string
+    %assign args = "()"
+    %if !ISEMPTY(fcnInfo.Params) 
+      %assign args = ""
+      %if (numArgs > 0)
+	%foreach argIdx = numArgs - 1
+	  %assign args = args + "%<argList[argIdx]>" + ", "
+	%endforeach
+	%assign args = args + "%<argList[numArgs - 1]>"
+      %endif
+      %assign comma = (WHITE_SPACE(addArgs) || WHITE_SPACE(args)) ? "" : ", "
+      %assign  args = "(%<args>%<comma>%<addArgs>)"
+      %% indes here
+    %endif
+    %assign fcnCallSysFcn = fcnCallSys.%<callType>Fcn
+    %if fciCont
+      if (%<RTMIs("MajorTimeStep")>) {
+      %<fcnCallSysFcn>%<args>;
+      }
+    %else
+      %<accelGuardStart>
+      %<fcnCallSysFcn>%<args>;
+      %<accelGuardEnd>
+    %endif
+  %endif %% inlinedFCSS
+  %closefile callBuffer
+  %assign fcnCallSys.CurrentTID = -1
+  %if !WHITE_SPACE(callBuffer)
+    %return callBuffer
+  %else
+    %return ""
+  %endif    
+%endfunction %% SLibCallFCSS
+
+
+%<LibAddToCompiledModel("LibTID01Eq_Seen", 0)>
+%% Function: LibTID01Eq ========================================================
+%% Abstract:
+%%      Return 1 if TID 0 and 1 are equivalent tasks, otherwise return 0.
+%%
+%% 	Note:  This function is left for backward compatibility only.  Use
+%% 	       CompiledModel.FixedStepOpts.TID01EQ instead of this
+%% 	       function.  This function may produce incorrect results due
+%% 	       to round-off errors.
+%%
+%function LibTID01Eq() void
+  %if !LibTID01Eq_Seen
+    %assign warnTxt = "Using the Real-Time Workshop value of " ...
+      "CompiledModel.FixedStepOpts.TID01EQ is " ...
+      "recommended over LibTID01Eq since LibTID01Eq may " ...
+      "produce incorrect results due to round-off errors."
+    %assign ::CompiledModel.LibTID01Eq_Seen = 1
+    %<LibReportWarning(warnTxt)>
+  %endif
+  %if NumSynchronousSampleTimes > 1
+    %assign periodTID0 = SampleTime[0].PeriodAndOffset[0]
+    %assign periodTID1 = SampleTime[1].PeriodAndOffset[0]
+    %assign stepSize = FixedStepOpts.FixedStep
+    %if periodTID0 == 0.0 && (stepSize == periodTID1)
+      %return 1
+    %endif
+  %endif
+  %return 0
+%endfunction
+
+%with CompiledModel
+%assign RootSystemTasks = []
+%foreach tidIdx = NumSynchronousSampleTimes
+  %assign RootSystemTasks = RootSystemTasks + tidIdx
+%endforeach
+%assign CompiledModel = CompiledModel + RootSystemTasks
+%endwith
+
+
+%% Function: LibSystemTasks ====================================================
+%% Abstract:
+%%   LibSystemTasks returns a vector containing the subsystem's TIDs.
+%%
+%%   Note, for convenience, the model tasks are group in a vector named
+%%   RootSystemTasks and attached to CompiledModel
+%%
+%function LibSystemTasks(system) void
+  %if system.Type == "root"
+    %return CompiledModel.RootSystemTasks
+  %endif
+  %assign sysIdx  = system.CallSites[0][2]
+  %assign blkIdx  = system.CallSites[0][3]
+  %assign ssBlock = CompiledModel.System[sysIdx].Block[blkIdx]
+  %if TYPE(ssBlock.SubsystemTID) == "Vector"
+    %return ssBlock.SubsystemTID
+  %else
+    %return [%<ssBlock.SubsystemTID>]
+  %endif
+%endfunction
+
+%% Function: LibTasksEqual =====================================================
+%% Abstract:
+%%   Determine if all specified tasks are equal (i.e. have the same TID)
+%%
+%%   Arguments:
+%%      taskVector: Vector of TIDs
+%%
+%%
+%function LibTasksEqual(taskVector) void
+  %assign task = taskVector[0]
+  %foreach idx = SIZE(taskVector, 1) - 1
+    %if !ISEQUAL(taskVector[idx+1], task)
+      %return 0
+    %endif
+  %endforeach
+  %return 1
+%endfunction
+
+%% Function: LibIsSingleRateSystem ============================================
+%% Abstract:
+%%   LibIsSingleRateSystem returns one if the system is a single rate
+%%   system, and zero otherwise.
+%%   
+%%   The system paramsetting for single rate is used to determine result.
+%%
+%%
+%function LibIsSingleRateSystem(system) void
+  %if system.Type == "root"
+    %assign sr = CompiledModel.SingleRate
+  %else
+    %assign sysIdx = system.CallSites[0][2]
+    %assign blkIdx = system.CallSites[0][3]
+    %assign sr = System[sysIdx].Block[blkIdx].ParamSettings.SingleRate
+  %endif
+  %if sr == "yes"
+    %return 1
+  %else
+    %return 0
+  %endif
+%endfunction
+
+%% Function: LibIsRateTransitionBlock ==========================================
+%% Abstract:
+%%   	LibIsRateTransitionBlock returns one if a block is being used as a rate
+%%	transition and zero otherwise. The build-in unit delay and zoh
+%%      block can be rate transition blocks. S-function blocks can also
+%%      be rate transition blocks if they specify the SS_OPTION to do so.
+%%
+%function LibIsRateTransitionBlock(system, block)
+  %if !LibIsSingleRateSystem(system) && SIZE(TID,1) == 1 && ...
+    EXISTS("SampleTimeIdx")
+    %if (TID != SampleTimeIdx)
+      %return 1
+    %endif
+  %endif
+  %return 0
+%endfunction
+
+
+%% Function: FcnERTsSampleHit ==================================================
+%% Abstract
+%%   Called by LibIsSampleHit for ERT code format.  Not to be call directly.
+%%
+%function FcnERTIsSampleHit(tid) void
+  %if !SLibSingleTasking()
+    %% Multitasking
+    %if Tid01Eq && ISEQUAL(tid,1)
+      %% xxx Should this be LibIsContinuous for model reference?
+      %if NumContStates > 0
+	%return "%<RTMIs("MajorTimeStep")> && \n" + "%<LibTID()> == 0"
+      %else
+	%return "%<LibTID()> == 0"
+      %endif
+    %else
+      %return "%<LibTID()> == %<tid>"
+    %endif
+  %elseif ISEQUAL(tid,0)
+    %% Singletasking and tid==0; base rate always runs
+    %return "1"
+  %elseif ::ModelReferenceTargetWithGlobalTiming
+    %assert CompiledModel.NumSynchronousSampleTimes > 1
+    %assert TYPE(tid) == "Number" && tid > 0
+    %assign ans = ""
+    %if Tid01Eq && ISEQUAL(tid,1)
+      %assert LibIsContinuous(0)
+      %assign ans = "%<RTMIs("MajorTimeStep")>"
+    %else
+      %if LibIsContinuous(0)
+        %assign ans = "%<RTMIs("MajorTimeStep")> && "
+      %endif
+      %assign ans = "%<ans>%<RTMIsSampleHit(tid)>"
+    %endif
+    %return ans
+  %elseif NumContStates > 0
+    %% Singletasking, need MajorStepGuard + task counter
+    %assign taskCountStr = RTMGet("TaskCounters") + "." + ...
+        SLibERTMultiRateCounterField(tid) + " == 0"
+    %return "%<RTMIs("MajorTimeStep")> &&\n" + "%<taskCountStr>"
+  %elseif Tid01Eq && ISEQUAL(tid,1)
+    %return "1"
+  %else
+    %% Otherwise
+    %return RTMGet("TaskCounters") + "." + ...
+      SLibERTMultiRateCounterField(tid) + ...
+      " == 0"
+  %endif
+%endfunction
+
+
+%% Function: LibIsSampleHit ====================================================
+%% Abstract:
+%%   LibIsSampleHit returns the appropriate TID scope given that the tid is
+%%   
+%%   Discrete:   ssIsSampleHit(S, %<tid>, tid)
+%%   Continuous: ssIsContinuousTask(S, tid)
+%%   
+%%   This function cannot be called with a TID that is neither
+%%   discrete nor continuous.
+%%   
+%%   S-function blocks should not use this function directly. They should 
+%%   instead use LibIsSFcnSampleHit().
+%%
+%%   Arguments:
+%%      tid: Global integer task identifier (TID) of block
+%%       or
+%%      tid: String indicating that you are accessing discrete tasks
+%%           using an indexing array.  This form is useful when looping
+%%           over the sample times.  String indexing for ERT code format
+%%           is supplied for backwards compatibility, however, results
+%%           in inefficient code.
+%%
+%%   Returns:
+%%      Non-ERT code formats:
+%%
+%%	One of the following sample hit macros:
+%%
+%%      rtmIsSampleHit(S, %<tid>, tid)  for a discrete TID
+%%      rtmIsContinuousTask(S, tid)     for a continuous TID
+%%
+%%      ERT code format:
+%%
+%%      Appropriate tid check (e.g., tid == 0)
+%%
+%%
+%function LibIsSampleHit(tid) void
+  %% See Also:
+  %%      LibIsSFcnSampleHit
+  %%
+  %if TYPE(tid) == "String"
+    %if LibTriggeredTID(tid) || tid == "constant"
+      %assign errTxt = "LibIsSampleHit called with invalid tid: %<tid>"
+      %<LibReportError(errTxt)>
+    %endif
+    %if CodeFormat == "Embedded-C"
+      %return FcnERTIsSampleHit(tid)
+    %else
+      %return RTMIsSampleHit(tid)
+    %endif
+  %else
+    %if CodeFormat == "Embedded-C"
+      %return FcnERTIsSampleHit(tid)
+    %endif
+    %assign period = CompiledModel.SampleTime[tid].PeriodAndOffset[0]
+    %assign offset = CompiledModel.SampleTime[tid].PeriodAndOffset[1]
+    %if period == 0.0 && offset == 0.0
+      %return RTMIsContinuousTask()
+    %else
+      %return RTMIsSampleHit(tid)
+    %endif
+  %endif
+%endfunction %% LibIsSampleHit
+
+
+%% Function: LibIsSpecialSampleHit =============================================
+%% Abstract:
+%%   LibIsSpecialSampleHit returns the appropriate special sample hit macro.
+%%   
+%%   S-function blocks should not use this function directly. They should
+%%   instead use LibIsSFcnSpecialSampleHit().
+%%   (See Chapter 6 of the Real-Time Workshop User's Guide for more
+%%   information about multi-tasking models.)
+%%
+%%   Arguments:
+%%      sti: Sample time index of block (only relevant for Zero-Order Hold and
+%%           Unit Delay blocks). The sample time index is the index of the
+%%           slower sample time.
+%%      tid: task identifier (TID) of block.  The TID is the index of the task
+%%           with the faster sample time.
+%%
+%%   Returns:
+%%	Non-ERT: rtmIsSpecialSampleHit(rtM,a,b,tid)
+%%      ERT    : Appropriate rate interaction flag
+%%
+%function LibIsSpecialSampleHit(sti, tid) void
+  %% See Also:
+  %%      LibIsSFcnSpecialSampleHit
+  %%
+  %if CodeFormat == "Embedded-C"
+    %assign CompiledModel.ActualMultiRateSampleHits[tid][sti] = 1
+    %assign CompiledModel.RequireMultiRateSampleHits = 1
+    %if SLibSingleTasking()
+      %return LibIsSampleHit(sti)
+    %else
+      %if ::ModelReferenceTargetWithGlobalTiming
+        %assign returnVal =  RTMIsSpecialSampleHit(sti, tid)
+      %else
+        %assign returnVal = ...
+          "%<RTMGet("PerTaskSampleHits") + "." + ...
+          SLibERTMultiRateTimingField(sti,tid)>"
+      %endif
+      %if (NumContStates > 0) && (tid == 0)
+        %assign returnVal = "%<RTMIs("MajorTimeStep")>" + " && " + returnVal
+      %endif
+      %return returnVal
+    %endif
+  %else
+    %return RTMIsSpecialSampleHit(sti, tid)
+  %endif
+%endfunction
+
+%<LibAddToCompiledModel("BlockInstanceDataCache", 0)>
+%% Function: LibGenerateBlockInstanceData ======================================
+%% Abstract:
+%%   LibCacheBlockInstanceData generates the data allocation code for
+%%   each block in a Simulink system.  This function updates
+%%   the global variable, CompiledModel.BlockInstanceDataCache.
+%%
+%function LibCacheBlockInstanceData() void
+  %assign rootSystem = System[NumSystems-1]
+  %openfile buffer
+  %with rootSystem
+    %foreach blkIdx = NumBlocks
+      %openfile tmpBuffer
+      %<GENERATE(Block[blkIdx], "BlockInstanceData", rootSystem)>\
+      %closefile tmpBuffer
+      %if WHITE_SPACE(tmpBuffer) == 0
+	{
+	  %<LibDeclareAllAccessedSimStructVars()>\
+	  %<tmpBuffer>\
+	}
+      %endif
+    %endforeach
+  %endwith
+  %closefile buffer
+  %assign ::CompiledModel.BlockInstanceDataCache = buffer
+%endfunction
+
+%% Function: LibBlockInstanceDataIsEmpty =======================================
+%% Abstract:
+%%   LibBlockInstanceDataIsEmpty determines if there is any block instance
+%%   data for this model.  It returns one if the cache is only white space
+%%   and zero otherwise.
+%% 
+%%   Returns:
+%%	1 if CompiledModel.BlockInstanceDataCache is only white space
+%%      0 otherwise
+%%
+%function LibBlockInstanceDataIsEmpty() void
+  %<LibTrapCacheAssert(BlockInstanceDataCache)>
+  %return WHITE_SPACE(BlockInstanceDataCache)
+%endfunction
+
+%% Function: LibDumpBlockInstanceData =========================================
+%% Abstract:
+%%   LibDumpBlockInstanceData outputs the current block instance data
+%%   cache to the output buffer.  The data cache that is output is
+%%   stored in CompiledModel.BlockInstanceDataCache.
+%%
+%function LibDumpBlockInstanceData() Output
+  %<LibTrapCacheAssert(BlockInstanceDataCache)>
+  %if !WHITE_SPACE(BlockInstanceDataCache)
+    
+    /* block instance data */
+    %<BlockInstanceDataCache>
+  %endif
+  %<SLibResetTLCGlobal("BlockInstanceDataCache")>\
+%endfunction
+
+
+%%------------------------------%
+%% End of function library code %
+%%------------------------------%
+
+%% Function: SLibSetSkipInitializationFlag =====================================
+%% Abstract:
+%%   Low level function used by discrete integrator and unit-delay block to
+%%   avoid re-initializing memory to zero.  This function is called in
+%%   BlockInstanceSetup.  When the parameter is scalar, initialization
+%%   requirements are determined up front (once).  If there is no initial
+%%   value parameter, call this function with [] for the param.
+%%
+%function SLibSetSkipInitializationFlag(system,block,param) void
+  %if ISEMPTY(param)
+    %<SETFIELD(block, "SkipInitialization", ...
+      !SLibXBInitRequired(system,block,[],"","",0))>
+  %else
+    %assign nRows = SIZE(param.Value,0)
+    %assign nCols = SIZE(param.Value,1)
+    %if param.ComplexSignal == "no" && ...
+      (nRows * nCols) == 1 && ...
+      !SLibXBInitRequired(system,block,param,"","",0)
+      %<SETFIELD(block,"SkipInitialization",1)>
+    %else
+      %<SETFIELD(block,"SkipInitialization",0)>
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: SLibXBInitRequired ================================================
+%% Abstract:
+%%   Whenever possible, avoid re-initializing the states and block outputs to
+%%   zero since they are initialized to zero in the model's registration
+%%   function.  Initialization is necessary in the following cases:
+%%
+%%   1) The code will roll (to avoid an empty for-loop).
+%%   2) The code is located inside the system's initialize function (the
+%%      states must re-initialize whenever the system enables).
+%%   3) Initial condition (IC) value is not zero or not empty
+%%
+%%   This check will not be necessary when state and block outputs
+%%   initialization is changed from run-time to static initialization.
+%%
+%% Note:
+%%	Always returns true if the parameter is complex or the code format
+%%      is other than Embedded-C.
+%%
+%%
+%%   Arguments:
+%% 	system: Reference to a Simulink system
+%% 	block:  Reference to a block
+%% 	param:  Parameter (If there is no initial value parameter, call 
+%%              this function with [] for the param)
+%% 	ucv:    User control variable string
+%% 	lcv:    Loop control variable string
+%% 	idx:    Index into parameter vector
+%%
+%%   Returns:
+%%	1 if initialization of states and block outputs is required
+%%      0 otherwise
+%%
+%%
+%function SLibXBInitRequired(system, block, param, ucv, lcv, idx) void 
+
+  %if system.StatesCanReset == "yes"
+    %return 1
+  %else
+    %return !ISEMPTY(param) && SLibParamInitRequired(param,ucv,lcv,idx)
+  %endif
+
+%endfunction
+
+
+%% Function: SLibParamInitRequired =============================================
+%% Abstract:
+%%   Whenever possible, avoid re-initializing parameters to zero since they
+%%   are initialized to zero in the model's registration function.
+%%   Parameter initialization (on it's own without enable and reset
+%%   considerations) is necessary in the following cases:
+%%
+%%   1) The code will roll (to avoid an empty for-loop).
+%%   2) Initial condition (IC) value is not zero.
+%%
+%% Note:
+%%   Always returns true if the parameter is complex or the code format
+%%   is other than Embedded-C.
+%%
+%%   Arguments:
+%% 	param:  Parameter
+%% 	ucv:    User control variable string
+%% 	lcv:    Loop control variable string
+%% 	idx:    Index into parameter vector
+%%
+%%   Returns:
+%%	1 if initialization is required
+%%      0 otherwise
+%%
+%%
+%function SLibParamInitRequired(param, ucv, lcv, idx) void 
+
+  %assign nRows = SIZE(param.Value,0)
+  %assign nCols = SIZE(param.Value,1)
+  %assign width = nRows * nCols
+
+  %if !CompiledModel.ConfigSet.IsERTTarget || ...
+    (width > 1 && (ucv != "" || lcv != ""))
+    %return 1
+  %endif
+  
+  %assign ASTNode = param.ASTNode
+
+  %switch (ASTNode.Op)
+    %case "SL_INLINED"
+    %case "SL_CALCULATED"
+      %% if the parameter is inlined or calculated, it is a candidate for
+      %% the optimization
+      %assign complex = SLibGetASTNodeIsComplex(ASTNode)
+
+      %if complex
+        %return 1
+      %endif
+
+      %assign dtype   = SLibGetASTNodeDataTypeId(ASTNode)
+      %% Can use param.Value in following line
+      %% since param.Value == ModelParameter.Value
+      %assign icValue = SLibParameterValue(param.Value, dtype, complex, 0, idx)
+
+      %if !ISEQUAL(icValue,0)
+        %return 1
+      %endif
+      %break
+
+    %default
+      %% if the parameter is tunable or not inlined, don't optimize away 
+      %% initialization
+        %return 1
+      %break
+  %endswitch
+
+  %return 0
+%endfunction
+
+
+%% =============================================================================
+%% Enable subsystems use the ssIsFirstInitCond macro to determine time zero.
+%% In order to optionally generate the boolean in the ERT real-time object,
+%% we track the usage of this macro with LibIsFirstInitCond().
+%%
+
+%<LibAddToCompiledModel("IsFirstInitCondMacroUsed", 0)>
+%% Function: SLibGetIsFirstInitCondAccessed ===================================
+%% Abstract:
+%%   SLibGetIsFirstInitCondAccessed returns the value of the global flag
+%%   CompiledModel.IsFirstInitCondMacroUsed.
+%%
+%function SLibGetIsFirstInitCondAccessed() void
+  %return IsFirstInitCondMacroUsed
+%endfunction
+
+
+
+%% DocFunction{Other Useful Functions}: LibIsFirstInitCond =====================
+%% Abstract:
+%%   LibIsFirstInitCond returns generated code intended for placement in
+%%   the initialization function.  This code determines, during run-time,
+%%   whether the initialization function is being called for the first time.
+%%
+%%   This function also sets a flag which tells the Real-Time Workshop if
+%%   it needs to declare and maintain the first-initialize-condition flag.
+%%
+%%   This function is the TLC version of the SimStruct macro: ssIsFirstInitCond
+%%
+%function LibIsFirstInitCond() void
+  %assign ::CompiledModel.IsFirstInitCondMacroUsed = 1
+  %return RTMIs("FirstInitCond")
+%endfunction
+
+
+
+
+%% Function: SLibCallerHStuctDeclSystem =======================================
+%% Abstract:
+%%     return root or callers' HStructDeclSystem (caller's reused parent)
+%%
+%function SLibCallerHStuctDeclSystem(system, callSiteIdx) void
+
+  %assign parentIdx = system.CallSites[callSiteIdx][0]
+  %assign rSysIdx   = CompiledModel.System[parentIdx].HStructDeclSystemIdx
+  %assign parent    = CompiledModel.System[rSysIdx]
+  
+  %return parent
+  
+%endfunction %% SLibCallerHStuctDeclSystem
+
+%% Function: SLibResetNextVHTDueToEnable ======================================
+%% Abstract:
+%%   This method is called by a block's private enable method to properly 
+%%   handle variable sample time inside an enabled subsystem.
+%%   The subsystem will be calling BdSystemOutput before the sampleHit 
+%%   vector is updated so we need to set the block's entry to true to 
+%%   make sure it gets to run its output function in the next opportunity
+%function SLibResetNextVHTDueToEnable(block,tNext) void
+    %assign tid = block.TID
+    %assign idx = CAST("Real", CompiledModel.SampleTime[tid].PeriodAndOffset[1])
+    %assign idx = CompiledModel.SampleTime[%<tid>].PeriodAndOffset[1]
+    %openfile buffer
+    {
+      int_T *sampleHit = %<RTMGet("SampleHitPtr")>;
+
+      /* Make sure block's output gets called right away */
+      sampleHit[%<block.TID>] = true; 
+      
+      /* Make sure we won't step over the next hit for the block*/
+      if ( %<tNext> < %<RTMSolverGet("SolverStopTime")> ) {
+	%assign underScore = GenRTModel ? "" : "_"
+	%<underScore>%<RTMSolverSet("SolverStopTime",tNext)>;
+      }
+      /* Set the next variable hit time in the list */
+      %<RTMuSetIdxed("VarNextHitTime", "(int_T) %<idx>", tNext)>;
+      %<RTMuSetIdxed("TaskTime", tid, tNext)>;
+    }
+    %closefile buffer
+    %return buffer
+%endfunction %% SLibResetNextVHTDueToEnable
+
+%% Function: SLibFcnComputeInput ===============================================
+%% Abstract:
+%%    This function is used by blocks that conditionally need their inputs, 
+%%    e.g., switch block. This function generates output code for the 
+%%    conditionally executed subsystem driving the specified input.
+%%
+%function SLibFcnComputeInput(block, portIdx) Output
+  %assign sysToCall   = SLibBlockSystemToCallForInput(portIdx)
+  %assign sysIdx      = sysToCall[0]
+  %assign callSiteIdx = sysToCall[1]
+  %if sysIdx >= 0
+    %assign ss = CompiledModel.System[sysIdx]
+    %if !LibSystemFcnIsEmpty(ss, "Output")
+      %<LibGenSystemFcnCall(ss, "Output", callSiteIdx)>\
+    %endif
+  %endif
+%endfunction %%SLibFcnComputeInput
+
+%% Function: SLibFcnComputeOutput ===============================================
+%% Abstract:
+%%    This function is used by blocks that conditionally call their outputs, 
+%%    This function generates output code for the conditionally executed 
+%%    subsystem driven by the specified output port.
+%%
+%function SLibFcnComputeOutput(block, portIdx) Output
+  %assign sysToCall   = SLibBlockSystemToCallForOutput(portIdx)
+  %assign sysIdx      = sysToCall[0]
+  %assign callSiteIdx = sysToCall[1]
+  %if sysIdx >= 0
+    %assign ss = CompiledModel.System[sysIdx]
+    %if !LibSystemFcnIsEmpty(ss, "Output")
+      %<LibGenSystemFcnCall(ss, "Output", callSiteIdx)>\
+    %endif
+  %endif
+%endfunction %%SLibFcnComputeOutput
+
+%% Function: SLibZeroOutDerivativesForSystem ===================================
+%% Abstract: 
+%%   This function will geenrate the code to zero out the derivatives
+%%   in a conditionally executed subsystem. Note it is
+%%   the callers responsibility to declare the loop index i and 
+%%   the double pointer dx.
+%function SLibZeroOutDerivativesForSystem(ssBlock,system) Output
+
+%%  %assign idx = system.Interface.ContStatesArgDef.FirstLocation
+  %assign ncStates = ssBlock.ParamSettings.SystemContStates[0]
+  %if (ncStates == 0) 
+    %return 
+  %endif  
+  %assign idx = ssBlock.ParamSettings.SystemContStates[1]
+  %assign cs = CompiledModel.ContStates.ContState[idx]
+  %assign blkType =  System[cs.SigSrc[0]].Block[cs.SigSrc[2]].Type
+  %assign isMdlRef =  blkType == "ModelReference"
+  %assign cross = system.CrossNoArgFcnBound  
+  %assign blockPath = FcnGetLocalCStateDerivativePathHelper(cs.SigSrc[0], ...
+    cs.SigSrc[1], system.HStructDeclSystemIdx, cross)
+
+  %% Cstates for model reference block is stored in a structure
+  %assign dxId = "%<blockPath>%<cs.Identifier>"
+  
+  %if ncStates > 1
+    %if isMdlRef
+      dx = (real_T *) &(%<dxId>);
+    %elseif  cs.Width >1 
+      dx = &(%<dxId>[0]);
+    %else 
+      dx = &(%<dxId>);
+    %endif
+    %assign dxZeroUpperLimitPlus1 = ncStates
+    for (i=0; i < %<dxZeroUpperLimitPlus1>; i++) {
+    dx[i] = 0.0;
+    }
+  %else
+    %if  isMdlRef
+      {
+	real_T *dx = (real_T *) &(%<dxId>);
+	(*dx) = 0.0;
+      }
+    %else
+      %<dxId> = 0.0;
+    %endif
+  %endif
+%endfunction
+
+%% Function: SLibZeroOutZeroCrossingsForSystem ================================
+%% Abstract: 
+%%   This function will generate the code to zero out the derivatives
+%%   in a conditionally executed subsystem. Note it is
+%function SLibZeroOutZeroCrossingsForSystem(ssBlock,system) Output
+  %assign nNSZC = ssBlock.ParamSettings.NumNonsampledZCs
+  %if (nNSZC == 0)
+    %return
+  %endif
+  %assert(SolverType == "VariableStep")
+  %% Need to handle model reference block (see 
+  %%   SLibZeroOutDerivativesForSystem function)
+  %assert(!IsModelReferenceTarget())
+  
+  %assign idx = ssBlock.ParamSettings.NonsampledZCOffset
+  %assign zc = CompiledModel.NonsampledZCs.NonsampledZC[idx]
+  %assign idxVec = SLibGetSystemAndCallSideIndex(zc)
+  %assign cross = system.CrossNoArgFcnBound
+  %assign blockPath = FcnGetLocalNonSampledZCPathHelper(idxVec[0], ...
+    idxVec[1], system.HStructDeclSystemIdx, cross)
+  %if nNSZC > 1
+    %if zc.Width >1
+      real_T * nszc = &(%<blockPath>%<zc.Identifier>[0]);
+    %else 
+      real_T * nszc = &(%<blockPath>%<zc.Identifier>);
+    %endif
+    int_T i;
+    %assign dxZeroUpperLimitPlus1 = nNSZC
+    for (i=0; i < %<dxZeroUpperLimitPlus1>; i++) {
+    nszc[i] = 0.0;
+    }
+  %else
+    %<blockPath>%<zc.Identifier> = 0.0;
+  %endif
+%endfunction
+
+
+%% Function SLibSetStatesDisabled ===========================================
+%% Abstract: 
+%%   This function generates code to set the system states to the value
+%%   passed
+%function SLibSetStatesDisabled(ssBlock,system,value) Output
+  %assign ncStates = ssBlock.ParamSettings.SystemContStates[0]
+  %if (ncStates == 0) 
+    %return 
+  %endif  
+  
+  %assert(SolverType == "VariableStep")
+  %% Need to handle model reference block (see 
+  %%   SLibZeroOutDerivativesForSystem function)
+  %assert(!IsModelReferenceTarget())
+  
+  %assign idx = ssBlock.ParamSettings.SystemContStates[1]
+  %assign cs = CompiledModel.ContStates.ContState[idx]
+  %assign cross = system.CrossNoArgFcnBound
+  %assign blockPath = FcnGetLocalContStateDisabledPathHelper(cs.SigSrc[0], ...
+    cs.SigSrc[1], system.HStructDeclSystemIdx, cross)
+
+  %if ncStates > 1
+    %if cs.Width >1
+      (void)memset(&(%<blockPath>%<cs.Identifier>[0]),%<value>, 
+      (%<ncStates>*sizeof(boolean_T)));
+    %else 
+      (void)memset(&(%<blockPath>%<cs.Identifier>),%<value>, 
+      (%<ncStates>*sizeof(boolean_T)));
+    %endif
+  %else
+    %<blockPath>%<cs.Identifier> = %<value>;
+  %endif
+%endfunction
+
+%endif %% _SYSLIB_
+
+%% [EOF] syslib.tlc

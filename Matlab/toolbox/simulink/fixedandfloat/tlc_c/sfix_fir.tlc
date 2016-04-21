@@ -1,0 +1,615 @@
+%% $RCSfile: sfix_fir.tlc,v $
+%% $Revision: 1.23 $
+%% $Date: 2002/04/10 19:01:49 $
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Fixed-point switch.
+
+%implements sfix_fir "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>
+    %%
+    %% Currently, do not support
+    %%   o multi-chunk math
+    %%   o input bias  != 0
+    %%   o output bias != 0
+    %%   o in.FracSlope != out.FracSlope
+    %%
+    %assign y0DT   = FixPt_GetOutputDataType(0)
+    %assign u0DT   = FixPt_GetInputDataType(0)
+    %%
+    %% Check if biases and fractional slopes match
+    %%
+    %if (y0DT.Bias != 0.0) || (u0DT.Bias != 0.0) ||...
+        !FixPt_FracSlopesSame(y0DT.FracSlope, u0DT.FracSlope)
+      %openfile errTxt
+RTW Fatal: Code generation for fixed point FIR.
+      %if !FixPt_FracSlopesSame(y0DT.FracSlope, u0DT.FracSlope)
+The fractional slopes must be equal.
+    Input  fractional slope = %<u0DT.FracSlope>
+    Output fractional slope = %<y0DT.FracSlope>
+      %endif
+      %if (y0DT.Bias != 0.0) || (u0DT.Bias != 0.0)
+The biases must be zero.
+    Input  Bias = %<u0DT.Bias>
+    Output Bias = %<y0DT.Bias>
+      %endif
+Block: %<MaskBlockName>
+      %closefile errTxt
+      %exit %<errTxt>
+    %endif
+    %%
+%endfunction
+
+
+
+%% Function: parameterAllZeros ===============================================
+%% Abstract:
+%%
+%function paramAllZeros(param) void
+    %%
+    %% if INPUT is complex then two cases to handle
+    %% otherwise only one
+    %%
+    %assign casesToHandle = 1 + LibBlockInputSignalIsComplex(0)
+    %%
+    %assign nRows = SIZE(param.Value, 0)
+    %%
+    %foreach idx = nRows
+        %foreach iCase = casesToHandle
+            %%
+            %if iCase == 0
+                %%
+                %assign riidx = (tRealPart + STRING(idx))
+                %%
+            %else
+                %%
+                %assign riidx = (tImagPart + STRING(idx))
+                %%
+            %endif
+            %%
+            %assign icValue = LibBlockParameterValue(param, riidx)
+            %%
+            %if !LibIsEqual(icValue, 0.0)
+                %%
+                %% NOT all zeros
+                %%
+                %return 0
+                %%
+            %endif
+            %%
+        %endforeach
+    %endforeach
+    %%
+    %% all zeros
+    %%
+    %return 1
+    %%
+%endfunction  %% paramAllZeros
+
+
+
+%% Function: InitiizeConditions ===============================================
+%% Abstract:
+%%      X[i] = IC[i]
+%%
+%%  Initialize the states.
+%%     If this is only needed once (in Start), and
+%%  the initial conditions are all zero then there is nothing to do.
+%%     If this is needed more than once (enabled subsystem with reset) then
+%%  NOTE the outputs are NOT initialized
+%%
+%function InitializeConditions(block, system) Output
+    %%
+    %% Determine the number of states
+    %%
+    %assign gainSize = LibBlockParameterSize(Gain)
+    %assign numStates = gainSize[1] - 1
+    %%
+    %% initialize states only if FIR actually has states
+    %%   ie coef not just a scalar
+    %%
+    %if numStates > 0
+        %%
+        %% only do init if needed
+        %%
+        %assign initNeeded = SLibXBInitRequired(system, block, InitialCondition,  "", "", 0)
+        %%
+        %if initNeeded || !paramAllZeros(InitialCondition)
+            %%
+            %% create header comment
+            %%
+            /* Fixed-Point FIR Block: %<MaskBlockName>
+             * Initialize State
+             *
+            %%
+            %% if INPUT is complex then two cases to handle
+            %% otherwise only one
+            %%
+            %assign casesToHandle = 1 + LibBlockInputSignalIsComplex(0)
+            %%
+            %% add comments about fixed point parameters
+            %%
+             * Initial Condition parameter uses the same data type and scaling as Input0
+             */
+            {
+            %%
+            %% For initialization, the roll region is a function of the state
+            %%
+            %assign xRollRegion = [0:%<numStates-1>]
+            %%
+            %% Initialize the states
+            %%
+            %assign dwName = LibBlockDWorkName(block.DWork)
+            %assign rollVars = ["<dwork>/%<dwName>", "<param>/InitialCondition"]
+            %%
+            %roll xIdx = xRollRegion, xlcv = RollThreshold, block, "Roller", rollVars
+                %foreach iCase = casesToHandle
+                    %%
+                    %if iCase == 0
+                        %%
+                        %assign rixIdx = (tRealPart + STRING(xIdx))
+                        %%
+                    %else
+                        %%
+                        %assign rixIdx = (tImagPart + STRING(xIdx))
+                        %%
+                    %endif
+                    %%
+                    %% for efficiency in embedded real time format
+                    %% check to see if initialization is necessary
+                    %%
+                    %assign initNeeded = SLibXBInitRequired(system, block, InitialCondition,  "", xlcv, rixIdx)
+                    %%
+                    %if initNeeded
+                        %<LibBlockDWork(block.DWork,"", xlcv, rixIdx)> = ...
+                        %<LibBlockParameter(InitialCondition,  "", xlcv, rixIdx)>;
+                    %else
+                        /* %<LibBlockDWork(block.DWork,"", xlcv, rixIdx)>
+                         * already initialized to zero, no code needed here
+                         */
+                    %endif
+                    %%
+                %endforeach
+            %endroll
+            }
+            %%
+            %% blank line for formating
+
+        %endif
+    %endif
+    %%
+%endfunction
+
+
+
+%% Function: Update ===========================================================
+%% Abstract:
+%%      X[i] = U[i]
+%%
+%function Update(block, system) Output
+    %%
+    %% Determine the number of states
+    %%
+    %assign gainSize = LibBlockParameterSize(Gain)
+    %assign numStates = gainSize[1] - 1
+    %%
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% Get input and state data types
+    %%
+    %% %assign u0DT  = FixPt_GetInputDataType(0)
+    %%
+    %% update states only if FIR actually has states
+    %%   ie coef not just a scalar
+    %%
+    %if numStates > 0
+        %%
+        %% create header comment
+        %%
+        /* Fixed-Point FIR Block: %<MaskBlockName>
+         */
+        %%
+        %% would be nice to apply roller, but
+        %% need to move from bottom to top
+        %% so not sure if roller is worth the effort ????????
+        %%    Alternately, could reverse the algorithm such that
+        %% it fit into the rollers preferred direction.
+        %%
+         {
+            %%
+            %% shuffle bottom states only if there is more than one state
+            %%
+            %if numStates > 1
+                int iObj;
+                /*
+                 * shift all the discrete states on time delay
+                 *  being careful not to overwrite a value before it
+                 *  has been moved.
+                 */
+                for( iObj = (%<numStates-1>); iObj > 0; iObj-- )
+                {
+                    %<LibBlockDWork(block.DWork,"iObj", "", "re0")> = ...
+                          %<LibBlockDWork(block.DWork,"iObj-1", "", "re0")>;
+                    %if u0IsComplex
+                        %<LibBlockDWork(block.DWork,"iObj", "", "im0")> = ...
+                              %<LibBlockDWork(block.DWork,"iObj-1", "", "im0")>;
+                    %endif
+                }
+            %endif
+
+            /*
+             * the top state is the current input
+             */
+            %<LibBlockDWork(block.DWork,"", "", "re0")> = ...
+                 %<LibBlockInputSignal(0, "", "", "re0")>;
+            %if u0IsComplex
+                %<LibBlockDWork(block.DWork,"", "", "im0")> = ...
+                     %<LibBlockInputSignal(0, "", "", "im0")>;
+            %endif
+        }
+        %%
+        %% blank line for formating
+
+    %endif
+    %%
+%endfunction
+
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    %% Determine the number of states
+    %%
+    %assign gainSize = LibBlockParameterSize(Gain)
+    %assign numStates = gainSize[1]-1
+    %%
+    %assign gainIsComplex = LibBlockParameterIsComplex(Gain)
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %%
+    %% Get input data type
+    %%
+    %assign u0DT  = FixPt_GetInputDataType(0)
+    %%
+    %% create RadixOnly version of input Data Type
+    %%
+    %copyrecord u0RadixDT u0DT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %% get input records
+    %%  Note that input is always a scalar so we can get its label now
+    %%
+    %assign u0ReLabel = LibBlockInputSignal(0, "", "", "re0")
+    %if u0IsComplex
+        %assign u0ImLabel = LibBlockInputSignal(0, "", "", "im0")
+    %endif
+    %%
+    %% Get output data type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %assign y0RadixDT.Bias      = 0.0
+    %%
+    %% Get data type info for first gain
+    %%
+    %assign iRow = 0
+    %assign iCol = 0
+    %assign kDT  = FixPt_GetParameterDataType(FixPtGainID,iRow,iCol)
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point FIR Block: %<MaskBlockName>
+     *
+     *  Finite Impulse Response Filter
+     *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+     *
+    %%
+    %% add comments about fixed point parameters
+    %%
+    %<FixPt_ParameterBlockComment(Gain,FixPtGainID,"Gain")>
+    %%
+    %% END: header comment
+    %%
+     */
+    {
+    %%
+    %% declare local variables only as needed
+    %%
+    %if ( numStates > 0 ) && ( y0IsComplex )
+        %%
+        %% if there are states then temp2 is used to
+        %% hold the imag part of the product states and gains
+        %%
+        %assign tmp2Label = "yTemp2"
+        %<y0DT.NativeType> %<tmp2Label>;
+    %endif
+    %if ( numStates > 0 ) && ( u0IsComplex && gainIsComplex )
+        %%
+        %% if there are states AND
+        %% if the input and the gain are both complex, then temp3
+        %% is used to hold the extra temp term in the product of input and state
+        %%
+        %assign tmp3Label = "yTemp3"
+        %<y0DT.NativeType> %<tmp3Label>;
+    %endif
+    %if ( numStates > 0 ) || ( u0IsComplex && gainIsComplex )
+        %%
+        %% if there are states then temp1 is used to
+        %% hold the real part of the product states and gains
+        %%
+        %% if the input and the gain are both complex, then temp1
+        %% is used to hold the extra temp term in the product of input and gain
+        %%
+        %assign tmp1Label = "yTemp1"
+        %<y0DT.NativeType> %<tmp1Label>;
+        %%
+        %% blank line for formating
+
+    %endif
+    %%
+    %% get roll regions based on parameter scaling discontinuities
+    %%
+    %assign rowRollRegions = FixPt_ParameterRowRollRegions(Gain,FixPtGainID)
+    %%
+    %% get roll variables for outer loop ie rolling around output
+    %%    jumps in scaling from row to row of the matrix gain
+    %%    determine whether or not rolling is possible
+    %%
+    %assign outerRollRegions = rowRollRegions
+    %assign outerRollVars = ["Y"]
+    %assign outerRollThreshold = 3
+    %%
+    %% if needed setup stuff for inner roll
+    %%
+    %if numStates > 0
+        %%
+        %% get roll regions based on parameter scaling discontinuities
+        %%
+        %assign colRollRegions = FixPt_ParameterColRollRegions(Gain,FixPtGainID)
+        %%
+        %% get roll variables for inner loop ie rolling around input
+        %%       jumps in scaling from column to column of the matrix gain
+        %%   AND noncontiguous storage of the inputs
+        %%       determine whether or not rolling is possible
+        %%
+        %assign innerRollRegions = colRollRegions
+        %%
+        %% remove roll for first gain because that multiples input rather than state
+        %%
+        %assign innerRollRegions = LibRemoveRollRegions(innerRollRegions,0)
+        %assign innerRollVars = ["DWork"]
+        %assign innerRollThreshold = 3
+    %endif
+    %%
+    %% Roll around OUTPUT signal width
+    %%
+    %roll outerSigIdx = outerRollRegions, outerlcv = outerRollThreshold, block, "Roller", outerRollVars
+        %%
+        %assign reOuterSigIdx = tRealPart + STRING(outerSigIdx)
+        %assign imOuterSigIdx = tImagPart + STRING(outerSigIdx)
+        %%
+        %% Get output
+        %%
+        %assign y0ReLabel = LibBlockOutputSignal(0, "", outerlcv, reOuterSigIdx)
+        %if y0IsComplex
+          %assign y0ImLabel = LibBlockOutputSignal(0, "", outerlcv, imOuterSigIdx)
+        %endif
+        %%
+        %% Get gain from first column
+        %%
+        %assign kDT = FixPt_GetParameterDataType(FixPtGainID,outerSigIdx,0)
+        %assign kReLabel = LibBlockMatrixParameterFixPoint(Gain, "", outerlcv, outerSigIdx, "", "", "re0")
+        %if gainIsComplex
+            %assign kImLabel = LibBlockMatrixParameterFixPoint(Gain, "", outerlcv, outerSigIdx, "", "", "im0")
+        %endif
+        %%
+        %% initialize output with gain from first column times input
+        %%
+        %if   !u0IsComplex
+          %if !gainIsComplex
+            %%
+            %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kReLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+          %else %% gainIsComplex
+            %%
+            %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kReLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kImLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+           %endif
+        %else %% u0IsComplex
+          %if !gainIsComplex
+            %%
+            %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kReLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                             u0ImLabel,u0RadixDT,...
+                             kReLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %%
+          %else %% gainIsComplex
+            %%
+            %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kReLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                             u0ImLabel,u0RadixDT,...
+                             kImLabel, kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_AccumNeg(y0ReLabel,y0RadixDT,...
+                             tmp1Label,y0RadixDT,...
+                             FixPtSaturationMode)>\
+            %%
+            %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             kImLabel,kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                             u0ImLabel,u0RadixDT,...
+                             kReLabel,kDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+                             tmp1Label,y0RadixDT,...
+                             FixPtSaturationMode)>\
+            %%
+          %endif
+        %endif
+        %%
+        %% inner loop needed only if FIR actually has states
+        %%   ie coef not just a scalar
+        %%
+        %if numStates > 0
+            %%
+            %% Roll around INPUT signal width
+            %%
+            %roll innerSigIdx = innerRollRegions, innerlcv = innerRollThreshold, block, "Roller", innerRollVars
+                %%
+                %assign reInnerSigIdx = tRealPart + STRING(innerSigIdx)
+                %assign imInnerSigIdx = tImagPart + STRING(innerSigIdx)
+                %%
+                %% Get state   note that the state index is one less than the column index
+                %%
+                %assign xsigIdx = innerSigIdx - 1
+                %%
+                %assign reXsigIdx = tRealPart + STRING(xsigIdx)
+                %assign imXsigIdx = tImagPart + STRING(xsigIdx)
+                %%
+                %if innerlcv == ""
+                    %assign xlcv    = innerlcv
+                %else
+                    %assign xlcv    = "((%<innerlcv>)-1)"
+                %endif
+                %assign xReLabel = LibBlockDWork(block.DWork,"", xlcv, reXsigIdx)
+                %if u0IsComplex
+                    %assign xImLabel = LibBlockDWork(block.DWork,"", xlcv, imXsigIdx)
+                %endif
+                %%
+                %% Get gain
+                %%
+                %assign kDT = FixPt_GetParameterDataType(FixPtGainID,outerSigIdx,innerSigIdx)
+                %assign kReLabel = LibBlockMatrixParameterFixPoint(Gain, "", outerlcv, outerSigIdx, "", innerlcv, reInnerSigIdx)
+                %if gainIsComplex
+                    %assign kImLabel = LibBlockMatrixParameterFixPoint(Gain, "", outerlcv, outerSigIdx, "", innerlcv, imInnerSigIdx)
+                %endif
+                %%
+                %% multiply current state and gain
+                %%
+                %if   !u0IsComplex
+                  %if !gainIsComplex
+                    %%
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kReLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %%
+                  %else %% gainIsComplex
+                    %%
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kReLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kImLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %%
+                   %endif
+                %else %% u0IsComplex
+                  %if !gainIsComplex
+                    %%
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kReLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+                                     xImLabel, u0RadixDT,...
+                                     kReLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %%
+                  %else %% gainIsComplex
+                    %%
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kReLabel,kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_Multiply(tmp3Label,y0RadixDT,...
+                                     xImLabel, u0RadixDT,...
+                                     kImLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_AccumNeg(tmp1Label,y0RadixDT,...
+                                     tmp3Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                    %%
+                    %<FixPt_Multiply(tmp2Label,y0RadixDT,...
+                                     xReLabel, u0RadixDT,...
+                                     kImLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_Multiply(tmp3Label,y0RadixDT,...
+                                     xImLabel, u0RadixDT,...
+                                     kReLabel, kDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_AccumPos(tmp2Label,y0RadixDT,...
+                                     tmp3Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                    %%
+                  %endif
+                %endif
+                %%
+                %% add product to output
+                %%
+                %<FixPt_AccumPos(y0ReLabel,y0RadixDT,...
+                                 tmp1Label,y0RadixDT,...
+                                 FixPtSaturationMode)>\
+                %if y0IsComplex
+                    %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+                                     tmp2Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                %endif
+            %endroll
+        %endif
+    %endroll
+    }
+    %%
+    %% blank line for formating
+
+%endfunction
+
+
+
+%% [EOF] sfix_fir.tlc

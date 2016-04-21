@@ -1,0 +1,418 @@
+%% File: mech_engine.tlc
+%% Abstract:
+%%     TLC file for SimMechanics code generation
+%%
+%% Copyright 2002-2004 The MathWorks, Inc.
+
+%% $Revision: 1.1.6.5 $ 
+
+%implements "mech_engine" "C"
+
+%% Function: BlockTypeSetup ====================================================
+%% Abstract:
+%%      Cache an extern declarations for SimMechanics
+%%
+%function BlockTypeSetup(block, system) void
+  %openfile buffer
+  #include "mech_std.h"
+  #include "mtypes.h"               
+  #include "simulation_data.h"               
+  #include "mech_method_table.h"
+  #include "rt_mechanism.h"
+  #include "sim_mechanics_imports.h"
+
+  /*
+   * simulation data structure for SimMechanics, one for each SFunction
+   */
+  typedef struct {
+    Mechanism             *mechanism;
+    SimulationDataGeneral  genSimData;
+    SimulationDataOutputs  outSimData;
+  } _rtMech_PWORK;
+  
+  %closefile buffer
+  %<LibCacheExtern(buffer)>
+%endfunction
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%      Add required external modules
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibAddToModelSources("rt_mechanism")>
+  %<LibAddToModelSources("rt_mechanism_map")>
+  %<LibAddToModelSources("rt_mechanism_data")>
+%endfunction
+
+%% Function: CreateGeneralSimData ========================================
+%% Abstract:
+%%       Fill-in the appropriate data in the SimData
+%%
+%function CreateGeneralSimData(block, simData, TStart) Output
+  %openfile buffer
+  %<simData>.tStart = %<TStart>;
+  %if SFcnParamSettings.SFunctionType == 3 || SFcnParamSettings.SFunctionType == 1
+    %<simData>.iwork  = &%<LibBlockIWork("","","","")>;
+  %else
+    %<simData>.iwork = NULL;
+  %endif
+  %<simData>.numInputPorts = %<NumDataInputPorts>;
+  %foreach portIdx = NumDataInputPorts
+    {
+      %%
+      %% setup input signal pointers
+      %%
+      %assign inputSignals = "mech_inputSignals"
+      static real_T *%<inputSignals>[%<LibBlockInputSignalWidth(portIdx)>];
+      %foreach signalIdx = LibBlockInputSignalWidth(portIdx)
+	mech_inputSignals[%<signalIdx>] = (real_T *) %<LibBlockInputSignalAddr(portIdx,"","",signalIdx)>;
+      %endforeach
+      %<simData>.inputSignals[%<portIdx>] = %<inputSignals>;
+    }
+  %endforeach
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: CreateOutputsSimData ========================================
+%% Abstract:
+%%       Fill-in the appropriate data in the SimData
+%%
+%function CreateOutputsSimData(block, simData) Output
+  %openfile buffer
+  %<simData>.consistencyChecking = 0U;
+  %<simData>.numOutputPorts      = %<NumDataOutputPorts>;
+  %foreach portIdx = NumDataOutputPorts
+    %%
+    %% setup output signals
+    %%
+    %<simData>.outputSignals[%<portIdx>] = %<LibBlockOutputSignalAddr(portIdx,"","",0)>;
+  %endforeach
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: PrepareGeneralSimData ========================================
+%% Abstract:
+%%       Fill-in the appropriate data in the SimData
+%%
+%function PrepareGeneralSimData(block, simData) Output
+  %openfile buffer
+  %<simData>.time            = %<LibGetT()>;
+  %if NumContStates > 0 && SolverType == "VariableStep"
+    %<simData>.cacheNeedsReset = %<RTMGet("ZCCacheNeedsReset")>;
+  %else
+    %<simData>.cacheNeedsReset = true;
+  %endif
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: PrepareOutputsSimData ========================================
+%% Abstract:
+%%       Fill-in the appropriate data in the SimData
+%%
+%function PrepareOutputsSimData(block, simData) Output
+  %openfile buffer
+  %<simData>.majorTimestep       = %<LibIsMajorTimeStep()>;
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: HandleMechanicalError
+%% Abstract:
+%%     Handle general engine error
+%function HandleMechanicalError(block) Output
+  %openfile buffer
+  {
+    const ErrorRecord *err    = getErrorMsg();
+    char_T             errorMsg[1024];
+    sprintf(errorMsg, 
+            err->errorMsg,
+	    err->blocks[0],
+	    err->blocks[1],
+	    err->blocks[2],
+	    err->blocks[3],
+	    err->blocks[4]);
+    %<LibSetRTModelErrorStatus("errorMsg")>;	    
+    return;
+  }
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function: InitializeConditions ===============================================
+%% Abstract:
+%%      Lookup mechanism and cache the mechanism in the PWORK of the block.
+%%      Initialize the state pointer in the mechanism and set the IWORK.
+%%
+%function InitializeConditions(block, system) Output
+  /* %<Type> Block: %<Name> */
+  {
+    static _rtMech_PWORK mechWork;
+    static ErrorRecord   errorRec;
+    %assign errorMsg      = "errorMsg"
+    %assign mechanism     = "mechWork.mechanism"
+    %assign genSimData    = "mechWork.genSimData"
+    %assign outSimData    = "mechWork.outSimData"
+    %assign mode          = SFcnParamSettings.AnalysisMode
+    %assign codeGenID     = SFcnParamSettings.CodeGenID
+    %assign getFcn        = "rt_get_mechanism_" + codeGenID
+    %assign visitedFlag   = "rt_mech_visited_" + codeGenID
+    %assign numStates     = SFcnParamSettings.NumStates
+    %assign sfunType      = SFcnParamSettings.SFunctionType
+    %assign pmGetErrorMsg = "getErrorMsg()"
+    %assign haveEvents    = SFcnParamSettings.HaveEvents
+    
+    %if sfunType == 1
+      %<visitedFlag>++;
+      if (%<visitedFlag> != 1) {
+	static const char reentranterrormsg[] =
+	"Attempting to use multiple instances of SimMechanics generated code";
+	%<LibSetRTModelErrorStatus("reentranterrormsg")>;
+	return;
+      }
+    %endif
+
+    %%
+    %% get mechanism from mechanism access funtion
+    %%
+    %<mechanism> = %<getFcn>();
+    %<mechanism>->engineError = &errorRec;
+    %<mechanism>->engineError->errorFlag = false;
+    
+    %switch sfunType
+      %case 1
+	%assign mechMethods   = SFcnParamSettings.Methods
+	{
+	  static char %<errorMsg>[1024];
+	  if((%<mechanism>->mapRuntimeData)(%<mechanism>,%<LibBlockParameterBaseAddr(SimMechanicsRuntimeParameters)>, %<errorMsg>, sizeof(%<errorMsg>) - 1)) {
+	    %<LibSetRTModelErrorStatus(errorMsg)>;	    
+	    return;
+	  }
+	}
+	{
+	  static mech_method_table_t _mech_method_table = {
+	  %foreach methodIdx = SIZE(mechMethods)[1]
+	    %if methodIdx != 0
+	      ,%<mechMethods[methodIdx]>
+	    %else
+	      %<mechMethods[methodIdx]>
+	    %endif
+	  %endforeach
+	  };
+	  mech_method_table_update(&_mech_method_table);
+	}
+	if(createEngineMechanism(%<mechanism>)) {
+	  %<HandleMechanicalError(block)>
+	}
+	%%
+	%% assign state into mechanism->state
+	%%
+	%if mode == "KINEMATICS"
+	  %<mechanism>->state = &%<LibBlockDiscreteState("","","")>;
+	%elseif numStates > 0
+	  %<mechanism>->state = &%<LibBlockContinuousState("","","")>;
+	%endif
+	%<LibBlockIWork("","","","")> = 0U;
+	%break
+      %case 3
+	%<LibBlockIWork("","","","")> = 1U;
+	%if haveEvents == 1
+	  %<genSimData>.modeVector = &%<LibBlockMode("","","")>;
+	%endif	  
+	%break
+    %endswitch
+    
+    %if !ISEQUAL(CodeFormat, "Embedded-C") || ISEQUAL(ModelReferenceTargetType, "SIM")
+      %assign TStart = RTMGet("TStart")
+    %else
+      %assign TStart = "(0.0)"
+    %endif
+    %%
+    %% setup simulation data
+    %%
+    %<CreateGeneralSimData(block, genSimData, TStart)>
+    %<CreateOutputsSimData(block, outSimData)>
+    
+    %%
+    %% put mechwork into the PWork
+    %%
+    %<LibBlockPWork("","","",0)> = &mechWork;
+  }
+%endfunction
+
+
+%% Function:  GetMechWork ================================================
+%% Abstract:
+%%       Get mech work pointer from the PWORK and create a variable named
+%%       mechWork on the stack.
+%%
+%function GetMechWork() Output
+  %openfile buffer
+  _rtMech_PWORK *mechWork = (_rtMech_PWORK *) %<LibBlockPWork("","","",0)>;
+  %closefile buffer
+  %return buffer
+%endfunction
+
+%% Function:  Outputs ================================================
+%% Abstract:
+%%       Call outputs for each S-Function passing in general sim. data
+%%       and outputs sim data.  After outputs for events S-Function,
+%%       update ZCCacheNeedsReset, do this only for non-RT targets.
+%%
+%function Outputs(block, system) Output
+  /* %<Type> Block: %<Name> */
+  {
+    %assign sfunType          = SFcnParamSettings.SFunctionType
+    %<GetMechWork()>
+    %assign mechanism       = "mechWork->mechanism"
+    %assign genSimData      = "mechWork->genSimData"
+    %assign outSimData      = "mechWork->outSimData"
+    %assign pmGetErrorMsg   = "getErrorMsg()"
+
+    %<PrepareGeneralSimData(block, genSimData)>
+    %<PrepareOutputsSimData(block, outSimData)>
+    %if sfunType == 1
+      if (kinematicSfcnOutputMethod(%<mechanism>, &(%<genSimData>), &(%<outSimData>))) {
+	%<HandleMechanicalError(block)>
+      }
+    %endif
+    %if sfunType == 2
+      if (dynamicSfcnOutputMethod(%<mechanism>,  &(%<genSimData>), &(%<outSimData>))) {
+	%<HandleMechanicalError(block)>
+      }
+    %endif
+    %if sfunType == 3
+      if (eventSfcnOutputMethod(%<mechanism>, &(%<genSimData>), &(%<outSimData>))) {
+	%<HandleMechanicalError(block)>
+      }
+      %if NumContStates > 0 && SolverType == "VariableStep"
+	%<RTMSet("ZCCacheNeedsReset", "%<genSimData>.cacheNeedsReset")>;
+      %endif
+    %endif
+  }
+%endfunction
+
+%% Function:  Outputs ================================================
+%% Abstract:
+%%       If KINEMATICS, update states.
+%%
+%function Update(block, system) Output
+  %assign sfunType     = SFcnParamSettings.SFunctionType
+  %if sfunType == 1
+    %assign mode         = SFcnParamSettings.AnalysisMode
+    %if mode == "KINEMATICS"
+      /* %<Type> Block: %<Name> */
+      {
+	%<GetMechWork()>
+	%assign mechanism = "mechWork->mechanism"
+	%assign pmGetErrorMsg = "getErrorMsg()"
+	if (sFcnUpdateStateMethod(%<mechanism>, &%<LibBlockDiscreteState("","","")>)) {
+	  %<HandleMechanicalError(block)>
+	}
+      }
+    %endif
+  %endif
+%endfunction
+
+
+%% Function:  Projection ================================================
+%% Abstract:
+%%       Do state projection for kinematics S-Function.
+%%
+%function Projection(block, system) Output
+  %assign sfunType     = SFcnParamSettings.SFunctionType
+  %if sfunType == 1
+    /* %<Type> Block: %<Name> */
+    {
+      %<GetMechWork()>
+      %assign mechanism  = "mechWork->mechanism"
+      %assign genSimData = "mechWork->genSimData"
+      %assign pmGetErrorMsg = "getErrorMsg()"
+      %<PrepareGeneralSimData(block, genSimData)>
+      if (sFcnProjectionMethod(%<mechanism>,&(%<genSimData>))) {
+	%<HandleMechanicalError(block)>
+      }
+    }
+  %endif
+%endfunction
+
+%% Function:  Derivatives ===============================================
+%% Abstract:
+%%       If we are in dynamics mode, compute derivatives.
+%%
+%function Derivatives(block, system) Output
+  %assign sfunType     = SFcnParamSettings.SFunctionType
+  %if sfunType == 1
+    %assign mode         = SFcnParamSettings.AnalysisMode
+    %if mode == "DYNAMICS"
+      /* %<Type> Block: %<Name> */
+      {
+	%<GetMechWork()>
+	%assign mechanism  = "mechWork->mechanism"
+	%assign pmGetErrorMsg = "getErrorMsg()"
+	if (sFcnDerivativesMethod(%<mechanism>, &%<LibBlockContinuousStateDerivative("","",0)>)) {
+	  %<HandleMechanicalError(block)>
+	}
+      }
+    %endif
+  %endif
+%endfunction
+
+%% Function:  ZeroCrossings ===============================================
+%% Abstract:
+%%       If we have events, call zcFunction
+%%
+%function ZeroCrossings(block, system) Output
+  %assign sfunType     = SFcnParamSettings.SFunctionType
+  %if sfunType == 3
+    %assign haveEvents = SFcnParamSettings.HaveEvents
+    %if haveEvents == 1
+      /* %<Type> Block: %<Name> */
+      {
+	%<GetMechWork()>
+	%assign mechanism     = "mechWork->mechanism"
+	%assign genSimData    = "mechWork->genSimData"
+	%assign pmGetErrorMsg = "getErrorMsg()"
+	if (zcFunction(%<genSimData>.inputSignals[0],%<mechanism>,&%<LibBlockNonSampledZC("", "", 0)>)) {
+	  %<HandleMechanicalError(block)>
+	}
+      }
+    %endif
+  %endif
+%endfunction
+
+%% Function:  Terminate ===============================================
+%% Abstract:
+%%       Destroy engine data
+%%
+%function Terminate(block, system) Output
+  %assign sfunType     = SFcnParamSettings.SFunctionType
+  %if sfunType == 1
+    %assign codeGenID     = SFcnParamSettings.CodeGenID
+    %assign visitedFlag   = "rt_mech_visited_" + codeGenID
+      /* %<Type> Block: %<Name> */
+      {
+	if (%<visitedFlag> == 1) {
+	  %<GetMechWork()>
+	  %assign mechanism  = "mechWork->mechanism"
+	  if (%<mechanism>->destroyEngine != NULL) {
+	    (%<mechanism>->destroyEngine)(%<mechanism>);
+	  }
+	}
+	%<visitedFlag>--;
+      }
+  %endif
+%endfunction
+
+%% [EOF] mech_engine.tlc
+
+
+
+
+
+
+
+
+ 

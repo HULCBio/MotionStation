@@ -1,0 +1,507 @@
+%% File : sfun_kflookupnd.tlc generated from sfun_kflookupnd.ttlc revsion 1.8.2.2.2.1
+%% $Date: 2004/04/13 03:09:16 $
+%%
+%% Rob Aberg, 13-Aug-1999
+%% Copyright 1990-2004 The MathWorks, Inc.
+%%
+%% Abstract: n-D interpolation using output from PreLook-Up
+%%           Index Search block, using calculated index 
+%%           and interval fraction values.
+
+%implements sfun_kflookupnd "C"
+
+%% Function: BlockInstanceSetup ===================================================
+%% Abstract:
+%%      Have mdlhdr.tlc get the definitions for the functions used
+%%
+%function BlockInstanceSetup(block, system) void
+  %<LibAddToCommonIncludes("rtlooksrc.h")>
+%endfunction
+
+%% Function: FcnGetIntrpFcnName ===============================================
+%% Abstract:
+%%    Determine the name for the correct interpolation function from the 
+%%    run-time library.
+%%
+%function FcnGetIntrpFcnName(block) void
+  %assign NUM_DIMS_FOR_TWORK = 6
+  %assign ioTypeId      = LibBlockOutputSignalDataTypeId(0)
+  %assign numDims       = NumDataInputPorts
+  %assign numSelDims    = SFcnParamSettings.selDims
+  %assign numInterpDims = numDims - numSelDims
+  %%
+  %% Data set used to build the function name
+  %%
+  %assign DnumDims  = [ "1", "2", "3", "4", "5", "N" ]
+  %assign DdType    = [ "d", "f" ]
+  %%
+  %% Instance info indices for accessing the mapping data
+  %%
+  %assign numDimsIdx = (numInterpDims >= NUM_DIMS_FOR_TWORK) ? 5 : (numInterpDims-1)
+  %assign dTypeIdx   = (ioTypeId == tSS_DOUBLE) ? 0 : 1
+  %%
+  %% Build the top-level function name
+  %%
+  %assign fcnName = "rt_Intrp" + DnumDims[numDimsIdx] + "Lin" + DdType[dTypeIdx]
+  %return fcnName
+%endfunction
+
+
+%% Function: Start ============================================================
+%% Abstract:
+%%    Set up work vector for n-D linear interpolations.
+%%
+%function Start(block, system) Output
+  %assign NUM_DIMS_FOR_TWORK = 6
+  %assign interpMethod  = SFcnParamSettings.interpMethod
+  %assign INTERP_FLAT   = 1
+  %assign INTERP_LINEAR = 2
+  %assign numTableDims  = NumDataInputPorts
+  %assign numSelDims    = SFcnParamSettings.selDims
+  %assign numInterpDims = numTableDims - numSelDims
+  %assign ioTypeId      = LibBlockOutputSignalDataTypeId(0)
+  %assign sfx           = (ioTypeId == tSS_SINGLE) ? "f" : "d"
+  %%
+  %if (numInterpDims >= NUM_DIMS_FOR_TWORK) && (interpMethod == INTERP_LINEAR)
+  /* Setup for Interpolation (%<NumDataInputPorts>-D) using PreLook-Up Block:
+   * '%<Name>' 
+   */
+  {
+    rt_LUTnWork%<sfx> *rt_TWork = (rt_LUTnWork%<sfx> *) %<LibBlockDWorkAddr(TWork,"","",0)>;
+    rt_TWork->dimSizes  = %<LibBlockParameterBaseAddr(dimSizes)>;
+    rt_TWork->tableData = %<LibBlockParameterBaseAddr(tableData)>;
+    rt_TWork->bpDataSet = NULL;
+    rt_TWork->bpIndex   = NULL;
+    rt_TWork->bpLambda  = NULL;
+    rt_TWork->maxIndex  = %<LibBlockParameterBaseAddr(maxIndex)>;
+  }
+  
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%    Perform indicated interpolation, flat or linear, for contiguous inputs.
+%%
+%function Outputs(block, system) Output
+  %assign INTERP_FLAT       = 1
+  %assign INTERP_LINEAR     = 2
+  %assign interpMethod      = SFcnParamSettings.interpMethod
+  %assign CLIP              = 1
+  %assign EXTRAP_LIN        = 2
+  %assign extrapMethod      = SFcnParamSettings.extrapMethod
+  %assign RG_NONE           = 1
+  %assign RG_WARN           = 2
+  %assign RG_ERROR          = 3
+  %assign RG_ERROR_NOCHECK  = 4
+  %assign RG_WARN_NOCHECK   = 5
+  %assign RG_NONE_NOCHECK   = 6
+  %assign rangeErrorMode    = SFcnParamSettings.rangeErrorMode
+  %assign indexCheckIsOn    = rangeErrorMode < RG_ERROR_NOCHECK
+  %assign NUM_DIMS_FOR_ND   = 6
+  %assign NUM_DIMS_FOR_RTCP = 3
+  %%			 
+  %assign idxTypeId      = tSS_INT32
+  %assign idxType        = LibGetDataTypeNameFromId(idxTypeId)
+  %assign loopVarIdx     = ::CompiledModel.LoopControlIdx
+  %assign idxCast        = "(" + idxType + ")"
+  %%
+  %assign ioTypeId       = LibBlockOutputSignalDataTypeId(0)
+  %assign ioType         = LibBlockOutputSignalDataTypeName(0,"")
+  %assign numOutputs     = LibBlockOutputSignalWidth(0)
+  %assign numDims        = NumDataInputPorts
+  %assign numSelDims     = SFcnParamSettings.selDims
+  %assign numInterpDims  = CAST("Number", numDims - numSelDims)
+  %assign dims           = SFcnParamSettings.tabDims
+  %assign tabDimsStr     = "%<CAST("Number", dims[0])>"
+  %assign tlcDimSizes    = dims
+  %assign tlcDimSizes[0] = 1
+  %foreach i = %<SIZE(dims,1)*SIZE(dims,0)-1>
+    %assign tlcDimSizes[i+1] = tlcDimSizes[i]*dims[i]
+    %assign tabDimsStr       = tabDimsStr + " x " + "%<CAST("Number", dims[i+1])>"
+  %endforeach
+  %%
+  %assign idxZero        = SLibGetFormattedValueFromId(idxTypeId, 0)
+  %assign zero           = SLibGetFormattedValueFromId(ioTypeId, 0.0)
+  %assign one            = SLibGetFormattedValueFromId(ioTypeId, 1.0)
+  %%
+  %assign tmpLambdaName  = "rt_bpLambda"
+  %assign tmpIndexName   = "rt_bpIndex"
+  %%
+  %% Block comment
+  %%
+  %assign interpStr   = [ "None - Flat Look-Up", "Linear"]
+  %assign extrapStr   = [ "None - Clip", "Linear" ]
+  %assign rangeErrStr = [ "ON", "ON", "ON", "OFF", "OFF", "OFF" ] 
+  %assign subTableMsg = ""
+  %if numSelDims > 0
+    %assign n = CAST("Number", numInterpDims)
+    %assign subTableMsg = "\n  * Sub-Table extent:  %<n>-D"
+  %endif
+  /* 
+   * Interpolation (%<NumDataInputPorts>-D) using PreLook-Up Block:
+   * '%<Name>' 
+   *
+   *       Table size:  %<tabDimsStr> 
+   * %<subTableMsg>
+   *    Interpolation:  %<interpStr[interpMethod-1]>
+   *    Extrapolation:  %<extrapStr[extrapMethod-1]>
+   *   Index Checking:  %<rangeErrStr[rangeErrorMode-1]>
+   */
+  %% 
+  %% Beginning of block scope containing the block's algorithmic code
+  %%
+  {
+  %%
+  %% Declare temporary variables if needed
+  %%
+  %if numInterpDims >= NUM_DIMS_FOR_ND
+    %assign sfx = (ioTypeId == tSS_SINGLE) ? "f" : "d"
+    rt_LUTnWork *rt_TWork = (rt_LUTnWork *) \
+    %<LibBlockDWorkAddr(TWork,"","",0)>;
+  %endif
+  %if numInterpDims > 1
+    %<ioType>  %<tmpLambdaName>[%<numInterpDims>];
+  %else
+    %<ioType>  %<tmpLambdaName>;
+  %endif
+  %if numDims > 1
+    %<idxType> %<tmpIndexName>[%<numDims>];
+  %else
+    %<idxType> %<tmpIndexName>;
+  %endif
+  %if numOutputs > 1
+    %assign loopVarIdx = loopVarIdx + 1
+    %assign tmpIdx     = "i%<loopVarIdx>"
+    %<idxType> %<tmpIdx>;
+  %endif
+  %%
+  %% One line of whitespace
+
+  %if numInterpDims >= NUM_DIMS_FOR_ND
+    rt_TWork->bpLambda = %<tmpLambdaName>;
+    rt_TWork->bpIndex  = %<tmpIndexName>;
+    
+  %endif
+  %%
+  %% Initialize lambda array for scalar lambdas
+  %%
+  %foreach portIdx = NumDataInputPorts - numSelDims
+    %if DataInputPort[portIdx].Width == 2
+      %assign lambda = LibBlockInputSignal(portIdx, "", "", 1)
+      %if numInterpDims > 1
+	%assign lval   = "%<tmpLambdaName>[%<portIdx>]"
+      %else
+	%assign lval   = tmpLambdaName
+      %endif
+      %if (extrapMethod == CLIP && interpMethod == INTERP_LINEAR)
+	%assign satFcnRec = LibCreateHomogMathFcnRec("saturate", ioTypeId)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, lambda)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, zero)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, one)
+	%<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+      %else
+	%<lval> = %<lambda>;
+      %endif
+    %endif
+  %endforeach
+  %%
+  %% Initialize index array for scalar indices
+  %%
+  %foreach portIdx = NumDataInputPorts
+    %if numDims > 1
+      %assign lval   = "%<tmpIndexName>[%<portIdx>]"
+    %else
+      %assign lval   = tmpIndexName
+    %endif
+    %if portIdx < numInterpDims
+      %% Scalar interpolation ports
+      %if (DataInputPort[portIdx].Width == 2)
+	%assign k      = LibBlockInputSignal(portIdx, "", "", 0)
+	%assign maxVal = "%<dims[portIdx] - 2>"
+	  %<lval> = %<idxCast> %<k>;
+	%if indexCheckIsOn
+	  %assign satFcnRec = LibCreateHomogMathFcnRec("saturate", idxTypeId)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, lval)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, idxZero)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, maxVal)
+	  %<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+	%endif
+	%if interpMethod == INTERP_FLAT
+	  %if numInterpDims > 1
+	    %assign tmpLambdaExpr = "%<tmpLambdaName>[%<portIdx>]"
+	  %else
+	    %assign tmpLambdaExpr = tmpLambdaName
+	  %endif
+	  if (%<lval> == %<maxVal> && %<tmpLambdaExpr> >= %<one>) %<lval>++;
+	%endif
+      %endif
+    %else
+      %% Scalar selection ports
+      %if (DataInputPort[portIdx].Width == 1)
+	%assign k      = LibBlockInputSignal(portIdx, "", "", 0)
+	%if !indexCheckIsOn
+	  %<lval> = %<k>;
+	%else
+	  %assign maxVal    = "%<dims[portIdx] - 1>"
+	  %assign satFcnRec = LibCreateHomogMathFcnRec("saturate", idxTypeId)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, k)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, idxZero)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, maxVal)
+	  %<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+	%endif
+      %endif
+    %endif
+  %endforeach
+  %%
+  %% Create a for() loop top if there is more than one interpolation
+  %%
+  %if numOutputs > 1
+    
+    for (%<tmpIdx> = 0; %<tmpIdx> <  %<numOutputs>; %<tmpIdx>++) {
+    %assign istr = tmpIdx 
+    %%
+    %% Handle ports that need the by-2 indexing
+    %assign needKFLoopVar = TLC_FALSE
+    %foreach portIdx = NumDataInputPorts - numSelDims
+      %if !(DataInputPort[portIdx].Width == 2)
+	%assign needKFLoopVar = TLC_TRUE
+      %endif
+    %endforeach
+    %%
+    %if needKFLoopVar
+      %assign loopVarIdx = loopVarIdx + 1
+      %assign tmpIdx2    = "i%<loopVarIdx>"
+      %assign istr2      = tmpIdx2
+      %assign istr21     = tmpIdx2 + "+1"
+      %<idxType> %<tmpIdx2> = %<tmpIdx> + %<tmpIdx>;
+    %endif
+  %else
+    %assign istr   = "0"
+    %assign istr2  = "0"
+    %assign istr21 = "1"
+  %endif
+  %%
+  %% Do the sub-table selection or flat lookup and/or 
+  %% make the call to the interpolation function
+  %%
+  %assign y = LibBlockOutputSignal(0, istr, "", "")
+  %%
+  %% Initialize wide lambdas
+  %% ("in the loop")
+  %%
+  %foreach portIdx = NumDataInputPorts - numSelDims
+    %if !(DataInputPort[portIdx].Width == 2)
+      %assign lambda = LibBlockInputSignal(portIdx, istr21, "", "")
+      %if numInterpDims > 1
+	%assign lval   = "%<tmpLambdaName>[%<portIdx>]"
+      %else
+	%assign lval   = tmpLambdaName
+      %endif
+      %if (extrapMethod == CLIP && interpMethod == INTERP_LINEAR)
+	%assign satFcnRec = LibCreateHomogMathFcnRec("saturate", ioTypeId)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, lambda)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, zero)
+	%assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, one)
+	%<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+      %else
+	%<lval> = %<lambda>;
+      %endif
+    %endif
+  %endforeach
+  %%
+  %% Initialize wide indices
+  %% ("in the loop")
+  %%
+  %foreach portIdx = NumDataInputPorts
+    %if numDims > 1
+      %assign lval   = "%<tmpIndexName>[%<portIdx>]"
+    %else
+      %assign lval   = tmpIndexName
+    %endif
+    %if portIdx < numInterpDims
+      %% Wide interpolation ports
+      %if !(DataInputPort[portIdx].Width == 2)
+	%assign k      = LibBlockInputSignal(portIdx, istr2, "", 0)
+	%assign maxVal = "%<dims[portIdx] - 2>"
+	%<lval> = %<idxCast> %<k>;
+	%if indexCheckIsOn
+	  %assign satFcnRec = LibCreateHomogMathFcnRec("saturate", idxTypeId)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, lval)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, idxZero)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, maxVal)
+	  %<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+	%endif
+	%if interpMethod == INTERP_FLAT
+	  %if numInterpDims > 1
+	    %assign tmpLambdaExpr = "%<tmpLambdaName>[%<portIdx>]"
+	  %else
+	    %assign tmpLambdaExpr = tmpLambdaName
+	  %endif
+	  if (%<lval> == %<maxVal> && %<tmpLambdaExpr> >= %<one>) %<lval>++;
+	%endif
+      %endif
+    %else
+      %% Wide selection ports
+      %if !(DataInputPort[portIdx].Width == 1)
+	%assign k      = LibBlockInputSignal(portIdx, istr, "", 0)
+	%if !indexCheckIsOn
+	  %<lval> = %<k>;
+	%else
+	  %assign maxVal    = "%<dims[portIdx] - 1>"
+	  %assign satFcnRec = LibCreateHomogMathFcnRec("saturate", idxTypeId)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 0, k)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 1, idxZero)
+	  %assign satFcnRec = LibSetMathFcnRecArgExpr(satFcnRec, 2, maxVal)
+	  %<lval> = %<SLibGenRTLibFcnCall(satFcnRec)>;
+	%endif
+      %endif
+    %endif
+  %endforeach
+  %%
+  %% Do the sub-table selection.  In the limit, this becomes
+  %% a flat lookup.
+  %%
+  %assign tabIdxVar      = "rt_base"
+  %assign selDimStartVal = CAST("Number", numDims-1)
+  %% one line of whitespace
+  
+  %%
+  %% Sub-table selection / flat lookup index calculation
+  %%
+  %if interpMethod == INTERP_FLAT
+    %assign numFlatDims = numDims
+  %else
+    %assign numFlatDims = numSelDims
+  %endif
+  %%
+  %if numSelDims > 0 || interpMethod == INTERP_FLAT
+  {
+  %endif
+  %%
+  %if numDims < NUM_DIMS_FOR_RTCP
+    %% dimSizes not created for 1-D or 2-D tables, 
+    %% only need numRows
+    %if numFlatDims == 2
+      %<idxType> %<tabIdxVar> = %<tmpIndexName>[0] + %<tlcDimSizes[1]> * %<tmpIndexName>[1];
+    %elseif numFlatDims == 1
+      %assign si = selDimStartVal
+      %if selDimStartVal > 0
+	%assign dimsVal = CAST("Number", tlcDimSizes[si])
+	%% tmpIndex variable is always an array here
+	%<idxType> %<tabIdxVar> = %<dimsVal> * %<tmpIndexName>[%<si>];
+      %else
+	%if numDims > 1
+	  %assign tmpIndexExpr = "%<tmpIndexName>[%<si>]"
+	%else
+	  %assign tmpIndexExpr = tmpIndexName
+	%endif
+	%<idxType> %<tabIdxVar> = %<tmpIndexExpr>;
+      %endif
+    %else
+      %assign tabIdxVar = "0"
+    %endif
+  %else
+    %% dimSizes RTCP is available
+    %assign si = selDimStartVal
+    %if numFlatDims > 2
+      %if interpMethod == INTERP_FLAT
+	%assign selDimEndVal = idxZero
+      %else
+	%assign selDimEndVal = CAST("Number", numInterpDims)
+      %endif
+      %assign loopVarIdx = loopVarIdx + 1
+      %assign subIdxVar  = "i%<loopVarIdx>"
+      %<idxType> %<tabIdxVar> = 0;
+      %<idxType> %<subIdxVar>;
+      
+      for (%<subIdxVar> = %<si>; %<subIdxVar> >= %<selDimEndVal>; %<subIdxVar>--) {
+      %<tabIdxVar> += %<LibBlockParameter(dimSizes, subIdxVar, "", 0)> \
+                      * %<tmpIndexName>[%<subIdxVar>];
+      }
+    %elseif numFlatDims == 2
+      %<idxType> %<tabIdxVar> = \
+      %<LibBlockParameter(dimSizes, "", "", si)> \
+      * %<tmpIndexName>[%<si>] + \
+      %<LibBlockParameter(dimSizes, "", "", si-1)> \
+      * %<tmpIndexName>[%<si-1>];
+    %elseif numFlatDims == 1
+      %if selDimStartVal > 0
+	%<idxType> %<tabIdxVar> = \
+	%<LibBlockParameter(dimSizes, "", "", si)> * %<tmpIndexName>[%<si>];
+      %else
+	%if numDims > 1
+	  %assign tmpIndexExpr = "%<tmpIndexName>[%<si>]"
+	%else
+	  %assign tmpIndexExpr = tmpIndexName
+	%endif
+	%<idxType> %<tabIdxVar> = %<tmpIndexExpr>;
+      %endif
+    %else
+      %assign tabIdxVar = "0"
+    %endif
+  %endif
+
+  %%
+  %% Call the interpolation function (or just get a point)
+  %%
+  %if numInterpDims == 0 || interpMethod == INTERP_FLAT
+    %% numInterpDims is 0, just get a table point (flat lookup)
+    %assign tab = LibBlockParameter(tableData, tabIdxVar, "", "")
+    %if tabIdxVar == "0"
+      %% START_ASSERT
+      %assign errorTxt = "Block internal code generation error for table value reference."
+      %<LibReportFatalError(errorTxt)>
+      %% END_ASSERT
+    %endif
+    %<y> = %<tab>;
+  %elseif numInterpDims >= NUM_DIMS_FOR_ND
+    %assign interpFcnName = FcnGetIntrpFcnName(block)
+    %assign atableData    = LibBlockParameterAddr(tableData, tabIdxVar, "", 0)
+    %<y> = %<interpFcnName>(%<numInterpDims-1>, %<tabIdxVar>, rt_TWork);
+  %elseif numInterpDims >= NUM_DIMS_FOR_RTCP
+    %% dimSizes always exists for 3-D and higher interpolations
+    %% tmpIndex and tmpLambda are always arrays for 2-D and higher interpolations
+    %assign interpFcnName = FcnGetIntrpFcnName(block)
+    %assign atableData    = LibBlockParameterAddr(tableData, tabIdxVar, "", 0)
+    %<y> = %<interpFcnName>(%<tmpIndexName>, %<tmpLambdaName>, %<atableData>, ...
+      %<LibBlockParameterBaseAddr(dimSizes)>);
+  %elseif numInterpDims == 2
+    %assign interpFcnName = FcnGetIntrpFcnName(block)
+    %assign atableData    = LibBlockParameterAddr(tableData, tabIdxVar, "", 0)
+    %% tmpIndex and tmpLambda are always arrays for 2-D and higher interpolations
+    %<y> = %<interpFcnName>(%<tmpIndexName>, %<tmpLambdaName>, %<atableData>, ...
+      %<dims[0]>);
+  %elseif numInterpDims == 1
+    %assign idxOffset = (tabIdxVar != "0") ? "%<tabIdxVar> + " : ""
+    %if numDims > 1
+      %assign tmpIndexExpr = "%<idxOffset>%<tmpIndexName>[0]"
+    %else
+      %assign tmpIndexExpr = "%<idxOffset>%<tmpIndexName>"
+    %endif
+    %assign tabL = LibBlockParameter(tableData, "%<tmpIndexExpr>", "", "")
+    %assign tabH = LibBlockParameter(tableData, "%<tmpIndexExpr>+1", "", "")
+    %<y> = %<tabL> + %<tmpLambdaName>*(%<tabH> - %<tabL>);
+  %endif
+  %%
+  %% End of sub-table selection scope
+  %%
+  %if numSelDims > 0 || interpMethod == INTERP_FLAT
+    }
+  %endif
+  %if numOutputs > 1
+    %% 
+    %% End of wide outputs loop scope
+    %%
+    }
+  %endif
+  %%
+  %% End of overall block scope
+  %%
+  }
+  %%
+  %% The following line is for whitespace
+
+%endfunction
+%%[EOF] sfun_kflookupnd.tlc

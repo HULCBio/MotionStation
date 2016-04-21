@@ -1,0 +1,568 @@
+%% $RCSfile: sfix_bitop.tlc,v $
+%% $Revision: 1.9.2.2 $
+%% $Date: 2004/04/13 00:34:31 $
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Fixed-point (bitwise) logic operator.
+
+%implements sfix_bitop "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%%   Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+  %<FixPt_LibBlockSetIsExpressionCompliant(block, system)>
+  %%
+  %% No BlockInstanceSetup for built-in block.
+%endfunction
+
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%
+%function Outputs(block, system) Output
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %assign uiDT = FixPt_GetInputDataType(0)
+    %%
+    %foreach iIn = NumDataInputPorts
+        %%
+        %assign uiDT = FixPt_GetInputDataType(iIn)
+        %%
+        %<FixPt_FloatingPointNotSupported(uiDT)>\
+    %endforeach
+    %%
+    %% make access to parameters easier to read
+    %%
+    %assign logicOp = FixPtLogicOpStr
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point Bitwise Block: %<MaskBlockName>
+     * %<logicOp>
+     */
+    %%
+    %%  Handle case of multiple input ports
+    %%  element by element vector logic
+    %%
+    %if NumDataInputPorts > 1
+        %%
+        %% Roll around signal width
+        %%
+        %assign rollVars = ["U", "Y"]
+        %%
+        %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+            %%
+            %% Get first input
+            %%
+            %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+            %%
+            %% Get second input
+            %%
+            %assign uiLabel = LibBlockInputSignal(1, "", lcv, sigIdx)
+            %%
+            %% Get output
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+            %%
+            %% Handle first two terms
+            %%
+            %assign smartEndOfCLine = ""
+            %if NumDataInputPorts == 2
+                %assign smartEndOfCLine = ";"
+            %endif
+            %switch (logicOp)
+                %case "AND"
+                    %<y0Label> =  (%<u0Label>) &  (%<uiLabel>)%<smartEndOfCLine>
+                    %break
+                %case "NAND"
+                    %<y0Label> = ~(%<u0Label>) | ~(%<uiLabel>)%<smartEndOfCLine>
+                    %break
+                %case "OR"
+                    %<y0Label> =  (%<u0Label>) |  (%<uiLabel>)%<smartEndOfCLine>
+                    %break
+                %case "NOR"
+                    %<y0Label> = ~(%<u0Label>) & ~(%<uiLabel>)%<smartEndOfCLine>
+                    %break
+                %case "XOR"
+                    %<y0Label> =  (%<u0Label>) ^  (%<uiLabel>)%<smartEndOfCLine>
+                    %break
+                %default
+                    %openfile tmpBuf
+
+                    RTW Fatal Error: Invalid logic operation for multi-inport case
+
+                    Block: %<MaskBlockName>
+                    %closefile tmpBuf
+                    %exit %<tmpBuf>
+            %endswitch
+            %%
+            %% handle each input port AFTER the first
+            %%
+            %foreach ipIdx = (NumDataInputPorts-2)
+                %%
+                %% Get ith input
+                %%
+                %assign uiLabel = LibBlockInputSignal(ipIdx+2, "", lcv, sigIdx)
+                %%
+                %% handle logic
+                %%
+                %if ipIdx == (NumDataInputPorts-3)
+                    %assign smartEndOfCLine = ";"
+                %endif
+                %%
+                %switch (logicOp)
+                    %case "AND"
+                        &  (%<uiLabel>)%<smartEndOfCLine>
+                        %break
+                    %case "NAND"
+                        | ~(%<uiLabel>)%<smartEndOfCLine>
+                        %break
+                    %case "OR"
+                        |  (%<uiLabel>)%<smartEndOfCLine>
+                        %break
+                    %case "NOR"
+                        & ~(%<uiLabel>)%<smartEndOfCLine>
+                        %break
+                    %case "XOR"
+                        ^  (%<uiLabel>)%<smartEndOfCLine>
+                        %break                                     
+                %endswitch
+                %%
+            %endforeach
+            %%
+            %<FixPt_EmulationSignExt(y0Label,y0DT)>\
+            %%
+        %endroll
+    %%
+    %% case of single input port "collapsed"
+    %% to form scalar output
+    %else
+        %%
+        %% handle logical NOT
+        %%
+        %if (logicOp == "NOT")
+            %%
+            %% Roll around signal width
+            %%
+            %assign rollVars = ["U", "Y"]
+            %%
+            %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+                %%
+                %% Get first input
+                %%
+                %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+                %%
+                %% Get output
+                %%
+                %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+                %%
+                %% Handle logic
+                %%
+                %<y0Label> =  ~(%<u0Label>);
+                %%
+                %<FixPt_EmulationSignExt(y0Label,y0DT)>\
+                %%
+            %endroll
+            %%
+        %%
+        %% handle MASK case
+        %%
+        %elseif FixPtUseBitMask == "TRUE"
+            %%
+            %% Roll around signal width
+            %%
+            %assign rollVars = ["U", "Y", "P"]
+            %%
+            %roll sigIdx = RollRegions, lcv = RollThreshold, block, "Roller", rollVars
+                %%
+                %% Get first input
+                %%
+                %assign u0Label = LibBlockInputSignal(0, "", lcv, sigIdx)
+                %%
+                %% Get output
+                %%
+                %assign y0Label = LibBlockOutputSignal(0, "", lcv, sigIdx)
+                %%
+                %% Get mask
+                %%
+                %assign maskLabel = LibBlockParameter(BitMask, "", lcv, sigIdx)
+                %%
+                %% Handle logic
+                %%
+                %switch (logicOp)
+                    %case "AND"
+                        %<y0Label> =  (%<u0Label>) &  (%<maskLabel>);
+                        %break
+                    %case "NAND"
+                        %<y0Label> = ~(%<u0Label>) | ~(%<maskLabel>);
+                        %break
+                    %case "OR"
+                        %<y0Label> =  (%<u0Label>) |  (%<maskLabel>);
+                        %break
+                    %case "NOR"
+                        %<y0Label> = ~(%<u0Label>) & ~(%<maskLabel>);
+                        %break
+                    %case "XOR"
+                        %<y0Label> =  (%<u0Label>) ^  (%<maskLabel>);
+                        %break
+                    %default
+                        %openfile tmpBuf
+    
+                        RTW Fatal Error: Invalid logic operation for single-inport case
+    
+                        Block: %<MaskBlockName>
+                        %closefile tmpBuf
+                        %exit %<tmpBuf>
+                %endswitch
+                %%
+                %<FixPt_EmulationSignExt(y0Label,y0DT)>\
+                %%
+            %endroll
+            %%
+        %%
+        %% handle trivial case of scalar input
+        %%
+        %elseif LibDataInputPortWidth(0) == 1
+            %%
+            %%
+            %% Get first input
+            %%
+            %assign u0Label = LibBlockInputSignal(0, "", "", 0)
+            %%
+            %% Get output
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", "", 0)
+            %%
+            %switch (logicOp)
+                %case "AND"
+                %case "OR"
+                %case "XOR"
+                    %<y0Label> =  (%<u0Label>);
+                    %break
+                %case "NAND"
+                %case "NOR"
+                    %<y0Label> = ~(%<u0Label>);
+                    %break
+                %default
+                    %openfile tmpBuf
+
+                    RTW Fatal Error: Invalid logic operation for single-inport case
+
+                    Block: %<MaskBlockName>
+                    %closefile tmpBuf
+                    %exit %<tmpBuf>
+            %endswitch
+        %%
+        %% handle non-trivial case
+        %%  of single nonscalar inport and AND, NAND, OR, NOR, or XOR
+        %%
+        %else
+            %%
+            %% Get first input
+            %%
+            %assign u0Label = LibBlockInputSignal(0, "", "", 0)
+            %%
+            %% Get second input
+            %%
+            %assign uiLabel = LibBlockInputSignal(0, "", "", 1)
+            %%
+            %% Get output
+            %%
+            %assign y0Label = LibBlockOutputSignal(0, "", "", 0)
+            %%
+            %% Handle first two terms
+            %%
+            %switch (logicOp)
+                %case "AND"
+                    %<y0Label> =  (%<u0Label>) &  (%<uiLabel>);
+                    %break
+                %case "NAND"
+                    %<y0Label> = ~(%<u0Label>) | ~(%<uiLabel>);
+                    %break
+                %case "OR"
+                    %<y0Label> =  (%<u0Label>) |  (%<uiLabel>);
+                    %break
+                %case "NOR"
+                    %<y0Label> = ~(%<u0Label>) & ~(%<uiLabel>);
+                    %break
+                %case "XOR"
+                    %<y0Label> =  (%<u0Label>) ^  (%<uiLabel>);
+                    %break
+                %default
+                    %openfile tmpBuf
+
+                    RTW Fatal Error: Invalid logic operation for single-inport case
+
+                    Block: %<MaskBlockName>
+                    %closefile tmpBuf
+                    %exit %<tmpBuf>
+            %endswitch
+            %%
+            %% handle remaining scalars
+            %%
+            %if LibDataInputPortWidth(0) > 2
+                %%
+                %% Roll around input
+                %%
+                %assign rollVars = ["U"]
+                %%
+                %% remove first and second input because they have already been
+                %% handled by "direct" multiply above
+                %%
+                %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+                %assign reducedRollRegions = LibRemoveRollRegions(reducedRollRegions,1)
+                %%
+                %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+                    %%
+                    %assign uiLabel = LibBlockInputSignal(0, "", lcv, sigIdx)
+                    %%
+                    %% handle logic
+                    %%
+                    %switch (logicOp)
+                        %case "AND"
+                            %<y0Label> &=  (%<uiLabel>);
+                            %break
+                        %case "NAND"
+                            %<y0Label> |= ~(%<uiLabel>);
+                            %break
+                        %case "OR"
+                            %<y0Label> |=  (%<uiLabel>);
+                            %break
+                        %case "NOR"
+                            %<y0Label> &= ~(%<uiLabel>);
+                            %break
+                        %case "XOR"
+                            %<y0Label> ^=  (%<uiLabel>);
+                            %break                                         
+                    %endswitch
+                    %%
+                %endroll
+            %endif
+            %%
+            %<FixPt_EmulationSignExt(y0Label,y0DT)>\
+            %%
+        %endif %% "NOT" and Scalar/Nonscalar
+    %endif   %% Number of input ports
+    %%
+    %% blank line for formating
+
+%endfunction
+
+
+%% BlockOutputSignal ====================================================
+%% Callback function for expression folding. This is called only if the
+%% input data type does not require sign extension.
+%%
+%% Logic:
+%%
+%%    If (don't use Bitmask) and (operator != "NOT")
+%%
+%%        Loop over the input signals, performing the operation between
+%%        input signals, and finally return scalar value.
+%%
+%%    else (now its either use bitmask or the NOT operator)
+%%
+%%        if (use bitmask) and (not the NOT operator)
+%%            create masks into variable opds
+%%        Now do a vector expansion of the output with the operator and opds
+%%        (note that in this case, the output signal dimension is same as
+%%        input signal dimension)
+%%
+%%    end
+%%
+%function BlockOutputSignal(block,system,portIdx,ucv,lcv,idx,retType) void
+  %%
+  %if retType != "Signal"
+    %assign errTxt = "Unsupported return type: %<retType>"
+    %<LibBlockReportError(block,errTxt)>
+  %endif
+  %%
+  %assign y0DT = FixPt_GetOutputDataType(0)
+  %assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+  %assign retString = ""
+  %assign inpDims = LibBlockInputSignalDimensions(0)
+  %if TYPE(inpDims) == "Vector"
+    %assign inpDims = inpDims[0]*inpDims[1]
+  %endif
+  %%
+  %foreach inpPortIdx = block.NumDataInputPorts
+    %assign tmpInpDims = LibBlockInputSignalDimensions(inpPortIdx)
+    %if TYPE(tmpInpDims) == "Vector"
+      %assign tmpInpDims = tmpInpDims[0]*tmpInpDims[1]
+    %endif
+    %if inpDims < tmpInpDims
+      %assign inpDims = tmpInpDims
+    %endif
+  %endforeach
+  %%
+  %% Case when no bitmask is to be used. Instead only one input port that
+  %% could possibly be a vector. The vector input is collapsed into a
+  %% scalar output by performing the operations between the elements of
+  %% the vector input.
+  %%
+  %if FixPtUseBitMask == "FALSE" && FixPtLogicOpStr != "NOT" && block.NumDataInputPorts == 1
+    %%
+    %assign retString = "(%<retString>"
+    %%
+    %foreach inpSigIdx = inpDims[0]-1
+      %%
+      %assign opds = LibBlockInputSignal(0,"","",inpSigIdx+1)
+      %%
+      %switch(FixPtLogicOpStr)
+	%case "NAND"
+	%case "AND"
+	  %assign retString = "%<retString> & %<opds>"
+	  %break
+	  %%
+	%case "NOR"
+	%case "OR"
+	  %assign retString = "%<retString> | %<opds>"
+	  %break
+	  %%
+	%case "XOR"
+	  %assign retString = "%<retString> ^ %<opds>"
+	  %break
+	  %%
+	%default
+	  %assign errTxt = "No bitmask used and NOT operator not used"
+	  %<LibBlockReportError(block,errTxt)>
+	  %%  
+      %endswitch
+      %%
+    %endforeach
+    %%
+    %if FixPtLogicOpStr == "NAND" || FixPtLogicOpStr == "NOR"
+      %assign retString = "(~%<retString>))"
+    %else
+      %assign retString = "%<retString>)"
+    %endif
+    %%
+    %return retString
+    %%
+  %endif
+  %%
+  %% The following case is to handle the case when the number of
+  %% input ports exceeds one. This mode does not use the bitmask.
+  %% Instead, the logic operation is done between the different
+  %% signal elements of the input port signals.
+  %%
+  %% NOTES:
+  %% 1. Note that the dimension of the output port is determined by
+  %% largest input signal dimension amongst all input ports.
+  %% 2. Note that for the NOT operation, only one input port can be
+  %% specified. NOT is handled as the last case in this function.
+  %%
+  %if FixPtUseBitMask == "FALSE" && FixPtLogicOpStr != "NOT" && block.NumDataInputPorts > 1
+    %%
+    %assign u = LibBlockInputSignal(0, ucv, lcv, idx)
+    %assign retString = "(%<retString>"
+    %%
+    %foreach inpPortIdx = block.NumDataInputPorts
+      %%
+      %% Since retString already brings in the first input value
+      %% from outside this loop, we skip the following case:
+      %%
+      %if inpPortIdx == 0
+	%continue
+      %endif
+      %%
+      %assign sigDims = LibBlockInputSignalDimensions(inpPortIdx)
+      %%
+      %if  sigDims[0] > 1 || sigDims[1] > 1
+	%%
+	%assign opds = LibBlockInputSignal(inpPortIdx,"","",idx)
+	%%
+      %else 
+	%%
+	%%All input ports have same dimensions
+	%%
+	%assign opds = LibBlockInputSignal(inpPortIdx,"","",0)
+	%%
+      %endif
+      %%
+      %switch(FixPtLogicOpStr)
+	%case "NAND"
+	%case "AND"
+	  %assign retString = "%<retString> & %<opds>"
+	  %break
+	%case "NOR"
+	%case "OR"
+	  %assign retString = "%<retString> | %<opds>"
+	  %break
+	%case "XOR"
+	  %assign retString = "%<retString> ^ %<opds>"
+	  %break
+	%default
+	  %assign errTxt = "No bitmask used and NOT operator not used"
+	  %<LibBlockReportError(block,errTxt)>
+      %endswitch
+      %%
+    %endforeach
+    %%
+    %%Compensate for NAND and NOR and return
+    %%
+    %if FixPtLogicOpStr == "NAND" || FixPtLogicOpStr == "NOR"
+      %assign retString = "(~%<retString>))"
+    %else
+      %assign retString = "%<retString>)"
+    %endif
+    %%
+    %return retString
+    %%
+  %endif
+  %%
+  %% FixPtUseBitMask is TRUE. There should be only one input port.
+  %% In the case of the NOT operator (which is really the bitwise
+  %% complement of the input value), the parameter BitMask does not
+  %% exist. The following if statement handles this to create the
+  %% appropriate mask values.
+  %%
+  %if FixPtLogicOpStr != "NOT" && FixPtUseBitMask == "TRUE"
+    %%
+    %assign paramDims = LibBlockParameterDimensions(BitMask)
+    %%
+    %if SIZE(paramDims,0) != 1 || SIZE(paramDims,1) != 1
+      %assign opds = LibBlockParameter(BitMask,"",lcv,idx)
+    %else
+      %assign opds = LibBlockParameter(BitMask,"",0,0)
+    %endif
+    %%    
+  %else
+    %assign opds = ""
+  %endif
+  %%  
+  %switch(FixPtLogicOpStr)
+    %case "NAND"
+      %assign retString = "~(%<u> & %<opds>)"
+      %break
+    %case "NOR"
+      %assign retString = "~(%<u> | %<opds>)"
+      %break
+    %case "NOT"
+      %assign retString = "(~%<u>)"
+      %break
+    %case "AND"
+      %assign retString = "(%<u> & %<opds>)"
+      %break
+    %case "OR"
+      %assign retString = "(%<u> | %<opds>)"
+      %break
+    %case "XOR"
+      %assign retString = "(%<u> ^ %<opds>)"
+      %break
+  %endswitch
+  %%
+  %return retString
+  %%
+%endfunction
+
+%% [EOF] $RCSfile: sfix_bitop.tlc,v $

@@ -1,0 +1,1007 @@
+%%
+%% SDSPFILTER.TLC
+%%
+%% Abstract: Performs digital filtering on input signal
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%% $Revision: 1.25.4.3 $ $Date: 2004/04/12 23:08:37 $
+
+%implements sdspfilter "C"
+
+%% Function: BlockTypeSetup ==================================================
+%%
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block, "dspfilter_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ==================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% assign various enums for filter type and filter structure
+  %% NOTE:: IF THESE CHANGE, UPDATE S-FUNCTION ENUM ACCORDINGLY
+  %%
+  %% valid values for FilterTypeID:
+  %%
+  %assign ::DSP_IIR              = 0
+  %assign ::DSP_FIR              = 1
+  %assign ::DSP_ALLPOLE          = 2
+  %assign ::DSP_BIQUAD           = 3
+  %%
+  %% valid values for FilterStructureID:
+  %%
+  %assign ::DSP_DF            = 0
+  %assign ::DSP_TDF           = 1
+  %assign ::DSP_DF1           = 2
+  %assign ::DSP_DF1T          = 3
+  %assign ::DSP_DF2           = 4
+  %assign ::DSP_DF2T          = 5
+  %assign ::DSP_LATTICE       = 6
+  %assign ::DSP_DF2T_BQ4      = 7
+  %assign ::DSP_DF2T_BQ5      = 8
+  %assign ::DSP_DF2T_BQ6      = 9
+  %assign ::DSP_SYM_TYPE1     = 10
+  %assign ::DSP_SYM_TYPE2     = 11
+  %assign ::DSP_ANTISYM_TYPE3 = 12
+  %assign ::DSP_ANTISYM_TYPE4 = 13
+  %assign ::DSP_HALFBAND      = 14
+  %assign ::DSP_COUPLEDFORM   = 15
+  %%
+  %%
+  %assign INPORT       = 0
+  %assign OUTPORT      = 0
+  %assign COEFF1PORT   = 1
+  %assign COEFF2PORT   = 2
+  %%  
+  %assign block        = block + INPORT + OUTPORT + COEFF1PORT + COEFF2PORT
+  %%                   
+  %assign inDims            = LibBlockInputSignalDimensions(INPORT)
+  %assign inFrame           = LibBlockInputSignalIsFrameData(INPORT)
+  %assign numChans          = (inFrame) ? inDims[1] : LibBlockInputSignalWidth(INPORT)
+  %assign numSamps          = (inFrame) ? inDims[0] : 1
+  %assign outportIsComplex  = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+  %assign FilterTypeID      = SFcnParamSettings.FILTER_TYPE_ID
+  %assign FilterStructureID = SFcnParamSettings.FILTER_STRUCTURE_ID
+  %assign performA0Scale    = SFcnParamSettings.PERFORM_A0SCALE
+  %%
+  %assign inportIsComplex  = LibBlockInputSignalIsComplex(INPORT)
+  %assign inportDataTypeID = LibBlockInputSignalDataTypeId(INPORT)
+  %%
+  %assign CoeffsNeedNormalizing = ((FilterStructureID != DSP_LATTICE)        && \
+                                   (FilterTypeID != DSP_ALLPOLE)             && \
+                                   (!SFcnParamSettings.COEFFS_ARE_FROM_MASK) && \
+                                   (SFcnParamSettings.COEFFS_NOT_NORMALIZED) && \
+                                   ((FilterTypeID == DSP_IIR) || (FilterTypeID == DSP_ALLPOLE)))
+  %if SFcnParamSettings.COEFFS_ARE_FROM_MASK
+    %assign coeff1DataTypeID = LibBlockParameterDataTypeId(RTP1COEFF)
+    %assign coeff1IsComplex  = LibBlockParameterIsComplex(RTP1COEFF)
+    %if SFcnParamSettings.SECOND_COEFF_SET_USED
+      %assign coeff2DataTypeID = LibBlockParameterDataTypeId(RTP2COEFF)
+      %assign coeff2IsComplex  = LibBlockParameterIsComplex(RTP2COEFF)
+    %endif
+  %else
+    %assign coeff1DataTypeID = LibBlockInputSignalDataTypeId(COEFF1PORT)
+    %assign coeff1IsComplex  = LibBlockInputSignalIsComplex(COEFF1PORT)
+    %if SFcnParamSettings.SECOND_COEFF_SET_USED
+      %assign coeff2DataTypeID = LibBlockInputSignalDataTypeId(COEFF2PORT)
+      %assign coeff2IsComplex  = LibBlockInputSignalIsComplex(COEFF2PORT)
+    %endif
+  %endif
+  %if (!SFcnParamSettings.SECOND_COEFF_SET_USED)
+    %assign coeff2DataTypeID = 0
+    %assign coeff2IsComplex  = 0
+  %endif
+  %assign ConvertCoeff2Cplx    =  ((FilterStructureID == DSP_DF1T) && \
+                                   (!SFcnParamSettings.COEFFS_ARE_FROM_MASK) && \
+                                   ( coeff1IsComplex != coeff2IsComplex ))
+  %switch SFcnParamSettings.NORMALIZE_FCN_INDEX
+    %case 0
+      %assign normalizeFcnStr = "MWDSP_NormalizeVector_D"
+      %break
+    %case 1
+      %assign normalizeFcnStr = "MWDSP_NormalizeVector_Z"
+      %break
+    %case 2
+      %assign normalizeFcnStr = "MWDSP_NormalizeVector_R"
+      %break
+    %case 3
+      %assign normalizeFcnStr = "MWDSP_NormalizeVector_C"
+      %break
+    %default
+      %assign normalizeFcnStr = ""
+  %endswitch
+  %assign outportDTypeName = LibBlockOutputSignalDataTypeName(OUTPORT, "")
+  %assign inportDataType  = LibBlockInputSignalDataTypeName(INPORT, "")
+  %assign realInportDType = LibBlockInputSignalDataTypeName(INPORT, "%<tRealPart>")
+  %assign str            = (inportDataTypeID == 0) ? "" : "F"
+  %assign div            = (inportDataTypeID == 0) ? "" : "32"
+  %assign block = block + numChans + numSamps + outportIsComplex + FilterStructureID + FilterTypeID \
+                  + inportIsComplex + inportDataTypeID + coeff1DataTypeID + coeff1IsComplex \
+                  + coeff2DataTypeID + coeff2IsComplex + CoeffsNeedNormalizing + normalizeFcnStr + ConvertCoeff2Cplx \
+                  + outportDTypeName + inportDataType + realInportDType + str + div + performA0Scale
+
+%endfunction %%BlockInstanceSetup
+  
+%% Function: InitializeConditions ==============================================
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset Filter Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+  %assign filtStatePtr     = LibBlockDWorkAddr(FILT_STATES, "", "", 0)
+  %assign filtStateIsCplx  = LibBlockDWorkIsComplex(FILT_STATES)
+  %assign numStates        = LibBlockDWorkWidth(FILT_STATES) / numChans
+  %assign bytesPerElemStr  = "sizeof(%<outportDTypeName>)"
+  %assign chanDelays       = numStates
+  %switch FilterTypeID
+    %case DSP_IIR
+      %switch FilterStructureID
+        %case DSP_DF2T
+        %case DSP_DF2
+        %case DSP_DF1
+          %assign chanDelays = chanDelays - 1
+          %break
+      %endswitch
+      %break
+    %case DSP_FIR
+      %switch FilterStructureID
+        %case DSP_TDF
+        %case DSP_DF
+          %assign chanDelays = chanDelays - 1
+          %break
+      %endswitch
+      %break
+    %case DSP_ALLPOLE
+      %switch FilterStructureID
+        %case DSP_TDF
+        %case DSP_DF
+          %assign chanDelays = chanDelays - 1
+          %break
+      %endswitch
+      %break
+  %endswitch
+  %assign needExtraState = (chanDelays != numStates) ? 1 : 0
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign Coeff1Size = LibBlockParameterSize(RTP1COEFF)
+    %assign numCoeffs1 = (Coeff1Size[0] * Coeff1Size[1])
+    %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+      %assign Coeff2Size = LibBlockParameterSize(RTP2COEFF)
+      %assign numCoeffs2 = (Coeff2Size[0] * Coeff2Size[1])
+    %endif
+  %else
+    %% Coeffs are from ports: determine where and how many
+    %assign numCoeffs1 = LibBlockInputSignalWidth(COEFF1PORT)
+    %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+        %assign numCoeffs2 = LibBlockInputSignalWidth(COEFF2PORT)
+    %endif
+  %endif
+  %if (!SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+    %assign numCoeffs1 = numCoeffs1 / numSamps
+    %if (SFcnParamSettings.SECOND_COEFF_SET_USED) 
+      %assign numCoeffs2 = numCoeffs2 / numSamps
+    %endif
+  %endif
+  %assign ordCoeffs1  = numCoeffs1 - 1
+  %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+    %assign ordCoeffs2  = numCoeffs2 - 1
+  %endif
+  %%
+  %% Initializing condition is done seperately for DF1T case and the other cases
+  %if (FilterStructureID == DSP_DF1T) || (FilterStructureID == DSP_DF1)
+    %%
+    byte_T *statePtr = (byte_T *) %<filtStatePtr>;
+    %% Initializing states for DF1T and DF1 filter structures. 
+    %if (ordCoeffs1 > 0)
+      byte_T *IC_zeros_ptr  =    (byte_T *)%<LibBlockParameterAddr(ICRTP, "", "", 0)>;
+    %endif
+    %assign IC_zeros_dims          = LibBlockParameterDimensions(ICRTP)
+    %assign IC_zeros_rows          = IC_zeros_dims[0]
+    %assign IC_zeros_cols          = IC_zeros_dims[1]
+    %assign num_zeros_ICs          = IC_zeros_rows * IC_zeros_cols
+    %if (ordCoeffs2 > 0)
+      byte_T *IC_poles_ptr  =    (byte_T *)%<LibBlockParameterAddr(IC2RTP, "", "", 0)>;
+    %endif
+    %assign IC_poles_dims          = LibBlockParameterDimensions(IC2RTP)
+    %assign IC_poles_rows          = IC_poles_dims[0]
+    %assign IC_poles_cols          = IC_poles_dims[1]
+    %assign num_poles_ICs          = IC_poles_rows * IC_poles_cols
+    %if (num_poles_ICs > 1)
+     const int_T           bytesPerChan2 = %<ordCoeffs2> * %<bytesPerElemStr>;
+    %endif
+    %if (num_zeros_ICs > 1)
+     const int_T           bytesPerChan1 = %<ordCoeffs1> * %<bytesPerElemStr>;
+    %endif
+    %<outportDTypeName> outZeroValPtr[1];
+    %if (numChans > 1)
+      int_T chanCount = %<numChans>;
+      while (chanCount--) {
+    %endif
+      %if (num_poles_ICs == 1)
+       %if (ordCoeffs2 > 1)
+        int_T numElems2 = %<ordCoeffs2>;
+       %endif
+      %endif
+      %if (num_zeros_ICs == 1)
+       %% Scalar expansion of zeros side ICs.
+       %if (ordCoeffs1 > 1)
+        int_T numElems1 = %<ordCoeffs1>;
+        while (numElems1--) {
+       %endif
+         %if (ordCoeffs1 > 0)
+           memcpy(statePtr, IC_zeros_ptr, %<bytesPerElemStr>);
+           statePtr += %<bytesPerElemStr>;
+         %endif
+       %if (ordCoeffs1 > 1)
+        } 
+       %endif
+       %<fillExtraStateElemWithZeroforDF1T(block,bytesPerElemStr,outportDTypeName)> 
+      %else
+       %% We have a vector IC which has to be filled in the state vector.
+       memcpy(statePtr, IC_zeros_ptr, bytesPerChan1);
+       statePtr += bytesPerChan1;
+       %if (num_zeros_ICs == (numChans*ordCoeffs1))              
+           IC_zeros_ptr += bytesPerChan1;
+       %endif
+       %<fillExtraStateElemWithZeroforDF1T(block,bytesPerElemStr,outportDTypeName)>
+      %endif  %% (num_zeros_ICs == 1)
+      %%
+      %if (num_poles_ICs == 1)
+       %% Scalar expansion of zeros side ICs.
+       %if (ordCoeffs2 > 1)
+         while (numElems2--) {
+       %endif
+         %if (ordCoeffs2 > 0)
+           memcpy(statePtr, IC_poles_ptr, %<bytesPerElemStr>);
+           statePtr += %<bytesPerElemStr>;
+         %endif
+       %if (ordCoeffs2 > 1)
+        }
+       %endif
+       %<fillExtraStateElemWithZeroforDF1T(block,bytesPerElemStr,outportDTypeName)>
+      %else
+       %% We have a vector IC which has to be filled in the state vector.
+       memcpy(statePtr, IC_poles_ptr, bytesPerChan2);
+       statePtr += bytesPerChan2;
+       %if (num_poles_ICs == (numChans*ordCoeffs2))              
+           IC_poles_ptr += bytesPerChan2;
+       %endif
+       %<fillExtraStateElemWithZeroforDF1T(block,bytesPerElemStr,outportDTypeName)>
+      %endif  %% (num_zeros_ICs == 1) 
+    %if (numChans > 1)
+    }  
+    %endif  
+  %else
+      %% Initializing states for non-DF1T filter structures. 
+      %<outportDTypeName> *statePtr = (%<outportDTypeName> *) %<filtStatePtr>;
+      %assign IC_Ptr           = "(const %<outportDTypeName> *)" + LibBlockParameterAddr(ICRTP, "", "", 0)
+      %assign IC_dims          = LibBlockParameterDimensions(ICRTP)
+      %assign IC_rows          = IC_dims[0]
+      %assign IC_cols          = IC_dims[1]
+      %assign numICs           = IC_rows * IC_cols
+      %if (numICs == 1)
+        /* Scalar expansion of ICs with extra zero element per channel */
+        %if (numChans > 1)
+          int_T chanCount = %<numChans>;
+          while (chanCount--) {
+        %endif
+        %% Fill state buffer with IC elements
+        %if (chanDelays > 1)
+          int_T numElems = %<chanDelays>;
+          while (numElems--) {
+        %endif
+          %% In the case when there are no ICs we don't want to store IC_Ptr in statePtr 
+          %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+            %if ((ordCoeffs1 > 0) || (ordCoeffs2 > 0))
+              *statePtr++ = *%<IC_Ptr>;
+            %endif
+          %else
+            %if (ordCoeffs1 > 0)
+              *statePtr++ = *%<IC_Ptr>;
+            %endif
+          %endif
+        %if (chanDelays > 1)
+          }
+        %endif
+        %if (needExtraState)
+          %<fillExtraStateElemWithZero(block)>
+        %endif
+        %if (numChans > 1)
+          }
+        %endif
+      %elseif (numICs == chanDelays)
+        /* Vector ICs, same vector for all channels */
+        const int_T bytesPerChan = %<chanDelays> * %<bytesPerElemStr>;
+        %if (numChans > 1)
+          int_T chanCount = %<numChans>;
+          while (chanCount--) {
+        %endif
+        %% Fill state buffer with IC elements
+        memcpy(statePtr, %<IC_Ptr>, bytesPerChan);
+        statePtr += %<chanDelays>;
+        %if (needExtraState)
+          %<fillExtraStateElemWithZero(block)>
+        %endif
+        %if (numChans > 1)
+          }
+        %endif
+      %elseif (numICs == numChans * chanDelays)
+        /*  Matrix ICs */
+        const %<outportDTypeName> *ICPtr        = %<IC_Ptr>;
+        const int_T           bytesPerChan = %<chanDelays> * %<bytesPerElemStr>;
+        int_T                 chanCount    = %<numChans>;
+        while (chanCount--) {
+          %% Fill state buffer with IC elements
+          memcpy(statePtr, ICPtr, bytesPerChan);
+          statePtr += %<chanDelays>;
+          ICPtr    += %<chanDelays>;
+          %if (needExtraState)
+            %<fillExtraStateElemWithZero(block)>
+          %endif
+          }
+      %endif
+  %endif
+}  
+%endfunction %% InitializeConditions
+
+%% Function: Outputs ==================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Filter Implementation (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %switch (inportDataTypeID)
+     %case 0
+       %% Double precision floating-point
+       %assign datatypeStr = "double precision floating-point"
+       %break
+     %case 1
+       %% Single precision floating-point
+       %assign datatypeStr = "single precision floating-point"
+       %break
+     %default
+       %% Unsupported
+       %assign datatypeStr = "unsupported"
+  %endswitch  
+  %assign inpCplxStr = (inportIsComplex) ? "complex" : "real"
+  %assign FilterFcnNameStr = "MWDSP"
+  %%
+  %switch (FilterTypeID)
+    %case DSP_IIR
+      %% IIR Filter
+      %assign numCplxStr = (coeff1IsComplex) ? "complex" : "real"
+      %assign denCplxStr = (coeff2IsComplex) ? "complex" : "real"
+      %switch (FilterStructureID)
+        %case DSP_DF2T
+          /* Filter algorithm: IIR Direct-Form II Transpose (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr>, den coeffs - %<denCplxStr> */
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED && performA0Scale)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF2T_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF2T"
+          %endif
+          %break
+        %case DSP_DF1T
+          /* Filter algorithm: IIR Direct-Form I Transpose (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr>, den coeffs - %<denCplxStr> */
+          %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+            %% Coeffs are from mask - stored in RTP always
+            %assign Coeff1Size = LibBlockParameterSize(RTP1COEFF)
+            %assign numCoeffs1 = (Coeff1Size[0] * Coeff1Size[1])
+            %assign Coeff2Size = LibBlockParameterSize(RTP2COEFF)
+            %assign numCoeffs2 = (Coeff2Size[0] * Coeff2Size[1])
+          %else
+            %% Coeffs are from ports: determine where and how many
+            %assign numCoeffs1 = LibBlockInputSignalWidth(COEFF1PORT)
+            %assign numCoeffs2 = LibBlockInputSignalWidth(COEFF2PORT)
+          %endif
+          %if (!SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+            %assign numCoeffs1 = numCoeffs1 / numSamps
+            %assign numCoeffs2 = numCoeffs2 / numSamps
+          %endif
+          %%
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF1T_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF1T"
+          %endif
+          %break
+        %case DSP_DF2
+          /* Filter algorithm: IIR Direct-Form II (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr>, den coeffs - %<denCplxStr> */
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF2_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF2"
+          %endif
+          %break
+        %case DSP_DF1
+          /* Filter algorithm: IIR Direct-Form I (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr>, den coeffs - %<denCplxStr> */
+          %%
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF1_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_IIR_DF1"
+          %endif
+          %break
+        %case DSP_LATTICE
+        %default
+          %error "The specified structure is not supported for IIR filters."
+          %break
+      %endswitch
+      %break
+    %case DSP_FIR
+      %% FIR Filter
+      %assign numCplxStr = (coeff1IsComplex) ? "complex" : "real"
+      %switch (FilterStructureID)
+        %case DSP_TDF
+          /* Filter algorithm: FIR Transposed Direct-Form (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr> */
+          %assign FilterFcnNameStr = FilterFcnNameStr + "_FIR_TDF"
+          %break
+        %case DSP_LATTICE
+          /* Filter algorithm: FIR Lattice (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, reflection coeffs - %<numCplxStr> */
+          %assign FilterFcnNameStr = FilterFcnNameStr + "_FIR_Lat"
+          %break
+        %case DSP_DF
+          /* Filter algorithm: FIR Direct-Form (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, num coeffs - %<numCplxStr> */
+          %assign FilterFcnNameStr = FilterFcnNameStr + "_FIR_DF"
+          %break
+        %case DSP_SYM_TYPE1
+        %case DSP_SYM_TYPE2
+        %case DSP_ANTISYM_TYPE3
+        %case DSP_ANTISYM_TYPE4
+        %case DSP_HALFBAND
+        %default
+          %error "The specified structure is not supported for FIR filters."
+          %break
+      %endswitch
+      %break
+    %case DSP_ALLPOLE
+      %% ALLPOLE Filter
+      %assign denCplxStr = (coeff1IsComplex) ? "complex" : "real"
+      %switch (FilterStructureID)
+        %case DSP_DF
+          /* Filter algorithm: All-Pole  Direct-Form (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, den coeffs - %<denCplxStr> */
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_AllPole_DF_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_AllPole_DF"
+          %endif
+          %break
+        %case DSP_TDF
+          /* Filter algorithm: All-Pole Transposed Direct-Form (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, den coeffs - %<denCplxStr> */
+          %if (SFcnParamSettings.COEFFS_NOT_NORMALIZED)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_AllPole_TDF_A0Scale"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "_AllPole_TDF"
+          %endif
+          %break
+        %case DSP_LATTICE
+          /* Filter algorithm: All-Pole Lattice (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, reflection coeffs - %<denCplxStr> */
+          %assign FilterFcnNameStr = FilterFcnNameStr + "_AllPole_Lat"
+          %break
+        %case DSP_DF
+        %case DSP_COUPLEDFORM
+        %default
+          %error "The specified structure is not supported for All-Pole filters."
+          %break
+      %endswitch
+      %break
+    %case DSP_BIQUAD
+      %% BIQUAD Filter
+      %assign coeffCplxStr = (coeff1IsComplex) ? "complex" : "real"
+      %switch (FilterStructureID)
+        %case DSP_DF2T_BQ5
+          /* Filter algorithm: Cascaded second-order DF2T sections (%<datatypeStr>) */
+          /* Complexities: input - %<inpCplxStr>, coeffs - %<coeffCplxStr> */
+          %assign FilterFcnNameStr = FilterFcnNameStr + "_BQ5_DF2T"
+          %break
+        %case DSP_DF2T_BQ4
+        %case DSP_DF2T_BQ6
+        %default
+          %error "The specified structure is not supported for BiQuad filters."
+          %break
+      %endswitch
+      %break
+    %default
+      %% Invalid/unsupported filter type
+      %error "The specified filter type is not supported."
+  %endswitch
+  %% Append '1fpf' or '1fps' depending on filter coefficient update rate
+  %if (FilterTypeID == DSP_BIQUAD)
+    %if (SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_1fpf"
+    %else
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_1fps"
+    %endif
+    %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+      %assign coeffSize = LibBlockParameterSize(RTP1COEFF)
+      %assign numCoeffs = coeffSize[0] * coeffSize[1]
+    %else
+      %assign numCoeffs = LibBlockInputSignalWidth(COEFF1PORT)
+    %endif
+    %switch FilterStructureID
+      %case DSP_DF2T_BQ5
+        %assign numSections = numCoeffs / 5
+        %break
+      %default
+        %error "Unable to determine number of sections for specified Biquad filter structure.  Please update Outputs fcn in sdspfilter.tlc."
+    %endswitch
+    %if (numSections == 1)
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_1sos"
+    %else
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_Nsos"
+    %endif
+  %endif
+  %% Append single-letter prefix for input datatype
+  %if (inportDataTypeID == 0)
+    %% input datatype is double-precision floating point
+    %if (inportIsComplex)
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_Z"
+    %else
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_D"
+    %endif
+  %else
+    %% input datatype is single-precision floating point
+    %if (inportIsComplex)
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_C"
+    %else
+      %assign FilterFcnNameStr = FilterFcnNameStr + "_R"
+    %endif
+  %endif
+  %% for the DSP_DF1T, DSP_DF2T, DSP_DF1 and DSP_DF2 filter structure, we have  1 run-time function for the case when both
+  %% numerator and denominator filter coefficients are real, otherwise we choose the other when
+  %% where any or both coefficients can be complex. 
+  %% 
+  %if (FilterTypeID == DSP_IIR) 
+      %% Append single-letter prefix based on first and second coefficient set datatype. 
+      %if (coeff1DataTypeID == 0)
+        %% first coeff set datatype is double-precision floating point
+        %if (coeff1IsComplex || coeff2IsComplex)
+          %assign FilterFcnNameStr = FilterFcnNameStr + "Z"
+        %else
+          %assign FilterFcnNameStr = FilterFcnNameStr + "D"
+        %endif
+      %else
+        %% first coeff set datatype is single-precision floating point
+        %if (coeff1IsComplex || coeff2IsComplex)
+          %assign FilterFcnNameStr = FilterFcnNameStr + "C"
+        %else
+          %assign FilterFcnNameStr = FilterFcnNameStr + "R"
+        %endif
+      %endif
+  %else
+      %% Append single-letter prefix for first coefficient set datatype
+      %if (coeff1DataTypeID == 0)
+        %% first coeff set datatype is double-precision floating point
+        %if (coeff1IsComplex)
+          %assign FilterFcnNameStr = FilterFcnNameStr + "Z"
+        %else
+          %assign FilterFcnNameStr = FilterFcnNameStr + "D"
+        %endif
+      %else
+        %% first coeff set datatype is single-precision floating point
+        %if (coeff1IsComplex)
+          %assign FilterFcnNameStr = FilterFcnNameStr + "C"
+        %else
+          %assign FilterFcnNameStr = FilterFcnNameStr + "R"
+        %endif
+      %endif
+      %% Append single-letter prefix for second coefficient set datatype (if needed)
+      %if SFcnParamSettings.SECOND_COEFF_SET_USED
+        %if (coeff2DataTypeID == 0)
+          %% second coeff set datatype is double-precision floating point
+          %if (coeff2IsComplex)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "Z"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "D"
+          %endif
+        %else
+          %% second coeff set datatype is single-precision floating point
+          %if (coeff2IsComplex)
+            %assign FilterFcnNameStr = FilterFcnNameStr + "C"
+          %else
+            %assign FilterFcnNameStr = FilterFcnNameStr + "R"
+          %endif
+        %endif
+      %endif
+  %endif
+  %% Need to convert the coefficients to complex in case of all the IIR filter case.
+  %% Do this currently only when coeffs. come from input port. 
+  %if ((FilterTypeID == DSP_IIR) && (!SFcnParamSettings.COEFFS_ARE_FROM_MASK) && (coeff1IsComplex != coeff2IsComplex))
+    {
+      %if (coeff2IsComplex)
+        int_T numCoeffs             = %<LibBlockInputSignalWidth(COEFF1PORT)>; 
+        %<realInportDType>   *SrcPtr = %<LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)>;
+      %else
+        int_T numCoeffs             = %<LibBlockInputSignalWidth(COEFF2PORT)>; 
+        %<realInportDType>   *SrcPtr = %<LibBlockInputSignalAddr(COEFF2PORT, "", "", 0)>;
+      %endif
+      c%<realInportDType>  *DstPtr = %<LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)>; 
+      while (numCoeffs--) {
+          (DstPtr->re) = *SrcPtr++;
+          (DstPtr++)->im = 0.0%<str>;
+      }
+    }
+  %endif
+  %%
+  %if (CoeffsNeedNormalizing && (!performA0Scale) && (FilterStructureID != DSP_DF2) && (FilterStructureID != DSP_DF1T))
+    %% Generate code to normalize coefficients from input ports and store in DWorks
+    /* Normalizing input coefficients by leading denominator coefficient */
+    /* Don't need to do any normalization in case of DF2 filter structure as the 
+     * run-time function take into account the 1/a0 term to compensate for non-unity first
+     * denominator coeff. */
+    %<normalizePortCoeffs(block)>
+  %endif
+  %% Now we need to  convert coefficient to complex datatype if needed (only done for DF1T filter structure
+  /* Implementing filter algorithm */
+   %<FilterFcnNameStr>(%<genFilterArgsList(block)>);
+/%
+  %if (CoeffsNeedNormalizing && (FilterTypeID == DSP_ALLPOLE) && !performA0Scale)
+      /* Scaling output samples by leading denominator coefficient */
+      %<scaleAllPoleOutputs(block)>
+  %endif
+%/
+%endfunction %% Outputs
+
+
+%% ======================================================================
+%% Local helper sub-functions
+%% ======================================================================
+
+
+%% Function: genFilterArgsList
+%%
+%% Abstract: Constructs and returns a comma-separated list of input arguments
+%%           to be used during calls to filter run-time functions.
+%%
+%function genFilterArgsList(block) void
+%%
+  %assign U_Ptr     = LibBlockInputSignalAddr(INPORT, "", "", 0)
+  %assign Y_Ptr     = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+  %assign State_Ptr = LibBlockDWorkAddr(FILT_STATES, "", "", 0)
+  %assign numStates = LibBlockDWorkWidth(FILT_STATES) / numChans
+  %if (SFcnParamSettings.COEFFS_ARE_FROM_MASK)
+    %% Coeffs are from mask - stored in RTP always
+    %assign Coeff1_Ptr = LibBlockParameterAddr(RTP1COEFF, "", "", 0)
+    %assign Coeff1Size = LibBlockParameterSize(RTP1COEFF)
+    %assign numCoeffs1 = (Coeff1Size[0] * Coeff1Size[1])
+    %%
+    %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+      %assign Coeff2_Ptr = LibBlockParameterAddr(RTP2COEFF, "", "", 0)
+      %assign Coeff2Size = LibBlockParameterSize(RTP2COEFF)
+      %assign numCoeffs2 = (Coeff2Size[0] * Coeff2Size[1])
+    %endif
+    %%
+  %else
+    %if (FilterStructureID == DSP_DF1) || (FilterStructureID == DSP_DF2) || (FilterStructureID == DSP_DF1T) || ((FilterStructureID == DSP_DF2T) && performA0Scale)
+        %if (!coeff1IsComplex  && coeff2IsComplex)
+          %assign numCoeffs1 = LibBlockDWorkWidth(COEFF1DWORK)
+          %assign Coeff1_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+        %else
+          %assign numCoeffs1 = LibBlockInputSignalWidth(COEFF1PORT)
+          %assign Coeff1_Ptr = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+        %endif
+        %%
+        %if (coeff1IsComplex  && !coeff2IsComplex )
+          %assign numCoeffs2 = LibBlockDWorkWidth(COEFF1DWORK)
+          %assign Coeff2_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+        %else
+          %assign numCoeffs2 = LibBlockInputSignalWidth(COEFF2PORT)
+          %assign Coeff2_Ptr = LibBlockInputSignalAddr(COEFF2PORT, "", "", 0)
+        %endif
+    %else
+        %if (performA0Scale)
+          %if (SFcnParamSettings.SECOND_COEFF_SET_USED) && (!coeff1IsComplex)  && (coeff2IsComplex)
+            %assign Coeff1_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+          %else 
+            %assign Coeff1_Ptr = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+          %endif
+        %else 
+          %if (CoeffsNeedNormalizing) || ((SFcnParamSettings.SECOND_COEFF_SET_USED) && (!coeff1IsComplex)  && (coeff2IsComplex))
+            %assign Coeff1_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+          %else
+            %assign Coeff1_Ptr = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+          %endif
+        %endif
+        %assign numCoeffs1 = LibBlockInputSignalWidth(COEFF1PORT)
+        %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+          %if (performA0Scale)
+            %if (!coeff1IsComplex)  && (coeff2IsComplex)
+              %assign Coeff2_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+            %else 
+              %assign Coeff2_Ptr = LibBlockInputSignalAddr(COEFF2PORT, "", "", 0)
+            %endif
+          %else 
+            %if (CoeffsNeedNormalizing)
+              %assign Coeff2_Ptr = LibBlockDWorkAddr(COEFF2DWORK, "", "", 0)
+            %elseif (coeff1IsComplex)  && (!coeff2IsComplex)
+              %assign Coeff2_Ptr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+            %else
+              %assign Coeff2_Ptr = LibBlockInputSignalAddr(COEFF2PORT, "", "", 0)
+            %endif
+          %endif
+          %assign numCoeffs2 = LibBlockInputSignalWidth(COEFF2PORT)
+        %endif
+    %endif
+    %if (!SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+      %assign numCoeffs1 = numCoeffs1 / numSamps
+      %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+        %assign numCoeffs2 = numCoeffs2 / numSamps
+      %endif
+    %endif
+  %endif
+  %if (!SFcnParamSettings.SECOND_COEFF_SET_USED)
+    %assign Coeff2_Ptr = "NULL"
+    %assign numCoeffs2 = 0
+  %endif
+  %assign filterArgsListStr = "%<U_Ptr>" + ", %<Y_Ptr>" + ", %<State_Ptr>"
+  %switch FilterTypeID
+    %case DSP_IIR
+      %switch FilterStructureID
+        %case DSP_DF2T
+        %case DSP_DF1T
+        %case DSP_DF2
+        %case DSP_DF1
+          %assign numCoeffs1 = numCoeffs1 - 1
+          %assign numCoeffs2 = numCoeffs2 - 1
+          %break  
+        %default
+          %error "Unable to generate argument list for specified IIR filter structure.  Update genFilterArgsList function in sdspfilter.tlc."
+      %endswitch
+      %if (FilterStructureID == DSP_DF2)    
+        %assign DF2_CurrIndx = LibBlockDWorkAddr(IIRDF_INDX, "", "", 0)
+        %assign filterArgsListStr = filterArgsListStr + ",(int32_T *)%<DF2_CurrIndx>" + ", %<numStates-1>" + ", %<numSamps>" + ", %<numChans>"
+      %elseif (FilterStructureID == DSP_DF1)
+        %assign DF1_CurrIndx = LibBlockDWorkAddr(IIRDF_INDX, "", "", 0)
+        %assign filterArgsListStr = filterArgsListStr + ",(int32_T *)%<DF1_CurrIndx>" + ", %<numStates>" + ", %<numSamps>" + ", %<numChans>"
+      %else
+        %assign filterArgsListStr = filterArgsListStr + ", %<numStates>" + ", %<numSamps>" + ", %<numChans>"
+      %endif
+      %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numCoeffs1>"
+      %assign filterArgsListStr = filterArgsListStr + ", %<Coeff2_Ptr>" + ", %<numCoeffs2>"
+      %assign filterArgsListStr = filterArgsListStr + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>" 
+    %break
+    %case DSP_FIR
+      %switch FilterStructureID
+        %case DSP_DF
+          %assign numCoeffs1 = numCoeffs1 - 1
+          %assign filterArgsListStr = filterArgsListStr + ", %<LibBlockDWorkAddr(DF_INDX, "", "", 0)>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<numStates>" + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %case DSP_TDF
+          %assign numCoeffs1 = numCoeffs1 - 1
+          %assign filterArgsListStr = filterArgsListStr + ", %<numStates>" + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numCoeffs1>" + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %case DSP_LATTICE
+          %assign filterArgsListStr = filterArgsListStr + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numCoeffs1>" + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %default
+          %error "Unable to generate argument list for specified FIR filter structure.  Update genFilterArgsList function in sdspfilter.tlc."
+      %endswitch
+    %break
+    %case DSP_ALLPOLE
+      %switch FilterStructureID
+        %case DSP_DF
+          %assign numCoeffs1 = numCoeffs1 - 1
+          %assign filterArgsListStr = filterArgsListStr + ", %<LibBlockDWorkAddr(DF_INDX, "", "", 0)>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<numStates-1>" + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>"  + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %case DSP_TDF
+          %assign numCoeffs1 = numCoeffs1 - 1
+          %assign filterArgsListStr = filterArgsListStr + ", %<numStates>" + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numCoeffs1>" + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %case DSP_LATTICE
+          %assign filterArgsListStr = filterArgsListStr + ", %<numSamps>" + ", %<numChans>"
+          %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numCoeffs1>" + ", %<SFcnParamSettings.COEFFS_UPDATE_PER_FRAME>"
+          %break
+        %default
+          %error "Unable to generate argument list for specified All-Pole filter structure.  Update genFilterArgsList function in sdspfilter.tlc."
+      %endswitch
+      %break
+    %case DSP_BIQUAD
+      %switch FilterStructureID
+        %case DSP_DF2T_BQ5
+          %assign numSections = numCoeffs1 / 5
+          %if (numSections == 1)
+            %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numSamps>" + ", %<numChans>"
+          %else
+            %assign filterArgsListStr = filterArgsListStr + ", %<Coeff1_Ptr>" + ", %<numSamps>" + ", %<numChans>" + ", %<numSections>"
+          %endif
+          %break
+        %default
+          %error "Unable to generate argument list for specified Biquad filter structure.  Update genFilterArgsList function in sdspfilter.tlc."
+      %endswitch
+      %break
+    %default
+      %error "Unable to generate argument list for specified filter.  Update genFilterArgsList function in sdspfilter.tlc."
+  %endswitch
+  %return filterArgsListStr
+%endfunction  %% genFilterArgsList
+
+
+
+%% Function: scaleAllPoleOutputs ================================================
+%%
+%function scaleAllPoleOutputs(block) Output
+  {
+    %assign outPtr   = LibBlockOutputSignalAddr(OUTPORT, "", "", 0)
+    %assign denPtr   = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+    %assign numMult  = (outportIsComplex != coeff1IsComplex) ? 2 : 1
+
+    %if (SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+      %% 1-filter-per-frame AllPole mode
+      %assign numElems  = numMult * LibBlockOutputSignalWidth(OUTPORT)
+      %<normalizeFcnStr>(%<denPtr>, %<outPtr>, %<outPtr>, %<numElems>);
+    %else
+      %% 1-filter-per-sample AllPole mode
+      %assign numDenCoeffsPerSet = LibBlockInputSignalWidth(COEFF1PORT) / numSamps
+      %assign denDataTypeStr     = LibBlockInputSignalDataTypeName(COEFF1PORT,"%<tRealPart>")
+      %assign bytesPerCoeffStr   = (coeff1IsComplex) \
+                                 ? "(2 * sizeof(%<denDataTypeStr>))" \
+                                 : "sizeof(%<denDataTypeStr>)"
+      %assign bytesPerDenSetStr  = "%<numDenCoeffsPerSet> * %<bytesPerCoeffStr>"
+      %assign outDataTypeStr     = LibBlockOutputSignalDataTypeName(OUTPORT,"%<tRealPart>")
+      %assign bytesPerOutElemStr = (outportIsComplex) \
+                                 ? "(2 * sizeof(%<outDataTypeStr>))" \
+                                 : "sizeof(%<outDataTypeStr>)"
+
+      %if ((numChans == 1) && (numSamps == 1))
+        %<normalizeFcnStr>(%<denPtr>, %<outPtr>, %<outPtr>, %<numMult>);
+      %else
+        const int_T bytesPerDenSet = %<bytesPerDenSetStr>;
+        const int_T bytesPerOutElem = %<bytesPerOutElemStr>;
+        byte_T *yPtr = (byte_T *) %<outPtr>;
+        int_T chanCount = %<numChans>;
+        while (chanCount--) {
+          byte_T *kPtr = (byte_T *) %<denPtr>;
+          int_T sampCount = %<numSamps>;
+          while (sampCount--) {
+            %<normalizeFcnStr>(kPtr, yPtr, yPtr, %<numMult>);
+            kPtr += bytesPerDenSet;
+            yPtr += bytesPerOutElem;
+          }
+        }
+      %endif
+    %endif
+  }
+%endfunction %% scaleAllPoleOutputs
+
+
+%% Function: normalizePortCoeffs ================================================
+%%
+%function normalizePortCoeffs(block) Output
+  {
+    %% If this function is called, it's because the filter type is either IIR or 
+    %% AllPole.  A check of whether the second coefficient set is used will 
+    %% be sufficient to distinguish between the two.  In either case, the
+    %% paradigm to follow is to read the coefficients from a source pointer,
+    %% normalize them by reading the leading denominator coefficient, and
+    %% then write the scaled coefficient into a destination pointer.
+    %% Since the coefficients come from ports, the source pointers are
+    %% input signals and the destination pointers are DWork areas.
+    %% If the coefficients are fed in the 1-filter-per-sample mode,
+    %% there will be a separate set of coefficients for every sample in
+    %% the input frame.  Normalization gets pretty tricky in that case.
+    %%
+    %if (SFcnParamSettings.SECOND_COEFF_SET_USED)
+      %% IIR Mode
+      %assign numSrcPtr = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+      %assign numDstPtr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+      %assign denSrcPtr = LibBlockInputSignalAddr(COEFF2PORT, "", "", 0)
+      %assign denDstPtr = LibBlockDWorkAddr(COEFF2DWORK, "", "", 0)
+      %if (SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+        %% 1-filter-per-frame IIR mode
+        %assign numNumCoeffs = LibBlockInputSignalWidth(COEFF1PORT)
+        %assign numDenCoeffs = LibBlockInputSignalWidth(COEFF2PORT)
+        %<normalizeFcnStr>(%<denSrcPtr>, %<numDstPtr>, %<numSrcPtr>, %<numNumCoeffs>);
+        %<normalizeFcnStr>(%<denSrcPtr>, %<denDstPtr>, %<denSrcPtr>, %<numDenCoeffs>);
+      %else
+        %% 1-filter-per-sample IIR mode
+        %assign numNumCoeffs      = LibBlockInputSignalWidth(COEFF1PORT) / numSamps
+        %assign numDenCoeffs      = LibBlockInputSignalWidth(COEFF2PORT) / numSamps
+        %assign denDataTypeStr    = LibBlockInputSignalDataTypeName(COEFF2PORT,"%<tRealPart>")
+        %assign bytesPerElemStr   = (coeff2IsComplex) \
+                                  ? "(2 * sizeof(%<denDataTypeStr>))" \
+                                  : "sizeof(%<denDataTypeStr>)"
+        %assign bytesPerNumSetStr = "%<numNumCoeffs> * %<bytesPerElemStr>"
+        %assign bytesPerDenSetStr = "%<numDenCoeffs> * %<bytesPerElemStr>"
+        byte_T     *numSrcPtr      = (byte_T *) %<numSrcPtr>;
+        byte_T     *numDstPtr      = (byte_T *) %<numDstPtr>;
+        byte_T     *denSrcPtr      = (byte_T *) %<denSrcPtr>;
+        byte_T     *denDstPtr      = (byte_T *) %<denDstPtr>;
+        const int_T bytesPerNumSet = %<bytesPerNumSetStr>;
+        const int_T bytesPerDenSet = %<bytesPerDenSetStr>;
+        int_T       sampCount      = %<numSamps>;
+        
+        while (sampCount--) {
+          %<normalizeFcnStr>(denSrcPtr, numDstPtr, numSrcPtr, %<numNumCoeffs>);
+          numSrcPtr += bytesPerNumSet;
+          numDstPtr += bytesPerNumSet;
+          %<normalizeFcnStr>(denSrcPtr, denDstPtr, denSrcPtr, %<numDenCoeffs>);
+          denSrcPtr += bytesPerDenSet;
+          denDstPtr += bytesPerDenSet;
+        }
+      %endif
+    %else
+      %% AllPole Mode
+      %assign denSrcPtr = LibBlockInputSignalAddr(COEFF1PORT, "", "", 0)
+      %assign denDstPtr = LibBlockDWorkAddr(COEFF1DWORK, "", "", 0)
+      %if (SFcnParamSettings.COEFFS_UPDATE_PER_FRAME)
+        %% 1-filter-per-frame AllPole mode
+        %assign numDenCoeffs = LibBlockInputSignalWidth(COEFF1PORT)
+        %<normalizeFcnStr>(%<denSrcPtr>,%<denDstPtr>,%<denSrcPtr>,%<numDenCoeffs>);
+      %else
+        %% 1-filter-per-sample AllPole mode
+        %assign denDataTypeStr    = LibBlockInputSignalDataTypeName(COEFF1PORT,"%<tRealPart>")
+        %assign numDenCoeffs = LibBlockInputSignalWidth(COEFF1PORT) / numSamps
+        %assign bytesPerElemStr   = (coeff1IsComplex) \
+                                  ? "(2 * sizeof(%<denDataTypeStr>))" \
+                                  : "sizeof(%<denDataTypeStr>)"
+        %assign bytesPerDenSetStr = "%<numDenCoeffs> * %<bytesPerElemStr>"
+        byte_T     *denSrcPtr      = (byte_T *) %<denSrcPtr>;
+        byte_T     *denDstPtr      = (byte_T *) %<denDstPtr>;
+        const int_T bytesPerDenSet = %<bytesPerDenSetStr>;
+        int_T       sampCount      = %<numSamps>;
+        
+        while (sampCount--) {
+          %<normalizeFcnStr>(denSrcPtr, denDstPtr, denSrcPtr, %<numDenCoeffs>);
+          denSrcPtr += bytesPerDenSet;
+          denDstPtr += bytesPerDenSet;
+        }
+      %endif
+    %endif
+  }
+%endfunction %% normalizePortCoeffs
+
+
+%% Function: fillExtraStateElemWithZero ================================================
+%%
+%function fillExtraStateElemWithZero(block) Output
+  %assign outID      = LibBlockOutputSignalDataTypeId(OUTPORT)
+  %assign outZero    = LibGetGroundValueFromId(outID)
+  %% Fill extra state element with scalar zero
+  %if (outportIsComplex)
+    (*statePtr).re = %<outZero>; 
+    %if (numChans > 1)
+      (*statePtr++).im = %<outZero>;
+    %else
+      (*statePtr).im = %<outZero>;
+    %endif
+  %else
+    %if (numChans > 1)
+      *statePtr++ = %<outZero>;
+    %else
+      *statePtr = %<outZero>;
+    %endif
+  %endif
+%endfunction %% fillExtraStateElemWithZero
+
+%% Function: fillExtraStateElemWithZeroforDF1T   ================================================
+%%
+%function fillExtraStateElemWithZeroforDF1T(block,bytesPerElemStr,outportDTypeName) Output
+  %assign outID      = LibBlockOutputSignalDataTypeId(OUTPORT)
+  %if (outportIsComplex) 
+    outZeroValPtr->re = %<LibGetGroundValueFromId(outID)>;
+    outZeroValPtr->im = %<LibGetGroundValueFromId(outID)>;
+  %else
+    *outZeroValPtr = %<LibGetGroundValueFromId(outID)>;
+  %endif
+  memcpy(statePtr, (byte_T *)outZeroValPtr, %<bytesPerElemStr>);
+  statePtr += %<bytesPerElemStr>;
+%endfunction %% fillExtraStateElemWithZeroforDF1T
+
+
+%% [EOF] sdspsfilter.tlc

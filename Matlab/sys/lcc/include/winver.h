@@ -1,0 +1,114 @@
+/* $Revision: 1.2 $ */
+#ifndef	__WINVER_H
+#define	__WINVER_H
+#ifdef	UNICODE
+#define	VerFindFile	VerFindFileW
+#define	VerInstallFile	VerInstallFileW
+#define	GetFileVersionInfoSize	GetFileVersionInfoSizeW
+#define	GetFileVersionInfo	GetFileVersionInfoW
+#define	VerLanguageName	VerLanguageNameW
+#define	VerQueryValue	VerQueryValueW
+#else
+#define	VerFindFile	VerFindFileA
+#define	VerInstallFile	VerInstallFileA
+#define	GetFileVersionInfoSize	GetFileVersionInfoSizeA
+#define	GetFileVersionInfo	GetFileVersionInfoA
+#define	VerLanguageName	VerLanguageNameA
+#define VerQueryValue	VerQueryValueA
+#endif
+#define	VS_FILE_INFO	RT_VERSION
+#define	VS_VERSION_INFO	1
+#define	VS_USER_DEFINED	100
+#define	VS_FFI_SIGNATURE	0xFEEF04BDL
+#define	VS_FFI_STRUCVERSION	0x10000L
+#define	VS_FFI_FILEFLAGSMASK	0x3F
+#define	VS_FF_DEBUG	1
+#define	VS_FF_PRERELEASE	2
+#define	VS_FF_PATCHED	4
+#define	VS_FF_PRIVATEBUILD	8
+#define	VS_FF_INFOINFERRED	0x10L
+#define	VS_FF_SPECIALBUILD	0x20L
+#define	VOS_UNKNOWN	0
+#define	VOS_DOS	0x10000
+#define	VOS_OS216	0x20000
+#define	VOS_OS232	0x30000
+#define	VOS_NT	0x40000
+#define	VOS__BASE	0
+#define	VOS__WINDOWS16	1
+#define	VOS__PM16	2
+#define	VOS__PM32	3
+#define	VOS__WINDOWS32	4
+#define	VOS_DOS_WINDOWS16	0x10001
+#define	VOS_DOS_WINDOWS32	0x10004
+#define	VOS_OS216_PM16	0x20002
+#define	VOS_OS232_PM32	0x30003
+#define	VOS_NT_WINDOWS32	0x40004
+#define	VFT_UNKNOWN	0
+#define	VFT_APP	1
+#define	VFT_DLL	2
+#define	VFT_DRV	3
+#define	VFT_FONT	4
+#define	VFT_VXD	5
+#define	VFT_STATIC_LIB	7
+#define	VFT2_UNKNOWN	0
+#define	VFT2_DRV_PRINTER	1
+#define	VFT2_DRV_KEYBOARD	2
+#define	VFT2_DRV_LANGUAGE	3
+#define	VFT2_DRV_DISPLAY	4
+#define	VFT2_DRV_MOUSE	5
+#define	VFT2_DRV_NETWORK	6
+#define	VFT2_DRV_SYSTEM	7
+#define	VFT2_DRV_INSTALLABLE	8
+#define	VFT2_DRV_SOUND	9
+#define	VFT2_DRV_COMM	0xA
+#define	VFT2_DRV_INPUTMETHOD	0xB
+#define	VFT2_FONT_RASTER	1
+#define	VFT2_FONT_VECTOR	2
+#define	VFT2_FONT_TRUETYPE	3
+#define	VFFF_ISSHAREDFILE	1
+#define	VFF_CURNEDEST	1
+#define	VFF_FILEINUSE	2
+#define	VFF_BUFFTOOSMALL	4
+#define	VIFF_FORCEINSTALL	1
+#define	VIFF_DONTDELETEOLD	2
+#define	VIF_TEMPFILE	1
+#define	VIF_MISMATCH	2
+#define	VIF_SRCOLD	4
+#define	VIF_DIFFLANG	8
+#define	VIF_DIFFCODEPG	0x10L
+#define	VIF_DIFFTYPE	0x20L
+#define	VIF_WRITEPROT	0x40L
+#define	VIF_FILEINUSE	0x80L
+#define	VIF_OUTOFSPACE	0x100L
+#define	VIF_ACCESSVIOLATION	0x200L
+#define	VIF_SHARINGVIOLATION	0x400L
+#define	VIF_CANNOTCREATE	0x800L
+#define	VIF_CANNOTDELETE	0x1000L
+#define	VIF_CANNOTRENAME	0x2000L
+#define	VIF_CANNOTDELETECUR	0x4000L
+#define	VIF_OUTOFMEMORY	0x8000L
+#define	VIF_CANNOTREADSRC	0x10000L
+#define	VIF_CANNOTREADDST	0x20000L
+#define	VIF_BUFFTOOSMALL	0x40000L
+typedef	struct	_VS_FIXEDFILEINFO {
+	DWORD	dwSignature; DWORD	dwStrucVersion;
+	DWORD	dwFileVersionMS; DWORD	dwFileVersionLS;
+	DWORD	dwProductVersionMS; DWORD	dwProductVersionLS;
+	DWORD	dwFileFlagsMask; DWORD	dwFileFlags;
+	DWORD	dwFileOS; DWORD	dwFileType;
+	DWORD	dwFileSubtype; DWORD	dwFileDateMS;
+	DWORD	dwFileDateLS;
+}	VS_FIXEDFILEINFO;
+DWORD	APIENTRY	VerFindFileA(DWORD,LPSTR,LPSTR,LPSTR,LPSTR,PUINT,LPSTR,PUINT);
+DWORD	APIENTRY	VerFindFileW(DWORD,LPWSTR,LPWSTR,LPWSTR,LPWSTR,PUINT,LPWSTR,PUINT);
+DWORD	APIENTRY	VerInstallFileA(DWORD,LPSTR,LPSTR,LPSTR,LPSTR,LPSTR,LPSTR,PUINT);
+DWORD	APIENTRY	VerInstallFileW(DWORD,LPWSTR,LPWSTR,LPWSTR,LPWSTR,LPWSTR,LPWSTR,PUINT);
+DWORD	APIENTRY	GetFileVersionInfoSizeA(LPSTR,LPDWORD);
+DWORD	APIENTRY	GetFileVersionInfoSizeW(LPWSTR,LPDWORD);
+WINBOOL	APIENTRY	GetFileVersionInfoA(LPSTR,DWORD,DWORD,LPVOID);
+WINBOOL	APIENTRY	GetFileVersionInfoW(LPWSTR,DWORD,DWORD,LPVOID);
+DWORD	APIENTRY	VerLanguageNameA(DWORD,LPSTR,DWORD);
+DWORD	APIENTRY	VerLanguageNameW(DWORD,LPWSTR,DWORD);
+WINBOOL	APIENTRY	VerQueryValueA(LPVOID,LPSTR,LPVOID *,PUINT);
+WINBOOL	APIENTRY	VerQueryValueW(LPVOID,LPWSTR,LPVOID *,PUINT);
+#endif

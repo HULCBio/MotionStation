@@ -1,0 +1,357 @@
+%% c6000_ertmain.tlc
+%% $Revision: 1.1.6.2 $ 
+%% $Date: 2004/02/06 00:29:54 $
+%% Copyright 2001-2004 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   Generation of ERT-based main.c file for 
+%%   Embedded Target for TI C6000 DSP.
+%%   External mode, mat-file logging, and continuous states
+%%   are not supported by this target.  
+
+
+%selectfile NULL_FILE
+%include "c6000_main_common.tlc"
+
+%% Note:  FcnSingleRateWithoutOS and FcnMultiRateSingletaskingWithoutOS
+%%    are not implemented here.  They are inherited from ertmainlib.tlc.  
+%% FcnMultiRateMultitaskingWithoutOS is implemented here, because it requires
+%%    C6000-specific code.
+
+%% ==============================================================
+%function FcnMultiRateMultitaskingWithoutOS(cFile) void
+    %openfile tmpFcnBuf
+    boolean_T OverrunFlags[%<FcnNumST()>] = %<FcnOverrunFlagsInitStr()>;
+    %closefile tmpFcnBuf
+    %<SLibSetModelFileAttribute(cFile, "Definitions", tmpFcnBuf)>  
+
+    %openfile tmpFcnBuf
+  
+    %% %<FcnRTOneStepDescription()>
+    /* Function: rt_OneStep -------------------------------------------
+     *
+     * Abstract:
+     *      Perform one step of the model.  Multi-tasking implementation.
+     */
+    %assign rootSystem = System[NumSystems-1]
+    %assign reqInsts = LibGetSystemField(rootSystem,"ReqRootPrmHdrDataInsts")
+    %if !reqInsts.SimStructInst && !EmptyRealTimeObject
+        %assign simstructArg = "%<tSimStructType> *%<tSimStruct>"
+    %else
+        %assign simstructArg = "void"
+    %endif
+    %assign tid01Eq = FixedStepOpts.TID01EQ
+    void rt_OneStep(%<simstructArg>)
+    {
+        boolean_T eventFlags[%<FcnNumST()>]; /* Model has %<FcnNumST()> rates */
+        %if (FcnNumST() - tid01Eq) > 2
+            int_T i;
+        %endif
+
+        %<disable_c6x_interrupts()>
+
+        /* Check base rate for overrun */
+        if (OverrunFlags[0]++) {
+            IsrOverrun = 1;
+            %if (OverrunAction == "Notify_and_halt")
+                StopExecutionFlag = 1;
+                %<RTMSetErrStat("\"Overrun\"")>;
+            %else
+                OverrunFlags[0]--; // allow future iterations to succeed
+            %endif
+            return;
+        }
+    
+        %% /* Save FPU context here (if necessary) */
+        %<enable_c6x_interrupts()>
+
+        %<FcnCallEventFlagsFunction()>\
+    
+        /* Set model inputs associated with base rate here */
+
+        %assign rootSystem.CurrentTID = 0
+        %<FcnCallMdlStep(0)>\
+    
+        /* Get model outputs associated with base rate here */
+
+        OverrunFlags[0]--;
+    
+        /* Check subrates for overrun */
+        %if (FcnNumST() - tid01Eq) > 2
+            for (i = %<1+tid01Eq>; i < %<FcnNumST()>; i++) {
+                if (eventFlags[i]) {
+                    if (OverrunFlags[i]++) {
+                        IsrOverrun = 1;
+                        %if (OverrunAction == "Notify_and_halt")
+                            StopExecutionFlag = 1;
+                            %<RTMSetErrStat("\"Overrun\"")>;
+                        %else
+                            OverrunFlags[i]--; // allow future iterations to succeed
+                        %endif
+                        return;
+                    }
+    	  
+                    /* Set model inputs associated with subrates here */
+
+                    %if SLibIsRateGrouping()
+                        switch(i) {
+                            %foreach idx = NumSynchronousSampleTimes - 1 - tid01Eq
+                                %assign tid = idx + 1 + tid01Eq
+                                case %<tid> :
+                                    %assign rootSystem.CurrentTID = tid
+                                    %<FcnCallMdlStep(tid)>\
+                                    break;
+                            %endforeach
+                                default : 
+                                    break;
+                        }
+                    %else
+                        %<FcnCallMdlStep("i")>\
+                    %endif
+
+                    /* Get model outputs associated with subrates here */
+
+                    OverrunFlags[i]--;
+                }
+            }
+        %else
+            %assign tid = FcnNumST()-1
+            if (eventFlags[%<tid>]) {
+                if (OverrunFlags[%<tid>]++) {
+                    IsrOverrun = 1;
+                    %if (OverrunAction == "Notify_and_halt")
+                        StopExecutionFlag = 1;
+                        %<RTMSetErrStat("\"Overrun\"")>;
+                    %else
+                        OverrunFlags[%<tid>]--; // allow future iterations to succeed
+                    %endif
+                    return;
+                }
+                %assign rootSystem.CurrentTID = tid
+                /* Set model inputs associated with subrates here */
+                %<FcnCallMdlStep(tid)>\
+    
+                /* Get model outputs associated with subrates here */
+                OverrunFlags[%<tid>]--;
+            }    
+        %endif
+    
+        %% /* Disable interrupts here */
+        %% /* Restore FPU context here (if necessary) */
+        %% /* Enable interrupts here */
+    
+    }
+
+    %<FcnSimpleNonOSMain()>\
+    %closefile tmpFcnBuf
+    %return tmpFcnBuf
+%endfunction
+
+
+%% ==============================================================
+%% Function: render_singleratestep
+%% Abstract: Renders singleRateStep(), which is 
+%%           used in DSP/BIOS mode to augment rt_OneStep
+%%           with overrun handling
+%%
+%function render_singleratestep() void
+%openfile buff
+%assign rootSystem = System[NumSystems-1]
+%assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+%if !reqInsts.SimStructInst && !EmptyRealTimeObject
+    %assign simstructArg = tSimStruct
+%else
+    %assign simstructArg = ""
+%endif
+
+/* Function: singleRateStep ----------------------------------
+ *
+ * Abstract:  ISR for software interrupt
+ *      
+ */
+ 
+int_T singleRateStep(void)
+{
+    pendingInterrupt = FALSE;
+
+    if (%<RTMGetErrStat()> == NULL
+            && !StopExecutionFlag) {
+
+        rt_OneStep(%<simstructArg>);
+
+        %if OverrunAction != "None"
+            %if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+                IsrOverrun = pendingInterrupt;
+            %endif
+            if (IsrOverrun) {
+                %<render_interrupt_overrun_handling()>
+            }
+        %endif
+
+        return(EXIT_SUCCESS);
+
+    }  else {
+
+        %<debugMsgPrint("**stopping the model**")>
+        exitprocessing();
+        return(EXIT_FAILURE);
+
+    }
+
+}
+
+%closefile buff
+%return buff
+%endfunction %% render_singleratestep
+
+
+%% ==============================================================
+%% Function: FcnSimpleNonOSMain
+%% Abstract:  Render main() function.
+%%            This tlc function overrides the one in ertmainlib.tlc
+%%            in order to add C6000-specific operations and to remove
+%%            unwanted material such as external mode.
+%%
+%function FcnSimpleNonOSMain() Output
+	void main(void)
+	{
+		%assign rootSystem = System[NumSystems-1]
+		%assign reqInsts = LibGetSystemField(rootSystem, "ReqRootPrmHdrDataInsts")
+	
+		%<FcnMdlName()>_initialize(%<SLibModelFcnArgs("Initialize",TLC_TRUE,"")>);
+		
+        %<render_target_setup()>
+		
+		%if !reqInsts.SimStructInst && !EmptyRealTimeObject
+			%assign simstructArg = tSimStruct
+		%else
+            %assign simstructArg = ""
+		%endif
+
+        %if !useDSPBIOS
+            /* register a function to be invoked at exit */
+            atexit (exitprocessing);
+
+        %endif
+        %<debugMsgPrint("**starting the model**")>
+
+        enable_interrupts(); 	
+		
+        %if useDSPBIOS
+            /* Drop out of main() and enter DSP/BIOS Kernel */
+
+        %else
+            while (%<RTMGetErrStat()> == NULL
+                    || StopExecutionFlag) {
+
+                %if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+                    while (!pendingInterrupt) {};
+                    pendingInterrupt = 0;
+                    rt_OneStep(%<simstructArg>);
+                %endif
+                %if OverrunAction != "None"
+                    %if CompiledModel.FixedStepOpts.SolverMode == "SingleTasking"
+                        IsrOverrun = pendingInterrupt;
+                    %endif
+                    if (IsrOverrun) {
+                        %<render_interrupt_overrun_handling()>
+                    }
+                %endif
+
+            }
+		
+            %<debugMsgPrint("**stopping the model**")>
+
+            %<FcnGenerateModelTerminate()>\
+        
+        %endif %% !useDSPBIOS
+	}
+%endfunction  %% FcnSimpleNonOSMain()
+
+
+%%   **********************************************************************
+%%   This is the entry point for generating main.c for ERT-based target
+%%   **********************************************************************
+
+%function SLibCreateC6000ERTMain(fName) void
+   
+	%assign cFile = SLibAddModelFile("SystemBody","Simulink",fName)
+	
+	%openfile tmpFcnBuf
+	%<SLibDeclareModelFcnArgs(TLC_TRUE)>\
+	%<dsk_cpld_defines()>
+    #define RUN_FOREVER -1.0
+	extern volatile int pendingInterrupt;
+    volatile int IsrOverrun = 0;
+    volatile int StopExecutionFlag = 0;
+    %closefile tmpFcnBuf
+	%<SLibSetModelFileAttribute(cFile, "Definitions", tmpFcnBuf)>
+
+	%openfile tmpFcnBuf
+		/*
+		* Real-Time Workshop code generation for Simulink model "%<FcnMdlName()>"
+		*
+		* Real-Time Workshop file version      : %<Version>
+		* Real-Time Workshop file generated on : %<GeneratedOn>
+		* C source code generated on           : %<TLC_TIME>
+		*
+		* Description:
+		%<FcnGenerateMainFunctions(1,cFile)>\
+		*
+        * Compiler specified defines:
+        *   RT
+        *   MODEL           = %<CompiledModel.Name>
+        *   NUMST           = %<CompiledModel.NumSampleTimes> (Number of sample times)
+        *   NCSTATES        = %<CompiledModel.NumContStates> (Number of continuous states)
+        *   TID01EQ         = %<CompiledModel.FixedStepOpts.TID01EQ> 
+        *                     (Set to 1 if sample time task id's 0 and 1 have equal rates)
+        *
+		* For more information:
+		*   o Real-Time Workshop User's Guide
+		*   o Real-Time Workshop Embedded Coder User's Guide
+		*   o Embedded Target for TI C6000 DSP User's Guide
+		*/    
+	%closefile tmpFcnBuf
+  
+	%<SLibSetModelFileAttribute(cFile, "Banner", tmpFcnBuf)>
+	%<SLibSetModelFileAttribute(cFile, "Functions", ...
+        render_exitprocessing())>
+	%<SLibSetModelFileAttribute(cFile, "Functions", ...
+        FcnGenerateMainFunctions(0,cFile))>
+    %if useDSPBIOS
+        %<SLibSetModelFileAttribute(cFile, "Functions", ...
+            render_singleratestep())>
+    %endif
+	
+	%openfile tmpFcnBuf
+    %if !useDSPBIOS
+        #include <stdio.h>
+    %endif
+	#include "rtwtypes.h"
+    %if ( (!PurelyIntegerCode) && SupportNonFinite)
+        #include "rt_nonfinite.h"
+    %endif
+    %if useDSPBIOS
+        #include "%<CompiledModel.Name>cfg.h"
+    %endif
+    #include "c6000_main.h"
+	#include "%<FcnGetPublicModelHeaderFile()>"
+%if CompiledModel.FixedStepOpts.SolverMode == "MultiTasking"
+    #include <std.h>
+    #include <csl.h>
+    #include <csl_irq.h>
+    #include <csl_edma.h>
+    #include <csl_mcbsp.h>
+    %if (IRInfo.timerIntNeeded) %% && !useDSPBIOS)
+        #include <csl_timer.h>
+        #include <csl_legacy.h>
+    %endif
+%endif
+
+	%closefile tmpFcnBuf
+  
+  %<SLibSetModelFileAttribute(cFile, "Includes", tmpFcnBuf)> 
+
+%endfunction
+
+%% EOF  c6000_ertmain.tlc

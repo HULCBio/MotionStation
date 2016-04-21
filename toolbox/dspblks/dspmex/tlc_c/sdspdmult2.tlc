@@ -1,0 +1,792 @@
+%% $RCSfile: sdspdmult2.tlc,v $
+%% $Revision: 1.12.4.5 $ 
+%% $Date: 2004/04/20 23:16:18 $
+%%
+%% Copyright 1995-2004 The MathWorks, Inc.
+%%
+%% Abstract: Matrix scaling 
+%%   TLC-function for multiplying a diagonal matrix (stored as a vector)
+%%   and a full matrix in either order.  This corresponds to row- or
+%%   column-scaling of a matrix.  
+%% 
+%%   This is equivalent to the MATLAB commands 
+%% 
+%%   A*diag(D)    % Column scaling
+%%   diag(D)*A    % Row scaling
+
+%implements sdspdmult2 "C"
+
+%% Function: BlockInstanceSetup =================================================
+%%
+%function BlockInstanceSetup(block, system) void
+  %%
+  %% All fixed-point blocks call the fixed-point setup function
+  %%
+  %<FixPt_Setup(block, system)>
+  %%
+  %assign INPORT_A = 0
+  %assign INPORT_D = 1
+  %assign OUTPORT  = 0
+  %%
+  %assign numDims = LibBlockInputSignalNumDimensions(INPORT_A)
+  %assign dims    = LibBlockInputSignalDimensions(INPORT_A)
+  %assign cols    = (numDims == 2) ? dims[1] : 1
+  %assign rows    = dims[0]
+  %assign cplx_A  = LibBlockInputSignalIsComplex(INPORT_A)
+  %assign cplx_Y  = LibBlockOutputSignalIsComplex(OUTPORT)
+  %%
+  %assign mode    = SFcnParamSettings.Mode
+  %assign mode_da = 1  %% row scaling
+  %assign mode_ad = 2  %% col scaling
+  %%
+  %assign width_A = LibBlockInputSignalWidth(INPORT_A)
+  %assign D_FromInputPort = (SFcnParamSettings.DInpMode == 1)
+  %if D_FromInputPort
+    %assign cplx_D  = LibBlockInputSignalIsComplex(INPORT_D)
+    %assign width_D = LibBlockInputSignalWidth(INPORT_D)
+  %else
+    %assign cplx_D  = LibBlockParameterIsComplex(DVect)
+    %assign D_Size  = LibBlockParameterSize(DVect)
+    %assign width_D = (D_Size[0] * D_Size[1])
+  %endif
+  %%
+  %assign block = block + INPORT_A + INPORT_D + OUTPORT + ...
+                  cols + rows + mode + mode_da + mode_ad + ...
+                  cplx_A + cplx_D + cplx_Y + D_FromInputPort + ...
+                  width_A + width_D
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Matrix Scaling (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %%
+  %assign ADType = FixPt_GetInputDataType(INPORT_A)
+  %%
+  %if (width_A == 1) && (width_D == 1)
+    %if FixPt_DataTypeIsFloat(ADType)
+      %<FltPtScaleScalar(block)>
+    %else
+      %<FixPtScaleScalar(block)>
+    %endif %% Scalar floating- or fixed-point
+  %elseif FixPt_DataTypeIsFloat(ADType)
+    %if mode == mode_ad
+      %<FltPtScaleColumns(block)>
+    %else
+      %<FltPtScaleRows(block)>
+    %endif
+  %else
+    %if mode == mode_ad
+      %<FixPtScaleColumns(block)>
+    %else
+      %<FixPtScaleRows(block)>
+    %endif
+  %endif
+
+%endfunction %% Outputs
+
+
+%% Function: FixPtScaleScalar  =====================================================
+%%
+%function FixPtScaleScalar(block) Output
+  %%
+  %% SCALAR fixed-point code
+  %%
+  %assign ADType    = FixPt_GetInputDataType(INPORT_A)
+  %assign A         = LibBlockInputSignal(INPORT_A,  "", "", 0)
+  %if D_FromInputPort
+    %assign DDType  = FixPt_GetInputDataType(INPORT_D)
+    %assign D       = LibBlockInputSignal(INPORT_D,  "", "", 0) 
+  %else
+    %assign DDType  = DSPFixPt_GetParameterDataType(DVect)
+    %assign D       = LibBlockParameter(DVect, "", "", 0)
+  %endif
+  %assign outDType  = FixPt_GetOutputDataType(OUTPORT)
+  %assign Y         = LibBlockOutputSignal(OUTPORT,  "", "", 0)
+  %assign prodDType = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+  %assign prodLabel = "prod"
+  %%
+  %createrecord InA { label     A; ...
+                      dTypeRec  ADType; ...
+                      isComplex cplx_A }
+  %createrecord InD { label     D; ...
+                      dTypeRec  DDType; ...
+                      isComplex cplx_D }
+  %createrecord Out { label     Y; ...
+                      dTypeRec  outDType; ...
+                      isComplex cplx_Y }
+  %createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                         overflowMode FixPtSaturationMode}
+  {
+    /* Scalar x Scalar */
+    %if (cplx_A && cplx_D)
+      %% ALL I/O COMPLEX
+      %assign prodCplx  = 0
+      %createrecord Prd { label     prodLabel; ...
+                          dTypeRec  prodDType; ...
+                          isComplex prodCplx }
+      %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+      %assign accLabel  = "acc"
+      %assign accCplx   = 1
+      %createrecord Acc { label     accLabel; ...
+                          dTypeRec  accDType; ...
+                          isComplex accCplx }
+      %<accDType.ComplexName> %<accLabel>;
+      %<prodDType.Name> %<prodLabel>;
+
+      %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+      %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+    %else
+      %% Real or mixed complexity I/O
+      %assign prodCplx = (cplx_A || cplx_D)
+      %createrecord Prd { label     prodLabel; ...
+                          dTypeRec  prodDType; ...
+                          isComplex prodCplx }
+      %if prodCplx
+        %<prodDType.ComplexName> %<prodLabel>;
+      %else
+        %<prodDType.Name> %<prodLabel>;
+      %endif
+
+      %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+      %<DSPFixptLibEquals(Out, Prd, RndSat)>
+    %endif
+  }
+%endfunction %% FixPtScaleScalar
+
+
+%% Function: FixPtScaleColumns  =====================================================
+%%
+%function FixPtScaleColumns(block) Output
+%assign ADType    = FixPt_GetInputDataType(INPORT_A)
+%assign AiPLUSjn  = LibBlockInputSignal(INPORT_A,"i+jn","","0")
+%assign Aj        = LibBlockInputSignal(INPORT_A,"j","","0")
+%assign Ai        = LibBlockInputSignal(INPORT_A,"i","","0")
+%if D_FromInputPort
+  %assign DDType    = FixPt_GetInputDataType(INPORT_D)
+  %assign Dj        = LibBlockInputSignal(INPORT_D,"j","","0")
+  %assign D0        = LibBlockInputSignal(INPORT_D,"0","","0")
+%else
+  %assign DDType    = DSPFixPt_GetParameterDataType(DVect)
+  %assign Dj        = LibBlockParameter(DVect, "j", "", "0")
+  %assign D0        = LibBlockParameter(DVect, "0", "", "0")
+%endif
+%assign outDType  = FixPt_GetOutputDataType(OUTPORT)
+%assign YiPLUSjn  = LibBlockOutputSignal(OUTPORT,"i+jn","","0")
+%assign Yj        = LibBlockOutputSignal(OUTPORT,"j","","0")
+%assign Yi        = LibBlockOutputSignal(OUTPORT,"i","","0")
+%assign prodDType = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%assign prodLabel = "prod"
+%%
+%createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                       overflowMode FixPtSaturationMode }
+%%
+{
+  /* Scale Columns:  A*diag(D) */
+  /* Y[i+jn] = A[i+jn] * D[j]; */
+  %if (rows == 1) || (cols == 1)
+    %%
+    %% A = Vector
+    %%	
+    %if rows == 1
+      /* Input A is a row vector. */
+      %createrecord InA { label     Aj; ...
+                          dTypeRec  ADType; ...
+                          isComplex cplx_A }
+      %createrecord InD { label     Dj; ...
+                          dTypeRec  DDType; ...
+                          isComplex cplx_D }
+      %createrecord Out { label     Yj; ...
+                          dTypeRec  outDType; ...
+                          isComplex cplx_Y }
+      int j;
+      for (j=0; j<%<cols>; j++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+      }
+    %else
+      /* Input A is a column vector. */
+      %createrecord InA { label     Ai; ...
+                          dTypeRec  ADType; ...
+                          isComplex cplx_A }
+      %createrecord InD { label     D0; ...
+                          dTypeRec  DDType; ...
+                          isComplex cplx_D }
+      %createrecord Out { label     Yi; ...
+                          dTypeRec  outDType; ...
+                          isComplex cplx_Y }
+      int i;
+      for (i=0; i<%<rows>; i++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+      }
+    %endif
+  %else
+    /* Input A is a full matrix. */
+    %createrecord InA { label     AiPLUSjn; ...
+                        dTypeRec  ADType; ...
+                        isComplex cplx_A }
+    %createrecord InD { label     Dj; ...
+                        dTypeRec  DDType; ...
+                        isComplex cplx_D }
+    %createrecord Out { label     YiPLUSjn; ...
+                        dTypeRec  outDType; ...
+                        isComplex cplx_Y }
+    int j;
+    for (j=0; j<%<cols>; j++) {
+      const int jn = %<rows> * j;
+      int i;
+      for (i=0; i<%<rows>; i++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+        }
+      }
+  %endif %% "A" input as a Vector versus a Full Matrix
+}
+%endfunction %% FixPtScaleColumns
+
+
+%% Function: FixPtScaleRows  ========================================================
+%%
+%function FixPtScaleRows(block) Output
+%assign ADType    = FixPt_GetInputDataType(INPORT_A)
+%assign AiPLUSjn  = LibBlockInputSignal(INPORT_A,"i+jn","","0")
+%assign Ai        = LibBlockInputSignal(INPORT_A,"i","","0")
+%assign Ajn       = LibBlockInputSignal(INPORT_A,"jn","","0")
+%assign Aj        = LibBlockInputSignal(INPORT_A,"j","","0")
+%if D_FromInputPort
+  %assign DDType    = FixPt_GetInputDataType(INPORT_D)
+  %assign Dr_i      = LibBlockInputSignal(INPORT_D,"i","","0")
+  %assign Dr_0      = LibBlockInputSignal(INPORT_D,"0","","0")
+%else
+  %assign DDType    = DSPFixPt_GetParameterDataType(DVect)
+  %assign Dr_i      = LibBlockParameter(DVect, "i", "", "0")
+  %assign Dr_0      = LibBlockParameter(DVect, "0", "", "0")
+%endif
+%assign outDType  = FixPt_GetOutputDataType(OUTPORT)
+%assign YiPLUSjn  = LibBlockOutputSignal(OUTPORT,"i+jn","","0")
+%assign Yi        = LibBlockOutputSignal(OUTPORT,"i","","0")
+%assign Yjn       = LibBlockOutputSignal(OUTPORT,"jn","","0")
+%assign Yj        = LibBlockOutputSignal(OUTPORT,"j","","0")
+%assign prodDType = FixPt_GetParameterDataType(PROD_DATA_TYPE, 0, 0)
+%assign prodLabel = "prod"
+%%
+%createrecord RndSat { roundingMode FixPtRoundingMode; ...
+                       overflowMode FixPtSaturationMode }
+%%
+{
+  /* Scale Rows:    diag(D)*A  */
+  %if (rows > 1)
+    /* Y[i+jn] = D[i] * A[i+jn]; */
+  %else
+    /* Y[i+j] = D[i] * A[i+j]; */
+  %endif
+  %%
+  %if (rows == 1) || (cols == 1)
+    %%
+    %% A = Vector
+    %%	
+    %if rows ==1
+      /* Input A is a row vector. */
+      %createrecord InA { label     Aj; ...
+                          dTypeRec  ADType; ...
+                          isComplex cplx_A }
+      %createrecord Out { label     Yj; ...
+                          dTypeRec  outDType; ...
+                          isComplex cplx_Y }
+      %createrecord InD { label     Dr_0; ...
+                          dTypeRec  DDType; ...
+                          isComplex cplx_D }
+      int j;
+      for (j=0; j<%<cols>; j++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+      }
+    %else
+      /* Input A is a column vector. */
+      %createrecord InA { label     Ai; ...
+                          dTypeRec  ADType; ...
+                          isComplex cplx_A }
+      %createrecord InD { label     Dr_i; ...
+                          dTypeRec  DDType; ...
+                          isComplex cplx_D }
+      %createrecord Out { label     Yi; ...
+                          dTypeRec  outDType; ...
+                          isComplex cplx_Y }
+      int i;
+      for (i=0; i<%<rows>; i++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+      }
+    %endif
+  %else
+    /* Input A is a full matrix. */
+    %createrecord InA { label     AiPLUSjn; ...
+                        dTypeRec  ADType; ...
+                        isComplex cplx_A }
+    %createrecord InD { label     Dr_i; ...
+                        dTypeRec  DDType; ...
+                        isComplex cplx_D }
+    %createrecord Out { label     YiPLUSjn; ...
+                        dTypeRec  outDType; ...
+                        isComplex cplx_Y }
+    int j;
+    for (j=0; j<%<cols>; j++) {
+      const int jn = %<rows> * j;
+      int i;
+      for (i=0; i<%<rows>; i++) {
+        %if (cplx_A && cplx_D)
+          %% ALL I/O COMPLEX
+          %assign prodCplx  = 0
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %assign accDType  = FixPt_GetParameterDataType(ACCUM_DATA_TYPE, 0, 0)
+          %assign accLabel  = "acc"
+          %assign accCplx   = 1
+          %createrecord Acc { label     accLabel; ...
+                              dTypeRec  accDType; ...
+                              isComplex accCplx }
+          %<accDType.ComplexName> %<accLabel>;
+          %<prodDType.Name> %<prodLabel>;
+
+          %<DSPFixptLibCplxTimes(Acc, InD, InA, Prd, RndSat)>
+          %<DSPFixptLibEquals(   Out, Acc, RndSat)>
+        %else
+          %% Real or mixed complexity I/O
+          %assign prodCplx = (cplx_A || cplx_D)
+          %createrecord Prd { label     prodLabel; ...
+                              dTypeRec  prodDType; ...
+                              isComplex prodCplx }
+          %if prodCplx
+            %<prodDType.ComplexName> %<prodLabel>;
+          %else
+            %<prodDType.Name> %<prodLabel>;
+          %endif
+
+          %<DSPFixptLibTimes( Prd, InD, InA, RndSat)>
+          %<DSPFixptLibEquals(Out, Prd, RndSat)>
+        %endif %% CPLX
+        }
+      }
+  %endif %% "A" input as a Vector versus a Full Matrix
+}
+%endfunction %% FixPtScaleRows
+
+
+%% Function: FltPtScaleScalar  =====================================================
+%%
+%function FltPtScaleScalar(block) Output
+  %%
+  %% SCALAR floating-point code
+  %%
+  %assign A    = LibBlockInputSignal(INPORT_A,  "", "", 0)
+  %assign A_re = LibBlockInputSignal(INPORT_A,  "", "", "%<tRealPart>0")
+  %assign A_im = LibBlockInputSignal(INPORT_A,  "", "", "%<tImagPart>0") 
+  %assign Y_re = LibBlockOutputSignal(OUTPORT, "", "", "%<tRealPart>0")
+  %assign Y_im = LibBlockOutputSignal(OUTPORT, "", "", "%<tImagPart>0")
+  %if D_FromInputPort
+    %assign D    = LibBlockInputSignal(INPORT_D,  "", "", 0) 
+    %assign D_re = LibBlockInputSignal(INPORT_D,  "", "", "%<tRealPart>0")
+    %assign D_im = LibBlockInputSignal(INPORT_D,  "", "", "%<tImagPart>0")
+  %else
+    %assign D    = LibBlockParameter(DVect, "", "", 0)
+    %assign D_re = LibBlockParameter(DVect, "", "", "%<tRealPart>0")
+    %assign D_im = LibBlockParameter(DVect, "", "", "%<tImagPart>0")
+  %endif
+  %%
+  /* Scalar x Scalar */
+  %if !cplx_A && !cplx_D
+    %<Y_re> = %<A_re> * %<D_re>;
+  %elseif !cplx_A && cplx_D
+    %<Y_re> = %<A_re> * %<D_re>;
+    %<Y_im> = %<A_re> * %<D_im>;
+  %elseif cplx_A && !cplx_D
+    %<Y_re> = %<A_re> * %<D_re>;
+    %<Y_im> = %<A_im> * %<D_re>;
+  %else %%cplx_A && cplx_D
+    %<Y_re> = CMULT_RE(%<A>,%<D>);
+    %<Y_im> = CMULT_IM(%<A>,%<D>);
+  %endif
+  %%
+%endfunction %% FltPtScaleScalar
+
+
+%% Function: FltPtScaleColumns  =====================================================
+%%
+%function FltPtScaleColumns(block) Output
+%assign dtype_A = LibBlockInputSignalDataTypeName(INPORT_A,"")
+%if D_FromInputPort
+  %assign dtype_D = LibBlockInputSignalDataTypeName(INPORT_D,"")
+%else
+  %assign dtype_D = LibBlockParameterDataTypeName(DVect,"")
+%endif
+%assign dtype_Y = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+{
+  /* Scale Columns (A*D) */
+  %if (rows == 1) || (cols == 1)
+    %%
+    %% A = Vector
+    %%	
+    %if rows ==1
+        /* Input A is a row vector. */
+        const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+      %if D_FromInputPort
+        const %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT_D,  "", "", 0)>;
+      %else
+        const %<dtype_D> *d = %<LibBlockParameterAddr(  DVect,     "", "", 0)>;
+      %endif
+        %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+        int_T cols = %<cols>;
+        
+        while(cols-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * *d++;
+          %elseif !cplx_A && cplx_D
+            y->re     = *a   * d->re;
+            (y++)->im = *a++ * (d++)->im;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * (*d);
+            (y++)->im = (a++)->im * (*d++);
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            const %<dtype_D> Dval = *d++;
+            y->re     = CMULT_RE(Aval, Dval); 
+            (y++)->im = CMULT_IM(Aval, Dval);	      
+          %endif	
+        }
+    %else  %% cols == 1
+      /* Input A is a column vector */
+      %%
+      %% If cols == 1 in the A*D mode, then width_d == 1  
+      %%
+      %if D_FromInputPort
+        %assign D0    = LibBlockInputSignal(INPORT_D,  "", "",0)
+        %assign D0_re = LibBlockInputSignal(INPORT_D,  "", "","%<tRealPart>0")
+        %assign D0_im = LibBlockInputSignal(INPORT_D,  "", "","%<tImagPart>0")
+      %else
+        %assign D0    = LibBlockParameter(DVect, "", "", 0)
+        %assign D0_re = LibBlockParameter(DVect, "", "", "%<tRealPart>0")
+        %assign D0_im = LibBlockParameter(DVect, "", "", "%<tImagPart>0")
+      %endif
+        %%
+        const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+        %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	    
+        int_T rows = %<rows>;
+        
+        while(rows-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * %<D0_re>;
+          %elseif !cplx_A && cplx_D
+            y->re     = *a   * %<D0_re>;
+            (y++)->im = *a++ * %<D0_im>;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * %<D0_re>;
+            (y++)->im = (a++)->im * %<D0_re>;
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            y->re     = CMULT_RE(Aval, %<D0>); 
+            (y++)->im = CMULT_IM(Aval, %<D0>);	      
+          %endif	
+        }
+    %endif
+  %else
+    /* Input A is a full matrix. */ 
+    const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+    %if D_FromInputPort
+      const %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT_D,  "", "", 0)>;
+    %else
+      const %<dtype_D> *d = %<LibBlockParameterAddr(  DVect,     "", "", 0)>;
+    %endif
+      %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	  
+      int_T cols = %<cols>;
+      
+      while(cols-- > 0) {
+        const %<dtype_D> Dval = *d++;
+        int_T rows = %<rows>;
+        
+        while(rows-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * Dval;
+          %elseif !cplx_A && cplx_D
+            y->re     = *a   * Dval.re;
+            (y++)->im = *a++ * Dval.im;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * Dval;
+            (y++)->im = (a++)->im * Dval;
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            y->re     = CMULT_RE(Aval, Dval); 
+            (y++)->im = CMULT_IM(Aval, Dval);	      
+          %endif	
+        }      
+      }
+  %endif 
+}
+%endfunction %% FltPtScaleColumns
+
+
+%% Function: FltPtScaleRows  =====================================================
+%%
+%function FltPtScaleRows(block) Output
+%assign dtype_A = LibBlockInputSignalDataTypeName(INPORT_A,"")
+%if D_FromInputPort
+  %assign dtype_D = LibBlockInputSignalDataTypeName(INPORT_D,"")
+%else
+  %assign dtype_D = LibBlockParameterDataTypeName(DVect,"")
+%endif
+%assign dtype_Y = LibBlockOutputSignalDataTypeName(OUTPORT,"")
+{
+  /* Scale Rows (D*A) */
+  %if (rows == 1) || (cols == 1)
+    %%
+    %% A = Vector
+    %%
+    %if rows == 1
+        /* Input A is a row vector. */
+        %% If rows ==1 in the D*A mode, then width_d == 1  
+      %if D_FromInputPort
+        %assign D0    = LibBlockInputSignal(INPORT_D,  "", "",0)
+        %assign D0_re = LibBlockInputSignal(INPORT_D,  "", "","%<tRealPart>0")
+        %assign D0_im = LibBlockInputSignal(INPORT_D,  "", "","%<tImagPart>0")
+      %else
+        %assign D0    = LibBlockParameter(DVect, "", "", 0)
+        %assign D0_re = LibBlockParameter(DVect, "", "", "%<tRealPart>0")
+        %assign D0_im = LibBlockParameter(DVect, "", "", "%<tImagPart>0")
+      %endif
+        %%
+        const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+        %<dtype_Y> *y = %<LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+        int_T cols = %<cols>;
+        
+        while(cols-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * %<D0_re>;
+          %elseif !cplx_A && cplx_D
+            y->re     = *a   * %<D0_re>;
+            (y++)->im = *a++ * %<D0_im>;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * %<D0_re>;
+            (y++)->im = (a++)->im * %<D0_re>;
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            y->re     = CMULT_RE(Aval, %<D0>); 
+            (y++)->im = CMULT_IM(Aval, %<D0>);	      
+          %endif	
+        }      	    
+    %endif	  	
+    %%
+    %if cols == 1
+        /* Input A is a column vector. */
+        const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+      %if D_FromInputPort
+        const %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT_D,  "", "", 0)>;
+      %else
+        const %<dtype_D> *d = %<LibBlockParameterAddr(  DVect,     "", "", 0)>;
+      %endif
+        %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;
+        int_T rows = %<rows>;
+        
+        while(rows-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * *d++;
+          %elseif !cplx_A && cplx_D
+            const %<dtype_D> Dval = *d++;
+            y->re     = *a   * Dval.re;
+            (y++)->im = *a++ * Dval.im;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * (*d);
+            (y++)->im = (a++)->im * (*d++);
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            const %<dtype_D> Dval = *d++;	    
+            y->re     = CMULT_RE(Aval, Dval); 
+            (y++)->im = CMULT_IM(Aval, Dval);	      
+          %endif	
+        }      
+    %endif
+  %else
+      /* Input A is a full matrix. */ 
+      const %<dtype_A> *a = %<LibBlockInputSignalAddr(INPORT_A,  "", "", 0)>;
+      %<dtype_Y> *y = %< LibBlockOutputSignalAddr(OUTPORT, "" , "", 0)>;	  
+      int_T cols = %<cols>;
+      
+      while(cols-- > 0) {
+      %if D_FromInputPort
+        const %<dtype_D> *d = %<LibBlockInputSignalAddr(INPORT_D,  "", "", 0)>;
+      %else
+        const %<dtype_D> *d = %<LibBlockParameterAddr(  DVect,     "", "", 0)>;
+      %endif
+        int_T rows = %<rows>;
+        
+        while(rows-- > 0) {
+          %if !cplx_A && !cplx_D
+            *y++ = *a++ * *d++;
+          %elseif !cplx_A && cplx_D
+            y->re     = *a   * d->re;
+            (y++)->im = *a++ * (d++)->im;
+          %elseif cplx_A && !cplx_D
+            y->re     = a->re     * (*d);
+            (y++)->im = (a++)->im * (*d++);
+          %else %%cplx_A && cplx_D
+            const %<dtype_A> Aval = *a++;
+            const %<dtype_D> Dval = *d++;	    
+            y->re     = CMULT_RE(Aval, Dval); 
+            (y++)->im = CMULT_IM(Aval, Dval);	      
+          %endif	
+        }      
+      }
+  %endif                                                       
+}
+%endfunction %% FltPtScaleRows

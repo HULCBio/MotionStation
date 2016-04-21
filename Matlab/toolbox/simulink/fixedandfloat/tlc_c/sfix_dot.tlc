@@ -1,0 +1,372 @@
+%% $RCSfile: sfix_dot.tlc,v $
+%% $Revision: 1.8.2.3 $
+%% $Date: 2004/04/15 00:35:40 $
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%      Dot product block target file
+
+%implements sfix_dot "C"
+
+%% Function: BlockInstanceSetup ===============================================
+%% Abstract:
+%% 	Pre-code generation work
+%%
+%function BlockInstanceSetup(block, system) void
+
+  %if InFixptMode
+    %%
+    %% All fixed-point blocks call the fixed-point setup function
+    %%
+    %<FixPt_Setup(block, system)>\
+    %%
+    %% Currently, do not support
+    %%   o multi-chunk math
+    %%   o input bias nonzero
+    %%   0 output bias nonzero
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %% Check if output has nonzero bias
+    %%
+    %if y0DT.Bias != 0
+      %openfile errTxt
+For code generation, fixed-point dot product does not support nonzero biases.
+Output Bias = %<y0DT.Bias>
+Block: %<MaskBlockName>
+      %closefile errTxt
+      %exit %<errTxt>
+    %endif
+    %%
+    %% Check each input for nonzero bias
+    %%
+    %foreach ipIdx = NumDataInputPorts
+      %%
+      %assign uiDT = FixPt_GetInputDataType(ipIdx)
+      %%
+      %if uiDT.Bias != 0
+        %openfile errTxt
+For code generation, fixed-point dot product does not support nonzero biases.
+Input%<ipIdx> Bias = %<uiDT.Bias>
+Block: %<MaskBlockName>
+        %closefile errTxt
+        %exit %<errTxt>
+      %endif
+    %endforeach
+  %else
+    %% No BlockInstanceSetup for built-in block.
+  %endif
+%endfunction
+
+
+%% Function: Outputs ==========================================================
+%% Abstract:
+%%   This block can operate in an element by element vector product/division
+%%   mode when there are multiple input ports.  When there is only one input
+%%   port, the scalar elements in the input vector are multiplied/divided to
+%%   produce a scalar output.
+%%
+%function Outputs(block, system) Output    
+
+  %if InFixptMode
+    %%
+    %assign y0IsComplex   = LibBlockOutputSignalIsComplex(0)
+    %assign u0IsComplex   = LibBlockInputSignalIsComplex(0)
+    %assign u1IsComplex   = LibBlockInputSignalIsComplex(1)
+    %%
+    %% create RadixOnly version of output Data Type
+    %%
+    %assign y0DT = FixPt_GetOutputDataType(0)
+    %%
+    %copyrecord y0RadixDT y0DT
+    %%
+    %assign y0RadixDT.FracSlope = 1.0
+    %assign y0RadixDT.Bias      = 0.0
+    %%
+    %if doFracCorrection == "CORRECTION_YES_FIXEXP_ADJUST"
+        %%
+        %assign y0RadixDT.FixedExp = y0RadixDT.FixedExp - iFixExpCorrection
+    %endif
+    %%
+    %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+        %%
+        %copyrecord y0CorrectionDT y0RadixDT
+        %%
+        %assign y0CorrectionDT.FixedExp = valFracCorrectionFixExp
+    %endif
+    %%
+    %% create RadixOnly version of first Input Data Type
+    %%
+    %assign u1DT = FixPt_GetInputDataType(1)
+    %%
+    %copyrecord u1RadixDT u1DT
+    %%
+    %assign u1RadixDT.FracSlope = 1.0
+    %assign u1RadixDT.Bias      = 0.0
+    %%
+    %assign u0DT = FixPt_GetInputDataType(0)
+    %%
+    %copyrecord u0RadixDT u0DT
+    %%
+    %assign u0RadixDT.FracSlope = 1.0
+    %assign u0RadixDT.Bias      = 0.0
+    %%
+    %% create header comment
+    %%
+    /* Fixed-Point Dot Product Block: %<MaskBlockName>
+     *
+    %%
+    %% add general comments
+    %%
+    %<FixPt_GeneralComments()>\
+    %%
+    %% END: header comment
+    %%
+     */
+    %%
+    %assign tmp1Label = "yTemp1"
+    %%
+    {
+        %if LibDataInputPortWidth(0) > 1
+        %<y0DT.NativeType> %<tmp1Label>;
+        %endif
+        %%
+        %%
+        %% Get output
+        %%
+        %assign y0ReLabel = LibBlockOutputSignal(0, "", "", "re0")
+        %if y0IsComplex
+            %assign y0ImLabel = LibBlockOutputSignal(0, "", "", "im0")
+        %endif
+        %%
+        %% Get first input
+        %%
+        %assign u0ReLabel = LibBlockInputSignal(0, "", "", "re0")
+        %if u0IsComplex
+            %assign u0ImLabel = LibBlockInputSignal(0, "", "", "im0")
+        %endif
+        %%
+        %% Get second input
+        %%
+        %assign u1ReLabel = LibBlockInputSignal(1, "", "", "re0")
+        %if u1IsComplex
+            %assign u1ImLabel = LibBlockInputSignal(1, "", "", "im0")
+        %endif
+        %%
+        %% handle first pair of scalars
+        %%
+        %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                         u0ReLabel,u0RadixDT,...
+                         u1ReLabel,u1RadixDT,...
+                         FixPtRoundingMode,FixPtSaturationMode)>\
+        %%
+        %if u0IsComplex && u1IsComplex
+            %%
+            %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                             u0ImLabel,u0RadixDT,...
+                             u1ImLabel,u1RadixDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_AccumPos(y0ReLabel,y0RadixDT,...
+                             tmp1Label,y0RadixDT,...
+                             FixPtSaturationMode)>\
+        %endif
+        %%
+        %if u1IsComplex
+            %<FixPt_Multiply(y0ImLabel,y0RadixDT,...
+                             u0ReLabel,u0RadixDT,...
+                             u1ImLabel,u1RadixDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+        %elseif u0IsComplex
+            %<y0ImLabel> = 0;    
+        %endif
+        %%
+        %if u0IsComplex
+            %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                             u0ImLabel,u0RadixDT,...
+                             u1ReLabel,u1RadixDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+            %<FixPt_AccumNeg(y0ImLabel,y0RadixDT,...
+                             tmp1Label,y0RadixDT,...
+                             FixPtSaturationMode)>\
+        %endif
+        %%
+        %% handle remaining scalars
+        %%
+        %if LibDataInputPortWidth(0) > 1
+            %%
+            %% Roll around input
+            %%
+            %assign rollVars = ["U"]
+            %%
+            %% remove first and second input because they have already been
+            %% handled by "direct" multiply above
+            %%
+            %assign reducedRollRegions = LibRemoveRollRegions(RollRegions,0)
+            %%
+            %roll sigIdx = reducedRollRegions, lcv = RollThreshold, block, "Roller", rollVars
+                %%
+                %assign reSigIdx = tRealPart + STRING(sigIdx)
+                %assign imSigIdx = tImagPart + STRING(sigIdx)
+                %%
+                %assign u0ReLabel = LibBlockInputSignal(0, "", lcv, reSigIdx)
+                %if u0IsComplex
+                    %assign u0ImLabel = LibBlockInputSignal(0, "", lcv, imSigIdx)
+                %endif
+                %%
+                %assign u1ReLabel = LibBlockInputSignal(1, "", lcv, reSigIdx)
+                %if u1IsComplex
+                    %assign u1ImLabel = LibBlockInputSignal(1, "", lcv, imSigIdx)
+                %endif
+                %%
+                %% handle current pair of scalars
+                %%
+                %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                 u0ReLabel,u0RadixDT,...
+                                 u1ReLabel,u1RadixDT,...
+                                 FixPtRoundingMode,FixPtSaturationMode)>\
+                %<FixPt_AccumPos(y0ReLabel,y0RadixDT,...
+                                 tmp1Label,y0RadixDT,...
+                                 FixPtSaturationMode)>\
+                %%
+                %if u0IsComplex && u1IsComplex
+                    %%
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     u0ImLabel,u0RadixDT,...
+                                     u1ImLabel,u1RadixDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_AccumPos(y0ReLabel,y0RadixDT,...
+                                     tmp1Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                %endif
+                %%
+                %if u1IsComplex
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     u0ReLabel,u0RadixDT,...
+                                     u1ImLabel,u1RadixDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_AccumPos(y0ImLabel,y0RadixDT,...
+                                     tmp1Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                %endif
+                %%
+                %if u0IsComplex
+                    %<FixPt_Multiply(tmp1Label,y0RadixDT,...
+                                     u0ImLabel,u0RadixDT,...
+                                     u1ReLabel,u1RadixDT,...
+                                     FixPtRoundingMode,FixPtSaturationMode)>\
+                    %<FixPt_AccumNeg(y0ImLabel,y0RadixDT,...
+                                     tmp1Label,y0RadixDT,...
+                                     FixPtSaturationMode)>\
+                %endif
+            %endroll
+        %endif
+        %%
+        %%  handle fractional slope adjustment if necessary
+        %%
+        %if doFracCorrection == "CORRECTION_YES_POST_MULTIPLY"
+            %%
+            %<FixPt_Multiply(y0ReLabel,y0RadixDT,...
+                             y0ReLabel,y0RadixDT,...
+                             STRING(valFracCorrectionValue[0]),y0CorrectionDT,...
+                             FixPtRoundingMode,FixPtSaturationMode)>\
+        %endif
+    }
+    %%
+    %% blank line for formating
+    
+  %else
+    %assign sfcnName = ParamSettings.FunctionName
+    /* %<Type> Block (%<sfcnName>): %<LibParentMaskBlockName(block)> */
+    %%
+    %assign u0re = LibBlockInputSignal(0, "", "", "%<tRealPart>0")
+    %assign u0im = LibBlockInputSignal(0, "", "", "%<tImagPart>0")
+    %assign u1re = LibBlockInputSignal(1, "", "", "%<tRealPart>0")
+    %assign u1im = LibBlockInputSignal(1, "", "", "%<tImagPart>0")
+    %%
+    %assign yre = LibBlockOutputSignal(0, "", "", "%<tRealPart>0")
+    %assign yim = LibBlockOutputSignal(0, "", "", "%<tImagPart>0")
+    %%
+    %% Need to declare a temporary variable for u1re when the output is
+    %% being over-written and u0im is non-zero
+    %assign outputOverWritesInput = ...
+      ((LibBlockInputSignalBufferDstPort(0) == 0) || ...
+      (LibBlockInputSignalBufferDstPort(1) == 0)) &&   ...
+      (LibBlockInputSignalIsComplex(0) && LibBlockInputSignalIsComplex(1))
+    %%
+    %if outputOverWritesInput
+      {
+	%assign dtName = LibBlockOutputSignalDataTypeName(0, tRealPart)
+	%<dtName> tmpVar;
+	\
+	%assign tmpVar = "tmpVar"
+      %else
+	%assign tmpVar = yre
+      %endif
+      %%
+      %<FcnThriftedComplexConjMultiply(u0re, u0im, u1re, u1im, tmpVar, yim, "=")>\
+      %%
+      %assign rollVars    = ["U", "Y"]
+      %assign rollRegion  = LibGetRollRegions1(RollRegions)
+      %%
+      %if LibIsEqual(rollRegion, []) 
+	%if outputOverWritesInput
+	  %<yre> = tmpVar;
+	%endif
+      %else
+	%% Continue with dot product for non-scalar case
+	%roll idx = rollRegion, lcv = RollThreshold, block, "Roller", rollVars
+	  %assign u0re = LibBlockInputSignal(0,"",lcv,"%<tRealPart>%<idx>")
+	  %assign u0im = LibBlockInputSignal(0,"",lcv,"%<tImagPart>%<idx>")
+	  %assign u1re = LibBlockInputSignal(1,"",lcv,"%<tRealPart>%<idx>")
+	  %assign u1im = LibBlockInputSignal(1,"",lcv,"%<tImagPart>%<idx>")
+	  %%			   
+	  %assign yre = LibBlockOutputSignal(0,"",lcv,"%<tRealPart>%<idx>")
+	  %assign yim = LibBlockOutputSignal(0,"",lcv,"%<tImagPart>%<idx>")
+	  %%
+	  %<FcnThriftedComplexConjMultiply(u0re, u0im, u1re, u1im, yre, yim, "+=")>\
+	%endroll
+      %endif
+      %if outputOverWritesInput
+      }
+    %endif
+  %endif
+%endfunction
+
+
+%% Function: FcnThriftedComplexMultiply ========================================
+%% Abstract:
+%%      This function multiplies two numbers in the complex plane. If any of
+%%      the input arguments is only real, then the complex part is passed in
+%%      as "".
+%%
+%function FcnThriftedComplexConjMultiply(ar,ai,br,bi,cr,ci,op) void
+  %openfile buffer
+  %%
+  %% Compute Cr = Ar * Br + Ai * Bi
+  %%
+  %assign rhsStr = "%<ar> * %<br>"
+  %if !LibIsEqual(ai, "") && !LibIsEqual(bi, "")
+    %assign rhsStr = rhsStr + " + %<ai> * %<bi>"
+  %endif
+  %<cr> %<op> %<rhsStr>;
+  %%
+  %% Compute Ci = Ar * Bi - Ai * Br
+  %%
+  %if !LibIsEqual(ci, "")
+    %assign rhsStr = "0.0"
+    %if !LibIsEqual(bi, "")
+      %assign rhsStr = "%<ar> * %<bi>"
+    %endif
+    %if !LibIsEqual(ai, "")
+      %assign rhsStr = rhsStr + " - %<ai> * %<br>"
+    %endif
+    %<ci> %<op> %<rhsStr>;
+  %endif
+  %%
+  %closefile buffer
+  %return buffer
+%endfunction %% FcnThriftedComplexMultiply
+
+
+%% [EOF] %% $RCSfile: sfix_dot.tlc,v $

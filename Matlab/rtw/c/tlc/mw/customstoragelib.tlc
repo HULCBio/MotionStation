@@ -1,0 +1,1496 @@
+%%
+%% $Revision: 1.1.6.10 $
+%%
+%%
+%% Copyright 1994-2002 The MathWorks, Inc.
+%%
+
+%if EXISTS("_CUSTOMSTORAGELIB_") == 0
+%assign _CUSTOMSTORAGELIB_ = 1
+
+%% For internal testing
+%if EXISTS("CustomStorageIncludeFile")
+  %include "%<CustomStorageIncludeFile>"
+%endif
+
+%%==================================%%
+%% Custom storage support functions %%
+%%==================================%%
+
+%% Function: LibBlockSetCustomStorageComplianceLevel ===========================
+%% Abstract:
+%%   Set the custom storage compliance level of a block
+%%
+%function LibBlockSetCustomStorageComplianceLevel(block, level) void
+  %assign block.CustomStorageClassCompliant = level
+%endfunction
+
+
+%% Function: LibHasCustomStorage ================================================
+%% Abstract:
+%%   Return 1 if the data record has a custom storage class, otherwise 0.
+%%
+%function LibHasCustomStorage(record) void
+  %if record.StorageClass == "Custom"
+    %assign rtwInfo = record.Object.ObjectProperties.RTWInfo
+    %if rtwInfo.Object.ObjectProperties.CustomStorageClass == ""
+      %assign errTxt = "The custom storage class property is not " + ...
+      "defined for data with identifier '%<record.Identifier>'"
+      %<LibReportFatalError(errTxt)>
+    %endif
+    %return 1
+  %endif
+  %return 0
+%endfunction
+
+%% Function: LibCustomDataIsComplex ============================================
+%% Abstract:
+%%   Return whether the custom data is complex.
+%%
+%function LibCustomDataIsComplex(record)
+  %switch record.RecordType
+    %case "BlockOutput"
+      %return record.ComplexSignal == "yes"
+      %break
+    
+    %case "ExternalInput"
+      %return record.ComplexSignal=="yes"
+      %break
+    
+    %case "DWork"
+      %return record.ComplexSignal=="yes"
+      %break
+    
+    %case "ModelParameter"
+      %return record.ComplexSignal
+      %break
+      
+    %case "MachineData"
+      %assign errTxt = "Custom storage classes are not supported for Stateflow machine data"
+      %<LibReportFatalError(errTxt)>
+      
+    %default
+      %assign errTxt = "Unknown record type: %<record.RecordType>"
+      %<LibReportFatalError(errTxt)>
+  %endswitch
+%endfunction
+
+%% Function: LibAccessCustomData ================================================
+%% Abstract:
+%%   Call the "Data Access" method for the data record's custom storage
+%%   class, using the specified access type.  Access types may be
+%%   predefined (e.g. "contents", "declare") or user-defined.
+%%
+%function LibAccessCustomData(record,type,idx,reim,extra) void
+  %assign genType = SLibGetGenerateTypeForData(record)
+
+  %% If the record is complex, prepend with a dot if necessary
+  %if LibCustomDataIsComplex(record)
+    %switch reim
+      %case tRealPart
+      %case tImagPart
+	%assign dot_reim = ".%<reim>"
+	%break
+      %default
+	%assign dot_reim = reim
+	%break
+    %endswitch
+    %% If it is not complex, slam it to null
+  %else
+    %assign dot_reim = ""
+  %endif
+
+  %if record.CustomStorageClassVersion > 1
+    %return GENERATE_TYPE(record,"DataAccess",genType,type,idx,dot_reim,extra)
+
+  %else
+    %if !ISEMPTY(extra)
+      %assign errTxt = "Can not call custom storage class version 1 with " + ...
+	"LibAccessCustomData unless the fifth argument is empty"
+      %<LibReportFatalError(errTxt)>
+    %endif
+
+    %return GENERATE_TYPE(record,"DataAccess",genType,type,idx,dot_reim)
+  %endif
+%endfunction
+
+%% Function: LibCustomData ================================================
+%% Abstract:
+%%   Older version of LibAccessCustomData
+%%
+%function LibCustomData(record,type,idx,reim) void
+  %switch type
+
+   %case "qualifier"
+     %assign msDefn = SLibGetMemorySectionDefForData(record)
+
+     %if !ISEMPTY(msDefn)
+       %return SLibGetQualifier(msDefn)
+       %break
+     %endif
+
+     %% NOTE: else do not %break, in to following %default case.
+     %%       (for backward compatibility of R13 csc)
+
+   %default
+     %return LibAccessCustomData(record,type,idx,reim,"")
+     %break
+  %endswitch
+%endfunction
+
+%% Function: LibCustomClass =====================================================
+%% Abstract:
+%%   Call the "Class Access" method for the data record's custom storage
+%%   class, using the specified access type.  Access types may be
+%%   predefined (e.g. "setup", "comment") or user-defined.
+%%
+%function LibCustomClass(record,type) void
+  %assign genType = SLibGetGenerateTypeForCSC(record)
+
+  %return GENERATE_TYPE(record, "ClassAccess", genType, type)
+%endfunction
+
+%%=========================%%
+%% Record access functions %%
+%%=========================%%
+
+
+%% Function: LibGetDataRecord ===================================================
+%% Abstract:
+%%   Return the RTW record corresponding to the idx'th entry in the
+%%   segment of the global memory map corresponding to the specified
+%%   custom storage class
+%%
+%function LibGetDataRecord(class, idx) void
+  %return class.Data[idx].RTWRecord
+%endfunction
+
+%% Function: LibGetRecordIdentifier =============================================
+%% Abstract:
+%%   Return the identifier associated with the data record
+%%
+%function LibGetRecordIdentifier(record) void
+  %return record.Identifier
+%endfunction
+
+%% Function: LibGetCustomStorageClassName =======================================
+%% Abstract:
+%%   Return the name of the custom storage class associated with a data
+%%   record
+%%
+%function LibGetCustomStorageClassName(record) void
+  %assign base = record.Object.ObjectProperties.RTWInfo.Object
+  %return base.ObjectProperties.CustomStorageClass
+%endfunction
+
+%% Function: LibGetRTWInfoObjectProperties ======================================
+%% Abstract:
+%%   Return the RTWInfo properties associated with a data record 
+%%   corresponding to a Simulink data object
+%%
+%function LibGetRTWInfoObjectProperties(record) void
+  %return record.Object.ObjectProperties.RTWInfo.Object.ObjectProperties
+%endfunction
+
+%% Function: LibGetRTWInfoObjectPackage =========================================
+%% Abstract:
+%%   Return the RTWInfo package associated with a data record 
+%%   corresponding to a Simulink data object
+%%
+%function LibGetRTWInfoObjectPackage(record) void
+  %return record.Object.ObjectProperties.RTWInfo.Object.Package
+%endfunction
+
+%% Function: LibGetRTWInfoObjectClass ===========================================
+%% Abstract:
+%%   Return the RTWInfo class associated with a data record 
+%%   corresponding to a Simulink data object
+%%
+%function LibGetRTWInfoObjectClass(record) void
+  %return record.Object.ObjectProperties.RTWInfo.Object.Class
+%endfunction
+
+%% Function: LibGetCustomStorageAttributes ======================================
+%% Abstract:
+%%   Return the storage class attributes associated with a data record 
+%%   corresponding to a Simulink.CustomParameter or Simulink.CustomSignal
+%%
+%function LibGetCustomStorageAttributes(record) void
+  %assign base = record.Object.ObjectProperties.RTWInfo.Object.ObjectProperties
+  %if ISFIELD(base, "CustomAttributes")
+    %if ISFIELD(base.CustomAttributes, "Object")
+      %return base.CustomAttributes.Object.ObjectProperties
+    %endif
+  %endif
+
+  %createrecord nil {}
+  %return nil
+%endfunction
+
+
+%%=============================================================================
+%function LibGetInstanceSpecificProp(cscDefn, customAttrProps, propname) void
+  %assert !ISEMPTY(cscDefn)
+
+  %% Get the default value
+  %if ISFIELD(cscDefn, propname)
+    %assign propVal = cscDefn.%<propname>
+  %elseif ISFIELD(cscDefn.CSCTypeAttributes, propname)
+    %assign propVal = cscDefn.CSCTypeAttributes.%<propname>
+  %else
+    %assign errTxt = "Instance specific property '%<propname>' does not " + ...
+                     "have a default counterpart in custom storage class " + ...
+                     "definition '%<cscDefn.Name>'"
+    %<LibReportFatalError(errTxt)>
+  %endif
+
+  %% Override with the instance-specific value
+  %if (!ISEMPTY(customAttrProps) && ISFIELD(customAttrProps, propname))
+    %assign propVal = customAttrProps.%<propname>
+  %endif
+
+  %return propVal
+%endfunction
+
+
+%%=============================================================================
+%function LibIsPropInstanceSpecific(cscDefn, customAttrProps, propname) void
+  %assert !ISEMPTY(cscDefn)
+
+  %if (!ISEMPTY(customAttrProps) && ISFIELD(customAttrProps, propname))
+    %return TLC_TRUE
+  %else
+    %return TLC_FALSE
+  %endif
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetDescriptionForData(record) void
+  %assign desc = ""
+  %if (record.HasObject == 1) && (ConfigSet.SimulinkDataObjDesc == 1)
+    %assign desc = record.Object.ObjectProperties.Description
+  %endif
+
+  %return desc
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetCSCDefForName(rtwInfoPkg, cscName) void
+  %assign cscDefn = []
+
+  %if ISFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+    %assign prec = GETFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+
+    %if !ISEMPTY(prec.CSCDefs) && ISFIELD(prec.CSCDefs, cscName)
+      %assign cscDefn = GETFIELD(prec.CSCDefs, cscName)
+    %endif
+  %endif
+
+  %return cscDefn
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetMemorySectionDefForName(rtwInfoPkg, msName) void
+  %assign msDefn = []
+
+  %if ISFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+    %assign prec = GETFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+
+    %if !ISEMPTY(prec.MemorySectionDefs) && ISFIELD(prec.MemorySectionDefs, msName)
+      %assign msDefn = GETFIELD(prec.MemorySectionDefs, msName)
+    %endif
+  %endif
+
+  %return msDefn
+%endfunction
+
+%%=============================================================================
+%function SLibGetCSCDefForData(record) void
+  %% Taking a data record as argument
+
+  %assign rtwInfoPkg = LibGetRTWInfoObjectPackage(record)
+  %assign cscName = LibGetCustomStorageClassName(record)
+
+  %return SLibGetCSCDefForName(rtwInfoPkg, cscName)
+%endfunction
+
+
+%%=============================================================================
+%% NOTE: MemorySection could be instance specific
+%%
+%function SLibGetMemorySectionDefForData(record) void
+  %% Taking a data record as argument
+
+  %assign rtwInfoPkg = LibGetRTWInfoObjectPackage(record)
+
+  %assign cscDefn = SLibGetCSCDefForData(record)
+  %if ISEMPTY(cscDefn)
+    %return []
+  %endif
+
+  %assign customAttrProps = LibGetCustomStorageAttributes(record)
+  %assign msName = LibGetInstanceSpecificProp(cscDefn, customAttrProps, "MemorySection")
+  %assert !ISEMPTY(msName)
+
+  %return SLibGetMemorySectionDefForName(rtwInfoPkg, msName)
+%endfunction
+
+
+%%=============================================================================
+%% NOTE: DataAccess could be instance specific
+%%
+%function SLibGetDataAccess(cscDefn, datarec) void
+  %assign dataAccess = cscDefn.DataAccess
+  
+  %assign customAttrProps = LibGetCustomStorageAttributes(datarec)
+  %assign dataAccess = LibGetInstanceSpecificProp(cscDefn, customAttrProps, "DataAccess")
+  %assert !ISEMPTY(dataAccess)
+
+  %return dataAccess
+%endfunction
+
+
+%%=============================================================================
+%% NOTE: HeaderFile could be instance specific
+%%
+%function SLibGetHeaderFile(cscDefn, datarec) void
+  %assign hdr = cscDefn.HeaderFile
+
+  %assign customAttrProps = LibGetCustomStorageAttributes(datarec)
+  %assign hdrInstance = LibGetInstanceSpecificProp(cscDefn, customAttrProps, "HeaderFile")
+
+  %if ISEMPTY(hdr)
+    %assign hdr = ""
+  %endif
+  %return hdr
+%endfunction
+
+
+%%=============================================================================
+%function SLibAddHeaderFileDelimeter(hdrfile) void
+  %assert !ISEMPTY(hdrfile)
+
+  %% Add "" as default if there's no delimeter
+  %assign hlen = SIZE(hdrfile, 1)
+  %if ((hdrfile[0] == "\"") && (hdrfile[hlen-1] == "\"")) || ...
+      ((hdrfile[0] == "<") && (hdrfile[hlen-1] == ">"))
+    %assign newhdr = hdrfile
+  %else
+    %assign newhdr = "\"" + hdrfile + "\""
+  %endif
+
+  %return newhdr
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetQualifier(msDefn) void
+  %assign qualifier = msDefn.Qualifier
+  %assign qualifier = ISEMPTY(qualifier) ? "" : "%<qualifier> "
+  %assign const = (msDefn.IsConst) ? "const " : ""
+  %assign volatile = (msDefn.IsVolatile) ? "volatile " : ""
+  %return "%<qualifier>%<const>%<volatile>"
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetCSCDefForCSC(record) void
+  %% Taking a class record as argument
+
+  %assign rtwInfoPkg = record.Package
+    %% RTWInfo package. May not be same as cscDefn.OwnerPackage.
+
+  %assign cscName = record.Name
+
+  %return SLibGetCSCDefForName(rtwInfoPkg, cscName)
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetMemorySectionDefForCSC(record) void
+  %% Taking a class record as argument
+
+  %assign rtwInfoPkg = record.Package
+    %% RTWInfo package. May not be same as cscDefn.OwnerPackage.
+
+  %assign cscDefn = SLibGetCSCDefForCSC(record)
+  %assign msName = cscDefn.MemorySection
+
+  %return SLibGetMemorySectionDefForName(rtwInfoPkg, msName)
+%endfunction
+
+
+%%=============================================================================
+%function LibDataAccessInSpecificTLC(toPackage, toTLCName, record, request, idx, reim) void
+  %assign myPackage = LibGetRTWInfoObjectPackage(record)
+  %assign cscName = LibGetCustomStorageClassName(record)
+
+  %assign genType = toPackage + "::" + toTLCName
+
+  %if !%<GENERATE_TYPE_FUNCTION_EXISTS(record, "DataAccess", genType)>
+    %if ISEMPTY(toPackage) || (toPackage == "Simulink")
+      %assign toPkgPath = FEVAL("matlabroot") + ...
+                          "/toolbox/simulink/simulink/@Simulink"
+      %assign toFilePath = "%<toPkgPath>/tlc/%<toTLCName>"
+    %else
+      %assign tmpstr = "fileparts(which('@%<toPackage>/schema'))"
+      %assign toPkgPath = FEVAL("eval", tmpstr)
+      %assign toFilePath = "%<toPkgPath>/tlc/%<toTLCName>"
+    %endif
+
+    %generatefile "%<genType>" "%<toFilePath>"
+
+    %if !%<GENERATE_TYPE_FUNCTION_EXISTS(record, "DataAccess", genType)>
+      %assign errTxt = "The DataAccess function does not exist in file: %<toFilePath>, " + ...
+	"but it is needed for custom storage class: %<myPackage>::%<cscName>"
+      %<LibReportFatalError(errTxt)>
+    %endif
+  %endif
+
+  %return GENERATE_TYPE(record, "DataAccess", genType, request, idx, reim)
+%endfunction
+
+
+%%=============================================================================
+%function LibClassAccessInSpecificTLC(toPackage, toTLCName, record, request) void
+  %assign myPackage = record.Package
+  %assign cscName = record.Name
+
+  %assign genType = toPackage + "::" + toTLCName
+
+  %if !%<GENERATE_TYPE_FUNCTION_EXISTS(record, "ClassAccess", genType)>
+    %if ISEMPTY(toPackage) || (toPackage == "Simulink")
+      %assign toPkgPath = FEVAL("matlabroot") + ...
+                          "/toolbox/simulink/simulink/@Simulink"
+      %assign toFilePath = "%<toPkgPath>/tlc/%<toTLCName>"
+    %else
+      %assign tmpstr = "fileparts(which('@%<toPackage>/schema'))"
+      %assign toPkgPath = FEVAL("eval", tmpstr)
+      %assign toFilePath = "%<toPkgPath>/tlc/%<toTLCName>"
+    %endif
+  
+    %generatefile "%<genType>" "%<toFilePath>"
+  
+    %if !%<GENERATE_TYPE_FUNCTION_EXISTS(record, "ClassAccess", genType)>
+      %assign errTxt = "The ClassAccess function does not exist in file: %<toFilePath>, " + ...
+	"but it is needed for custom storage class: %<myPackage>::%<cscName>"
+      %<LibReportFatalError(errTxt)>
+    %endif
+  %endif
+
+  %return GENERATE_TYPE(record, "ClassAccess", genType, request)
+%endfunction
+
+
+%% Function: LibCustomStorageRecordIsCustomStorageClassInMap ====================
+%% Abstract: 
+%%   Return whether a record is a custom storage class record in
+%%   the global memory map.
+%%
+%function LibCustomStorageRecordIsCustomStorageClassInMap(record) void
+  %return (record.RecordType == "CustomStorageClassInMap")
+%endfunction
+
+
+
+%% Function: LibCustomStorageRecordIsModelParameter =============================
+%% Abstract: 
+%%   Return whether a record is a model parameter.
+%%
+%function LibCustomStorageRecordIsModelParameter(record) void
+  %return (record.RecordType == "ModelParameter")
+%endfunction
+
+
+
+%% Function: LibCustomStorageRecordIsBlockState =================================
+%% Abstract: 
+%%   Return whether a record is a block state
+%%
+%function LibCustomStorageRecordIsBlockState(record) void
+  %return (record.RecordType == "DWork")
+%endfunction
+
+
+%% Function: LibCustomStorageRecordIsBlockOutput ================================
+%% Abstract: 
+%%   Return whether a record is a block output
+%%
+%function LibCustomStorageRecordIsBlockOutput(record) void
+  %return (record.RecordType == "BlockOutput")
+%endfunction
+
+
+%% Function: LibCustomStorageRecordIsExternalInput ==============================
+%% Abstract: 
+%%   Return whether a record is an external input
+%%
+%function LibCustomStorageRecordIsExternalInput(record) void
+  %return (record.RecordType == "ExternalInput")
+%endfunction
+
+
+%% Function: LibCustomStorageRecordIsExternalOutput =============================
+%% Abstract: 
+%%   Return whether a record is an external output
+%%
+%function LibCustomStorageRecordIsExternalOutput(record) void
+  %return (record.RecordType == "ExternalOutput")
+%endfunction
+
+
+%% Function: LibCustomStorageVerifyRecordIsParameter ============================
+%% Abstract: 
+%%   Report an error if record is not a parameter yet the custom storage
+%%   class associated with the record only supports parameters
+%%
+%function LibCustomStorageVerifyRecordIsModelParameter(record) void
+  %if LibCustomStorageRecordIsModelParameter(record) == 0
+    %assign id = LibGetRecordIdentifier(record)
+    %assign sc = LibGetCustomStorageClassName(record)
+    %assign errTxt = "Custom storage class '%<sc>' " + ...
+      "is not legal for '%<id>' because it is not a parameter"
+    %<LibReportError(errTxt)>
+  %endif
+  %return
+%endfunction
+
+
+%% Function: LibCustomStorageVerifyPropertyIsNotEmpty ============================
+%% Abstract: 
+%%   Report an error if record is not a parameter yet the custom storage
+%%   class associated with the record only supports parameters
+%%
+%function LibCustomStorageVerifyPropertyIsNotEmpty(record, prop, propName) void
+  %if prop == ""
+    %assign id = LibGetRecordIdentifier(record)
+    %assign errTxt = "Data '%<id>' must have its '%<propName>' property set"
+    %<LibReportError(errTxt)>
+  %endif
+  %return
+%endfunction
+
+
+%% Function: LibCustomStorageVerifyRecordIsScalar ===============================
+%% Abstract: 
+%%   Report an error if record is not a scalar yet the custom storage
+%%   class associated with the record only supports scalars
+%%
+%function LibCustomStorageVerifyRecordIsScalar(record) void
+  %if LibGetDataWidth(record) != 1 
+    %assign id = LibGetRecordIdentifier(record)
+    %assign sc = LibGetCustomStorageClassName(record)
+    %assign errTxt = "Custom storage class '%<sc>' " + ...
+      "is not legal for '%<id>' because it is not a scalar"
+    %<LibReportError(errTxt)>
+  %endif
+  %return
+%endfunction
+
+
+
+%% Function: LibCustomStorageVerifyRecordIsNonComplex ===========================
+%% Abstract: 
+%%   Report an error if record is complex yet the custom storage
+%%   class associated with the record only supports non-complex
+%%
+%function LibCustomStorageVerifyRecordIsNonComplex(record) void
+  %if LibGetRecordIsComplex(record)
+    %assign id = LibGetRecordIdentifier(record)
+    %assign sc = LibGetCustomStorageClassName(record)
+    %assign errTxt = "Custom storage class '%<sc>' " + ...
+      "is not legal for %<id> because it is complex"
+    %<LibReportError(errTxt)>
+  %endif
+  %return
+%endfunction
+
+
+
+%% Function: SLibSetupCustomStorageClasses ======================================
+%% Abstract: 
+%%   Perform actions associated with custom storage classes prior to 
+%%   their use
+%%
+%function SLibSetupCustomStorageClasses() void
+  %assign slPkgPath = FEVAL("matlabroot") + ...
+                      "/toolbox/simulink/simulink/@Simulink"
+
+  %with CompiledModel.CustomStorageClasses
+  
+    %%
+    %% Setup the GENERATE mapping
+    %%
+  
+    %foreach idx = NumCustomStorageClasses
+      %assign sc = CustomStorageClass[idx] 
+      %assign cscName = sc.Name
+      %assign rtwInfoPkg = sc.Package
+        %% RTWInfo package. May not be same as cscDefn.OwnerPackage.
+  
+      %%
+      %% Cache all registered CSCDefs/MemorySectionDefs of given RTWInfo package
+      %% into CompiledModel.CustomStorageClasses.CSCReg.$rtwInfoPkg if not
+      %% already done so.
+      %%
+  
+      %if !ISFIELD(CompiledModel.CustomStorageClasses, "CSCReg")
+        %addtorecord CompiledModel.CustomStorageClasses CSCReg {}
+      %endif
+  
+      %if !ISFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+        %addtorecord CompiledModel.CustomStorageClasses.CSCReg %<rtwInfoPkg> {}
+        %assign prec = GETFIELD(CompiledModel.CustomStorageClasses.CSCReg, rtwInfoPkg)
+  
+        %assign userDefs = FEVAL("cscdefn2struct", rtwInfoPkg)
+
+        %if ISEMPTY(userDefs.CSCDefs)
+          %addtorecord prec CSCDefs {}
+        %else
+          %addtorecord prec CSCDefs %<userDefs.CSCDefs>
+        %endif
+
+        %if ISEMPTY(userDefs.MemorySectionDefs)
+          %addtorecord prec MemorySectionDefs {}
+        %else
+          %addtorecord prec MemorySectionDefs %<userDefs.MemorySectionDefs>
+        %endif
+      %endif
+  
+      %%
+      %% Setup the generate type to the right TLC file of this custom storage class
+      %%
+
+      %addtorecord sc Data {}
+      %assign dummyScope = sc
+
+      %assign filePkgAndName = FcnGetTLCFilePackageAndName(rtwInfoPkg, cscName)
+      %assign filePkg = filePkgAndName[0]
+      %assign fileName = filePkgAndName[1]
+
+      %if filePkg == "Simulink"
+        %assign filePkgPath = "%<slPkgPath>"
+      %else
+        %assign tmpstr = "fileparts(which('@%<filePkg>/schema'))"
+        %assign filePkgPath = FEVAL("eval", tmpstr)
+      %endif
+      %assign filePath = "%<filePkgPath>/tlc/%<fileName>"
+ 
+      %if !FILE_EXISTS(filePath)
+        %assign errTxt = "The file %<filePath> does not exist, " + ...
+  	  "but it is needed for the custom storage class %<rtwInfoPkg>::%<cscName>"
+        %<LibReportError(errTxt)>
+      %endif
+  
+      %assign genType = SLibGetGenerateTypeForName(rtwInfoPkg, cscName)
+      %generatefile "%<genType>" "%<filePath>"
+
+      %if !%<GENERATE_TYPE_FUNCTION_EXISTS(dummyScope, "DataAccess", genType)>
+	%assign errTxt = "The DataAccess function does not exist in file: %<filePath>, " + ...
+	  "but it is needed for custom storage class: %<rtwInfoPkg>::%<cscName>"
+        %<LibReportFatalError(errTxt)>
+      %endif
+
+      %if !%<GENERATE_TYPE_FUNCTION_EXISTS(dummyScope, "ClassAccess", genType)>
+	%assign errTxt = "The ClassAccess function does not exist in file: %<filePath>, " + ...
+	  "but it is needed for custom storage class: %<rtwInfoPkg>::%<cscName>"
+        %<LibReportFatalError(errTxt)>
+      %endif
+
+    %endforeach  %% idx in CustomStorageClass
+    
+    %%
+    %% Create the custom part of the map
+    %%
+
+    %<SLibMapCustomData()>
+    
+    %%
+    %% Loop through RTWInfo packages and Sanitize user strings for use in TLC
+    %%
+
+    %assign rtwInfoPkgNames = FIELDNAMES(CSCReg)
+    %assign numRTWInfoPkgs = SIZE(rtwInfoPkgNames)[1]
+    %foreach idx = numRTWInfoPkgs
+  
+      %assign rtwInfoPkg = rtwInfoPkgNames[idx]
+      %assign rtwInfoPkgDefs = CSCReg.%<rtwInfoPkg>
+
+      %% Sanitize CSC Definitions in this RTWInfo package
+      %assign cscDefns = FIELDNAMES(rtwInfoPkgDefs.CSCDefs)
+      %assign numCSCs  = SIZE(cscDefns)[1]
+      %foreach cscIdx = numCSCs
+        %assign cscDefn = rtwInfoPkgDefs.CSCDefs.%<cscDefns[cscIdx]>
+  
+        %if cscDefn.CommentSource == "Default"
+          %assign cscRec = \
+                       LibGetCustomStorageInMap(rtwInfoPkg, cscDefn.Name)
+          %if !ISEMPTY(cscRec)
+            %assign cscDefn.TypeComment    = LibCustomClass(cscRec, "typeComment")
+            %assign cscDefn.DeclareComment = LibCustomClass(cscRec, "declComment")
+            %assign cscDefn.DefineComment  = LibCustomClass(cscRec, "defnComment")
+          %endif
+        %else
+          %assign cscDefn.TypeComment = FcnSanitizeUserString(cscDefn.TypeComment)
+          %assign cscDefn.DeclareComment = \
+                                     FcnSanitizeUserString(cscDefn.DeclareComment)
+          %assign cscDefn.DefineComment = \
+                                     FcnSanitizeUserString(cscDefn.DefineComment)
+        %endif
+  
+        %assign cscDefn.HeaderFile = FcnSanitizeUserString(cscDefn.HeaderFile)
+      %endforeach
+  
+      %% Sanitize Memory Section comments in this RTWInfo package
+      %assign memSecDefns = FIELDNAMES(rtwInfoPkgDefs.MemorySectionDefs)
+      %assign numMemSecs  = SIZE(memSecDefns)[1]
+      %foreach memIdx = numMemSecs
+        %assign memSecDef = rtwInfoPkgDefs.MemorySectionDefs.%<memSecDefns[memIdx]>
+        %assign memSecDef.Comment    = FcnSanitizeUserString(memSecDef.Comment)
+        %assign memSecDef.PrePragma  = FcnSanitizeUserString(memSecDef.PrePragma)
+        %assign memSecDef.PostPragma = FcnSanitizeUserString(memSecDef.PostPragma)
+      %endforeach
+  
+    %endforeach
+
+    %%
+    %% Call the create method for the storage class, passing the map entry as
+    %% the record
+    %%
+
+    %foreach idx = NumCustomStorageClasses
+      %assign sc         = CustomStorageClass[idx]
+      %assign cscName    = sc.Name
+      %assign rtwInfoPkg = sc.Package
+      %assign class      = LibGetCustomStorageInMap(rtwInfoPkg, cscName)
+      %%
+      %% Do not call LibCustomClass when there are no instances of a
+      %% recognized class. When there are no instances the class record
+      %% is empty.
+      %%
+      %% This allows classes that have been emptied by custom target
+      %% preprocessing. Removing this will cause errors to any custom
+      %% target code generation process that removes all instances of
+      %% data that are of a CustomStorageClass.
+      %%
+      %if !ISEMPTY(class)
+        %<LibCustomClass(class, "setup")>
+      %endif
+    %endforeach
+  %endwith
+
+  %<VerifyCustomStorageCompliance()>
+%endfunction
+
+%% Function LibDefaultCustomStorageDeclaration ==================================
+%% Abstract:
+%%   Generate default data declaration for data with a custom storage
+%%   class.  The declaration takes the form of a standalone global
+%%   variable, e.g.
+%%
+%%                      real32_T x;
+%%                      uint8_T  y[3];
+%%
+%function LibDefaultCustomStorageDeclare(record)
+  %assign id = LibGetRecordIdentifier(record)
+  %assign dt = LibGetRecordCompositeDataTypeName(record)
+  %assign width = LibGetDataWidth(record)
+  %if width == 1
+    %assign dims = ""
+  %else
+    %assign dims = "[%<width>]"
+  %endif
+  %return "%<dt> %<id>%<dims>;"
+%endfunction
+
+%% Function LibDefaultCustomStorageInitialize ===================================
+%% Abstract:
+%%   Generate default data initialization for external I/O and states.  The 
+%%   initialization is to the value of ground for the datatype, e.g.
+%%
+%%                      x = 0.0;
+%%                      y[1] = 0;
+%%                      y[2] = 0;
+%%                      y[3] = 0;
+%%
+%function LibDefaultCustomStorageInitialize(record, idxInfo, reim)
+  %if record.RecordType == "ModelParameter"
+    %return ""
+  %else
+    %assign gndValue = LibGetGroundValue(record, tRealPart)
+    %return ...
+      "%<LibDefaultCustomStorageContents(record, idxInfo, reim)> = " + ...
+      "%<gndValue>;"
+  %endif
+%endfunction
+
+%% Function LibDefaultCustomStorageDefine =======================================
+%% Abstract:
+%%   Generate default data definition for data with a custom storage
+%%   class.  If the data is a parameter, the definition includes its
+%%   initialization to its nominal value.   The definition takes the 
+%%   form of a standalone global variable, e.g.
+%%
+%%                      real32_T x;
+%%                      uint8_T  p[3] = {4, 27, 92};
+%%                      uint8_T  y[3];
+%%
+%function LibDefaultCustomStorageDefine(record)
+  %assign id = LibGetRecordIdentifier(record)
+  %assign dt = LibGetRecordCompositeDataTypeName(record)
+  %assign width = LibGetDataWidth(record)
+  %if width == 1
+    %assign dims = ""
+  %else
+    %assign dims = "[%<width>]"
+  %endif
+  %if record.RecordType == "ModelParameter"
+    %openfile initStr
+     %<dt> %<id>%<dims> = %<LibParameterInstanceInitStr(record)>;
+    %closefile initStr
+    %return initStr
+  %else
+    %return "%<dt> %<id>%<dims>;"
+  %endif
+%endfunction
+
+%% Function LibDefaultCustomStorageContents =====================================
+%% Abstract:
+%%   Generate default data access for data with a custom storage
+%%   class.  The definition takes the form of a standalone global 
+%%   variable, e.g.
+%%
+%%                      x
+%%                      y[2]
+%%
+%function LibDefaultCustomStorageContents(record, idxInfo, reim)
+  %assign id = LibGetRecordIdentifier(record)
+  %return "%<id>%<idxInfo>%<reim>"
+%endfunction
+
+%% Function LibDefaultCustomStorageSet =====================================
+%% Abstract:
+%%   Generate default data access for data with a custom storage
+%%   class.  The definition takes the form of a standalone global 
+%%   variable, e.g.
+%%
+%%                      x = u;
+%%                      y[2] = u;
+%%
+%function LibDefaultCustomStorageSet(record, idxInfo, reim, value)
+  %return "%<LibDefaultCustomStorageContents(record, idxInfo, reim)> = %<value>;\n"
+%endfunction
+
+%% Function LibDefaultCustomStorageAddress ======================================
+%% Abstract:
+%%   Generate default data address for data with a custom storage
+%%   class.  The definition takes the form of a standalone global 
+%%   variable, e.g.
+%%
+%%                      &(x)
+%%                      y[2]
+%%
+%function LibDefaultCustomStorageAddress(record, idxInfo, reim)
+  %return "&%<LibDefaultCustomStorageContents(record, idxInfo, reim)>"
+%endfunction
+
+%% Function LibDefaultCustomStorageLayout =======================================
+%% Abstract:
+%%   For a given record, return a vector containing information about
+%%   the layout of that data; see LibGetDataLayout() for more information.
+%%
+%function LibDefaultCustomStorageLayout(record)
+  %return LibGetDataLayout(record)
+%endfunction
+
+%% Function LibDefaultCustomStorageDataDeclComment ==============================
+%% Abstract:
+%%   For a given data record, return a comment to be inserted before / at the end
+%%   of / after declarations of that data.
+%%
+%function LibDefaultCustomStorageDataDeclComment(record)
+  %return ["", "", ""]
+%endfunction
+
+%% Function LibDefaultCustomStorageDataDefnComment ==============================
+%% Abstract:
+%%   For a given data record, return a comment to be inserted before / at the end
+%%   of / after definition of that data.
+%%
+%function LibDefaultCustomStorageDataDefnComment(record)
+  %return ["", "", ""]
+%endfunction
+
+%% Function LibDefaultCustomStorageComment ======================================
+%% Abstract:
+%%   For a given class record, return a comment to be generally inserted before
+%%   the data of that class
+%%
+%function LibDefaultCustomStorageComment(record)
+  %return "/* Data with custom storage class %<record.Name> */"
+%endfunction
+
+%% Function LibDefaultCustomStorageTypeComment ==================================
+%% Abstract:
+%%   For a given class record, return a comment to be inserted before
+%%   type definition (if there is) of the data of that class
+%%
+%function LibDefaultCustomStorageTypeComment(record)
+  %return "/* Type definition of data with custom storage class %<record.Name> */"
+%endfunction
+
+%% Function LibDefaultCustomStorageDeclComment ==================================
+%% Abstract:
+%%   For a given class record, return a comment to be inserted before
+%%   declaration of the data of that class
+%%
+%function LibDefaultCustomStorageDeclComment(record)
+  %return "/* Declaration of data with custom storage class %<record.Name> */"
+%endfunction
+
+%% Function LibDefaultCustomStorageDefnComment ==================================
+%% Abstract:
+%%   For a given class record, return a comment to be inserted before
+%%   definition of the data of that class
+%%
+%function LibDefaultCustomStorageDefnComment(record)
+  %return "/* Definition of data with custom storage class %<record.Name> */"
+%endfunction
+
+%% Function LibDefaultCustomStorageUnknownDataAccessType ========================
+%% Abstract:
+%%   Handle the case where an unknown access type is used when calling DataAccess
+%%
+%function LibDefaultCustomStorageUnknownDataAccessType ...
+  (record, type, idxInfo, reim) void
+  
+  %switch type
+    %case "layout"
+      %% Assume worst case if not defined
+      %return ["other"]
+      %break
+
+    %case "qualifier"
+      %% Return the default type qualifier if not defined
+      %return ""
+      %break
+
+    %case "declComment"
+    %case "defnComment"
+      %% Return empty strings for comments to place
+      %% before / on same line / after code.
+      %return ["", "", ""]
+      %break
+      
+    %% These are critical and must be defined
+    %case "initialize"
+    %case "contents"
+    %case "address"
+    %case "declare"
+    %case "define"
+    %% Unknown access type
+    %default
+      %assign rtwInfoPkg = LibGetRTWInfoObjectPackage(record)
+      %assign cscName = LibGetCustomStorageClassName(record)
+      %assign id = LibGetRecordIdentifier(record)
+      %assign errTxt = "The access type '%<type>' is not defined for " + ...
+	"custom storage class '%<cscName>' used by data item " + ...
+	"'%<id>' of package '%<rtwInfoPkg>'"
+      %<LibReportFatalError(errTxt)>
+      %break
+
+  %endswitch
+%endfunction
+
+%% Function LibDefaultCustomStorageUnknownClassAccessType =======================
+%% Abstract:
+%%   Handle the case where an unknown access type is used when calling
+%%   ClassAccess
+%%
+%function LibDefaultCustomStorageUnknownClassAccessType(record, type) void
+
+  %switch type
+
+    %% For backward compatibility, the following will fall back to "comment"
+    %case "typeComment"
+    %case "declComment"
+    %case "defnComment"
+      %assign genType = SLibGetGenerateTypeForCSC(record)
+
+      %return GENERATE_TYPE(record, "ClassAccess", genType, "comment")
+      %break
+
+    %case "comment"
+      %% Just return a null if not defined
+      %return [""]
+      %break
+
+    %% These are critical and must be defined
+    %case "setup"
+    %% Unknown access type
+    %default
+      %assign rtwInfoPkg = record.Package
+      %assign cscName = record.Name
+      %assign errTxt = "The access type '%<type>' is not defined for " + ...
+	"custom storage class '%<cscName>' used by data of " + ...
+        "package '%<rtwInfoPkg>'"
+      %<LibReportFatalError(errTxt)>
+      %break
+
+  %endswitch
+%endfunction
+
+%% Function LibCustomStorageClassRecordNumData ==================================
+%% Abstract: 
+%%   in the ClassAccess method, return the number of data subrecords in the 
+%%   class record
+%%
+%function LibCustomStorageClassRecordNumData(record) void
+  %return record.NumData
+%endfunction
+
+
+%% Function LibConvertNameToIdentifier ==========================================
+%% Abstract:
+%%   convert filename to legal C identifier
+%%
+%function LibConvertNameToIdentifier(s) void
+  %assign str = "char(bitor(bitand('%<s>'>='0','%<s>'<='9')," + ...
+    "bitor(bitand('%<s>'>='a','%<s>'<='z'),bitand('%<s>'>='A'," + ...
+    "'%<s>'<='Z'))).*'%<s>' + ~bitor(bitand('%<s>'>='0','%<s>'<='9')" + ...
+    ",bitor(bitand('%<s>'>='a','%<s>'<='z'),bitand('%<s>'>='A'," + ...
+    "'%<s>'<='Z'))).*'_')"
+  %return "_INCLUDED_" + FEVAL("eval", str) + "_"
+%endfunction
+
+%% Function SLibCustomStorageStructTemplateDataAccess ===========================
+%% Abstract:
+%%   Define DataAccess() template function for arbitrary flat data structures.
+%%
+%function SLibCustomStorageStructTemplateDataAccess(record, request, ...
+  idx, reim, structInstanceName)
+
+  %switch request
+
+    %% The "initialize" request is used by the model registration 
+    %% function to zero internal or external data.  
+    %case "initialize"
+      %assign props = LibGetCustomStorageAttributes(record)
+      %assign gnd = LibGetGroundValue(record, tRealPart)
+      %return "%<structInstanceName>.%<props.FieldName> = %<gnd>;"
+
+    %% The "contents" request is used to generate code corresponding
+    %% to the usage of data on the left-hand or right-hand side of
+    %% an assignment.  
+    %case "contents"
+      %assign props = LibGetCustomStorageAttributes(record)
+      %return "%<structInstanceName>.%<props.FieldName>"
+      
+    %% The "address" request is used to generate code corresponding
+    %% to the address of data.  
+    %case "address"
+      %assign props = LibGetCustomStorageAttributes(record)
+      %return "&(%<structInstanceName>.%<props.FieldName>)"
+      
+    %% Since the data is embedded as fields in a composite, we will
+    %% not declare or define it individually using the "declare"
+    %% and "define" requests
+    %case "declare"
+    %case "define"
+      %return ""
+
+    %% The "layout" request is used to define the way data is mapped to
+    %% memory. In this case, the data is simply scalar elements
+    %% (embedded in a structure) so we can use the default layout.
+    %case "layout"
+      %return LibDefaultCustomStorageLayout(record)
+      %break
+
+    %% Handle unrecognized requests
+    %default
+      
+      %% You should invoke LibDefaultCustomStorageUnknownDataAccessType
+      %% for unrecognized requests.  It gracefully errs out for unknown
+      %% or known, critical requests not handled above, but supplies 
+      %% safe defaults for known, noncritical requests not handled above.
+      %return LibDefaultCustomStorageUnknownDataAccessType ...
+	(record, request, idx, reim)
+      %break
+      
+  %endswitch
+  
+%endfunction
+
+
+%% Function SLibCustomStorageStructTemplateClassAccess ===================
+%% Abstract:
+%%   define ClassAccess() function for the Struct template
+%%
+%% NOTE: This function is obsolete.
+%%
+%function SLibCustomStorageStructTemplateClassAccess(record, request, ...
+  structTypeName, structInstanceName, structFieldNames, ...
+  booleanBitField)
+
+  %if structTypeName == ""
+    %<LibReportFatalError("Undefined structure type name")>
+  %endif
+  %if structInstanceName == ""
+    %<LibReportFatalError("Undefined structure instance name")>
+  %endif
+  %if structFieldNames == []
+    %<LibReportFatalError("Undefined structure field names")>
+  %endif
+    
+  %switch request
+
+    %% The "setup" request performs class-wide operations prior to
+    %% code generation.
+    %case "setup"
+
+      %% Do some error checking: for each object in this class, 
+      %% * make sure it is a scalar, noncomplex
+      %% * make sure it is the only object referencing a particular field
+      %% * make sure it uses a valid fieldname
+      %%
+      %% Also, establish data type for each field and initial value for
+      %% each field.
+      %createrecord fieldProps {}
+      %assign numFields = SIZE(structFieldNames)[1]
+      %foreach idx = numFields
+        %if booleanBitField
+  	  %addtorecord fieldProps %<structFieldNames[idx]> ...
+           { Used 0;\
+             CDataType "unsigned int";\
+             InitValue "FALSE" \
+	   }
+	 %else
+  	  %addtorecord fieldProps %<structFieldNames[idx]> ...
+           { Used 0;\
+             CDataType "real_T";\
+             InitValue "0.0" \
+	   }
+	 %endif
+      %endforeach
+      %assign numData = LibCustomStorageClassRecordNumData(record)
+
+      %foreach idx = numData
+	%% Get the idx'th data record with BitField storage
+	%assign item  = LibGetDataRecord(record, idx)
+
+	%% Make sure the data is scalar and noncomplex
+	%<LibCustomStorageVerifyRecordIsScalar(item)>
+	%<LibCustomStorageVerifyRecordIsNonComplex(item)>
+
+	%% If this is a boolean bitfield, make sure the datatype is boolean
+	%if booleanBitField && ...
+	  LibGetDataTypeIdAliasedThruToFromId(LibGetRecordDataTypeId(item)) != tSS_BOOLEAN
+	  %assign errTxt = "Bitfields are only supported for boolean data"
+	  %<LibReportError(errTxt)>
+	%endif
+	
+	%% Make sure the object's fieldname is OK with what the TLC
+	%% says the legal fieldnames are, and that no two objects utilize
+	%% the same field.
+	%assign id    = LibGetRecordIdentifier(item)
+        %assign props = LibGetCustomStorageAttributes(item)
+	%assign fieldName = props.FieldName
+        %if !ISFIELD(fieldProps, fieldName)
+	  %assign errTxt = "The object field name '%<fieldName>' " +...
+	    "is not defined as a legal field name by the custom storage " +...
+	    "TLC file defining the '%<structTypeName>' type"
+	  %<LibReportError(errTxt)>
+	%endif
+        %assign field = GETFIELD(fieldProps, fieldName)
+	%if field.Used != 0
+	  %assign errTxt = "The object field '%<fieldName>' " +...
+	    "is used by multiple objects"
+	  %<LibReportError(errTxt)>
+	%else
+	  %assign field.Used = field.Used + 1
+	%endif
+	
+	%% Cache away the C data type, and the initial value of the field.
+	%assign field.CDataType = LibGetRecordCompositeDataTypeName(item)
+	%if LibCustomStorageRecordIsModelParameter(item)
+	  %assign field.InitValue = LibParameterInstanceInitStr(item)
+	%else
+	  %assign field.InitValue = LibGetGroundValue(item, tRealPart)
+	%endif
+      %endforeach  	  
+
+      %% Build up the type definition
+      %openfile structTypeBuf
+      /* %<structTypeName> data type */
+      typedef struct %<structTypeName>_tag {
+	%foreach idx = numFields
+	  %assign fieldName = structFieldNames[idx]
+          %assign field = GETFIELD(fieldProps, fieldName)
+          %if booleanBitField
+	    unsigned int %<fieldName>:1;
+	  %else
+	    %<field.CDataType> %<fieldName>;
+	  %endif
+	%endforeach
+      } %<structTypeName>;
+      %closefile structTypeBuf
+      
+      %% Build up the structure initializer
+      %openfile structInitBuf
+      {\
+	%foreach idx = numFields
+	  %assign fieldName = structFieldNames[idx]
+          %assign field = GETFIELD(fieldProps, fieldName)
+	  %if idx > 0
+	    , \
+	  %endif
+	  %<field.InitValue>\
+	%endforeach
+      } \
+      %closefile structInitBuf
+      
+      %% Cache the structure type definition and instance definition
+      %<LibHeaderFileCustomCode(structTypeBuf,"trailer")>
+      %<LibPrmFileCustomCode(...
+	"%<structTypeName> %<structInstanceName>" + ...
+	" = %<structInitBuf>;\n","trailer")>
+      %return ""
+      %break
+
+    %case "comment"
+      %% No individual data declarations or definitions.
+      %return ""
+      %break
+
+    %case "groupTypeDeclDefn"
+      %return ["", "", ""]
+      %break
+
+    %% Handle unrecognized requests
+    %default
+      
+      %return LibDefaultCustomStorageUnknownClassAccessType ...
+	(record, request)
+      %break
+      
+  %endswitch
+      
+%endfunction
+
+%% Function: LibBlockAssignOutputSignal ========================================
+%% Abstract:
+%%  Assign a block's output to a specified right-hand-side value
+%%
+%function LibBlockAssignOutputSignal(portIdx, ucv, lcv, sigIdx, rhs) void
+  %assign op = FcnGetOutputPortRecord(portIdx)
+  %assign sigRec = SLibGetSourceRecord(op, 0)
+  %if sigRec.StorageClass == "Custom" && ...
+    sigRec.CustomStorageClassVersion > 1
+    %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+    %assign reim    = tmpVect[0]
+    %assign sigIdx  = tmpVect[1]
+    %assign sigIndexer = SLibGet1DArrayIndexer(sigRec.Width, ucv, lcv, sigIdx)
+    %return LibAccessCustomData(sigRec, "set", sigIndexer, reim, rhs)
+  %else
+    %return "%<LibBlockOutputSignal(portIdx, ucv, lcv, sigIdx)> = %<rhs>;\n"
+  %endif
+%endfunction
+
+
+%% Function: LibBlockAssignDWork ===============================================
+%% Abstract:
+%%  Assign a block's dwork to a specified right-hand-side value
+%%
+%function LibBlockAssignDWork(dwork, ucv, lcv, sigIdx, rhs) void
+  %assign dworkAndRec = FcnGetDworkAndRec(dwork)
+  %assign dworkRec = dworkAndRec.DWorkRec
+
+  %if dworkRec.StorageClass == "Custom" && ...
+    dworkRec.CustomStorageClassVersion > 1
+    %assign tmpVect = SLibGetReimAndIdx(sigIdx)
+    %assign reim    = tmpVect[0]
+    %assign sigIdx  = tmpVect[1]
+    %assign sigIndexer = SLibGet1DArrayIndexer(dworkRec.Width, ucv, lcv, sigIdx)
+    %return LibAccessCustomData(dworkRec, "set", sigIndexer, reim, rhs)
+  %else
+    %return "%<LibBlockDWork(dwork, ucv, lcv, sigIdx)> = %<rhs>;\n"
+  %endif
+%endfunction
+
+%% Function: VerifyCustomStorageCompliance =====================================
+%% Abstract:
+%%  Verify a block's dworks and outputs of with custom storage class
+%%  are not a version higher than that which the block is compliant to
+%%
+%function VerifyCustomStorageCompliance() void
+  %foreach sysIdx = NumSystems
+    %assign system = System[sysIdx]
+    %with system
+    %foreach blkIdx = NumBlocks+NumVirtualOutportBlocks
+      %assign block = Block[blkIdx]
+      %with block
+      %if NumDWork > 0
+	%foreach idx = NumDWork
+	  %assign dwork = DWork[idx]
+	  %assign dworkAndRec = FcnGetDworkAndRec(dwork)
+	  %assign dworkRec = dworkAndRec.DWorkRec
+	  %if dworkRec.StorageClass == "Custom" && ...
+	    dworkRec.CustomStorageClassVersion > CustomStorageClassCompliant
+	    %assign errTxt = ...
+	      "DWork %<LibGetRecordIdentifier(dworkRec)> " + ...
+	      "uses custom storage class, level " + ...
+	      "%<dworkRec.CustomStorageClassVersion> but the compliance " + ...
+	      "level of this block is only " + ...
+	      "%<CustomStorageClassCompliant>; use a different block or " + ...
+	      "a different custom storage class, level " + ...
+	      "%<CustomStorageClassCompliant> or lower"
+	    %<LibBlockReportError(block, errTxt)>
+	  %endif
+	%endforeach
+      %endif	
+      %if NumDataOutputPorts > 0
+	%foreach idx = NumDataOutputPorts
+	  %assign op = FcnGetOutputPortRecord(idx)
+	  %assign sigSrc = IDNUM(op.SignalSrc[0])[0]
+	  %if sigSrc == "E"
+	    %assign sigRec = SLibGetSourceRecord(op, 0)
+	    %if sigRec.StorageClass == "Custom" && ...
+	      sigRec.CustomStorageClassVersion > CustomStorageClassCompliant
+	      %assign errTxt = ...
+		"Block output %<LibGetRecordIdentifier(sigRec)> " + ...
+		"uses custom storage class, level " + ...
+		"%<sigRec.CustomStorageClassVersion> but the compliance " + ...
+		"level of this block is only " + ...
+		"%<CustomStorageClassCompliant>; use a different block or " + ...
+		"a different custom storage class, level " + ...
+		"%<CustomStorageClassCompliant> or lower"
+	      %<LibBlockReportError(block, errTxt)>
+	    %endif
+	  %endif
+	%endforeach
+      %endif	
+      %endwith
+    %endforeach
+  %endwith
+  %endforeach
+%endfunction
+
+%% Function: FcnSanitizeUserString ==========================================
+%%
+%function FcnSanitizeUserString(userString) void
+  %if ISEMPTY(userString)
+    %return ""
+  %elseif WHITE_SPACE(userString)
+    %return ""
+  %endif
+  %return userString
+%endfunction
+
+
+%%=============================================================================
+%function FcnGetTLCFilePackageAndName(rtwInfoPkg, cscName) void
+  %assign filePkg = ""
+  %assign fileName = ""
+
+  %assign cscDefn = SLibGetCSCDefForName(rtwInfoPkg, cscName)
+  %if !ISEMPTY(cscDefn)
+    %if cscDefn.CSCType != "Other"
+      %% ie. Unstructured or FlatStructure
+      %assign filePkg = "Simulink"
+
+    %else
+      %% OwnerPackage controls actual path of TLCFileName. Not RTWInfo package.
+      %assign filePkg = cscDefn.OwnerPackage
+    %endif
+
+    %assign fileName = cscDefn.TLCFileName
+  %endif
+
+  %if ISEMPTY(filePkg)
+    %% No cscDefn at all (R13 backward compatibility); or OwnerPackage empty
+    %assign filePkg = rtwInfoPkg
+  %endif
+
+  %if ISEMPTY(fileName)
+    %assign fileName = cscName + ".tlc"
+  %endif
+
+  %return ["%<filePkg>", "%<fileName>"]
+  
+%endfunction  %% of FcnGetTLCFilePackageAndName()
+
+
+%%=============================================================================
+%function SLibGetGenerateTypeForName(rtwInfoPkg, cscName) void
+  %assign filePkgAndName = FcnGetTLCFilePackageAndName(rtwInfoPkg, cscName)
+
+  %assign genType = filePkgAndName[0] + "::" + filePkgAndName[1]
+
+  %return genType
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetGenerateTypeForCSC(record) void
+  %assign rtwInfoPkg = record.Package
+    %% RTWInfo package. May not be same as cscDefn.OwnerPackage.
+
+  %assign cscName = record.Name
+
+  %return SLibGetGenerateTypeForName(rtwInfoPkg, cscName)
+%endfunction
+
+
+%%=============================================================================
+%function SLibGetGenerateTypeForData(record) void
+  %assign rtwinfo = record.Object.ObjectProperties.RTWInfo
+  %assign rtwInfoPkg = rtwinfo.Object.Package
+  %assign cscName = rtwinfo.Object.ObjectProperties.CustomStorageClass
+
+  %return SLibGetGenerateTypeForName(rtwInfoPkg, cscName)
+%endfunction
+
+%% Function: LibGetSLDataObjectInfo ================================================
+%% Abstract:
+%%   Return the requested property value of the Simulink data object associated 
+%%   with a data record
+%function LibGetSLDataObjectInfo(record, property) void
+ 
+  %if !ISFIELD(record, "Object") || !ISFIELD(record.Object, "ObjectProperties")
+      %assign errTxt = "Invalid record for requesting data object property"
+      %<LibReportFatalError(errTxt)>
+  %endif   
+
+  %assign baseProps = record.Object.ObjectProperties
+  %assign RTWInfoProps = LibGetRTWInfoObjectProperties(record)
+  %assign cusAttriProps = LibGetCustomStorageAttributes(record)
+  %if ISEQUAL(property,"Class")
+      %assign propValue = record.Object.Class
+      %return propValue
+  %elseif ISEQUAL(property,"DataType")
+      %assign propValue = DataTypes.DataType[record.DataTypeIdx].DTName
+      %return  propValue
+  %else 
+      %if ISFIELD(baseProps, property)
+        %assign propValue = GETFIELD(baseProps, property)
+        %return  propValue
+      %elseif ISFIELD(RTWInfoProps, property)
+        %assign propValue = GETFIELD(RTWInfoProps, property)
+        %return  propValue
+      %elseif ISFIELD(cusAttriProps, property)
+        %assign propValue = GETFIELD(cusAttriProps, property)
+        %return  propValue
+      %else
+        %assign errTxt = "Invalid property %<property>"
+        %<LibReportFatalError(errTxt)>
+      %endif 
+  %endif
+
+%endfunction
+
+%endif %% _CUSTOMSTORAGELIB_
+
+%% [EOF] customstoragelib.tlc

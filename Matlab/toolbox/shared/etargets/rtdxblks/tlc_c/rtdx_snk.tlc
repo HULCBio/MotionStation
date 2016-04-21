@@ -1,0 +1,151 @@
+%% rtdx_snk.tlc
+%%
+%% $Revision: 1.1.6.2 $ $Date: 2004/04/08 21:08:20 $
+%% Copyright 2001-2003 The MathWorks, Inc.
+
+%implements rtdx_snk "C"
+
+
+%% Include external functions ==================================================
+%%
+%include "rtdx_util.tlc"
+
+
+%% Function: AddParamsToBlock ==================================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameter for easy reference.
+%%
+%function AddParamsToBlock(block) void
+
+    %assign INPORT            = 0
+    %assign ChannelName       = SFcnParamSettings.ChannelName
+    %assign InportDTypeName   = LibBlockInputSignalDataTypeName(INPORT, "%<tRealPart>")
+    %assign isInputFrame      = LibBlockInputSignalIsFrameData(INPORT) 
+    %assign InputWidth        = CAST("Number",LibDataInputPortWidth(INPORT))
+    %assign InputDims         = LibBlockInputSignalDimensions(INPORT)
+    %assign numChannels       = (isInputFrame) ? InputDims[1] : InputWidth   
+    %assign InSampsPerChannel = (isInputFrame) ? InputDims[0] : 1
+    %assign InportNumElems    = numChannels * InSampsPerChannel
+    %assign IsEnabled         = SFcnParamSettings.IsChannelEnabled    
+
+    %assign block = block + INPORT + ChannelName + IsEnabled + InportDTypeName + InportNumElems 
+
+%endfunction  %% AddParamsToBlock
+
+
+%% Function:  GetSizeOfDataType ===========================================================
+%%
+%% Get the size (in Bytes) of the data entering this block
+%%
+%function GetSizeOfDataType(block) void
+
+    %if (InportDTypeName == "real_T")
+        %return 8
+    %elseif (InportDTypeName == "real32_T")
+        %return 4
+    %elseif (InportDTypeName == "int32_T")
+        %return 4        
+    %elseif (InportDTypeName == "int16_T")
+        %return 2        
+    %elseif (InportDTypeName == "uint8_T")
+        %return 1        
+    %endif
+    
+%endfunction  %% GetSizeOfDataType
+
+
+%% Function:  AddChannelDeclarationsToModelPrm ============================================
+%%
+%% Adds global variables to model.prm
+%%
+%function AddChannelDeclarationsToModelPrm(block) void
+
+    %% Render channel name declaration
+
+    %openfile buffer
+        RTDX_CreateOutputChannel(%<ChannelName>);  /* Channel %<ChannelName> for block %<Name> */
+    %closefile buffer
+    %<LibCacheGlobalPrmData(buffer)>
+    %openfile buffer
+        extern RTDX_outputChannel %<ChannelName>;  /* Channel %<ChannelName> for block %<Name> */
+    %closefile buffer
+    %<LibCacheExtern(buffer)>
+
+%endfunction  %% AddLocalGlobalsToModelPrm
+
+
+%% Function: BlockTypeSetup ================================================
+%%
+%function BlockTypeSetup(block,system) void
+
+    %assign ::RTDXSnkSize = 0
+
+%endfunction %% BlockTypeSetup
+
+
+%% Function: BlockInstanceSetup ================================================
+%%
+%function BlockInstanceSetup(block,system) void
+
+    %<AddParamsToBlock(block)>
+    %if ( InportNumElems*GetSizeOfDataType(block) > ::RTDXSnkSize )
+        %assign ::RTDXSnkSize = InportNumElems*GetSizeOfDataType(block)          
+    %endif
+
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: Start =============================================================
+%%
+%%  Enable Output channel
+%%
+%function Start(block,system) Output
+    %%
+    %% Render #includes, #defines, and global declarations
+    %%
+    %<AddRtdxIncludesToModelH(block)>          \
+    %<AddChannelDeclarationsToModelPrm(block)> \
+    %%
+    %if IsEnabled == 1
+    RTDX_enableOutput(&%<ChannelName>);  \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %else
+    RTDX_disableOutput(&%<ChannelName>);  \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */                
+    %endif
+    %%
+%endfunction %% Start
+
+
+%% Function: Outputs ===========================================================
+%%
+%%  Write input buffer to RTDX channel
+%%
+%function Outputs(block,system) Output
+
+    /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+    %if (TargetName=="C2000")
+        RTDX_write( &%<ChannelName>, (void*) %<LibBlockInputSignalAddr(0,"","",0)>, %<InportNumElems>*sizeof(%<InportDTypeName>));   
+        while(RTDX_writing != NULL)
+        {
+            RTDX_Poll();
+        }
+    %else
+        while ( RTDX_writing != NULL) {}  /* waiting for rtdx write to complete */
+        RTDX_write( &%<ChannelName>, (void*) %<LibBlockInputSignalAddr(0,"","",0)>, %<InportNumElems>*sizeof(%<InportDTypeName>));
+    %endif
+
+%endfunction %% Outputs
+
+
+%% Function: Terminate ==========================================================
+%%
+%%  Disable Output channel
+%%
+%function Terminate(block,system) Output
+    RTDX_disableOutput(&%<ChannelName>);  \
+                /* %<Type> Block: %<Name> (%<ParamSettings.FunctionName>) */
+%endfunction %% Terminate
+
+%% [EOF] rtdx_snk.tlc

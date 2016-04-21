@@ -1,0 +1,484 @@
+%% $RCSfile: sdspdwt.tlc,v $
+%% $Revision: 1.4.4.3 $ 
+%% $Date: 2004/04/12 23:08:33 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Discrete Wavelet Transform
+%%
+
+%implements sdspdwt "C"
+
+%% Function: BlockTypeSetup ==================================================
+%%
+%function BlockTypeSetup(block, system) void
+
+  %<Include_rt_header(block, "dsp_ic_rt")>
+  %<Include_rt_header(block, "dspfilterbank_rt")>
+
+%endfunction %% BlockTypeSetup
+
+%% Function: BlockInstanceSetup ===============================================
+%%
+%% Abstract:
+%%      Rename the S-Function parameters for easy reference.
+%%
+%function BlockInstanceSetup(block, system) void
+%%  
+    %%Port info
+    %%
+    %assign INPORT      = 0
+    %assign numDims     = LibBlockInputSignalNumDimensions(INPORT)
+    %assign dims        = LibBlockInputSignalDimensions(INPORT)
+    %assign NUM_CHANS   = (numDims == 2) ? dims[1] : 1
+    %assign FRAMESIZE   = dims[0]
+    %assign block = block + INPORT + NUM_CHANS + FRAMESIZE
+    %%
+    %%Data Type Info
+    %%
+    %assign DATA_CPLX        = LibBlockInputSignalIsComplex(INPORT)  
+    %assign OUT_CPLX         = LibBlockOutputSignalIsComplex(0)
+    %assign FILT_CPLX        = LibBlockParameterIsComplex(LFILT)
+    %assign INPORT_IS_SINGLE = (LibBlockInputSignalDataTypeId(INPORT) == tSS_SINGLE)
+    %if(INPORT_IS_SINGLE)
+        %assign DAT_T  = DATA_CPLX ? "creal32_T" : "real32_T"
+        %assign FILT_T = FILT_CPLX ? "creal32_T" : "real32_T"
+        %assign OUT_T  = OUT_CPLX  ? "creal32_T" : "real32_T"
+    %else                   %%input is double
+        %assign DAT_T  = DATA_CPLX ? "creal_T" : "real_T"
+        %assign FILT_T = FILT_CPLX ? "creal_T" : "real_T"
+        %assign OUT_T  = OUT_CPLX  ? "creal_T" : "real_T"
+    %endif  
+    %assign bytesPerOutElemStr  = "sizeof(%<OUT_T>)"
+    %assign block = block + FILT_T + DAT_T + OUT_T + INPORT_IS_SINGLE +         \
+                            DATA_CPLX + OUT_CPLX + FILT_CPLX + bytesPerOutElemStr
+    %%
+    %%S-function Parameters
+    %%
+    %assign TREE        = SFcnParamSettings.TREE
+    %assign ASYMMETRIC  = 1
+    %assign SYMMETRIC   = 2
+    %assign NUM_LEVELS  = SFcnParamSettings.LEVELS
+    %assign OUTPUT_ARG  = SFcnParamSettings.OUTPUT
+    %assign DWT         = 1
+    %assign BANKS       = 2
+    %assign needInportBuf = (!DATA_CPLX) && FILT_CPLX
+    %assign dTypeID  = LibBlockOutputSignalDataTypeId(0)
+    %assign zeroVal  = SLibGetGroundValueFromId(dTypeID)
+    %assign block = block + TREE + NUM_LEVELS + OUTPUT_ARG + ASYMMETRIC \
+                          + SYMMETRIC + DWT + BANKS + needInportBuf + zeroVal
+    %%
+    %%GetTotalNumFilters
+    %%
+    %if (TREE == ASYMMETRIC)
+        %assign NUM_FILTERS = 2 * NUM_LEVELS
+        %assign NUM_OUTPUTS = NUM_LEVELS + 1
+    %else
+        %assign FILT_LEVEL  = 2
+        %assign NUM_FILTERS = 2
+        %assign NUM_OUTPUTS = 2
+        %foreach II = NUM_LEVELS-1
+            %assign FILT_LEVEL  = FILT_LEVEL * 2
+            %assign NUM_FILTERS = NUM_FILTERS + FILT_LEVEL
+            %assign NUM_OUTPUTS = NUM_OUTPUTS * 2
+        %endforeach
+    %endif
+    %assign LFSize = LibBlockParameterSize(LFILT)
+    %assign LFLen  = LFSize[0] * LFSize[1]
+    %assign HFSize = LibBlockParameterSize(HFILT)
+    %assign HFLen  = HFSize[0] * HFSize[1]
+    %assign lpfIsLonger = (LFLen > HFLen) ? 1 : 0
+    %%
+    %assign block = block + NUM_FILTERS + NUM_OUTPUTS + LFLen + HFLen + lpfIsLonger
+    %%
+%endfunction %% BlockInstanceSetup
+
+
+%% Function: InitializeConditions =============================================
+%%
+%% Abstract:
+%%      Initialize the DWork vector (Buffer) to the initial values specified.
+%%
+%function InitializeConditions(block, system) Output
+/* Signal Processing Blockset DWT %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %assign count    = %<NUM_FILTERS>/2
+    %assign maxInTapLen  = MAX(HFLen, LFLen)
+    %assign totalNumTaps = NUM_CHANS * maxInTapLen * NUM_FILTERS / 2
+    %%
+    /* Initialize TapDelayIndex to zero and 
+       polyphase index to one for all filter banks */
+    int32_T *phasePtr  = %<LibBlockDWorkAddr(PhaseIdx, "", "", 0)>;
+    int32_T *memPtr    = %<LibBlockDWorkAddr(TapDelayIndex, "", "", 0)>;
+    int_T i;
+    for (i=0; i<%<count>; i++) {
+        *memPtr++   = 0;
+        *phasePtr++ = 1;
+    }
+    
+    /* Initialize all elements of PartialSums Buffer and input taps to zero */
+    {
+        %<OUT_T> *sumsPointer = %<LibBlockDWorkAddr(Sums, "", "", 0)>;
+        %if (!DATA_CPLX && FILT_CPLX)
+            %<OUT_T> *tapDelayBuf = %<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+        %else
+            %<DAT_T> *tapDelayBuf = %<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+        %endif
+        int_T j = %<NUM_CHANS> * %<NUM_FILTERS>;
+        while (j--) {
+            %if (OUT_CPLX)
+                sumsPointer->re = %<zeroVal>;
+                sumsPointer->im = %<zeroVal>;
+            %else
+                *sumsPointer = %<zeroVal>;
+            %endif
+            sumsPointer++;
+        }
+        j = %<totalNumTaps>;
+        while (j--) {
+            %if (DATA_CPLX || FILT_CPLX)
+                tapDelayBuf->re = %<zeroVal>;
+                tapDelayBuf->im = %<zeroVal>;
+            %else
+                *tapDelayBuf = %<zeroVal>;
+            %endif
+            tapDelayBuf++;
+        }
+    }
+}
+
+%endfunction
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+/* Signal Processing Blockset DWT %<Type> (%<ParamSettings.FunctionName>) - '%<Name>' */
+{
+    %if (TREE == ASYMMETRIC)
+        %<GenerateAsymDWTCode(block)>
+    %else
+        %<GenerateSymDWTCode(block)>
+    %endif
+
+    /* Output data */
+    %<GenerateOutputCode(block)>
+}
+
+%endfunction  %% Outputs
+
+
+%%%%%%%%%%%%%%%%%%%%% 
+%% Subfunction: GenerateSymDWTCode ======================================
+%%
+%function GenerateSymDWTCode(block) Output
+    %%
+    %assign polyphaseFiltLenShort = (lpfIsLonger) ? HFLen/2 : LFLen/2
+    %assign polyphaseFiltLenLong  = (lpfIsLonger) ? LFLen/2 : HFLen/2
+    %assign inElem                = %<NUM_CHANS> * %<FRAMESIZE>
+    %assign maxInTapLen           = MAX(HFLen, LFLen)
+    byte_T *sums     = (byte_T *)%<LibBlockDWorkAddr(Sums, "", "", 0)>;
+    byte_T *memBase  = (byte_T *)%<LibBlockDWorkAddr(WorkBuff, "", "", 0)>;
+    byte_T *tapBuf   = (byte_T *)%<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+    int32_T  *tapIdx   = %<LibBlockDWorkAddr(TapDelayIndex, "", "", 0)>;
+    int32_T  *phaseIdx = %<LibBlockDWorkAddr(PhaseIdx, "", "", 0)>;
+
+    /* Initialize parameters for the first level filter bank */
+    const int_T inElemTimesBpe  = %<inElem> * %<bytesPerOutElemStr>;
+    boolean_T   memFlag         = 0; /* boolean flag to indicate active input buffer */
+    int_T inFrameSize  = %<FRAMESIZE>;
+    int_T outElem      = %<inElem> >> 1;
+    int_T outFrameSize = inFrameSize >> 1;
+    int_T numBanks     = 1;
+    int_T level;
+
+    %if (needInportBuf)
+    %<CopyInputToCplxBuf(block)>
+    %endif
+    
+    /* loop through all numLevels filter bank levels */
+    for (level=0; level < %<NUM_LEVELS>; level++) {
+        
+        byte_T *wbuf = memBase + memFlag*inElemTimesBpe;    
+        int_T   i    = numBanks;
+        /* run all the 2-channel analysis filter banks on current level */
+        while (i--) {     
+
+            %if (needInportBuf)
+            const byte_T *in = (level == 0) ? (byte_T *)%<LibBlockDWorkAddr(InportBuff, "", "", 0)> : (byte_T *)wbuf;
+            %else
+            const byte_T *in = (level == 0) ? (const byte_T *)%<LibBlockInputSignalAddr(INPORT, "", "", 0)> : wbuf;
+            %endif
+            int_T   memOffset       = (1-2*memFlag) * inElemTimesBpe;
+            byte_T *lpfOutputAddr   = wbuf + memOffset + outElem * %<bytesPerOutElemStr>;
+            byte_T *hpfOutputAddr   = wbuf + memOffset;
+            %if lpfIsLonger
+            byte_T *longFiltOutput  = lpfOutputAddr;
+            byte_T *shortFiltOutput = hpfOutputAddr;
+            %else
+            byte_T *longFiltOutput  = hpfOutputAddr;
+            byte_T *shortFiltOutput = lpfOutputAddr;
+            %endif
+
+            /* Two-channel analysis subband filter function */
+            %<Generate2ChanABankFcnCall(block)>
+            
+            /* Advance pointers for the next filter in the same level */
+            wbuf   += inFrameSize * %<NUM_CHANS> * %<bytesPerOutElemStr>;    
+            tapBuf += %<NUM_CHANS> * %<maxInTapLen> * %<bytesPerOutElemStr>; 
+            sums   += 2 * %<NUM_CHANS> * %<bytesPerOutElemStr>;
+            tapIdx++;
+            phaseIdx++;
+
+        } /* current level done */
+
+        /* Update parameters for next level */
+        memFlag      = (boolean_T)!memFlag;
+        numBanks     = numBanks     << 1;
+        inFrameSize  = inFrameSize  >> 1;
+        outFrameSize = outFrameSize >> 1;
+        outElem      = outElem      >> 1;
+        
+    } /* all levels done*/
+    if(memFlag) {
+        memcpy((byte_T *)memBase, ((byte_T *)memBase + %<inElem>*%<bytesPerOutElemStr>), %<inElem>*%<bytesPerOutElemStr>);
+    }
+%%
+%endfunction %%GenerateSymDWTCode
+
+%% Subfunction: GenerateAsymDWTCode ======================================
+%%
+%function GenerateAsymDWTCode(block) Output
+    %%
+    %assign polyphaseFiltLenShort = (lpfIsLonger) ? HFLen/2 : LFLen/2
+    %assign polyphaseFiltLenLong  = (lpfIsLonger) ? LFLen/2 : HFLen/2
+    %assign inElem                = %<NUM_CHANS> * %<FRAMESIZE>
+    %assign maxInTapLen           = MAX(HFLen, LFLen)
+    byte_T *sums     = (byte_T *)%<LibBlockDWorkAddr(Sums, "", "", 0)>;
+    byte_T *memBase  = (byte_T *)%<LibBlockDWorkAddr(WorkBuff, "", "", 0)>;
+    byte_T *tapBuf   = (byte_T *)%<LibBlockDWorkAddr(TapDelayBuff, "", "", 0)>;
+    int32_T  *tapIdx   = %<LibBlockDWorkAddr(TapDelayIndex, "", "", 0)>;
+    int32_T  *phaseIdx = %<LibBlockDWorkAddr(PhaseIdx, "", "", 0)>;
+
+    /* Initialize parameters for the first level filter bank */
+    int_T inFrameSize  = %<FRAMESIZE>;
+    int_T outElem      = %<inElem> >> 1;
+    int_T offset       = %<inElem>;
+    int_T level;
+
+    %if (needInportBuf)
+    %<CopyInputToCplxBuf(block)>
+    %endif
+    
+    /* loop through all numLevels filter bank levels */
+    for (level=0; level < %<NUM_LEVELS>; level++) {
+        
+        %if (needInportBuf)
+        const byte_T *in = (level == 0) ? (byte_T *)%<LibBlockDWorkAddr(InportBuff, "", "", 0)> : (byte_T *)memBase;
+        %else
+        const byte_T *in = (level == 0) ? (const byte_T *)%<LibBlockInputSignalAddr(INPORT, "", "", 0)> : memBase;
+        %endif
+        /* all filter outputs from the same level are temporally stored in
+           the bottom half of WorkBuffer.
+           store high-pass filter result in location mem 
+           store low-pass filter result  in location mem+outElemTimesBpe */
+        byte_T  *mem = memBase + offset * %<bytesPerOutElemStr>;
+        int_T    outElemTimesBpe = outElem * %<bytesPerOutElemStr>;
+        %if lpfIsLonger
+        byte_T *longFiltOutput  = mem + outElemTimesBpe;
+        byte_T *shortFiltOutput = mem;
+        %else
+        byte_T *longFiltOutput  = mem;
+        byte_T *shortFiltOutput = mem + outElemTimesBpe;
+        %endif
+
+        /* Two-channel analysis subband filter function */
+        %<Generate2ChanABankFcnCall(block)>
+        
+        /* Update offset for memcpy operation and for next level */
+        offset += %<inElem> >> (level+1);
+
+        /* copy low pass filtered results to the top of WorkBuffer for next level function call 
+           the high pass filtered results remains stored in the bottom half WorkBuffer */
+        memcpy((byte_T *)memBase, ((byte_T *)memBase + offset*%<bytesPerOutElemStr>), outElemTimesBpe);
+
+        /* Update parameters for next level */
+        inFrameSize  = inFrameSize  >> 1;
+        outElem      = outElem      >> 1;
+        tapBuf      += %<NUM_CHANS> * %<maxInTapLen> * %<bytesPerOutElemStr>; 
+        sums        += 2 * %<NUM_CHANS> * %<bytesPerOutElemStr>;
+        tapIdx++;
+        phaseIdx++;
+    }
+%%
+%endfunction %%GenerateAsymDWTCode
+
+%% Subfunction: CopyInputToCplxBuf ======================================
+%%
+%function CopyInputToCplxBuf(block) Output
+%%
+{
+    /*Interleave real input data with imaginary zero and
+      store the results in memory before processing */
+    %<DAT_T> *buffer = (%<DAT_T> *)%<LibBlockDWorkAddr(InportBuff, "", "", 0)>;
+    const %<DAT_T> *uPort = (%<DAT_T> *)%<LibBlockInputSignalAddr(INPORT, "", "", 0)>;
+    int_T i = %<FRAMESIZE> * %<NUM_CHANS>;
+    while (i--) {
+        *buffer++ = *uPort++;
+        *buffer++ = %<zeroVal>;
+    }
+}
+%endfunction %% CopyInputToCplxBuf
+
+%% Subfunction: Generate2ChanSBankFcnCall ======================================
+%%
+%function Generate2ChanABankFcnCall(block) Output
+    %%
+    %assign shortFiltAddr = (lpfIsLonger)                                \
+                          ? LibBlockParameterAddr(HFILT, "", "", "0")    \
+                          : LibBlockParameterAddr(LFILT, "", "", "0")    
+    %assign longFiltAddr  = (lpfIsLonger)                                \
+                          ? LibBlockParameterAddr(LFILT, "", "", "0")    \
+                          : LibBlockParameterAddr(HFILT, "", "", "0")
+    %assign polyphaseShortFiltLen = (lpfIsLonger) ? HFLen/2 : LFLen/2
+    %assign polyphaseLongFiltLen  = (lpfIsLonger) ? LFLen/2 : HFLen/2
+    %%
+    %assign ARG_LIST = "(void *)in,               \
+                        (void *)longFiltOutput,   \
+                        (void *)shortFiltOutput,  \
+                        (void *)tapBuf,           \
+                        (void *)sums,             \
+                        (void *)%<longFiltAddr>,  \
+                        (void *)%<shortFiltAddr>, \
+                        tapIdx,                   \
+                        phaseIdx,                 \
+                        %<NUM_CHANS>,             \
+                        inFrameSize,              \
+                        %<polyphaseLongFiltLen>,  \
+                        %<polyphaseShortFiltLen>"
+    %%
+    %if (INPORT_IS_SINGLE)
+        %assign cplx_str = "C"
+        %assign real_str = "R"
+    %else
+        %assign cplx_str = "Z"
+        %assign real_str = "D"
+    %endif
+    %%
+    %assign func_str = "MWDSP_2ChABank_Fr_DF_"
+    %%
+    %if (DATA_CPLX) || (FILT_CPLX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %if (FILT_CPLX)
+        %assign func_str = func_str + cplx_str
+    %else
+        %assign func_str = func_str + real_str
+    %endif
+    %%
+    %% Generate function call
+    %%
+    %<func_str>(%<ARG_LIST>);
+    %%
+%endfunction %% Generate2ChanABankFcnCall
+
+%% Subfunction: GenerateOutputCode ======================================
+%%
+%function GenerateOutputCode(block) Output
+{
+    %assign inElem = NUM_CHANS * FRAMESIZE
+    %%
+    %if (TREE == SYMMETRIC)
+        %%
+        %if (OUTPUT_ARG == BANKS) 
+            byte_T *outPortAddr[%<NUM_OUTPUTS>]; /* Local array of pointers to the output port locations */
+            byte_T *mem = (byte_T *)%<LibBlockDWorkAddr(WorkBuff, "", "", 0)>;
+            int_T   outElemTimesBpe = ( (%<inElem>) >> %<NUM_LEVELS>) * %<bytesPerOutElemStr>;
+            int_T   i;
+            %foreach outPortIdx = NUM_OUTPUTS
+            outPortAddr[%<outPortIdx>] = (byte_T *)%<LibBlockOutputSignalAddr(outPortIdx, "", "", 0)>;
+            %endforeach
+            %%
+            for (i=0; i<%<NUM_OUTPUTS>; i++) {
+                byte_T *y = outPortAddr[i];
+                memcpy(y,mem, outElemTimesBpe);
+                mem += outElemTimesBpe;
+            }
+        %else
+            byte_T *y = (byte_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>;
+            const int bytesPerOutputChan = (%<FRAMESIZE> >> %<NUM_LEVELS>) * %<bytesPerOutElemStr>;
+            const int numOutBanks        = 1 << %<NUM_LEVELS>;
+            int   i ;
+            for (i=0; i < %<NUM_CHANS>; i++) {
+                byte_T *mem = (byte_T *)%<LibBlockDWorkAddr(WorkBuff, "", "", 0)> + i*bytesPerOutputChan;
+                int_T   j   = numOutBanks;
+                while (j--) {
+                    memcpy( y, mem, bytesPerOutputChan );
+                    y   += bytesPerOutputChan;
+                    mem += bytesPerOutputChan * %<NUM_CHANS>;
+                }
+            }
+        %endif
+    %%
+    %else %%ASYMMETRIC TREE
+        byte_T *const memBase = (byte_T *)%<LibBlockDWorkAddr(WorkBuff, "", "", 0)>;
+        %%
+        %if (OUTPUT_ARG == BANKS)
+            byte_T *outPortAddr[%<NUM_OUTPUTS>]; /* Local array of pointers to the output port locations */
+            int_T outElem = %<inElem>;
+            int_T offset  = %<inElem>; /* initial offset */
+            int_T i;
+            %foreach outPortIdx = NUM_OUTPUTS
+            outPortAddr[%<outPortIdx>] = (byte_T *)%<LibBlockOutputSignalAddr(outPortIdx, "", "", 0)>;
+            %endforeach
+            %assign numPortsMinusOne = %<NUM_OUTPUTS> - 1
+            for (i=0; i < %<numPortsMinusOne>; i++) {
+                byte_T *y   = outPortAddr[i];
+                byte_T *mem = (byte_T *)memBase + offset*%<bytesPerOutElemStr>;
+                outElem     = %<inElem> >> (i+1);
+                memcpy(y, mem, outElem*%<bytesPerOutElemStr>);
+                offset     += %<inElem> >> (i+1); /* calculate offset for next level */
+            }
+            /* last output port */
+            {
+                byte_T *y   = outPortAddr[%<NUM_OUTPUTS>-1];
+                byte_T *mem = (byte_T *)memBase + (2*%<inElem> - outElem)*%<bytesPerOutElemStr>;
+                memcpy(y, mem, outElem*%<bytesPerOutElemStr>);
+            }
+        %else
+            const int_T numOutBanks      = %<NUM_LEVELS> + 1;
+            const int_T bufferOffset     = %<inElem> * %<bytesPerOutElemStr>;
+            const byte_T *const memStart = memBase + bufferOffset;
+            byte_T *y = (byte_T *)%<LibBlockOutputSignalAddr(0, "", "", 0)>;
+            %assign numChansMinusOne = %<NUM_CHANS> - 1
+            int_T   i, j ;
+            for (i=0; i < %<NUM_CHANS>; i++) {
+               const byte_T *mem = memStart;
+               /* output per channel results from numOutBanks output banks */
+               for (j=0; j < numOutBanks-1; j++) {
+                    int_T bytesToCopy   = (%<FRAMESIZE> >> (j+1)) * %<bytesPerOutElemStr>;
+                    /* advance to next output bank for same channel*/
+                    int_T bytesToAdvance= (%<numChansMinusOne> - i) * bytesToCopy; 
+                    /* allows for channel memory offset */
+                    mem += i*bytesToCopy;   
+                    memcpy( y, mem, bytesToCopy );
+                    y   += bytesToCopy;
+                    mem += bytesToCopy + bytesToAdvance;
+                    /* output last bank */
+                    if (j == numOutBanks-2) {
+                        mem += i*bytesToCopy; 
+                        memcpy(y, mem, bytesToCopy);
+                        y   += bytesToCopy;
+                    }
+               }
+            }
+        %endif
+    %endif
+}
+
+%endfunction %% GenerateOutputCode
+
+
+%% [EOF] sdspdwt.tlc

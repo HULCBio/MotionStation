@@ -1,0 +1,172 @@
+%% $RCSfile: sdspmtoep2.tlc,v $
+%% $Revision: 1.7.4.2 $
+%% $Date: 2004/04/12 23:09:11 $
+%%
+%% Copyright 1995-2003 The MathWorks, Inc.
+%%
+%% Abstract: Construct a Toeplitz Matrix
+
+%implements sdspmtoep2 "C"
+
+%% Function: Outputs ==========================================================
+%%
+%function Outputs(block, system) Output
+  /* Signal Processing Blockset Toeplitz (%<ParamSettings.FunctionName>) - '%<Name>' */
+  %assign INPORT0   = 0
+  %assign OUTPORT   = 0
+  %assign symmetric = ((SFcnParamSettings.SYMMETRIC) == 1)
+  %assign cplx_R    = (LibBlockInputSignalIsComplex(INPORT0) != 0)
+  %assign cplx_Y    = (LibBlockOutputSignalIsComplex(OUTPORT) != 0)
+  %assign dtype_R   = cplx_R ? "creal_T" : "real_T"
+  %assign dtype_Y   = cplx_Y ? "creal_T" : "real_T"
+  %assign LengthR   = LibDataInputPortWidth(INPORT0)
+  %assign dTypeName = LibBlockInputSignalDataTypeName(INPORT0,"%<tRealPart>")
+  %assign dTypeID   = LibBlockOutputSignalDataTypeId( INPORT0)
+  %assign SAT_MODE  = (SFcnParamSettings.SatMode) ? "Saturate" : "Wrap"
+  {
+      int_T  i;
+  %if symmetric
+    %% One input port - a row
+    %%
+    %if !cplx_R
+      const int_T bytesPerRealElmt = sizeof(%<dTypeName>);
+      const byte_T *row = (byte_T *)%<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      byte_T       *y   = (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      for(i=0; i<%<LengthR>; i++) {
+        const byte_T *u1  = row;
+        int_T         idx = i;
+        int_T           j = %<LengthR>;
+
+        while(j-- > 0) {
+          memcpy(y,u1,bytesPerRealElmt);
+          y += bytesPerRealElmt;
+          u1 = ((--idx) < 0) ? (u1+bytesPerRealElmt) : (u1-bytesPerRealElmt);
+        }
+        row += bytesPerRealElmt;
+      }
+    %else
+      const %<dTypeName> *row = (%<dTypeName> *)%<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+      %<dTypeName> *y = (%<dTypeName> *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+
+      for (i=0; i<%<LengthR>; i++){
+        const %<dTypeName> *u1 = row;
+        int_T        idx =i;
+        int_T j;
+
+        for (j=0; j<%<LengthR>; j++){
+          /* Transfer the real part */
+          *y++ = *u1++;             %%u1 points to imag part of same element
+          %%
+          %createrecord outStruct {Label "y";  IsPtr 1; postfixOp "++"}
+          %createrecord inStruct  {Label "u1"; IsPtr 1; postfixOp ""}
+          %%
+          /* Take negative of imag part if we are in lower triangle */
+          if ((--idx) < 0){
+            if (i<j){
+            %<LibBlockDSPUnaryMinus(outStruct, inStruct, dTypeID, SAT_MODE)>
+            }else{
+              *y++ = *u1;
+            }
+            u1++;       %%u1 points to real part of next element
+          %%
+          }
+          else{
+            if (i<j){
+            %<LibBlockDSPUnaryMinus(outStruct, inStruct, dTypeID, SAT_MODE)>
+            }else{
+              *y++ = *u1;
+            }
+          u1 -= 3;      %%u1 points to real part of prev element
+          }
+        }
+        row +=2;        %%row points to real part of next element
+      }
+    %endif
+    %else   %%ASYMMETRIC
+      %% Two input ports - one row, one column
+      %assign INPORT1 = 1
+      %assign cplx_C  = (LibBlockInputSignalIsComplex(INPORT1) != 0)
+      %assign dtype_C = cplx_C ? "creal_T" : "real_T"
+      %assign LengthC = LibDataInputPortWidth(INPORT1)
+      %%
+        const byte_T *col = (byte_T *)%<LibBlockInputSignalAddr(INPORT1, "", "", 0)>;
+        const byte_T *row = (byte_T *)%<LibBlockInputSignalAddr(INPORT0, "", "", 0)>;
+        byte_T       *y   = (byte_T *)%<LibBlockOutputSignalAddr(OUTPORT, "", "", 0)>;
+      %%
+      %if( (cplx_C && cplx_R) || (!cplx_C && !cplx_R) )
+        %if (cplx_C || cplx_R)
+        const int_T bytesPerElmt = 2*sizeof(%<dTypeName>);
+        %else
+        const int_T bytesPerElmt = sizeof(%<dTypeName>);
+        %endif
+
+        for(i=0; i<%<LengthC>; i++) {
+          const byte_T *c1  = col; /* reset to start at next element of col */
+          const byte_T *r1  = row; /* reset to start row */
+          int_T       j;
+
+          col += bytesPerElmt;
+
+          for(j=0; j<%<LengthR>; j++){
+            if (i <=j){
+              memcpy(y,r1,bytesPerElmt);
+              r1 += bytesPerElmt;
+            }else{
+              memcpy(y,c1,bytesPerElmt);
+              c1 -= bytesPerElmt;
+            }
+            y += bytesPerElmt;
+          }
+      }
+      %%
+      %elseif ((!cplx_C && cplx_R) || (cplx_C && !cplx_R))
+      %%
+        const int_T bytesPerRealElmt = sizeof(%<dTypeName>);
+        const int_T bytesPerElmt = 2*bytesPerRealElmt;
+      %<dTypeName> zero = %<SLibGetGroundValueFromId(dTypeID)>;
+
+        for(i=0; i<%<LengthC>; i++) {
+          const byte_T *c1  = col; /* reset to start at next element of col */
+          const byte_T *r1  = row; /* reset to start row */
+          int_T       j;
+          %%
+          %if (!cplx_C && cplx_R)
+          col += bytesPerRealElmt;
+          %else
+          col += bytesPerElmt;
+          %endif
+          %%
+
+          for(j=0; j<%<LengthR>; j++){
+            if (i <=j){
+            %%
+            %if (!cplx_C && cplx_R)
+              memcpy(y,r1,bytesPerElmt);
+              r1 += bytesPerElmt;
+            %else
+              memcpy(y,r1,bytesPerRealElmt);
+              memcpy((y+bytesPerRealElmt), (byte_T *)&zero, bytesPerRealElmt);
+              r1 += bytesPerRealElmt;
+            %endif
+            %%
+            }else{
+            %if (!cplx_C && cplx_R)
+              memcpy(y,c1,bytesPerRealElmt);
+              memcpy((y+bytesPerRealElmt), (byte_T *)&zero, bytesPerRealElmt);
+              c1 -= bytesPerRealElmt;
+            %else
+              memcpy(y,c1,bytesPerElmt);
+              c1 -= bytesPerElmt;
+            %endif
+            }
+            y += bytesPerElmt;
+          }
+        }
+      %endif
+  %endif
+  }
+
+%endfunction
+
+%% [EOF] sdspmtoep2.tlc

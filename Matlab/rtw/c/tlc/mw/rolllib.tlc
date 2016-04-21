@@ -1,0 +1,1500 @@
+%% $Revision: 1.1.6.4 $
+%% 
+%%
+%% Copyright 1994-2003 The MathWorks, Inc.
+%%
+%% Abstract:
+%%   This file contains all functions required for loop rolling.
+%%
+
+%if EXISTS("_ROLLLIB_") == 0
+%assign _ROLLLIB_ = 1
+
+%%
+%% (1) Global Library Functions (Lib functions)
+%%
+
+%% Function: FcnEmptyTq ========================================================
+%% Abstract:
+%%   Is the type qualifier empty?
+%%
+%function FcnEmptyTq(tq) void
+  %return (WHITE_SPACE(tq) || (tq == "Auto"))
+%endfunction
+
+%% Function: SLibInitializeRollingModelParameters ==============================
+%%
+%% initialize all parameters to say that their roll var has not been
+%% declared
+%%
+%function SLibInitializeRollingModelParameters() void
+  %foreach paramIdx = Parameters[0]
+    %assign param = Parameter[paramIdx]
+    %assign param_array = SLibGetAllASTParamsForBlockParam(param)
+    %foreach idx = SIZE(param_array, 1)
+      %assign mdlParamIdx = param_array[idx]
+      %if mdlParamIdx > -1 %% Is it model or mask parameter ??? (-1 == mask prm)
+	%assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+	%assign mdlParam.RollVarDeclared = 0
+      %endif
+    %endforeach
+  %endforeach
+%endfunction
+  
+%% Function: LibDeclareRollVariables ===========================================
+%%
+%% Abstract:
+%%      This function will declare the necessary local variables required for
+%%      loop rolling.
+%%
+%% Synopsis:
+%%      LibDeclareRollVariables(block, sigOffset, numIterations,
+%%                              rolledCount, rollVars)
+%%
+%%      sigOffset     - signal offset sent to roller function by TLC
+%%      numIterations - number of iterations variable sent to roller
+%%                      function by TLC
+%%      rolledCount   - rolled count variable sent to roller function by TLC
+%%      rollVars      - vector of variables to declare.
+%%
+%%      Valid rollVars:
+%%
+%%                           Declare All   Declare Individual
+%%                           -----------   ------------------
+%%      Inputs:              U             ui
+%%      Outputs:             Y             yi
+%%      Continuous states:   Xc            xc
+%%      State Derivatives:   Xdot          xdot
+%%      State Disabled:      Xdis          xdis
+%%      Discrete states:     Xd            xd
+%%      Parameters:          P             <param>/name
+%%      Real work:           RWork         <rwork>/name
+%%      Integer work:        IWork         <iwork>/name 
+%%      Pointer work:        PWork         <pwork>/name
+%%      Data type work:      DWork         <dwork>/name
+%%      Mode:                Mode          --
+%%      Previous zc:         PZC           --
+%%      Nonsampled ZC:       NSZC          --
+%%      Data store memory:   DSM           --
+%%      Enable port:         enable        --
+%%      Trigger port:        trigger       --
+%%      Enable block:        enableblk     --
+%%      Trigger block:       triggerblk    --
+%%      Inport block:        inportblk     --
+%%      Outport block:       outportblk    --
+%%
+%%      For example, rollVars = ["U", "<param>/Gain"] declares all non-scalar
+%%      block inputs and the specific parameter "Gain".
+%%
+%function LibDeclareRollVariables(block, sigOffset, numIterations, rolledCount, rollVars) void
+  %openfile tmpBuffer
+
+  %%
+  %% initialize all parameters to say that their roll var has not been
+  %% declared
+  %%
+  %<SLibInitializeRollingModelParameters()>
+  
+  %foreach varIdx = SIZE(rollVars, 1)
+    %assign varType = "%<rollVars[varIdx]>"
+    %if varType[0] == "<"
+      %assign sysName = SYSNAME(varType)
+      %assign idNum = [%<sysName[0]>, %<sysName[1]>]
+    %else
+      %assign idNum = IDNUM(varType)
+    %endif
+    %switch idNum[0]
+      %case "U"
+	%%
+	%% Roll all non-scalar inputs
+	%%
+	%if NumDataInputPorts == 0
+	  %assign errTxt = "Inputs are not rollable, or do not exist."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%foreach uIdx = NumDataInputPorts
+	  %if DataInputPort[uIdx].Width > 1 && !LibBlockInputSignalIsExpr(uIdx)
+	    %assign rhs = LibBlockInputSignalAddr(uIdx,"","",sigOffset)
+	    %if rolledCount == 0
+	      %assign dt   = LibBlockInputSignalDataTypeName(uIdx,"")
+	      %assign sc   = LibBlockInputSignalStorageClass(uIdx,sigOffset)
+              %% For RollInputIsWritable=1, declare the roll input variable to be of
+              %% type "%<dt>" instead of "const %<dt>".  This is invoked when the
+              %% %roll modifies the input signal being rolled.
+	      %assign tq = LibBlockInputSignalStorageTypeQualifier(uIdx,sigOffset)
+	      %if !CompiledModel.RollInputIsWritable && FcnEmptyTq(tq)
+		%assign tq = "const"
+	      %endif
+	      %if !SLibBlockSrcSignalIsGnd(uIdx,sigOffset)
+		%<tq> %<dt> *u%<uIdx> = %<rhs>;
+	      %else
+		%if DataInputPort[uIdx].HaveGround == "yes"
+		  %% The input consists grounded and non-grounded sources.
+		  %% The input will roll at some point (otherwise we wouldn't
+		  %% be here, but this particular index maps to ground).
+		  %<tq> %<dt> *u%<uIdx>;
+		%endif
+	      %endif
+	    %elseif !SLibBlockSrcSignalIsGnd(uIdx,sigOffset)
+	      u%<uIdx> = %<rhs>;
+	    %endif
+	  %endif
+	%endforeach
+	%break
+	
+	
+      %case "u"
+	%%
+	%% Roll an individual non-scalar input
+	%%
+	%assign uIdx = idNum[1]
+	%if uIdx < 0 || uIdx >= NumDataInputPorts
+	  %assign errTxt = "Invalid port index: %<uIdx>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if DataInputPort[uIdx].Width > 1 && !LibBlockInputSignalIsExpr(uIdx)
+	  %assign rhs = LibBlockInputSignalAddr(uIdx,"","",sigOffset)
+	  %if rolledCount == 0
+	    %assign dt   = LibBlockInputSignalDataTypeName(uIdx,"")
+	    %assign sc   = LibBlockInputSignalStorageClass(uIdx,sigOffset)
+	    %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+	      LibBlockInputSignalStorageTypeQualifier(uIdx,sigOffset)
+	    %if FcnEmptyTq(tq)
+		%assign tq = "const"
+	    %endif
+	    %if !SLibBlockSrcSignalIsGnd(uIdx,sigOffset)
+	      %<tq> %<dt> *u%<uIdx> = %<rhs>;
+	    %elseif DataInputPort[uIdx].HaveGround == "yes"
+	      %% The input consists grounded and non-grounded sources.
+	      %% The input will roll at some point (otherwise we wouldn't
+	      %% be here, but this particular index maps to ground).
+	      %<tq> %<dt> *u%<uIdx>;
+	    %endif
+	  %elseif !SLibBlockSrcSignalIsGnd(uIdx,sigOffset)
+	    u%<uIdx> = %<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "inportblk"
+	%%
+	%% Roll the inport block (valid for inport block only)
+	%%
+	%assign loc = idNum[0]
+	%if Type != "Inport"
+	  %assign errTxt = "Block type %<Type> does not support roll variable: %<loc>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%assign rhs = LibBlockSrcSignalLocationAddr(loc,"","",sigOffset)
+	%% inport block cannot be a scalar in this code.  Therefore,
+	%% there's no need to check.
+	%if rolledCount == 0
+	  %assign dt   = LibBlockOutputSignalDataTypeName(0,"")
+	  %assign sc   = LibBlockSrcSignalLocationStorageClass(loc,sigOffset)
+	  %assign tq = LibBlockSrcSignalLocationStorageTypeQualifier(loc,sigOffset)
+	  %if FcnEmptyTq(tq)
+	    %assign tq = "const"
+	  %endif
+	  %if !SLibBlockSrcSignalIsGnd(loc, sigOffset)
+	    %<tq> %<dt> *u%<loc> = %<rhs>;
+	  %else
+	    %if HiddenDataInputPort.HaveGround == "yes"
+	      %% The input consists of grounded and non-grounded sources.
+	      %% The input will roll at some point (otherwise we wouldn't
+	      %% be here, but this particular index maps to ground).
+	      %% That is, eventually we will need a roll variable.  Not
+	      %% this time, but eventually.  Therefore, declare the
+	      %% roll variable, but don't assign it.
+	      %<tq> %<dt> *u%<loc>;
+	    %endif
+	  %endif
+	%elseif !SLibBlockSrcSignalIsGnd(loc, sigOffset)
+	  u%<loc> = %<rhs>;
+	%endif
+	%break
+	
+	
+      %case "trigger"
+      %case "enable"
+	%%
+	%% Roll the enable or trigger input port of a subsystem block (valid 
+	%% from within the subsystem block only)
+	%%
+	%assign loc = idNum[0]
+	%if block.Type != "SubSystem"
+	  %assign errTxt = "Block type %<Type> does not support roll variable: %<loc>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%% FcnGetInputPortRecord will assert that loc is sensical
+	%assign ip = FcnGetInputPortRecord(loc)
+	%if ip.Width > 1 && !LibBlockInputSignalIsExpr(loc)
+	  %assign rhs = LibBlockInputSignalAddr(loc,"","",sigOffset)
+	  %if rolledCount == 0
+	    %assign dt   = LibBlockInputSignalDataTypeName(loc,"")
+	    %assign sc   = LibBlockInputSignalStorageClass(loc,sigOffset)
+	    %assign tq   = LibBlockInputSignalStorageTypeQualifier(loc,sigOffset)
+	    %if FcnEmptyTq(tq)
+	      %assign tq = "const"
+	    %endif
+	    %if !SLibBlockSrcSignalIsGnd(loc,sigOffset)
+	      %<tq> %<dt> *u%<loc> = %<rhs>;
+	    %else
+	      %if ControlInputPort[0].Type == loc
+		%assign cIdx = 0
+	      %else
+		%if ControlInputPort[1].Type == loc
+		  %assign cIdx = 1
+		%else
+		  %<LibBlockReportFatalError(block,"invalid ctrl port record")>
+		%endif
+	      %endif
+	      %if ControlInputPort[cIdx].HaveGround == "yes"
+		%% The control input consists grounded and non-grounded sources.
+		%%
+		%% The fact the control input port has signals that
+		%% do not come from ground may imply that this
+		%% roll region needs the variable declared. The
+		%% subsystem block, when handling the enable port block,
+		%% looks at the driving signal based on the source rate
+		%% tid's. This breaks up the roll region into smaller
+		%% sections, thus we need to scan all inputs for the
+		%% SrcTID[%<idx>].RollRegions. However, there is no
+		%% way to communicate what idx, so we may generate
+		%% unused variable warnings.
+		%<tq> %<dt> *u%<loc>;
+	      %endif
+	    %endif
+	  %elseif !SLibBlockSrcSignalIsGnd(loc,sigOffset)
+	    u%<loc> = %<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "triggerblk"
+	%%
+	%% The trigger port block is never to roll its inputs, since this is handled
+	%% is handled by the subsystem block directly.
+	%%
+	%assign loc    = idNum[0]
+	%assign errTxt = "Block type %<Type> does not support roll variable: %<loc>"
+	%<LibBlockReportFatalError(block,errTxt)>
+	%break
+	
+	
+      %case "enableblk"
+	%%
+	%% Enable port block (valid for the enable block only)
+	%%
+	%assign loc = idNum[0]
+	%if block.Type != "EnablePort"
+	  %assign errTxt = "Block type %<Type> does not support roll variable: %<loc>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if LibBlockOutputSignalWidth(0) > 1
+	  %assign rhs = LibBlockSrcSignalLocationAddr(loc,"","",sigOffset)
+	  %if rolledCount == 0
+	    %assign dt   = LibBlockOutputSignalDataTypeName(0,"")
+	    %assign sc   = LibBlockSrcSignalLocationStorageClass(loc,sigOffset)
+	    %assign tq   = LibBlockSrcSignalLocationStorageTypeQualifier(loc,sigOffset)
+	    %if FcnEmptyTq(tq)
+	      %assign tq = "const"
+	    %endif
+	    %if !SLibBlockSrcSignalIsGnd(loc,sigOffset)
+	      %<tq> %<dt> *u%<loc> = %<rhs>;
+	    %else
+	      %assign ssIdx = ParamSettings.SubsystemIdx
+	      %assign ssBlk = CompiledModel.System[ssIdx[0]].Block[ssIdx[1]]
+	      %if ssBlk.ControlInputPort[0].Type != "enable"
+		%<LibBlockReportFatalError(block,"ctrl port record not first")>
+	      %endif
+	      %if ssBlk.ControlInputPort[0].HaveGround == "yes"
+		%% The input consists grounded and non-grounded sources.
+		%% The input will roll at some point (otherwise we wouldn't
+		%% be here, but this particular index maps to ground).
+		%<tq> %<dt> *u%<loc>;
+	      %endif
+	    %endif
+	  %elseif !SLibBlockSrcSignalIsGnd(loc,sigOffset)
+	    u%<loc> = %<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "Y"
+	%%
+	%% Roll all non-scalar outputs
+	%%
+	%if NumDataOutputPorts == 0
+	  %assign errTxt = "Inputs are not rollable, or do not exist."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%foreach yIdx = NumDataOutputPorts
+	  %if LibBlockOutputSignalWidth(yIdx) > 1
+	    %assign rhs = LibBlockOutputSignalAddr(yIdx,"","",sigOffset)
+	    %if rolledCount == 0
+	      %assign dt   = LibBlockOutputSignalDataTypeName(yIdx,"")
+	      %assign sc   = LibBlockOutputSignalStorageClass(yIdx)
+	      %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+	                     LibBlockOutputSignalStorageTypeQualifier(yIdx)
+	      %<tq> %<dt> *y%<yIdx> = %<rhs>;
+	    %else
+	      y%<yIdx> = %<rhs>;
+	    %endif
+	  %endif
+	%endforeach
+	%break
+	
+	
+      %case "y"
+	%%
+	%% Roll individual non-scalar outputs
+	%%
+	%assign yIdx = idNum[1]
+	%if yIdx < 0 || yIdx >= NumDataOutputPorts
+	  %assign errTxt = "Invalid output port index: %<yIdx>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if LibBlockOutputSignalWidth(yIdx) > 1
+	  %assign rhs = LibBlockOutputSignalAddr(yIdx, "", "", sigOffset)
+	  %if rolledCount == 0
+	    %assign dt   = LibBlockOutputSignalDataTypeName(yIdx,"")
+	    %assign sc   = LibBlockOutputSignalStorageClass(yIdx)
+	    %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+	                   LibBlockOutputSignalStorageTypeQualifier(yIdx)
+	    %<tq> %<dt> *y%<yIdx> = %<rhs>;
+	  %else
+	    y%<yIdx> = %<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "outportblk"
+	%%
+	%% Output port
+	%%
+	%assign loc = idNum[0]
+	%if block.Type != "Outport"
+	  %assign errTxt = "Block type %<Type> does not support roll variable: %<loc>"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if LibBlockInputSignalWidth(0) > 1
+	  %assign yIdx = idNum[1]
+	  %assign rhs = LibBlockDstSignalLocation(loc,"","",sigOffset)
+	  %if rolledCount == 0
+	    %assign dtype = LibBlockInputSignalDataTypeName(0,"")
+	    %<dtype> *y%<yIdx> = &%<rhs>;
+	  %else
+	    y%<yIdx> = &%<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "xd"
+      %case "Xd"
+	%%
+	%% all non-scalar discrete states
+	%%
+	%if DiscStates[0] == 0
+	  %assign errTxt = "No discrete states to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if DiscStates[0] > 1
+	  %assign rhs = LibBlockDiscreteState("", "", sigOffset)
+	  %if rolledCount == 0
+	    real_T *xd = &%<rhs>;
+	  %else
+	    xd = &%<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "xc"
+      %case "Xc"
+	%%
+	%% all non-scalar continuous states
+	%%
+	%if ContStates[0] == 0
+	  %assign errTxt = "No continuous states to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if ContStates[0] > 1
+	  %assign rhs = LibBlockContinuousState("", "", sigOffset)
+	  %if rolledCount == 0
+	    real_T *xc = &%<rhs>;
+	  %else
+	    xc = &%<rhs>;
+	  %endif
+	%endif
+	%break
+	
+      %case "xdot"
+      %case "Xdot"
+	%%
+	%% all non-scalar continuous state derivatives
+	%%
+	%if ContStates[0] == 0
+	  %assign errTxt = "No continuous state derivatives to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if ContStates[0] > 1
+	  %assign rhs = LibBlockContinuousStateDerivative("", "", sigOffset)
+	  %if rolledCount == 0
+	    real_T *xdot = &%<rhs>;
+	  %else
+	    xdot = &%<rhs>;
+	  %endif
+	%endif
+	%break	
+	
+      %case "xdis"
+      %case "Xdis"
+	%%
+	%% all non-scalar continuous state derivatives
+	%%
+	%if ContStates[0] == 0
+	  %assign errTxt = "No continuous state disabled to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if ContStates[0] > 1
+	  %assign rhs = LibBlockContStateDisabled("", "", sigOffset)
+	  %if rolledCount == 0
+	    boolean_T *xdis = &%<rhs>;
+	  %else
+	    xdis = &%<rhs>;
+	  %endif
+	%endif
+	%break	
+	
+      %case "P"
+	%%
+	%% all non-scalar parameters
+	%%
+	%if Parameters[0] == 0
+	  %assign errTxt = "No parameters to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%% Get all model parameters associated with all block parameter ASTs
+	%% for this block
+	%foreach paramIdx = Parameters[0]
+	  %assign param = Parameter[paramIdx]
+	  %assign param_array = SLibGetAllASTParamsForBlockParam(param)
+	  %assign name  = Parameter[paramIdx].Name
+	  %<SLibDeclareBlockParamRollVars(name, param_array, sigOffset, ...
+	    rolledCount)>
+	%endforeach
+	%break
+	
+	
+      %case "param"
+	%%
+	%% individual non-scalar parameters, some examples:
+	%%    "<param>/Amplitude", "<param>/SinH", "<param>/CosH", ...
+	%%
+	%assign name  = idNum[1]
+	%if EXISTS("%<name>") == 0
+	  %assign errTxt = "Unable to declare roll variable p_%<name>."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%assign param = %<name>
+	%% Get all model parameters in AST for this block parameter
+	%assign param_array = SLibGetAllASTParamsForBlockParam(param)
+	%<SLibDeclareBlockParamRollVars(name, param_array, sigOffset, ...
+	  rolledCount)>
+	%break
+	
+	
+      %case "RWork"
+	%%
+	%% all non-scalar rworks in block
+	%%
+	%if (NumRWorkDefines < 0)
+	  %assign errTxt = "Unable to roll R-work (it must be defined)"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%foreach rwIdx = NumRWorkDefines
+	  %assign rwork = RWorkDefine[rwIdx]
+	  %assign name = RWorkDefine[rwIdx].Name
+	  %if rwork.Width > 1
+	    %assign rhs = LibBlockRWork(rwork, "", "", sigOffset)
+	    %if rolledCount == 0
+	      real_T *rw_%<name> = &%<rhs>;
+	    %else
+	      rw_%<name> = &%<rhs>;
+	    %endif
+	  %endif
+	%endforeach   
+	%break
+	
+	
+      %case "rwork"
+	%%
+	%% individual non-scalar rworks
+	%%
+	%assign name = idNum[1]
+	%assign rwork = %<name>
+	%if EXISTS("%<name>") == 0
+	  %assign errTxt = "Unable to roll R-work rw_%<name> (it must be defined)."
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%if rwork.Width > 1
+	  %assign rhs = LibBlockRWork(rwork, "", "", sigOffset)
+	  %if rolledCount == 0
+	    real_T *rw_%<name> = &%<rhs>;
+	  %else
+	    rw_%<name> = &%<rhs>;
+	  %endif
+	%endif
+	%break
+	
+	
+      %case "IWork"
+	%%
+	%% all non-scalar iworks in block
+	%%
+	%if (NumIWorkDefines < 0)
+	  %assign errTxt = "Unable to roll I-work (it must be defined)"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+	%foreach iwIdx = NumIWorkDefines
+	  %assign iwork = IWorkDefine[iwIdx]
+	  %assign name = IWorkDefine[iwIdx].Name
+	  %if iwork.Width > 1
+	    %assign rhs = LibBlockIWork(iwork, "", "", sigOffset)
+	    %if rolledCount == 0
+	      int_T *iw_%<name> = &%<rhs>;
+	    %else
+	      iw_%<name> = &%<rhs>;
+	    %endif
+	  %endif
+	%endforeach   
+	%break
+	
+	
+      %case "iwork"
+	%%
+	%% individual non-scalar iworks
+	%%
+        %assign name = idNum[1]
+        %assign iwork = %<name>
+        %if EXISTS("%<name>") == 0
+	  %assign errTxt = "Unable to roll I-work iw_%<name> (it must be defined)."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if iwork.Width > 1
+	  %assign rhs = LibBlockIWork(iwork, "", "", sigOffset)
+          %if rolledCount == 0
+            int_T *iw_%<name> = &%<rhs>;
+          %else
+            iw_%<name> = &%<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %case "PWork"
+	%%
+	%% all non-scalar pworks in block
+	%%
+        %if (NumPWorkDefines < 0)
+	  %assign errTxt = "Unable to roll P-work (it must be defined)"
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %foreach pwIdx = NumPWorkDefines
+          %assign pwork = PWorkDefine[pwIdx]
+          %assign name = PWorkDefine[pwIdx].Name
+          %if pwork.Width > 1
+	    %assign rhs = LibBlockPWork(pwork, "", "", sigOffset)
+            %if rolledCount == 0
+              void **pw_%<name> = &%<rhs>;
+            %else
+              pw_%<name> = &%<rhs>;
+            %endif
+          %endif
+        %endforeach
+        %break
+
+      
+      %case "pwork"
+	%%
+	%% individual non-scalar pworks
+	%%
+        %assign name = idNum[1]
+        %assign pwork = %<name>
+        %if EXISTS("%<name>") == 0
+	  %assign errTxt = "Unable to roll P-work pw_%<name> (it must be defined)."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if pwork.Width > 1
+	  %assign rhs = LibBlockPWork(pwork, "", "", sigOffset)
+          %if rolledCount == 0
+            void **pw_%<name> = &%<rhs>;
+          %else
+            pw_%<name> = &%<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %case "DWork"
+	%%
+	%% all non-scalar DWorks in block
+	%%
+        %if NumDWork == 0
+	  %assign errTxt = "Unable to roll D-work (it must be defined)"
+	  %<LibBlockReportFatalError(block,errTxt)>
+	%endif
+        %foreach dwIdx = NumDWork
+          %assign dwork = DWork[dwIdx]
+          %assign name = dwork.Name
+	  %if LibBlockDWorkWidth(dwork) > 1
+	    %assign rhs = LibBlockDWorkAddr(dwork,"","",sigOffset)
+	    %if rolledCount == 0
+	      %assign dtype = LibBlockDWorkDataTypeName(dwork, "")
+	      %assign sc  = LibBlockDWorkStorageClass(dwork)
+	      %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+		LibBlockDWorkStorageTypeQualifier(dwork)
+	      %<tq> %<dtype> *dw_%<name> = %<rhs>;
+            %else
+              dw_%<name> = %<rhs>;
+            %endif
+          %endif
+        %endforeach
+        %break
+	
+	
+      %case "dwork"
+	%%
+	%% individual non-scalar pworks
+	%%
+        %assign name = idNum[1]
+        %assign dwork = %<name>
+        %if EXISTS("%<name>") == 0
+	  %assign errTxt = "Unable to roll D-work dw_%<name> (it must be defined)."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if LibBlockDWorkWidth(dwork) > 1
+	  %assign rhs = LibBlockDWorkAddr(dwork,"","",sigOffset)
+          %if rolledCount == 0
+	    %assign dtype = LibBlockDWorkDataTypeName(dwork,"")
+	    %assign sc  = LibBlockDWorkStorageClass(dwork)
+	    %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+	      LibBlockDWorkStorageTypeQualifier(dwork)
+            %<tq> %<dtype> *dw_%<name> = %<rhs>;
+          %else
+            dw_%<name> = %<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %case "Mode"
+	%%
+	%% non-scalar block mode
+	%%
+        %if ModeVector[0] == 0
+	  %assign errTxt = "No modes to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if ModeVector[0] > 1
+	  %assign rhs = LibBlockMode("", "", sigOffset)
+          %if rolledCount == 0
+            int_T *mode = &%<rhs>;
+          %else
+            mode = &%<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %case "PZC"
+	%%
+	%% non-scalar previous zero-crossing state
+	%%
+        %if ZCEvents[0] == 0
+	  %assign errTxt = "No previous zero-crossings to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if ZCEvents[0] > 1
+	  %assign rhs = LibBlockPrevZCState("", "", sigOffset)
+          %if rolledCount == 0
+            ZCSigState *pzc = &%<rhs>;
+          %else
+            pzc = &%<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %case "NSZC"
+	%%
+	%% non-scalar nonsampled zero-crossing vector
+	%%
+        %if NumNonsampledZCs == 0
+	  %assign errTxt = "No nonsampled zero-crossings to roll."
+	  %<LibBlockReportFatalError(block,errTxt)>
+        %endif
+        %if NumNonsampledZCs > 1
+	  %assign rhs = LibBlockNonSampledZC("", "", sigOffset)
+          %if rolledCount == 0
+            real_T *nszc = &%<rhs>;
+          %else
+            nszc = &%<rhs>;
+          %endif
+        %endif
+        %break
+	
+	
+      %default
+	%%
+	%% Unknown roll variable
+	%%
+	
+	%assign errTxt = "Unknown roll variable specified: %<idNum[0]>"
+	%<LibBlockReportFatalError(block,errTxt)>
+	
+    %endswitch
+  %endforeach
+  %closefile tmpBuffer
+  %return tmpBuffer
+%endfunction %% LibDeclareRollVariables
+
+%% Function: LibGetRollRegions1 ===============================================
+%%
+%% Abstract:
+%%
+%% Synopsis:
+%%
+%function LibGetRollRegions1(rollRegions) void
+
+  %assign rrSz = SIZE(rollRegions,1)
+  %if rrSz < 3
+    %if rrSz <= 1
+      %assign rollRegions1 = []
+    %else
+      %assign rollRegions1 = [1]
+    %endif
+    %return rollRegions1
+  %endif
+
+  %assign inpStr = "%<rollRegions>"
+  %assign strLen = SIZE(inpStr, 1)
+
+  %assign vect3 = FcnGetNextRollRegion(inpStr, 0, strLen)
+
+  %assign outStr = "[1"
+  %assign offset = vect3[2]
+
+  %if vect3[1] > 1
+    %assign outStr = outStr + ":%<vect3[1]>"
+  %elseif vect3[1] == 0
+    %assign vect3 = FcnGetNextRollRegion(inpStr, vect3[2], strLen)
+    %assign offset = vect3[2]
+    %if vect3[1] > 1
+      %assign outStr = outStr + ":%<vect3[1]>"
+    %endif
+  %endif
+
+  %foreach idx = strLen-offset
+    %assign outStr = outStr + inpStr[idx+offset]
+  %endforeach
+  %assign rollRegions1 = %<outStr>
+
+  %return rollRegions1
+
+%endfunction %% LibGetRollRegions1
+
+
+
+%% Function: LibGetIndexedElement ==============================================
+%% Abstract:
+%%      This routine appends the correct index to the specified variable name,
+%%      taking into account the current loop offset if inside a %roll construct.
+%%      It is assumed that the width of this variable is atleast as big as the
+%%      extent of the roll regions. This routine helps in rolling custom
+%%      variables with out having to explicitly walk pointers.
+%%
+%function LibGetIndexedElement(name, width, lcv, idx) void
+
+  %assign answer = name
+  
+  %if lcv == ""
+    %assign answer = answer + "[%<idx>]"
+  %else
+    %if CurrentLoopOffset == 0
+      %assign lhsIdx = lcv
+    %else
+      %assign lhsIdx = lcv + "+ %<CurrentLoopOffset>"
+    %endif
+    %assign answer = answer + "[%<lhsIdx>]"
+  %endif    
+  
+  %return answer
+  
+%endfunction %% LibGetIndexedElement
+
+
+
+%%---------------------------------------------%
+%% (2) Local Library Functions (Fcn Functions) %
+%%---------------------------------------------%
+
+
+%% Function: FcnGetNextRollRegion =============================================
+%% Abstarct:
+%%     Work horse routine used by the function LibGetRollRegions1
+%%
+%function FcnGetNextRollRegion(inpStr, startIdx, strLen) void
+
+  %assign idx0 = -1
+  %assign startRoll = ""
+
+  %foreach idx = strLen-startIdx
+    %assign ch = inpStr[idx+startIdx]
+    %if ch != "[" && ch != "," && ch != " "
+      %assign idx0 = idx+startIdx+1
+      %assign startRoll = "%<inpStr[idx+startIdx]>"
+      %break
+    %endif
+  %endforeach
+
+  %if idx0 == -1
+    %assign errTxt = "Invalid input argument: %<inpStr>"
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign idx1 = -1
+  %assign outStr = ""
+
+  %foreach idx = strLen-idx0
+    %assign ch = inpStr[idx+idx0]
+    %if ch == ":"
+      %assign idx1 = idx+idx0+1
+      %break
+    %endif
+    %if ch == "]" || ch == ","
+      %assign outStr = "[%<startRoll>, %<startRoll>, %<idx+idx0>]"
+      %break
+    %endif
+    %assign startRoll = startRoll + ch
+  %endforeach
+
+  %if outStr != ""
+    %assign outVec = %<outStr>
+    %return outVec
+  %endif
+
+  %if idx1 == -1
+    %assign errTxt = "Invalid input argument: %<inpStr>"
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign idx2 = -1
+  %assign endRoll = "%<inpStr[idx1]>"
+
+  %foreach idx = strLen-idx1-1
+    %assign ch = inpStr[idx+idx1+1]
+    %if ch == "," || ch == "]"
+      %assign idx2 = idx+idx1+1
+      %break
+    %endif
+    %assign endRoll = endRoll + ch
+  %endforeach
+
+  %if idx2 == -1
+    %assign errTxt = "Invalid input argument: %<inpStr>"
+    %<LibBlockReportFatalError([], errTxt)>
+  %endif
+
+  %assign outStr = "[%<startRoll>, %<endRoll>, %<idx2>]"
+  %assign outVec = %<outStr>
+  %return outVec
+
+%endfunction %% FcnGetNextRollRegion
+
+
+
+%% Function: LibRemoveRollRegions ==============================================
+%%
+%% Abstract:
+%%      This function removes a specified index from roll region (a vector of
+%%      ranges.)  Note, the index is not "unrolled", rather it is outright
+%%      removed.  The new "reduced" roll region is returned.
+%%
+%% Synopsis:
+%%      LibRemoveRollRegions(rollRegions,idx) void
+%%
+%%      rollRegions  is a roll region such as from an RTW file
+%%      idx          is a scalar integer specifying index to be REMOVED
+%%                   from roll region.  
+%%
+%% Author: Andy Bartlett  98 Feb 17
+%%
+/% Examples
+     idx   OldRoll     NewRoll
+     0     [0, 1, 2:4] [1, 2:4]
+     1     [0, 1, 2:4] [0, 2:4]
+     2     [0, 1, 2:4] [0, 1, 3:4]
+     3     [0, 1, 2:4] [0, 1, 2, 4]
+     4     [0, 1, 2:4] [0, 1, 2:3]
+     5     [0, 1, 2:4] [0, 1, 2:4]
+     idx   OldRoll     NewRoll
+     0     [2:7, 9]    [2:7, 9]
+     1     [2:7, 9]    [2:7, 9]
+     2     [2:7, 9]    [3:7, 9]
+     3     [2:7, 9]    [2, 4:7, 9]
+     4     [2:7, 9]    [2:3, 5:7, 9]
+     5     [2:7, 9]    [2:4, 6:7, 9]
+     6     [2:7, 9]    [2:5, 7, 9]
+     7     [2:7, 9]    [2:6, 9]
+     8     [2:7, 9]    [2:7, 9]
+     9     [2:7, 9]    [2:7]
+     [2:7]
+%/
+%function LibRemoveRollRegions(rollRegions,idx) void
+    %%
+    %% create string to hold old and new rollRegions
+    %%
+    %assign rollRegionsStr = "%<rollRegions>"
+    %assign newRollRegionsStr = "["
+    %%
+    %% create string to hold last numbers from rollRegions
+    %%
+    %assign curNumberStr = ""
+    %%
+    %% create variable to represent the STATE of
+    %% processing
+    %%
+    %assign isMiddleRange = 0
+    %assign isBeginRoll = 1
+    %%
+    %% processes each char in rollRegions
+    %%
+    %assign numChar = SIZE(rollRegionsStr,1)
+    %%
+    %foreach i = numChar
+        %%
+        %% get current character
+        %%
+        %assign curChar = rollRegionsStr[i]      
+        %%
+        %% handle case where current char is a digit
+        %%
+        %if ( ( curChar == "0" ) || ( curChar == "1" ) || ...
+              ( curChar == "2" ) || ( curChar == "3" ) || ...
+              ( curChar == "4" ) || ( curChar == "5" ) || ...
+              ( curChar == "6" ) || ( curChar == "7" ) || ...
+              ( curChar == "8" ) || ( curChar == "9" ) )
+            %%
+            %% add digit to current number
+            %%
+            %assign curNumberStr = curNumberStr + curChar
+        %%
+        %% handle case where current char marks the middle of a region
+        %%
+        %elseif ( curChar == ":" )
+            %%
+            %% set up variables so full range can be handled when
+            %% end is reached
+            %%
+            %assign prevNumber = %<curNumberStr>
+            %assign curNumberStr = ""
+            %assign isMiddleRange = 1
+        %%
+        %% handle case where current char marks the end of a region
+        %%
+        %else  %%if (curChar == ",") || (curChar == " ") || (curChar == "]")
+            %%
+            %% process only if there is a non empty current Number
+            %%
+            %if curNumberStr != ""
+                %%
+                %% get current number as a number rather than as a string
+                %% 
+                %assign curNumber = %<curNumberStr>
+                %%
+                %% get proper punction to put before current number range
+                %%
+                %if isBeginRoll
+                    %assign beforeStr = ""
+                %else
+                    %assign beforeStr = ", "
+                %endif
+                %%
+                %% handle case where state is in middle of range
+                %%
+                %if isMiddleRange
+                    %%
+                    %% case   full range
+                    %%
+                    %if ( idx < prevNumber) || ( curNumber < idx )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(prevNumber) + ":" + STRING(curNumber)
+                    %%
+                    %% case   left nothing   right scalar
+                    %%
+                    %elseif ( prevNumber == idx ) && ( idx == (curNumber-1) )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr  ...
+                                + STRING(idx+1)
+                    %%
+                    %% case   left nothing   right range
+                    %%
+                    %elseif ( prevNumber == idx )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(idx+1) + ":" + STRING(curNumber)
+                    %%
+                    %% case   left scalar   right nothing
+                    %%
+                    %elseif ( (prevNumber+1) == idx ) && ( idx == curNumber )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr + STRING(idx-1)
+                    %%
+                    %% case   left scalar   right scalar
+                    %%
+                    %elseif ((prevNumber+1) == idx ) && ( idx == (curNumber-1))
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(idx-1) + ", " ...
+                                + STRING(idx+1)
+                    %%
+                    %% case   left scalar   right range
+                    %%
+                    %elseif ( (prevNumber+1) == idx )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(idx-1) + ", " ...
+                                + STRING(idx+1) + ":" + STRING(curNumber)
+                    %%
+                    %% case   left range   right nothing
+                    %%
+                    %elseif ( idx == curNumber )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(prevNumber) + ":" + STRING(idx-1)
+                    %%
+                    %% case   left range   right scalar
+                    %%
+                    %elseif ( idx == (curNumber-1) )
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(prevNumber) + ":" + STRING(idx-1) ...
+                                + ", " ...
+                                + STRING(idx+1)
+                    %%
+                    %% case   left range   right range
+                    %%
+                    %else
+                        %%
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(prevNumber) + ":" + STRING(idx-1) ...
+                                + ", " ...
+                                + STRING(idx+1) + ":" + STRING(curNumber)
+                    %endif
+                    %%
+                    %% note that no longer at beginning of New RollRegion
+                    %%
+                    %assign isBeginRoll = 0
+                %%
+                %% handle case where state is NOT in middle of range
+                %%  ie there is a scalar to deal with
+                %%
+                %else
+                    %%
+                    %% case   scalar is NOT the index to remove
+                    %%
+                    %if ( curNumber != idx )
+                        %%
+                        %% do 
+                        %assign newRollRegionsStr = newRollRegionsStr ...
+                                + beforeStr ...
+                                + STRING(curNumber)
+                        %%
+                        %% note that no longer at beginning of New RollRegion
+                        %%
+                        %assign isBeginRoll = 0
+                    %endif
+                %endif                
+                %%
+                %% reset variables to mark no longer in middle of range
+                %%
+                %assign curNumberStr = ""
+                %assign isMiddleRange = 0
+            %endif
+        %endif
+    %endforeach
+    %%
+    %% mark end of roll region
+    %%
+    %assign newRollRegionsStr = newRollRegionsStr + "]"
+    %%
+    %% return as roll region rather than a string
+    %%
+    %assign newRollRegions = %<newRollRegionsStr>
+                        
+    %return newRollRegions
+
+%endfunction %% LibRemoveRollRegions
+
+
+
+%% Function: LibRollRegions2StartEndMatrix ====================================
+%%
+%% Abstract:
+%%      Convert a rollregion (ie a vector of ranges) to a matrix whose
+%%      first row contains the start of each range and whose second row
+%%      contains the end of each range.
+%%      For example
+%%           rollRegions  = [ 0:5, 6:7, 8, 11:14, 17 ]
+%%
+%%           returnMatrix = [ 0,   6,   8, 11,    17;
+%%                            5,   7,   8, 14,    17 ]
+%% Synopsis:
+%%     returnMatrix = LibRollRegions2StartEndMatrix(rollRegions)
+%%
+%% Author: Andy Bartlett
+%%
+%function LibRollRegions2StartEndMatrix(rollRegions) void
+    %assign str1 = "[eval(strrep('%<rollRegions>',':','*1+0*'));"+...
+                    "eval(strrep('%<rollRegions>',':','*0+1*'))]"
+    %assign rangePoints = FEVAL("eval",str1)
+    %return rangePoints
+%endfunction %% LibRollRegions2StartEndMatrix
+
+
+
+%% Function: LibInRollRegion ===============================================
+%%
+%% Abstract:  Determine if an integer is contained in a roll region
+%%
+%% Synopsis:
+%%            returnBoolean = LibInRollRegion(rollRegions,idx)
+%%
+%% Author: Andy Bartlett
+%%
+%function LibInRollRegion(rollRegions,idx) void
+    %%
+    %% Convert roll region vector to
+    %% a record that contains 
+    %% a vector of start points and
+    %% a vector or end points
+    %%
+    %assign startEndMatrix = LibRollRegions2StartEndMatrix(rollRegions)
+    %%
+    %% search each range to see if it contains idx
+    %%
+    %assign iMax = SIZE(startEndMatrix,1)
+    %%
+    %foreach i = iMax
+        %%
+        %if (idx >= startEndMatrix[0][i]) && (idx <= startEndMatrix[1][i])
+            %%
+            %% match has been found
+            %%
+            %return 1
+        %endif
+    %endforeach
+    %%
+    %% no match was found
+    %%
+    %return 0
+    %%
+%endfunction %% LibInRollRegion
+
+
+
+%% Function: LibInVector ===============================================
+%%
+%% Abstract:  Determine if an integer is contained in a roll region
+%%
+%% Synopsis:
+%%            returnBoolean = LibInVector(rollRegions,idx)
+%%
+%% Author: Andy Bartlett
+%%
+%function LibInVector(vector,idx) void
+    %%
+    %% search each range to see if it contains idx
+    %%
+    %assign iMax = SIZE(vector,1)
+    %%
+    %foreach i = iMax
+        %%
+        %if (idx == vector[i])
+            %%
+            %% match has been found
+            %%
+            %return 1
+        %endif
+    %endforeach
+    %%
+    %% no match was found
+    %%
+    %return 0
+    %%
+%endfunction %% LibInVector
+
+
+
+%% Function: LibIntersectRollRegions ==========================================
+%%
+%% Abstract:  Return the intersection between two roll regions.
+%%            For example:
+%%               rollRegions1 =      [ 0:7, 8:12 ]
+%%               rollRegions2 =      [ 0:3, 4:12 ]
+%%
+%%               returnRollRegions = [ 0:3, 4:7, 8:12 ]
+%%
+%% Synopsis:
+%%      returnRollRegions = LibIntersectRollRegions(rollRegions1,rollRegions2)
+%%
+%% Author: Andy Bartlett
+%%
+%function LibIntersectRollRegions(rollRegions1,rollRegions2) void
+    %%
+    %% perform consistency on the sizes of the roll regions 
+    %%    they must be identical
+    %%
+    %assign sizeRR1 = SIZE(rollRegions1,1)
+    %assign sizeRR2 = SIZE(rollRegions2,1)
+    %%
+    %if sizeRR1 != sizeRR2
+        %%
+        %assign errTxt = "Rollregions must be same size for intersection."
+        %<LibBlockReportFatalError([], errTxt)>
+    %endif
+    %%
+    %% do a consistency check
+    %% 1) scalars from both roll regions must be identical
+    %% 2) roll regions must be monotonically increasing
+    %%
+    %foreach i = sizeRR1
+        %%
+        %assign scalar1 = rollRegions1[i]
+        %assign scalar2 = rollRegions2[i]
+        %%
+        %if scalar1 != scalar2
+          %%
+          %assign errTxt = "Rollregions must hold same scalars for intersection."
+          %<LibBlockReportFatalError([], errTxt)>
+        %endif
+        %%
+        %if i > 0
+            %if scalar1 <= scalarLast
+              %%
+              %assign errTxt = "Rollregions must be increasing for intersection."
+              %<LibBlockReportFatalError([], errTxt)>
+            %endif
+        %endif
+        %%
+        %assign scalarLast = scalar1
+        %%
+    %endforeach
+    %%
+    %% don't waste time on trivial case
+    %%
+    %if sizeRR1 == 1
+        %%
+        %assign intersectRollRegions = [%<scalar1>]
+    %else
+        %%
+        %% Convert roll region vectors to
+        %% a records that contains 
+        %% a vector of start points and
+        %% a vector or end points
+        %%
+        %assign rangePoints1 = LibRollRegions2StartEndMatrix(rollRegions1)
+        %assign rangePoints1end = rangePoints1[1]
+        %assign rangePoints2 = LibRollRegions2StartEndMatrix(rollRegions2)
+        %assign rangePoints2end = rangePoints2[1]
+        %%
+        %% find intersection
+        %%
+        %assign intersectRollRegions = "["
+        %%
+        %assign leftIdx  = ""
+        %%
+        %foreach i = sizeRR1
+            %%
+            %assign rightIdx = rollRegions1[i]
+            %%
+            %if "%<leftIdx>"  == ""
+                %assign leftIdx  = rightIdx
+            %endif
+            %%
+            %% if current scalar is an end point for either
+            %% roll region then it is an end point for the intersection
+            %%
+            %if LibInVector(rangePoints1end,rightIdx) || ...
+                LibInVector(rangePoints2end,rightIdx)
+                %%
+                %% handle range of width one
+                %%
+                %if leftIdx == rightIdx
+                    %%
+                    %if i == (sizeRR1-1)
+                        %assign newRange = "%<leftIdx>]"
+                    %else
+                        %assign newRange = "%<leftIdx>,"
+                    %endif
+                %%
+                %% handle true range
+                %%
+                %else
+                    %if i == (sizeRR1-1)
+                        %assign newRange = "%<leftIdx>:%<rightIdx>]"
+                    %else
+                        %assign newRange = "%<leftIdx>:%<rightIdx>,"
+                    %endif
+                %endif
+                %%
+                %% append new range to vector
+                %%
+                %assign intersectRollRegions = intersectRollRegions + newRange
+                %%
+                %% reset the left end point
+                %%
+                %assign leftIdx  = ""
+                %%
+            %endif
+        %endforeach
+        %%
+        %% convert from string to roll region vector
+        %%
+        %assign intersectRollRegions = %<intersectRollRegions>
+    %endif
+    %%
+    %return intersectRollRegions
+%endfunction %% LibIntersectRollRegions
+
+
+%% Function: SLibDeclareBlockParamRollVars ====================================
+%%
+%% Purpose:
+%%        Declare several model parameters for a rolled loop
+%%
+%% Syntax:
+%%        SLibDeclareBlockParamRollVars(param_array, sigOffset, rolledCount)
+%%
+%% Arguments:
+%%        param_array - a vector of indices into the model parameter table
+%%        sigOffset   - offset into the loop
+%%        rolledCount - 
+%%
+%% Returns:
+%%        Nothing.
+%%        Generates output that is placed in the declaration of rolled loops.
+%%
+%% Description:
+%%        This function declares all model parameters listed in the param_array
+%%        argument.
+%%
+%% Example:
+%%        param_array = [1 3]
+%%
+%%        This function will declare the first and third model parameters
+%%        depending on whether each one is wide or not. 
+%%
+%function SLibDeclareBlockParamRollVars(pName, param_array, sigOffset, ...
+  rolledCount) void
+  %openfile tmpBuf
+  %% Loop through all the parameters and check if we have to declare
+  %% any of them
+  %foreach idx = SIZE(param_array, 1)
+    %assign mdlParamIdx = param_array[idx]
+    %if mdlParamIdx > -1 %% Is it model or mask parameter ??? (-1 == mask prm)
+      %% Get the parameter record
+      %assign mdlParam = ModelParameters.Parameter[mdlParamIdx]
+      %if mdlParam.RollVarDeclared == 0
+	%%
+	%% Get the value
+	%assign value = mdlParam.Value
+	%%
+	%% Only declare roll var if it's a vector
+	%if SIZE(value, 1) > 1
+	  %assign rhs = LibModelParameterAddr(mdlParam, "", "", sigOffset)
+	  %%
+	  %% Get name of parameter to write
+	  %if mdlParam.Tunable == "yes"
+	    %assign varName = "p_%<mdlParam.Identifier>"
+	    %% Make sure we don't generate redundant declarations for
+	    %% tunable model parameters that are used by more than 
+	    %% one block parameter, keep track of when we've already
+	    %% generated a rollvar for a tunable model parameter
+	    %assign mdlParam.RollVarDeclared = 1
+	  %else
+	    %assign varName = "p_%<pName>"
+	  %endif
+	  %%
+	  %if rolledCount == 0
+	    %assign sc   = mdlParam.StorageClass
+	    %assign dt   = LibModelParameterDataTypeName(mdlParam)
+	    %assign tq   = FcnIsRTWClass(sc) ? "" : ...
+	                   SLibGetModelParameterTypeQualifier(mdlParam)
+	    %if FcnEmptyTq(tq)
+	      %assign tq = "const"
+	    %endif
+	    %<tq> %<dt> *%<varName> = %<rhs>;
+	  %else
+	    %<varName> = %<rhs>;
+	  %endif
+	%endif
+      %endif
+    %endif
+  %endforeach
+  %closefile tmpBuf
+  %return tmpBuf
+%endfunction %%SLibDeclareBlockParamRollVars
+
+
+%% Function: FcnIsRTWClass =====================================================
+%%
+%% Description:
+%%   Return whether or not this is an RTW storage class that requires a "const"
+%%   keyword in the roll variable declaration.
+%%
+%function FcnIsRTWClass(storageClass) void
+  %if storageClass == "Auto"
+    %return 1
+  %else
+    %return 0
+  %endif
+%endfunction
+
+
+%% Function: SLibRollInputIsWritable ===========================================
+%%
+%% Description:
+%%   Set the state of RollInputIsWritable
+%%   RollInputIsWritable=0 - declare roll input variable 'const %<dt>'
+%%   RollInputIsWritable=1 - declare roll input variable '%<dt>'
+%%   Default behavior is RollInputIsWritable=0
+%%   RollInputIsWritable=1 is currently only invoked by outport.ttlc
+%%
+%function SLibRollInputIsWritable(isWritable) void
+  %assign CompiledModel.RollInputIsWritable = isWritable
+%endfunction
+
+
+%%
+%% End of function library code
+%%
+
+%endif %% _ROLLLIB_
+
+%% [EOF] rolllib.tlc
