@@ -1,0 +1,5 @@
+I've totally broke compatibility for the reasoning that this source code got very big.  I've tried to follow a naming system of LVvtkClassFunction for all functions here. New objects are created with LVCreateVtkClass.  It was getting kinda hard to navigate through all the functions in Labview, hence the new naming scheme.  The end result of this, is that the old VIs will likely not work.  Apologies if this move is dumb and annoying
+
+Fortunately, this DLL is named lvvtkwrap2.dll, so you can load this one where you want to use my newer VIs, and you can use lvvtkwrap.dll where you want to use the old ones.  There should be no problem using both dlls in the same Labview code
+
+If you make use of a function that requires the linker to add another file, just add it to the CMakeLists.txt where it says TARGET_LINK_LIBRARIES.
